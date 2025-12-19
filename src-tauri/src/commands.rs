@@ -30,13 +30,22 @@ pub struct CollectionInfo {
     pub created_at: String,
 }
 
-/// Search result
+/// Single search hit
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResult {
+pub struct SearchHit {
     pub document: DocumentInfo,
     pub collection_id: String,
     pub score: f32,
     pub snippet: String,
+}
+
+/// Paginated search response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub hits: Vec<SearchHit>,
+    pub total_hits: usize,
+    pub page: usize,
+    pub page_size: usize,
 }
 
 /// Get all collections
@@ -457,14 +466,26 @@ pub async fn delete_document(
         .parse()
         .map_err(|_| "Invalid collection ID")?;
 
-    let mut storage_guard = state.storage.write().await;
-    let storage = storage_guard
-        .as_mut()
-        .ok_or_else(|| "Storage not initialized".to_string())?;
+    // Delete from storage
+    {
+        let mut storage_guard = state.storage.write().await;
+        let storage = storage_guard
+            .as_mut()
+            .ok_or_else(|| "Storage not initialized".to_string())?;
 
-    storage
-        .delete_document(namespace_id, &document_id)
-        .map_err(|e| e.to_string())?;
+        storage
+            .delete_document(namespace_id, &document_id)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Delete from search index
+    let search_guard = state.search.read().await;
+    if let Some(index) = search_guard.as_ref() {
+        let indexer_config = state.indexer_config.lock().await;
+        search::delete_document(index, &indexer_config, &document_id)
+            .map_err(|e| e.to_string())?;
+        tracing::info!("Removed document {} from search index", document_id);
+    }
 
     Ok(())
 }
@@ -481,14 +502,31 @@ pub async fn delete_collection(
         .parse()
         .map_err(|_| "Invalid collection ID")?;
 
-    let mut storage_guard = state.storage.write().await;
-    let storage = storage_guard
-        .as_mut()
-        .ok_or_else(|| "Storage not initialized".to_string())?;
+    // Delete from storage
+    {
+        let mut storage_guard = state.storage.write().await;
+        let storage = storage_guard
+            .as_mut()
+            .ok_or_else(|| "Storage not initialized".to_string())?;
 
-    storage
-        .delete_collection(namespace_id)
-        .map_err(|e| e.to_string())?;
+        storage
+            .delete_collection(namespace_id)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Delete all documents from search index for this collection
+    let search_guard = state.search.read().await;
+    if let Some(index) = search_guard.as_ref() {
+        let indexer_config = state.indexer_config.lock().await;
+        let deleted_count =
+            search::delete_documents_by_collection(index, &indexer_config, &collection_id)
+                .map_err(|e| e.to_string())?;
+        tracing::info!(
+            "Removed {} documents from search index for collection {}",
+            deleted_count,
+            collection_id
+        );
+    }
 
     Ok(())
 }
@@ -497,10 +535,11 @@ pub async fn delete_collection(
 #[tauri::command]
 pub async fn search(
     query: String,
-    limit: Option<usize>,
+    page: Option<usize>,
+    page_size: Option<usize>,
     collection_ids: Option<Vec<String>>,
     state: State<'_, AppState>,
-) -> Result<Vec<SearchResult>, String> {
+) -> Result<SearchResponse, String> {
     tracing::info!(
         "Searching for: {} (collections: {:?})",
         query,
@@ -512,13 +551,31 @@ pub async fn search(
         .as_ref()
         .ok_or_else(|| "Search not initialized".to_string())?;
 
-    let limit = limit.unwrap_or(20);
+    let page = page.unwrap_or(0);
+    let page_size = page_size.unwrap_or(20);
+    let offset = page * page_size;
+
+    let doc_count = search::get_document_count(index).unwrap_or(0);
+    tracing::info!(
+        "Search params: page={}, page_size={}, offset={}, index_docs={}",
+        page,
+        page_size,
+        offset,
+        doc_count
+    );
+
     let results =
-        search::search_index(index, &query, limit, collection_ids.as_deref())
+        search::search_index(index, &query, page_size, offset, collection_ids.as_deref())
             .map_err(|e| e.to_string())?;
 
-    let mut search_results = Vec::new();
-    for hit in results {
+    tracing::info!(
+        "Search returned: {} hits, total_hits={}",
+        results.hits.len(),
+        results.total_hits
+    );
+
+    let mut hits = Vec::new();
+    for hit in results.hits {
         let id = search::get_document_field(index, hit.doc_id, "id")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
@@ -536,7 +593,7 @@ pub async fn search(
         let score =
             milli::score_details::ScoreDetails::global_score(hit.scores.iter()) as f32;
 
-        search_results.push(SearchResult {
+        hits.push(SearchHit {
             document: DocumentInfo {
                 id,
                 name,
@@ -552,7 +609,12 @@ pub async fn search(
         });
     }
 
-    Ok(search_results)
+    Ok(SearchResponse {
+        hits,
+        total_hits: results.total_hits,
+        page,
+        page_size,
+    })
 }
 
 /// Get the local node ID for P2P connections

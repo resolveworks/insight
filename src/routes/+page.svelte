@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
 
   type Tab = "trajectory" | "search" | "files";
@@ -10,6 +10,9 @@
 
   let searchQuery = $state("");
   let results = $state<any[]>([]);
+  let totalHits = $state(0);
+  let currentPage = $state(0);
+  let pageSize = $state(20);
   let collections = $state<any[]>([]);
   let documents = $state<any[]>([]);
   let importing = $state(false);
@@ -25,6 +28,9 @@
     const query = searchQuery;
     const filterIds = selectedSearchCollections;
 
+    // Reset to first page when query or filters change
+    currentPage = 0;
+
     // Clear previous timeout
     if (searchTimeout) {
       clearTimeout(searchTimeout);
@@ -32,7 +38,7 @@
 
     // Debounce search by 200ms
     searchTimeout = setTimeout(() => {
-      performSearch(query, filterIds);
+      performSearch(query, filterIds, 0);
     }, 200);
 
     return () => {
@@ -40,21 +46,33 @@
     };
   });
 
-  async function performSearch(query: string, filterIds: Set<string>) {
+  async function performSearch(query: string, filterIds: Set<string>, page: number) {
     if (!query.trim()) {
       results = [];
+      totalHits = 0;
       return;
     }
     searching = true;
     try {
       const collectionIds = filterIds.size > 0 ? Array.from(filterIds) : null;
-      results = await invoke("search", { query, collectionIds });
+      const response: { hits: any[]; total_hits: number; page: number; page_size: number } =
+        await invoke("search", { query, collectionIds, page, pageSize });
+      results = response.hits;
+      totalHits = response.total_hits;
+      currentPage = response.page;
     } catch (e) {
       console.error("Search failed:", e);
     } finally {
       searching = false;
     }
   }
+
+  function goToPage(page: number) {
+    currentPage = page;
+    performSearch(searchQuery, selectedSearchCollections, page);
+  }
+
+  const totalPages = $derived(Math.ceil(totalHits / pageSize));
 
   function toggleSearchCollection(collectionId: string) {
     const newSet = new Set(selectedSearchCollections);
@@ -167,29 +185,32 @@
     }
   }
 
-  $effect(() => {
+  // Subscribe to backend events
+  let unlistenReady: UnlistenFn;
+  let unlistenDocAdded: UnlistenFn;
+
+  onMount(async () => {
     loadCollections();
+
+    unlistenReady = await listen("backend-ready", loadCollections);
+
+    unlistenDocAdded = await listen<{ collection_id: string; document: any }>(
+      "document-added",
+      (event) => {
+        const { collection_id, document } = event.payload;
+        if (selectedCollection === collection_id && !documents.some((d) => d.id === document.id)) {
+          documents = [...documents, document];
+        }
+        collections = collections.map((c) =>
+          c.id === collection_id ? { ...c, document_count: c.document_count + 1 } : c
+        );
+      }
+    );
   });
 
-  // Listen for document-added events from backend
-  onMount(() => {
-    let unlisten: UnlistenFn | undefined;
-
-    listen<{ collection_id: string; document: any }>("document-added", (event) => {
-      // Only add if we're viewing the same collection
-      if (selectedCollection === event.payload.collection_id) {
-        // Avoid duplicates (in case event arrives after batch returns)
-        if (!documents.some((d) => d.id === event.payload.document.id)) {
-          documents = [...documents, event.payload.document];
-        }
-      }
-      // Update collection document count in sidebar
-      collections = collections.map((c) =>
-        c.id === event.payload.collection_id ? { ...c, document_count: c.document_count + 1 } : c
-      );
-    }).then((fn) => (unlisten = fn));
-
-    return () => unlisten?.();
+  onDestroy(() => {
+    unlistenReady?.();
+    unlistenDocAdded?.();
   });
 
   const tabs: { id: Tab; label: string }[] = [
@@ -270,13 +291,16 @@
             {/if}
           </div>
 
-          <section class="flex-1 overflow-y-auto p-6">
+          <section class="flex flex-1 flex-col overflow-hidden p-6">
             {#if results.length === 0}
               <p class="text-sm italic text-slate-500">
                 {searchQuery ? "No results found" : "Start typing to search"}
               </p>
             {:else}
-              <ul class="space-y-4">
+              <div class="mb-2 text-sm text-slate-500">
+                {totalHits} result{totalHits === 1 ? '' : 's'} found
+              </div>
+              <ul class="flex-1 space-y-4 overflow-y-auto">
                 {#each results as result}
                   <li class="rounded-lg border border-slate-700 bg-slate-800 p-4">
                     <div class="mb-2 flex items-center justify-between">
@@ -290,6 +314,27 @@
                   </li>
                 {/each}
               </ul>
+              {#if totalPages > 1}
+                <div class="mt-4 flex items-center justify-center gap-2 border-t border-slate-700 pt-4">
+                  <button
+                    onclick={() => goToPage(currentPage - 1)}
+                    disabled={currentPage === 0}
+                    class="rounded px-3 py-1 text-sm text-slate-400 hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-transparent"
+                  >
+                    Previous
+                  </button>
+                  <span class="text-sm text-slate-500">
+                    Page {currentPage + 1} of {totalPages}
+                  </span>
+                  <button
+                    onclick={() => goToPage(currentPage + 1)}
+                    disabled={currentPage >= totalPages - 1}
+                    class="rounded px-3 py-1 text-sm text-slate-400 hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-transparent"
+                  >
+                    Next
+                  </button>
+                </div>
+              {/if}
             {/if}
           </section>
         </div>

@@ -3,7 +3,7 @@ pub mod commands;
 pub mod core;
 pub mod headless;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::core::AppState;
 
@@ -34,10 +34,17 @@ pub fn run() {
                 indexer_config: state.indexer_config.clone(),
             };
 
+            let app_handle = app.handle().clone();
+
             // Initialize storage and search in background
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = state_clone.initialize().await {
                     tracing::error!("Failed to initialize: {}", e);
+                } else {
+                    // Notify frontend that backend is ready
+                    if let Err(e) = app_handle.emit("backend-ready", ()) {
+                        tracing::error!("Failed to emit backend-ready event: {}", e);
+                    }
                 }
             });
 
