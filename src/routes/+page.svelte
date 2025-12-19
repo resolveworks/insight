@@ -67,71 +67,93 @@
   });
 </script>
 
-<main>
-  <header>
-    <h1>Insight</h1>
-    <p class="subtitle">Local-first document search</p>
-  </header>
-
-  <div class="search-container">
+<main class="flex h-screen flex-col bg-slate-900 text-slate-100">
+  <div class="flex gap-2 bg-slate-800 p-4">
     <input
       type="text"
       placeholder="Search documents..."
       bind:value={searchQuery}
       onkeydown={(e) => e.key === "Enter" && search()}
+      class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2 text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
     />
-    <button onclick={search}>Search</button>
-    <button onclick={importPdf} disabled={importing}>
+    <button
+      onclick={search}
+      class="rounded-md bg-rose-600 px-6 py-2 font-medium text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      Search
+    </button>
+    <button
+      onclick={importPdf}
+      disabled={importing}
+      class="rounded-md bg-rose-600 px-6 py-2 font-medium text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+    >
       {importing ? "Importing..." : "Import PDF"}
     </button>
   </div>
 
-  <div class="content">
-    <aside class="sidebar">
-      <h2>Collections</h2>
-      <div class="new-collection">
-        <input
-          type="text"
-          placeholder="New collection..."
-          bind:value={newCollectionName}
-          onkeydown={(e) => e.key === "Enter" && createCollection()}
-        />
-        <button onclick={createCollection}>+</button>
-      </div>
-      {#if collections.length === 0}
-        <p class="empty">No collections yet</p>
-      {:else}
-        <ul>
-          {#each collections as collection}
-            <li>{collection.name}</li>
-          {/each}
-        </ul>
-      {/if}
+  <div class="flex flex-1 overflow-hidden">
+    <aside class="flex w-72 flex-col gap-4 overflow-y-auto border-r border-slate-700 bg-slate-800 p-4">
+      <section>
+        <h2 class="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Collections</h2>
+        <div class="mb-2 flex gap-2">
+          <input
+            type="text"
+            placeholder="New collection..."
+            bind:value={newCollectionName}
+            onkeydown={(e) => e.key === "Enter" && createCollection()}
+            class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
+          />
+          <button
+            onclick={createCollection}
+            class="rounded-md bg-rose-600 px-3 py-1.5 font-medium text-white hover:bg-rose-700"
+          >
+            +
+          </button>
+        </div>
+        {#if collections.length === 0}
+          <p class="text-sm italic text-slate-500">No collections yet</p>
+        {:else}
+          <ul class="space-y-1">
+            {#each collections as collection}
+              <li class="cursor-pointer truncate rounded px-2 py-1.5 text-sm hover:bg-slate-700">
+                {collection.name}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
 
-      <h2>Imported Documents</h2>
-      {#if documents.length === 0}
-        <p class="empty">No documents imported</p>
-      {:else}
-        <ul>
-          {#each documents as doc}
-            <li title={`${doc.page_count} pages`}>{doc.name}</li>
-          {/each}
-        </ul>
-      {/if}
+      <section>
+        <h2 class="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Imported Documents</h2>
+        {#if documents.length === 0}
+          <p class="text-sm italic text-slate-500">No documents imported</p>
+        {:else}
+          <ul class="space-y-1">
+            {#each documents as doc}
+              <li
+                title={`${doc.page_count} pages`}
+                class="cursor-pointer truncate rounded px-2 py-1.5 text-sm hover:bg-slate-700"
+              >
+                {doc.name}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
     </aside>
 
-    <section class="results">
+    <section class="flex-1 overflow-y-auto p-6">
       {#if results.length === 0}
-        <p class="empty">
+        <p class="text-sm italic text-slate-500">
           {searchQuery ? "No results found" : "Enter a search query to find documents"}
         </p>
       {:else}
-        <ul>
+        <ul class="space-y-4">
           {#each results as result}
-            <li class="result-item">
-              <h3>{result.document.name}</h3>
-              <p class="snippet">{result.snippet}</p>
-              <span class="score">Score: {result.score.toFixed(2)}</span>
+            <li class="rounded-lg border border-slate-700 bg-slate-800 p-4">
+              <h3 class="mb-2 font-medium text-rose-500">{result.document.name}</h3>
+              <p class="text-sm leading-relaxed text-slate-400">{result.snippet}</p>
+              <span class="mt-2 inline-block text-xs text-slate-600">Score: {result.score.toFixed(2)}</span>
             </li>
           {/each}
         </ul>
@@ -139,186 +161,3 @@
     </section>
   </div>
 </main>
-
-<style>
-  :global(body) {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #1a1a2e;
-    color: #eee;
-  }
-
-  main {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-
-  header {
-    padding: 1.5rem 2rem;
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: 1.5rem;
-    color: #e94560;
-  }
-
-  .subtitle {
-    margin: 0.25rem 0 0;
-    font-size: 0.875rem;
-    color: #888;
-  }
-
-  .search-container {
-    display: flex;
-    gap: 0.5rem;
-    padding: 1rem 2rem;
-    background: #16213e;
-  }
-
-  input {
-    flex: 1;
-    padding: 0.75rem 1rem;
-    border: 1px solid #0f3460;
-    border-radius: 6px;
-    background: #1a1a2e;
-    color: #eee;
-    font-size: 1rem;
-  }
-
-  input:focus {
-    outline: none;
-    border-color: #e94560;
-  }
-
-  button {
-    padding: 0.75rem 1.5rem;
-    border: none;
-    border-radius: 6px;
-    background: #e94560;
-    color: white;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-
-  button:hover:not(:disabled) {
-    background: #d63850;
-  }
-
-  button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .content {
-    display: flex;
-    flex: 1;
-  }
-
-  .sidebar {
-    width: 280px;
-    padding: 1rem;
-    background: #16213e;
-    border-right: 1px solid #0f3460;
-    overflow-y: auto;
-  }
-
-  .sidebar h2 {
-    margin: 1rem 0 0.5rem;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    color: #888;
-  }
-
-  .sidebar h2:first-child {
-    margin-top: 0;
-  }
-
-  .new-collection {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .new-collection input {
-    flex: 1;
-    padding: 0.5rem;
-    font-size: 0.875rem;
-  }
-
-  .new-collection button {
-    padding: 0.5rem 0.75rem;
-    font-size: 1rem;
-  }
-
-  .sidebar ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-
-  .sidebar li {
-    padding: 0.5rem;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.875rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .sidebar li:hover {
-    background: #0f3460;
-  }
-
-  .results {
-    flex: 1;
-    padding: 1.5rem 2rem;
-    overflow-y: auto;
-  }
-
-  .results ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-
-  .result-item {
-    padding: 1rem;
-    margin-bottom: 1rem;
-    background: #16213e;
-    border-radius: 8px;
-    border: 1px solid #0f3460;
-  }
-
-  .result-item h3 {
-    margin: 0 0 0.5rem;
-    font-size: 1rem;
-    color: #e94560;
-  }
-
-  .snippet {
-    margin: 0;
-    font-size: 0.875rem;
-    color: #aaa;
-    line-height: 1.5;
-  }
-
-  .score {
-    display: inline-block;
-    margin-top: 0.5rem;
-    font-size: 0.75rem;
-    color: #666;
-  }
-
-  .empty {
-    color: #666;
-    font-style: italic;
-    font-size: 0.875rem;
-  }
-</style>
