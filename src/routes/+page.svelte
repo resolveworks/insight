@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
+  import Sidebar from "$lib/components/Sidebar.svelte";
 
   type Tab = "trajectory" | "search" | "files";
   let activeTab = $state<Tab>("search");
@@ -12,17 +13,60 @@
   let importing = $state(false);
   let newCollectionName = $state("");
   let selectedCollection = $state<string | null>(null);
+  let selectedSearchCollections = $state<Set<string>>(new Set());
+  let searching = $state(false);
 
-  async function search() {
-    if (!searchQuery.trim()) {
+  // Debounced search-as-you-type
+  let searchTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => {
+    const query = searchQuery;
+    const filterIds = selectedSearchCollections;
+
+    // Clear previous timeout
+    if (searchTimeout) {
+      clearTimeout(searchTimeout);
+    }
+
+    // Debounce search by 200ms
+    searchTimeout = setTimeout(() => {
+      performSearch(query, filterIds);
+    }, 200);
+
+    return () => {
+      if (searchTimeout) clearTimeout(searchTimeout);
+    };
+  });
+
+  async function performSearch(query: string, filterIds: Set<string>) {
+    if (!query.trim()) {
       results = [];
       return;
     }
+    searching = true;
     try {
-      results = await invoke("search", { query: searchQuery });
+      const collectionIds = filterIds.size > 0 ? Array.from(filterIds) : null;
+      results = await invoke("search", { query, collectionIds });
     } catch (e) {
       console.error("Search failed:", e);
+    } finally {
+      searching = false;
     }
+  }
+
+  function toggleSearchCollection(collectionId: string) {
+    const newSet = new Set(selectedSearchCollections);
+    if (newSet.has(collectionId)) {
+      newSet.delete(collectionId);
+    } else {
+      newSet.add(collectionId);
+    }
+    selectedSearchCollections = newSet;
+  }
+
+  function getCollectionName(collectionId: string): string {
+    const col = collections.find((c) => c.id === collectionId);
+    return col?.name ?? "Unknown";
   }
 
   async function importPdf() {
@@ -151,47 +195,81 @@
       </div>
     {:else if activeTab === "search"}
       <!-- Search Tab -->
-      <div class="flex flex-col h-full">
-        <div class="flex gap-2 p-4">
-          <input
-            type="text"
-            placeholder="Search documents..."
-            bind:value={searchQuery}
-            onkeydown={(e) => e.key === "Enter" && search()}
-            class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2 text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
-          />
-          <button
-            onclick={search}
-            class="rounded-md bg-rose-600 px-6 py-2 font-medium text-white hover:bg-rose-700"
-          >
-            Search
-          </button>
-        </div>
-
-        <section class="flex-1 overflow-y-auto p-6">
-          {#if results.length === 0}
-            <p class="text-sm italic text-slate-500">
-              {searchQuery ? "No results found" : "Enter a search query"}
-            </p>
+      <div class="flex h-full">
+        <Sidebar title="Filter by Collection">
+          {#if collections.length === 0}
+            <p class="text-sm italic text-slate-500">No collections</p>
           {:else}
-            <ul class="space-y-4">
-              {#each results as result}
-                <li class="rounded-lg border border-slate-700 bg-slate-800 p-4">
-                  <h3 class="mb-2 font-medium text-rose-500">{result.document.name}</h3>
-                  <p class="text-sm text-slate-400">{result.snippet}</p>
-                  <span class="mt-2 inline-block text-xs text-slate-600">Score: {result.score.toFixed(2)}</span>
+            <ul class="space-y-1">
+              {#each collections as collection}
+                <li>
+                  <label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={selectedSearchCollections.has(collection.id)}
+                      onchange={() => toggleSearchCollection(collection.id)}
+                      class="h-4 w-4 rounded border-slate-600 bg-slate-900 text-rose-500 focus:ring-rose-500"
+                    />
+                    <span class="truncate {selectedSearchCollections.has(collection.id) ? 'text-rose-400' : 'text-slate-300'}">
+                      {collection.name}
+                    </span>
+                  </label>
                 </li>
               {/each}
             </ul>
+            {#if selectedSearchCollections.size > 0}
+              <button
+                onclick={() => (selectedSearchCollections = new Set())}
+                class="mt-3 text-xs text-slate-500 hover:text-slate-300"
+              >
+                Clear filters
+              </button>
+            {/if}
           {/if}
-        </section>
+        </Sidebar>
+
+        <!-- Search Content -->
+        <div class="flex flex-1 flex-col">
+          <div class="flex items-center gap-2 border-b border-slate-700 p-4">
+            <input
+              type="text"
+              placeholder="Search documents..."
+              bind:value={searchQuery}
+              class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2 text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
+            />
+            {#if searching}
+              <span class="text-sm text-slate-500">Searching...</span>
+            {/if}
+          </div>
+
+          <section class="flex-1 overflow-y-auto p-6">
+            {#if results.length === 0}
+              <p class="text-sm italic text-slate-500">
+                {searchQuery ? "No results found" : "Start typing to search"}
+              </p>
+            {:else}
+              <ul class="space-y-4">
+                {#each results as result}
+                  <li class="rounded-lg border border-slate-700 bg-slate-800 p-4">
+                    <div class="mb-2 flex items-center justify-between">
+                      <h3 class="font-medium text-rose-500">{result.document.name}</h3>
+                      <span class="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-400">
+                        {getCollectionName(result.collection_id)}
+                      </span>
+                    </div>
+                    <p class="text-sm text-slate-400">{result.snippet}</p>
+                    <span class="mt-2 inline-block text-xs text-slate-600">Score: {result.score.toFixed(2)}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+        </div>
       </div>
     {:else if activeTab === "files"}
       <!-- Files Tab -->
       <div class="flex h-full">
-        <!-- Collections Sidebar -->
-        <aside class="w-64 overflow-y-auto border-r border-slate-700 bg-slate-800 p-4">
-          <h2 class="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">Collections</h2>
+        <Sidebar title="Collections">
           <div class="mb-4 flex gap-2">
             <input
               type="text"
@@ -213,13 +291,19 @@
             <ul class="space-y-1">
               {#each collections as collection}
                 <li
-                  onclick={() => selectCollection(collection.id)}
                   class="group flex cursor-pointer items-center justify-between rounded px-3 py-2 text-sm {selectedCollection === collection.id
                     ? 'bg-rose-600/20 text-rose-400'
                     : 'hover:bg-slate-700'}"
                 >
-                  <span class="truncate">{collection.name}</span>
                   <button
+                    type="button"
+                    onclick={() => selectCollection(collection.id)}
+                    class="flex-1 truncate text-left"
+                  >
+                    {collection.name}
+                  </button>
+                  <button
+                    type="button"
                     onclick={(e) => deleteCollection(collection.id, e)}
                     class="ml-2 hidden text-slate-500 hover:text-red-400 group-hover:block"
                     title="Delete collection"
@@ -230,7 +314,7 @@
               {/each}
             </ul>
           {/if}
-        </aside>
+        </Sidebar>
 
         <!-- Documents Area -->
         <section class="flex-1 overflow-y-auto p-6">

@@ -38,12 +38,19 @@ pub struct CollectionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub document: DocumentInfo,
+    pub collection_id: String,
     pub score: f32,
     pub snippet: String,
 }
 
 /// Index a document in milli
-fn index_document(index: &Index, doc_id: &str, name: &str, content: &str) -> Result<(), String> {
+fn index_document(
+    index: &Index,
+    doc_id: &str,
+    name: &str,
+    content: &str,
+    collection_id: &str,
+) -> Result<(), String> {
     let indexer_config = IndexerConfig::default();
 
     // Create JSON document as Object (Map<String, Value>)
@@ -51,6 +58,10 @@ fn index_document(index: &Index, doc_id: &str, name: &str, content: &str) -> Res
     doc.insert("id".to_string(), serde_json::Value::String(doc_id.to_string()));
     doc.insert("name".to_string(), serde_json::Value::String(name.to_string()));
     doc.insert("content".to_string(), serde_json::Value::String(content.to_string()));
+    doc.insert(
+        "collection_id".to_string(),
+        serde_json::Value::String(collection_id.to_string()),
+    );
 
     // Use milli's mmap_from_objects helper
     let mmap = mmap_from_objects([doc]);
@@ -120,11 +131,29 @@ fn search_index(
     index: &Index,
     query: &str,
     limit: usize,
+    collection_ids: Option<&[String]>,
 ) -> Result<Vec<(u32, Vec<milli::score_details::ScoreDetails>)>, String> {
     let rtxn = index.read_txn().map_err(|e| e.to_string())?;
     let mut search = milli::Search::new(&rtxn, index);
     search.query(query);
     search.limit(limit);
+
+    // Build filter string (must outlive the search)
+    let filter_str = collection_ids
+        .filter(|ids| !ids.is_empty())
+        .map(|ids| {
+            let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
+            format!("collection_id IN [{}]", quoted.join(", "))
+        });
+
+    // Apply collection filter if provided
+    if let Some(ref fs) = filter_str {
+        let filter =
+            milli::Filter::from_str(fs).map_err(|e| format!("Filter error: {:?}", e))?;
+        if let Some(f) = filter {
+            search.filter(f);
+        }
+    }
 
     let result = search.execute().map_err(|e| e.to_string())?;
 
@@ -258,7 +287,7 @@ pub async fn import_pdf(
     // Index in milli search
     let search_guard = state.search.read().await;
     if let Some(index) = search_guard.as_ref() {
-        index_document(index, &doc_id, &file_name, &extracted.text)?;
+        index_document(index, &doc_id, &file_name, &extracted.text, &collection_id)?;
         tracing::info!("Indexed document {} in milli", doc_id);
     } else {
         tracing::warn!("Search not initialized, document not indexed");
@@ -374,9 +403,14 @@ pub async fn delete_collection(
 pub async fn search(
     query: String,
     limit: Option<usize>,
+    collection_ids: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<Vec<SearchResult>, String> {
-    tracing::info!("Searching for: {}", query);
+    tracing::info!(
+        "Searching for: {} (collections: {:?})",
+        query,
+        collection_ids
+    );
 
     let search_guard = state.search.read().await;
     let index = search_guard
@@ -384,7 +418,7 @@ pub async fn search(
         .ok_or_else(|| "Search not initialized".to_string())?;
 
     let limit = limit.unwrap_or(20);
-    let results = search_index(index, &query, limit)?;
+    let results = search_index(index, &query, limit, collection_ids.as_deref())?;
 
     // Convert internal doc IDs to SearchResults
     let rtxn = index.read_txn().map_err(|e| e.to_string())?;
@@ -399,6 +433,7 @@ pub async fn search(
                 let id_field = fields_ids_map.id("id");
                 let name_field = fields_ids_map.id("name");
                 let content_field = fields_ids_map.id("content");
+                let collection_id_field = fields_ids_map.id("collection_id");
 
                 let id = id_field
                     .and_then(|fid| obkv.get(fid))
@@ -411,6 +446,11 @@ pub async fn search(
                     .unwrap_or_default();
 
                 let content = content_field
+                    .and_then(|fid| obkv.get(fid))
+                    .and_then(|v| serde_json::from_slice::<String>(v).ok())
+                    .unwrap_or_default();
+
+                let collection_id = collection_id_field
                     .and_then(|fid| obkv.get(fid))
                     .and_then(|v| serde_json::from_slice::<String>(v).ok())
                     .unwrap_or_default();
@@ -431,6 +471,7 @@ pub async fn search(
                         tags: vec![],
                         created_at: String::new(),
                     },
+                    collection_id,
                     score,
                     snippet,
                 });

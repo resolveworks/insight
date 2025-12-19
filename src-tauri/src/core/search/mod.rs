@@ -2,7 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use milli::heed::EnvOpenOptions;
-use milli::Index;
+use milli::progress::Progress;
+use milli::update::IndexerConfig;
+use milli::{FilterableAttributesRule, Index};
 
 /// Open or create a milli search index
 pub fn open_index(path: &Path) -> Result<Index> {
@@ -14,6 +16,27 @@ pub fn open_index(path: &Path) -> Result<Index> {
         true,
     )
     .context("Failed to create milli index")?;
+
+    // Configure filterable attributes for collection faceting
+    let needs_setup = {
+        let rtxn = index.read_txn()?;
+        let current_rules = index.filterable_attributes_rules(&rtxn)?;
+        !current_rules
+            .iter()
+            .any(|rule| matches!(rule, FilterableAttributesRule::Field(f) if f == "collection_id"))
+    };
+
+    if needs_setup {
+        let indexer_config = IndexerConfig::default();
+        let mut wtxn = index.write_txn()?;
+        let mut settings = milli::update::Settings::new(&mut wtxn, &index, &indexer_config);
+        settings.set_filterable_fields(vec![FilterableAttributesRule::Field(
+            "collection_id".to_string(),
+        )]);
+        settings.execute(&|| false, &Progress::default(), Default::default())?;
+        wtxn.commit()?;
+        tracing::info!("Configured filterable attribute: collection_id");
+    }
 
     tracing::info!("Search index opened at {:?}", path);
 
