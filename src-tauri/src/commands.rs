@@ -136,13 +136,30 @@ fn search_index(
 /// Get all collections
 #[tauri::command]
 pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<CollectionInfo>, String> {
-    let storage = state.storage.read().await;
-    if storage.is_none() {
-        return Ok(vec![]);
+    let mut storage_guard = state.storage.write().await;
+    let storage = match storage_guard.as_mut() {
+        Some(s) => s,
+        None => return Ok(vec![]),
+    };
+
+    let collections = storage
+        .list_collections()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Build CollectionInfo for each collection
+    let mut result = Vec::with_capacity(collections.len());
+    for (namespace_id, metadata) in collections {
+        let document_count = storage.count_documents(namespace_id).unwrap_or(0);
+        result.push(CollectionInfo {
+            id: namespace_id.to_string(),
+            name: metadata.name,
+            document_count,
+            created_at: metadata.created_at,
+        });
     }
 
-    // TODO: Query iroh-docs for namespaces
-    Ok(vec![])
+    Ok(result)
 }
 
 /// Create a new collection
@@ -153,17 +170,22 @@ pub async fn create_collection(
 ) -> Result<CollectionInfo, String> {
     tracing::info!("Creating collection: {}", name);
 
-    let storage = state.storage.read().await;
-    if storage.is_none() {
-        return Err("Storage not initialized".to_string());
-    }
+    let mut storage_guard = state.storage.write().await;
+    let storage = match storage_guard.as_mut() {
+        Some(s) => s,
+        None => return Err("Storage not initialized".to_string()),
+    };
 
-    // TODO: Create namespace in iroh-docs
+    let (namespace_id, metadata) = storage
+        .create_collection(&name)
+        .await
+        .map_err(|e| e.to_string())?;
+
     Ok(CollectionInfo {
-        id: uuid::Uuid::new_v4().to_string(),
-        name,
+        id: namespace_id.to_string(),
+        name: metadata.name,
         document_count: 0,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: metadata.created_at,
     })
 }
 

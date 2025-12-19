@@ -26,6 +26,7 @@ iroh = "0.35"
 iroh-blobs = "0.35"
 iroh-docs = "0.35"
 iroh-gossip = "0.35"
+iroh-io = "0.6"
 
 # PDF processing
 lopdf = "0.34"
@@ -39,6 +40,10 @@ bumpalo = "3"  # Required by milli's indexing API
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
+bytes = "1"
+
+# Random
+rand = "0.8"
 
 # Utilities
 anyhow = "1"
@@ -48,3 +53,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

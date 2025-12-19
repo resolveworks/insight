@@ -19,3 +19,35 @@ pub fn open_index(path: &Path) -> Result<Index> {
 
     Ok(index)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_index() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+
+        // Verify we can read from the index
+        let rtxn = index.read_txn().unwrap();
+        let count = index.number_of_documents(&rtxn).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_index_reopens() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Open and close
+        {
+            let _index = open_index(temp_dir.path()).unwrap();
+        }
+
+        // Should reopen successfully
+        let index = open_index(temp_dir.path()).unwrap();
+        let rtxn = index.read_txn().unwrap();
+        let count = index.number_of_documents(&rtxn).unwrap();
+        assert_eq!(count, 0);
+    }
+}

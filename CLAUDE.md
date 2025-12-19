@@ -113,6 +113,27 @@ cargo run -- --headless # Headless mode (from src-tauri/)
 pnpm tauri build        # Release build
 ```
 
+## Testing
+
+Minimal strategy focused on Rust backend where critical logic lives.
+
+```bash
+cd src-tauri && cargo test
+```
+
+### What to Test
+
+1. **Core modules** (unit tests) - Storage, sync, search operations
+2. **Tauri commands** (integration tests) - The frontend ↔ backend bridge
+3. **Critical path** - Collection CRUD, document ingestion, search queries
+
+### Guidelines
+
+- Test behavior, not implementation details
+- Use `#[tokio::test]` for async tests
+- Temporary directories for test data (avoid polluting real data)
+- Mock iroh/milli only when necessary for isolation
+
 ## Data Storage
 
 ```
