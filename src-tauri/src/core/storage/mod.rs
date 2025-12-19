@@ -265,6 +265,33 @@ impl Storage {
 
         Ok(documents)
     }
+
+    /// Delete a document from a collection
+    pub fn delete_document(&mut self, namespace_id: NamespaceId, document_id: &str) -> Result<()> {
+        let key = format!("files/{}", document_id);
+        let mut replica = self.docs.open_replica(&namespace_id)?;
+        replica.delete_prefix(key.as_bytes(), &self.author)?;
+        self.docs.close_replica(namespace_id);
+        self.docs.flush()?;
+
+        tracing::info!(
+            "Deleted document '{}' from collection {}",
+            document_id,
+            namespace_id
+        );
+
+        Ok(())
+    }
+
+    /// Delete a collection and all its documents
+    pub fn delete_collection(&mut self, namespace_id: NamespaceId) -> Result<()> {
+        self.docs.remove_replica(&namespace_id)?;
+        self.docs.flush()?;
+
+        tracing::info!("Deleted collection {}", namespace_id);
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

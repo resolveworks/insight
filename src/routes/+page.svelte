@@ -92,6 +92,30 @@
     }
   }
 
+  async function deleteCollection(collectionId: string, event: MouseEvent) {
+    event.stopPropagation();
+    try {
+      await invoke("delete_collection", { collectionId });
+      collections = collections.filter((c) => c.id !== collectionId);
+      if (selectedCollection === collectionId) {
+        selectedCollection = null;
+        documents = [];
+      }
+    } catch (e) {
+      console.error("Failed to delete collection:", e);
+    }
+  }
+
+  async function deleteDocument(documentId: string) {
+    if (!selectedCollection) return;
+    try {
+      await invoke("delete_document", { collectionId: selectedCollection, documentId });
+      documents = documents.filter((d) => d.id !== documentId);
+    } catch (e) {
+      console.error("Failed to delete document:", e);
+    }
+  }
+
   $effect(() => {
     loadCollections();
   });
@@ -190,11 +214,18 @@
               {#each collections as collection}
                 <li
                   onclick={() => selectCollection(collection.id)}
-                  class="cursor-pointer truncate rounded px-3 py-2 text-sm {selectedCollection === collection.id
+                  class="group flex cursor-pointer items-center justify-between rounded px-3 py-2 text-sm {selectedCollection === collection.id
                     ? 'bg-rose-600/20 text-rose-400'
                     : 'hover:bg-slate-700'}"
                 >
-                  {collection.name}
+                  <span class="truncate">{collection.name}</span>
+                  <button
+                    onclick={(e) => deleteCollection(collection.id, e)}
+                    class="ml-2 hidden text-slate-500 hover:text-red-400 group-hover:block"
+                    title="Delete collection"
+                  >
+                    x
+                  </button>
                 </li>
               {/each}
             </ul>
@@ -220,9 +251,18 @@
           {:else}
             <ul class="space-y-2">
               {#each documents as doc}
-                <li class="rounded-lg border border-slate-700 bg-slate-800 px-4 py-3">
-                  <span class="text-slate-200">{doc.name}</span>
-                  <span class="ml-2 text-xs text-slate-500">{doc.page_count} pages</span>
+                <li class="group flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-4 py-3">
+                  <div>
+                    <span class="text-slate-200">{doc.name}</span>
+                    <span class="ml-2 text-xs text-slate-500">{doc.page_count} pages</span>
+                  </div>
+                  <button
+                    onclick={() => deleteDocument(doc.id)}
+                    class="hidden text-slate-500 hover:text-red-400 group-hover:block"
+                    title="Delete document"
+                  >
+                    x
+                  </button>
                 </li>
               {/each}
             </ul>

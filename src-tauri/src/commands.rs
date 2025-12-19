@@ -315,6 +315,59 @@ pub async fn get_documents(
         .collect())
 }
 
+/// Delete a document from a collection
+#[tauri::command]
+pub async fn delete_document(
+    collection_id: String,
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    tracing::info!(
+        "Deleting document {} from collection {}",
+        document_id,
+        collection_id
+    );
+
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| "Invalid collection ID")?;
+
+    let mut storage_guard = state.storage.write().await;
+    let storage = storage_guard
+        .as_mut()
+        .ok_or_else(|| "Storage not initialized".to_string())?;
+
+    storage
+        .delete_document(namespace_id, &document_id)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Delete a collection and all its documents
+#[tauri::command]
+pub async fn delete_collection(
+    collection_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    tracing::info!("Deleting collection {}", collection_id);
+
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| "Invalid collection ID")?;
+
+    let mut storage_guard = state.storage.write().await;
+    let storage = storage_guard
+        .as_mut()
+        .ok_or_else(|| "Storage not initialized".to_string())?;
+
+    storage
+        .delete_collection(namespace_id)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Search documents
 #[tauri::command]
 pub async fn search(
