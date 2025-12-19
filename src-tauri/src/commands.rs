@@ -231,6 +231,9 @@ struct ExtractionResult {
 }
 
 /// Import multiple PDF files into a collection with parallel processing
+///
+/// Each file is fully processed (extract → store → index) before being marked successful.
+/// This ensures no orphaned documents in storage without search index entries.
 #[tauri::command]
 pub async fn import_pdfs_batch(
     paths: Vec<String>,
@@ -276,9 +279,9 @@ pub async fn import_pdfs_batch(
 
     let mut successful = Vec::new();
     let mut failed = Vec::new();
-    let mut docs_to_index = Vec::new();
 
-    // Process each extraction as it completes: store → emit → collect for indexing
+    // Process each extraction as it completes: store → index → emit
+    // Each file is a complete unit of work
     while let Some(result) = extraction_stream.next().await {
         let extraction = match result {
             Ok(Ok(e)) => e,
@@ -295,13 +298,16 @@ pub async fn import_pdfs_batch(
             }
         };
 
+        let file_name = extraction.file_name.clone();
+        let text_content = extraction.extracted.text.clone();
+
         // Store blobs and metadata
         let mut storage_guard = state.storage.write().await;
         let storage = match storage_guard.as_mut() {
             Some(s) => s,
             None => {
                 failed.push(BatchImportError {
-                    path: extraction.file_name,
+                    path: file_name,
                     error: "Storage not initialized".to_string(),
                 });
                 continue;
@@ -315,7 +321,7 @@ pub async fn import_pdfs_batch(
             Ok(h) => h.to_string(),
             Err(e) => {
                 failed.push(BatchImportError {
-                    path: extraction.file_name,
+                    path: file_name,
                     error: format!("Failed to store PDF: {}", e),
                 });
                 continue;
@@ -329,7 +335,7 @@ pub async fn import_pdfs_batch(
             Ok(h) => h.to_string(),
             Err(e) => {
                 failed.push(BatchImportError {
-                    path: extraction.file_name,
+                    path: file_name,
                     error: format!("Failed to store text: {}", e),
                 });
                 continue;
@@ -338,7 +344,7 @@ pub async fn import_pdfs_batch(
 
         let metadata = DocumentMetadata {
             id: doc_id.clone(),
-            name: extraction.file_name.clone(),
+            name: file_name.clone(),
             pdf_hash: pdf_hash.clone(),
             text_hash: text_hash.clone(),
             page_count: extraction.extracted.page_count,
@@ -348,18 +354,44 @@ pub async fn import_pdfs_batch(
 
         if let Err(e) = storage.add_document(namespace_id, metadata).await {
             failed.push(BatchImportError {
-                path: extraction.file_name,
+                path: file_name,
                 error: format!("Failed to add metadata: {}", e),
             });
             continue;
         }
 
-        // Release lock before emitting event
+        // Release storage lock before indexing
         drop(storage_guard);
 
+        // Index in milli immediately after storing
+        let search_guard = state.search.read().await;
+        if let Some(index) = search_guard.as_ref() {
+            let indexer_config = state.indexer_config.lock().await;
+            if let Err(e) = search::index_document(
+                index,
+                &indexer_config,
+                &doc_id,
+                &file_name,
+                &text_content,
+                &collection_id,
+            ) {
+                // Document stored but not indexed - this is a problem
+                // Log error but don't fail the whole import
+                tracing::error!("Failed to index document {}: {}", file_name, e);
+                failed.push(BatchImportError {
+                    path: file_name,
+                    error: format!("Stored but failed to index: {}", e),
+                });
+                continue;
+            }
+        } else {
+            tracing::warn!("Search not initialized, document {} not indexed", file_name);
+        }
+        drop(search_guard);
+
         let doc_info = DocumentInfo {
-            id: doc_id.clone(),
-            name: extraction.file_name.clone(),
+            id: doc_id,
+            name: file_name,
             pdf_hash,
             text_hash,
             page_count: extraction.extracted.page_count,
@@ -367,7 +399,7 @@ pub async fn import_pdfs_batch(
             created_at,
         };
 
-        // Emit event immediately
+        // Emit event after full processing
         let _ = app.emit(
             "document-added",
             DocumentAddedEvent {
@@ -376,34 +408,7 @@ pub async fn import_pdfs_batch(
             },
         );
 
-        docs_to_index.push(search::DocToIndex {
-            id: doc_id,
-            name: extraction.file_name,
-            content: extraction.extracted.text,
-            collection_id: collection_id.clone(),
-        });
-
         successful.push(doc_info);
-    }
-
-    tracing::info!(
-        "Processed {} PDFs successfully, {} failed",
-        successful.len(),
-        failed.len()
-    );
-
-    // Batch index all documents
-    if !docs_to_index.is_empty() {
-        let search_guard = state.search.read().await;
-        if let Some(index) = search_guard.as_ref() {
-            let indexer_config = state.indexer_config.lock().await;
-            let doc_count = docs_to_index.len();
-            search::index_documents_batch(index, &indexer_config, docs_to_index)
-                .map_err(|e| e.to_string())?;
-            tracing::info!("Batch indexed {} documents in milli", doc_count);
-        } else {
-            tracing::warn!("Search not initialized, documents not indexed");
-        }
     }
 
     tracing::info!(

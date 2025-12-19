@@ -12,16 +12,19 @@ use milli::vector::RuntimeEmbedders;
 use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
 use serde_json::{Map, Value};
 
+/// Default map size for the LMDB environment (10 GB)
+/// This is the maximum size the database can grow to
+const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
+
 /// Open or create a milli search index
 pub fn open_index(path: &Path) -> Result<Index> {
     std::fs::create_dir_all(path)?;
 
-    let index = Index::new(
-        EnvOpenOptions::new().read_txn_without_tls(),
-        path,
-        true,
-    )
-    .context("Failed to create milli index")?;
+    let mut env_options = EnvOpenOptions::new();
+    env_options.map_size(DEFAULT_MAP_SIZE);
+    let env_options = env_options.read_txn_without_tls();
+
+    let index = Index::new(env_options, path, true).context("Failed to create milli index")?;
 
     // Configure filterable attributes for collection faceting
     let needs_setup = {
@@ -95,13 +98,15 @@ pub fn index_documents_batch(
     let total = docs.len();
 
     // Process in chunks to avoid stack overflow with large batches
+    let num_chunks = (total + BATCH_CHUNK_SIZE - 1) / BATCH_CHUNK_SIZE;
     for (chunk_idx, chunk) in docs.chunks(BATCH_CHUNK_SIZE).enumerate() {
         index_chunk(index, indexer_config, chunk)?;
-        tracing::debug!(
-            "Indexed chunk {}/{} ({} documents)",
+        tracing::info!(
+            "Indexed chunk {}/{} ({} documents, {}% complete)",
             chunk_idx + 1,
-            (total + BATCH_CHUNK_SIZE - 1) / BATCH_CHUNK_SIZE,
-            chunk.len()
+            num_chunks,
+            chunk.len(),
+            ((chunk_idx + 1) * 100) / num_chunks
         );
     }
 

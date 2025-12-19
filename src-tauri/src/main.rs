@@ -30,6 +30,8 @@ enum Command {
 enum IndexCommand {
     /// Rebuild the search index from stored documents
     Rebuild,
+    /// Show status of storage vs search index
+    Status,
 }
 
 fn main() {
@@ -46,6 +48,9 @@ fn main() {
         Some(Command::Index { action }) => match action {
             IndexCommand::Rebuild => {
                 insight_lib::cli::index_rebuild();
+            }
+            IndexCommand::Status => {
+                insight_lib::cli::index_status();
             }
         },
     }
