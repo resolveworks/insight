@@ -392,4 +392,64 @@ mod tests {
         assert_eq!(docs[0].name, "test.pdf");
         assert_eq!(docs[0].page_count, 5);
     }
+
+    #[tokio::test]
+    async fn test_delete_document() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut storage = Storage::open(temp_dir.path()).await.unwrap();
+
+        let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
+
+        // Add two documents
+        let doc1 = DocumentMetadata {
+            id: "doc-1".to_string(),
+            name: "first.pdf".to_string(),
+            pdf_hash: "abc".to_string(),
+            text_hash: "def".to_string(),
+            page_count: 1,
+            tags: vec![],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let doc2 = DocumentMetadata {
+            id: "doc-2".to_string(),
+            name: "second.pdf".to_string(),
+            pdf_hash: "ghi".to_string(),
+            text_hash: "jkl".to_string(),
+            page_count: 2,
+            tags: vec![],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        storage.add_document(collection_id, doc1).await.unwrap();
+        storage.add_document(collection_id, doc2).await.unwrap();
+
+        assert_eq!(storage.count_documents(collection_id).unwrap(), 2);
+
+        // Delete first document
+        storage.delete_document(collection_id, "doc-1").unwrap();
+
+        // Should have 1 document left
+        let docs = storage.list_documents(collection_id).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].id, "doc-2");
+    }
+
+    #[tokio::test]
+    async fn test_delete_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut storage = Storage::open(temp_dir.path()).await.unwrap();
+
+        // Create two collections
+        let (id1, _) = storage.create_collection("First").await.unwrap();
+        let (id2, _) = storage.create_collection("Second").await.unwrap();
+
+        assert_eq!(storage.list_collections().await.unwrap().len(), 2);
+
+        // Delete first collection
+        storage.delete_collection(id1).unwrap();
+
+        // Should have 1 collection left
+        let collections = storage.list_collections().await.unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].0, id2);
+    }
 }
