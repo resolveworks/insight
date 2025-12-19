@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Map;
 use tauri::State;
 
+use crate::core::storage::DocumentMetadata;
 use crate::core::{pdf, AppState};
+use iroh_docs::NamespaceId;
 
 /// Document metadata returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,10 +195,14 @@ pub async fn create_collection(
 #[tauri::command]
 pub async fn import_pdf(
     path: String,
-    _collection_id: Option<String>,
+    collection_id: String,
     state: State<'_, AppState>,
 ) -> Result<DocumentInfo, String> {
-    tracing::info!("Importing PDF: {}", path);
+    tracing::info!("Importing PDF: {} into collection {}", path, collection_id);
+
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| "Invalid collection ID")?;
 
     let path_ref = std::path::Path::new(&path);
     let file_name = path_ref
@@ -210,6 +216,43 @@ pub async fn import_pdf(
 
     let doc_id = uuid::Uuid::new_v4().to_string();
     let created_at = chrono::Utc::now().to_rfc3339();
+
+    // Store PDF and text blobs
+    {
+        let mut storage_guard = state.storage.write().await;
+        let storage = storage_guard
+            .as_mut()
+            .ok_or_else(|| "Storage not initialized".to_string())?;
+
+        // Read PDF bytes and store as blob
+        let pdf_bytes = std::fs::read(path_ref).map_err(|e| e.to_string())?;
+        storage
+            .store_blob(&pdf_bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Store extracted text as blob
+        storage
+            .store_blob(extracted.text.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Create document metadata and store in collection
+        let metadata = DocumentMetadata {
+            id: doc_id.clone(),
+            name: file_name.clone(),
+            pdf_hash: extracted.pdf_hash.clone(),
+            text_hash: extracted.text_hash.clone(),
+            page_count: extracted.page_count,
+            tags: vec![],
+            created_at: created_at.clone(),
+        };
+
+        storage
+            .add_document(namespace_id, metadata)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     // Index in milli search
     let search_guard = state.search.read().await;
@@ -236,6 +279,40 @@ pub async fn import_pdf(
         tags: vec![],
         created_at,
     })
+}
+
+/// Get all documents in a collection
+#[tauri::command]
+pub async fn get_documents(
+    collection_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<DocumentInfo>, String> {
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| "Invalid collection ID")?;
+
+    let mut storage_guard = state.storage.write().await;
+    let storage = storage_guard
+        .as_mut()
+        .ok_or_else(|| "Storage not initialized".to_string())?;
+
+    let documents = storage
+        .list_documents(namespace_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(documents
+        .into_iter()
+        .map(|m| DocumentInfo {
+            id: m.id,
+            name: m.name,
+            pdf_hash: m.pdf_hash,
+            text_hash: m.text_hash,
+            page_count: m.page_count,
+            tags: m.tags,
+            created_at: m.created_at,
+        })
+        .collect())
 }
 
 /// Search documents

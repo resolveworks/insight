@@ -16,6 +16,18 @@ pub struct CollectionMetadata {
     pub created_at: String,
 }
 
+/// Document metadata stored in iroh-docs under `files/{id}` key
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentMetadata {
+    pub id: String,
+    pub name: String,
+    pub pdf_hash: String,
+    pub text_hash: String,
+    pub page_count: usize,
+    pub tags: Vec<String>,
+    pub created_at: String,
+}
+
 /// Storage layer using iroh for P2P content-addressed storage
 pub struct Storage {
     /// Content-addressed blob storage (PDFs, extracted text)
@@ -200,6 +212,59 @@ impl Storage {
         let entries = self.docs.get_many(namespace_id, query)?;
         Ok(entries.count())
     }
+
+    /// Add a document to a collection
+    pub async fn add_document(
+        &mut self,
+        namespace_id: NamespaceId,
+        metadata: DocumentMetadata,
+    ) -> Result<()> {
+        // Store metadata in blob storage
+        let metadata_bytes = serde_json::to_vec(&metadata)?;
+        let hash = self.store_blob(&metadata_bytes).await?;
+        let len = metadata_bytes.len() as u64;
+
+        // Store reference in iroh-docs under `files/{id}` key
+        let key = format!("files/{}", metadata.id);
+        let mut replica = self.docs.open_replica(&namespace_id)?;
+        replica.insert(key.as_bytes(), &self.author, hash, len)?;
+        self.docs.close_replica(namespace_id);
+        self.docs.flush()?;
+
+        tracing::info!(
+            "Added document '{}' to collection {}",
+            metadata.name,
+            namespace_id
+        );
+
+        Ok(())
+    }
+
+    /// List all documents in a collection
+    pub async fn list_documents(
+        &mut self,
+        namespace_id: NamespaceId,
+    ) -> Result<Vec<DocumentMetadata>> {
+        let query = iroh_docs::store::Query::key_prefix(b"files/").build();
+        let entries = self.docs.get_many(namespace_id, query)?;
+
+        let mut documents = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let hash = entry.content_hash();
+
+            if let Some(data) = self.get_blob(&hash).await? {
+                match serde_json::from_slice::<DocumentMetadata>(&data) {
+                    Ok(metadata) => documents.push(metadata),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse document metadata: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(documents)
+    }
 }
 
 #[cfg(test)]
@@ -268,5 +333,36 @@ mod tests {
         let (id, _) = storage.create_collection("Empty").await.unwrap();
         let count = storage.count_documents(id).unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_add_and_list_documents() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut storage = Storage::open(temp_dir.path()).await.unwrap();
+
+        let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
+
+        // Add a document
+        let doc = DocumentMetadata {
+            id: "doc-1".to_string(),
+            name: "test.pdf".to_string(),
+            pdf_hash: "abc123".to_string(),
+            text_hash: "def456".to_string(),
+            page_count: 5,
+            tags: vec!["test".to_string()],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        storage.add_document(collection_id, doc).await.unwrap();
+
+        // Count should be 1
+        let count = storage.count_documents(collection_id).unwrap();
+        assert_eq!(count, 1);
+
+        // List documents
+        let docs = storage.list_documents(collection_id).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].id, "doc-1");
+        assert_eq!(docs[0].name, "test.pdf");
+        assert_eq!(docs[0].page_count, 5);
     }
 }

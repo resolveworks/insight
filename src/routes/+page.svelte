@@ -26,6 +26,11 @@
   }
 
   async function importPdf() {
+    if (!selectedCollection) {
+      console.error("No collection selected");
+      return;
+    }
+
     const files = await open({
       multiple: true,
       filters: [{ name: "PDF", extensions: ["pdf"] }],
@@ -45,6 +50,27 @@
       }
     }
     importing = false;
+  }
+
+  async function loadDocuments(collectionId: string) {
+    try {
+      documents = await invoke("get_documents", { collectionId });
+    } catch (e) {
+      console.error("Failed to load documents:", e);
+      documents = [];
+    }
+  }
+
+  async function selectCollection(collectionId: string | null) {
+    if (selectedCollection === collectionId) {
+      selectedCollection = null;
+      documents = [];
+    } else {
+      selectedCollection = collectionId;
+      if (collectionId) {
+        await loadDocuments(collectionId);
+      }
+    }
   }
 
   async function createCollection() {
@@ -163,7 +189,7 @@
             <ul class="space-y-1">
               {#each collections as collection}
                 <li
-                  onclick={() => (selectedCollection = selectedCollection === collection.id ? null : collection.id)}
+                  onclick={() => selectCollection(collection.id)}
                   class="cursor-pointer truncate rounded px-3 py-2 text-sm {selectedCollection === collection.id
                     ? 'bg-rose-600/20 text-rose-400'
                     : 'hover:bg-slate-700'}"
@@ -178,10 +204,12 @@
         <!-- Documents Area -->
         <section class="flex-1 overflow-y-auto p-6">
           <div class="mb-4 flex items-center justify-between">
-            <h2 class="text-sm font-medium text-slate-400">Documents</h2>
+            <h2 class="text-sm font-medium text-slate-400">
+              {selectedCollection ? "Documents" : "Select a collection"}
+            </h2>
             <button
               onclick={importPdf}
-              disabled={importing}
+              disabled={importing || !selectedCollection}
               class="rounded-md bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-60"
             >
               {importing ? "Importing..." : "Import PDF"}

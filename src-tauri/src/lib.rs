@@ -44,6 +44,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_collections,
             commands::create_collection,
+            commands::get_documents,
             commands::import_pdf,
             commands::search,
             commands::get_node_id,
