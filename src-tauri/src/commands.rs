@@ -217,22 +217,21 @@ pub async fn import_pdf(
     let doc_id = uuid::Uuid::new_v4().to_string();
     let created_at = chrono::Utc::now().to_rfc3339();
 
-    // Store PDF and text blobs
-    {
+    // Store PDF and text blobs, get hashes from iroh
+    let (pdf_hash, text_hash) = {
         let mut storage_guard = state.storage.write().await;
         let storage = storage_guard
             .as_mut()
             .ok_or_else(|| "Storage not initialized".to_string())?;
 
-        // Read PDF bytes and store as blob
-        let pdf_bytes = std::fs::read(path_ref).map_err(|e| e.to_string())?;
-        storage
-            .store_blob(&pdf_bytes)
+        // Store PDF bytes as blob - iroh returns the BLAKE3 hash
+        let pdf_hash = storage
+            .store_blob(&extracted.pdf_bytes)
             .await
             .map_err(|e| e.to_string())?;
 
         // Store extracted text as blob
-        storage
+        let text_hash = storage
             .store_blob(extracted.text.as_bytes())
             .await
             .map_err(|e| e.to_string())?;
@@ -241,8 +240,8 @@ pub async fn import_pdf(
         let metadata = DocumentMetadata {
             id: doc_id.clone(),
             name: file_name.clone(),
-            pdf_hash: extracted.pdf_hash.clone(),
-            text_hash: extracted.text_hash.clone(),
+            pdf_hash: pdf_hash.to_string(),
+            text_hash: text_hash.to_string(),
             page_count: extracted.page_count,
             tags: vec![],
             created_at: created_at.clone(),
@@ -252,7 +251,9 @@ pub async fn import_pdf(
             .add_document(namespace_id, metadata)
             .await
             .map_err(|e| e.to_string())?;
-    }
+
+        (pdf_hash.to_string(), text_hash.to_string())
+    };
 
     // Index in milli search
     let search_guard = state.search.read().await;
@@ -273,8 +274,8 @@ pub async fn import_pdf(
     Ok(DocumentInfo {
         id: doc_id,
         name: file_name,
-        pdf_hash: extracted.pdf_hash,
-        text_hash: extracted.text_hash,
+        pdf_hash,
+        text_hash,
         page_count: extracted.page_count,
         tags: vec![],
         created_at,

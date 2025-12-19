@@ -30,7 +30,6 @@ iroh-io = "0.6"
 
 # PDF processing
 lopdf = "0.34"
-blake3 = "1"
 
 # Search (milli from meilisearch - includes candle for embeddings)
 milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.30.1" }
