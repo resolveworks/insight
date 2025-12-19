@@ -1,16 +1,8 @@
-use bumpalo::Bump;
-use milli::documents::mmap_from_objects;
-use milli::progress::Progress;
-use milli::update::new::indexer::{self, DocumentOperation};
-use milli::update::IndexerConfig;
-use milli::vector::RuntimeEmbedders;
-use milli::Index;
 use serde::{Deserialize, Serialize};
-use serde_json::Map;
 use tauri::State;
 
 use crate::core::storage::DocumentMetadata;
-use crate::core::{pdf, AppState};
+use crate::core::{pdf, search, AppState};
 use iroh_docs::NamespaceId;
 
 /// Document metadata returned to frontend
@@ -41,127 +33,6 @@ pub struct SearchResult {
     pub collection_id: String,
     pub score: f32,
     pub snippet: String,
-}
-
-/// Index a document in milli
-fn index_document(
-    index: &Index,
-    doc_id: &str,
-    name: &str,
-    content: &str,
-    collection_id: &str,
-) -> Result<(), String> {
-    let indexer_config = IndexerConfig::default();
-
-    // Create JSON document as Object (Map<String, Value>)
-    let mut doc = Map::new();
-    doc.insert("id".to_string(), serde_json::Value::String(doc_id.to_string()));
-    doc.insert("name".to_string(), serde_json::Value::String(name.to_string()));
-    doc.insert("content".to_string(), serde_json::Value::String(content.to_string()));
-    doc.insert(
-        "collection_id".to_string(),
-        serde_json::Value::String(collection_id.to_string()),
-    );
-
-    // Use milli's mmap_from_objects helper
-    let mmap = mmap_from_objects([doc]);
-
-    // Get current fields map
-    let rtxn = index.read_txn().map_err(|e| e.to_string())?;
-    let db_fields_ids_map = index.fields_ids_map(&rtxn).map_err(|e| e.to_string())?;
-    let mut new_fields_ids_map = db_fields_ids_map.clone();
-
-    // No embedders configured yet
-    let embedders = RuntimeEmbedders::default();
-
-    // Create document operation
-    let mut operation = DocumentOperation::new();
-    operation.replace_documents(&mmap).map_err(|e| e.to_string())?;
-
-    let indexer_alloc = Bump::new();
-    let (document_changes, operation_stats, primary_key) = operation
-        .into_changes(
-            &indexer_alloc,
-            index,
-            &rtxn,
-            None,
-            &mut new_fields_ids_map,
-            &|| false,
-            Progress::default(),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-
-    // Check for errors in operation stats
-    if let Some(error) = operation_stats.into_iter().find_map(|stat| stat.error) {
-        return Err(format!("Document operation error: {}", error));
-    }
-
-    // Write transaction for indexing (rtxn stays alive as document_changes borrows from it)
-    let mut wtxn = index.write_txn().map_err(|e| e.to_string())?;
-
-    indexer_config
-        .thread_pool
-        .install(|| {
-            indexer::index(
-                &mut wtxn,
-                index,
-                &milli::ThreadPoolNoAbortBuilder::new().build().unwrap(),
-                indexer_config.grenad_parameters(),
-                &db_fields_ids_map,
-                new_fields_ids_map,
-                primary_key,
-                &document_changes,
-                embedders,
-                &|| false,
-                &Progress::default(),
-                &Default::default(),
-            )
-        })
-        .map_err(|e| format!("Thread pool error: {}", e))?
-        .map_err(|e| e.to_string())?;
-
-    wtxn.commit().map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-/// Search milli index
-fn search_index(
-    index: &Index,
-    query: &str,
-    limit: usize,
-    collection_ids: Option<&[String]>,
-) -> Result<Vec<(u32, Vec<milli::score_details::ScoreDetails>)>, String> {
-    let rtxn = index.read_txn().map_err(|e| e.to_string())?;
-    let mut search = milli::Search::new(&rtxn, index);
-    search.query(query);
-    search.limit(limit);
-
-    // Build filter string (must outlive the search)
-    let filter_str = collection_ids
-        .filter(|ids| !ids.is_empty())
-        .map(|ids| {
-            let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
-            format!("collection_id IN [{}]", quoted.join(", "))
-        });
-
-    // Apply collection filter if provided
-    if let Some(ref fs) = filter_str {
-        let filter =
-            milli::Filter::from_str(fs).map_err(|e| format!("Filter error: {:?}", e))?;
-        if let Some(f) = filter {
-            search.filter(f);
-        }
-    }
-
-    let result = search.execute().map_err(|e| e.to_string())?;
-
-    Ok(result
-        .documents_ids
-        .into_iter()
-        .zip(result.document_scores)
-        .collect())
 }
 
 /// Get all collections
@@ -287,7 +158,8 @@ pub async fn import_pdf(
     // Index in milli search
     let search_guard = state.search.read().await;
     if let Some(index) = search_guard.as_ref() {
-        index_document(index, &doc_id, &file_name, &extracted.text, &collection_id)?;
+        search::index_document(index, &doc_id, &file_name, &extracted.text, &collection_id)
+            .map_err(|e| e.to_string())?;
         tracing::info!("Indexed document {} in milli", doc_id);
     } else {
         tracing::warn!("Search not initialized, document not indexed");
@@ -418,65 +290,43 @@ pub async fn search(
         .ok_or_else(|| "Search not initialized".to_string())?;
 
     let limit = limit.unwrap_or(20);
-    let results = search_index(index, &query, limit, collection_ids.as_deref())?;
-
-    // Convert internal doc IDs to SearchResults
-    let rtxn = index.read_txn().map_err(|e| e.to_string())?;
-    let fields_ids_map = index.fields_ids_map(&rtxn).map_err(|e| e.to_string())?;
+    let results =
+        search::search_index(index, &query, limit, collection_ids.as_deref())
+            .map_err(|e| e.to_string())?;
 
     let mut search_results = Vec::new();
-    for (doc_id, scores) in results {
-        // Get document from index
-        if let Ok(docs) = index.documents(&rtxn, [doc_id]) {
-            if let Some((_id, obkv)) = docs.first() {
-                // Extract fields
-                let id_field = fields_ids_map.id("id");
-                let name_field = fields_ids_map.id("name");
-                let content_field = fields_ids_map.id("content");
-                let collection_id_field = fields_ids_map.id("collection_id");
+    for hit in results {
+        let id = search::get_document_field(index, hit.doc_id, "id")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let name = search::get_document_field(index, hit.doc_id, "name")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let content = search::get_document_field(index, hit.doc_id, "content")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let collection_id = search::get_document_field(index, hit.doc_id, "collection_id")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
 
-                let id = id_field
-                    .and_then(|fid| obkv.get(fid))
-                    .and_then(|v| serde_json::from_slice::<String>(v).ok())
-                    .unwrap_or_default();
+        let snippet = content.chars().take(200).collect::<String>();
+        let score =
+            milli::score_details::ScoreDetails::global_score(hit.scores.iter()) as f32;
 
-                let name = name_field
-                    .and_then(|fid| obkv.get(fid))
-                    .and_then(|v| serde_json::from_slice::<String>(v).ok())
-                    .unwrap_or_default();
-
-                let content = content_field
-                    .and_then(|fid| obkv.get(fid))
-                    .and_then(|v| serde_json::from_slice::<String>(v).ok())
-                    .unwrap_or_default();
-
-                let collection_id = collection_id_field
-                    .and_then(|fid| obkv.get(fid))
-                    .and_then(|v| serde_json::from_slice::<String>(v).ok())
-                    .unwrap_or_default();
-
-                // Create snippet from content
-                let snippet = content.chars().take(200).collect::<String>();
-
-                // Calculate score from score details
-                let score = milli::score_details::ScoreDetails::global_score(scores.iter()) as f32;
-
-                search_results.push(SearchResult {
-                    document: DocumentInfo {
-                        id,
-                        name,
-                        pdf_hash: String::new(),
-                        text_hash: String::new(),
-                        page_count: 0,
-                        tags: vec![],
-                        created_at: String::new(),
-                    },
-                    collection_id,
-                    score,
-                    snippet,
-                });
-            }
-        }
+        search_results.push(SearchResult {
+            document: DocumentInfo {
+                id,
+                name,
+                pdf_hash: String::new(),
+                text_hash: String::new(),
+                page_count: 0,
+                tags: vec![],
+                created_at: String::new(),
+            },
+            collection_id,
+            score,
+            snippet,
+        });
     }
 
     Ok(search_results)

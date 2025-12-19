@@ -1,10 +1,15 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use bumpalo::Bump;
+use milli::documents::mmap_from_objects;
 use milli::heed::EnvOpenOptions;
 use milli::progress::Progress;
+use milli::update::new::indexer::{self, DocumentOperation};
 use milli::update::IndexerConfig;
+use milli::vector::RuntimeEmbedders;
 use milli::{FilterableAttributesRule, Index};
+use serde_json::Map;
 
 /// Open or create a milli search index
 pub fn open_index(path: &Path) -> Result<Index> {
@@ -30,17 +35,161 @@ pub fn open_index(path: &Path) -> Result<Index> {
         let indexer_config = IndexerConfig::default();
         let mut wtxn = index.write_txn()?;
         let mut settings = milli::update::Settings::new(&mut wtxn, &index, &indexer_config);
+        settings.set_primary_key("id".to_string());
         settings.set_filterable_fields(vec![FilterableAttributesRule::Field(
             "collection_id".to_string(),
         )]);
         settings.execute(&|| false, &Progress::default(), Default::default())?;
         wtxn.commit()?;
-        tracing::info!("Configured filterable attribute: collection_id");
+        tracing::info!("Configured primary key and filterable attribute");
     }
 
     tracing::info!("Search index opened at {:?}", path);
 
     Ok(index)
+}
+
+/// Index a document in milli
+pub fn index_document(
+    index: &Index,
+    doc_id: &str,
+    name: &str,
+    content: &str,
+    collection_id: &str,
+) -> Result<()> {
+    let indexer_config = IndexerConfig::default();
+
+    let mut doc = Map::new();
+    doc.insert(
+        "id".to_string(),
+        serde_json::Value::String(doc_id.to_string()),
+    );
+    doc.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    doc.insert(
+        "content".to_string(),
+        serde_json::Value::String(content.to_string()),
+    );
+    doc.insert(
+        "collection_id".to_string(),
+        serde_json::Value::String(collection_id.to_string()),
+    );
+
+    let mmap = mmap_from_objects([doc]);
+
+    let rtxn = index.read_txn()?;
+    let db_fields_ids_map = index.fields_ids_map(&rtxn)?;
+    let mut new_fields_ids_map = db_fields_ids_map.clone();
+
+    let embedders = RuntimeEmbedders::default();
+
+    let mut operation = DocumentOperation::new();
+    operation.replace_documents(&mmap)?;
+
+    let indexer_alloc = Bump::new();
+    let (document_changes, operation_stats, primary_key) = operation.into_changes(
+        &indexer_alloc,
+        index,
+        &rtxn,
+        None,
+        &mut new_fields_ids_map,
+        &|| false,
+        Progress::default(),
+        None,
+    )?;
+
+    if let Some(error) = operation_stats.into_iter().find_map(|stat| stat.error) {
+        anyhow::bail!("Document operation error: {}", error);
+    }
+
+    let mut wtxn = index.write_txn()?;
+
+    indexer_config
+        .thread_pool
+        .install(|| {
+            indexer::index(
+                &mut wtxn,
+                index,
+                &milli::ThreadPoolNoAbortBuilder::new().build().unwrap(),
+                indexer_config.grenad_parameters(),
+                &db_fields_ids_map,
+                new_fields_ids_map,
+                primary_key,
+                &document_changes,
+                embedders,
+                &|| false,
+                &Progress::default(),
+                &Default::default(),
+            )
+        })
+        .map_err(|e| anyhow::anyhow!("Thread pool error: {}", e))??;
+
+    wtxn.commit()?;
+
+    Ok(())
+}
+
+/// Search result with document ID and score
+pub struct SearchHit {
+    pub doc_id: u32,
+    pub scores: Vec<milli::score_details::ScoreDetails>,
+}
+
+/// Search the milli index
+pub fn search_index(
+    index: &Index,
+    query: &str,
+    limit: usize,
+    collection_ids: Option<&[String]>,
+) -> Result<Vec<SearchHit>> {
+    let rtxn = index.read_txn()?;
+    let mut search = milli::Search::new(&rtxn, index);
+    search.query(query);
+    search.limit(limit);
+
+    // Build filter string (must outlive the search)
+    let filter_str = collection_ids
+        .filter(|ids| !ids.is_empty())
+        .map(|ids| {
+            let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
+            format!("collection_id IN [{}]", quoted.join(", "))
+        });
+
+    if let Some(ref fs) = filter_str {
+        let filter = milli::Filter::from_str(fs)
+            .map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?;
+        if let Some(f) = filter {
+            search.filter(f);
+        }
+    }
+
+    let result = search.execute()?;
+
+    Ok(result
+        .documents_ids
+        .into_iter()
+        .zip(result.document_scores)
+        .map(|(doc_id, scores)| SearchHit { doc_id, scores })
+        .collect())
+}
+
+/// Extract a string field from an indexed document
+pub fn get_document_field(index: &Index, doc_id: u32, field: &str) -> Result<Option<String>> {
+    let rtxn = index.read_txn()?;
+    let fields_ids_map = index.fields_ids_map(&rtxn)?;
+
+    let docs = index.documents(&rtxn, [doc_id])?;
+    if let Some((_id, obkv)) = docs.first() {
+        let value = fields_ids_map
+            .id(field)
+            .and_then(|fid| obkv.get(fid))
+            .and_then(|v| serde_json::from_slice::<String>(v).ok());
+        Ok(value)
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -52,7 +201,6 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
 
-        // Verify we can read from the index
         let rtxn = index.read_txn().unwrap();
         let count = index.number_of_documents(&rtxn).unwrap();
         assert_eq!(count, 0);
@@ -62,15 +210,94 @@ mod tests {
     fn test_index_reopens() {
         let temp_dir = tempfile::tempdir().unwrap();
 
-        // Open and close
         {
             let _index = open_index(temp_dir.path()).unwrap();
         }
 
-        // Should reopen successfully
         let index = open_index(temp_dir.path()).unwrap();
         let rtxn = index.read_txn().unwrap();
         let count = index.number_of_documents(&rtxn).unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_index_and_search_document() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+
+        index_document(
+            &index,
+            "doc1",
+            "test.pdf",
+            "This is a test document about climate change.",
+            "collection1",
+        )
+        .unwrap();
+
+        let rtxn = index.read_txn().unwrap();
+        assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
+
+        // Search should find the document
+        let results = search_index(&index, "climate", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Verify we can retrieve the document fields
+        let name = get_document_field(&index, results[0].doc_id, "name").unwrap();
+        assert_eq!(name, Some("test.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_search_no_results() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+
+        index_document(&index, "doc1", "test.pdf", "Hello world", "col1").unwrap();
+
+        let results = search_index(&index, "nonexistent", 10, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filter_by_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+
+        index_document(&index, "doc1", "a.pdf", "Climate research paper", "climate").unwrap();
+        index_document(&index, "doc2", "b.pdf", "Climate news article", "news").unwrap();
+        index_document(&index, "doc3", "c.pdf", "Climate policy document", "policy").unwrap();
+
+        // Search all collections
+        let all = search_index(&index, "climate", 10, None).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Filter to single collection
+        let climate_only =
+            search_index(&index, "climate", 10, Some(&["climate".to_string()])).unwrap();
+        assert_eq!(climate_only.len(), 1);
+        let name = get_document_field(&index, climate_only[0].doc_id, "name").unwrap();
+        assert_eq!(name, Some("a.pdf".to_string()));
+
+        // Filter to multiple collections
+        let two = search_index(
+            &index,
+            "climate",
+            10,
+            Some(&["climate".to_string(), "news".to_string()]),
+        )
+        .unwrap();
+        assert_eq!(two.len(), 2);
+    }
+
+    #[test]
+    fn test_empty_filter_returns_all() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+
+        index_document(&index, "doc1", "a.pdf", "Test content", "col1").unwrap();
+        index_document(&index, "doc2", "b.pdf", "Test content", "col2").unwrap();
+
+        // Empty filter should return all
+        let results = search_index(&index, "test", 10, Some(&[])).unwrap();
+        assert_eq!(results.len(), 2);
     }
 }
