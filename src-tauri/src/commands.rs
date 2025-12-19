@@ -277,11 +277,72 @@ pub async fn import_pdfs_batch(
         })
         .buffer_unordered(MAX_CONCURRENT_EXTRACTIONS);
 
+    const INDEX_BATCH_SIZE: usize = 50;
+
     let mut successful = Vec::new();
     let mut failed = Vec::new();
+    let mut pending_index: Vec<(DocumentInfo, search::DocToIndex)> = Vec::new();
 
-    // Process each extraction as it completes: store → index → emit
-    // Each file is a complete unit of work
+    // Macro to flush pending documents to index
+    macro_rules! flush_pending {
+        () => {
+            if !pending_index.is_empty() {
+                let (doc_infos, docs_to_index): (Vec<_>, Vec<_>) =
+                    std::mem::take(&mut pending_index).into_iter().unzip();
+
+                let search_guard = state.search.read().await;
+                if let Some(index) = search_guard.as_ref() {
+                    let indexer_config = state.indexer_config.lock().await;
+
+                    match search::index_documents_batch(index, &indexer_config, docs_to_index) {
+                        Ok(()) => {
+                            for doc_info in doc_infos {
+                                let _ = app.emit(
+                                    "document-added",
+                                    DocumentAddedEvent {
+                                        collection_id: collection_id.clone(),
+                                        document: doc_info.clone(),
+                                    },
+                                );
+                                successful.push(doc_info);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to batch index {} documents: {}",
+                                doc_infos.len(),
+                                e
+                            );
+                            for doc_info in doc_infos {
+                                failed.push(BatchImportError {
+                                    path: doc_info.name,
+                                    error: format!("Stored but failed to index: {}", e),
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        "Search not initialized, {} documents not indexed",
+                        doc_infos.len()
+                    );
+                    for doc_info in doc_infos {
+                        let _ = app.emit(
+                            "document-added",
+                            DocumentAddedEvent {
+                                collection_id: collection_id.clone(),
+                                document: doc_info.clone(),
+                            },
+                        );
+                        successful.push(doc_info);
+                    }
+                }
+            }
+        };
+    }
+
+    // Process each extraction as it completes: store blobs and metadata
+    // Indexing is batched every INDEX_BATCH_SIZE documents
     while let Some(result) = extraction_stream.next().await {
         let extraction = match result {
             Ok(Ok(e)) => e,
@@ -360,38 +421,12 @@ pub async fn import_pdfs_batch(
             continue;
         }
 
-        // Release storage lock before indexing
+        // Release storage lock
         drop(storage_guard);
 
-        // Index in milli immediately after storing
-        let search_guard = state.search.read().await;
-        if let Some(index) = search_guard.as_ref() {
-            let indexer_config = state.indexer_config.lock().await;
-            if let Err(e) = search::index_document(
-                index,
-                &indexer_config,
-                &doc_id,
-                &file_name,
-                &text_content,
-                &collection_id,
-            ) {
-                // Document stored but not indexed - this is a problem
-                // Log error but don't fail the whole import
-                tracing::error!("Failed to index document {}: {}", file_name, e);
-                failed.push(BatchImportError {
-                    path: file_name,
-                    error: format!("Stored but failed to index: {}", e),
-                });
-                continue;
-            }
-        } else {
-            tracing::warn!("Search not initialized, document {} not indexed", file_name);
-        }
-        drop(search_guard);
-
         let doc_info = DocumentInfo {
-            id: doc_id,
-            name: file_name,
+            id: doc_id.clone(),
+            name: file_name.clone(),
             pdf_hash,
             text_hash,
             page_count: extraction.extracted.page_count,
@@ -399,17 +434,23 @@ pub async fn import_pdfs_batch(
             created_at,
         };
 
-        // Emit event after full processing
-        let _ = app.emit(
-            "document-added",
-            DocumentAddedEvent {
-                collection_id: collection_id.clone(),
-                document: doc_info.clone(),
-            },
-        );
+        let doc_to_index = search::DocToIndex {
+            id: doc_id,
+            name: file_name,
+            content: text_content,
+            collection_id: collection_id.clone(),
+        };
 
-        successful.push(doc_info);
+        pending_index.push((doc_info, doc_to_index));
+
+        // Flush batch when it reaches INDEX_BATCH_SIZE
+        if pending_index.len() >= INDEX_BATCH_SIZE {
+            flush_pending!();
+        }
     }
+
+    // Flush any remaining documents
+    flush_pending!();
 
     tracing::info!(
         "Batch import complete: {} successful, {} failed",

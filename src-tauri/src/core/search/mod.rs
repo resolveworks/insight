@@ -82,8 +82,8 @@ pub fn index_document(
     )
 }
 
-/// Maximum documents per indexing chunk to avoid stack overflow
-const BATCH_CHUNK_SIZE: usize = 100;
+/// Maximum documents per indexing chunk
+const BATCH_CHUNK_SIZE: usize = 50;
 
 /// Index multiple documents in a single batch operation
 pub fn index_documents_batch(
