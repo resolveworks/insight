@@ -1,6 +1,8 @@
+use milli::update::IndexerConfig;
+
 use crate::core::{
     config::Config,
-    search::{index_document, open_index},
+    search::{index_documents_batch, open_index, DocToIndex},
     storage::Storage,
 };
 
@@ -40,12 +42,15 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
 
     let index = open_index(&config.search_dir)?;
 
+    // Create a single IndexerConfig for all indexing operations
+    let indexer_config = IndexerConfig::default();
+
     // Get all collections
     let collections = storage.list_collections().await?;
     tracing::info!("Found {} collections", collections.len());
 
     let mut total_docs = 0;
-    let mut indexed_docs = 0;
+    let mut docs_to_index = Vec::new();
 
     for (namespace_id, collection_meta) in &collections {
         tracing::info!(
@@ -65,12 +70,16 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
 
             match storage.get_blob(&text_hash).await? {
                 Some(text_bytes) => {
-                    let text = String::from_utf8_lossy(&text_bytes);
+                    let text = String::from_utf8_lossy(&text_bytes).to_string();
                     let collection_id = namespace_id.to_string();
 
-                    index_document(&index, &doc.id, &doc.name, &text, &collection_id)?;
-                    indexed_docs += 1;
-                    tracing::debug!("Indexed document '{}' ({})", doc.name, doc.id);
+                    docs_to_index.push(DocToIndex {
+                        id: doc.id.clone(),
+                        name: doc.name.clone(),
+                        content: text,
+                        collection_id,
+                    });
+                    tracing::debug!("Prepared document '{}' ({})", doc.name, doc.id);
                 }
                 None => {
                     tracing::warn!(
@@ -83,9 +92,16 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
         }
     }
 
+    // Batch index all documents at once
+    let indexed_count = docs_to_index.len();
+    if !docs_to_index.is_empty() {
+        tracing::info!("Batch indexing {} documents...", indexed_count);
+        index_documents_batch(&index, &indexer_config, docs_to_index)?;
+    }
+
     tracing::info!(
         "Indexed {}/{} documents from {} collections",
-        indexed_docs,
+        indexed_count,
         total_docs,
         collections.len()
     );

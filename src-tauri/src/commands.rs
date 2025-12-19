@@ -1,9 +1,13 @@
+use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::core::storage::DocumentMetadata;
 use crate::core::{pdf, search, AppState};
 use iroh_docs::NamespaceId;
+
+/// Max concurrent PDF extractions to avoid stack overflow from too many parallel tasks
+const MAX_CONCURRENT_EXTRACTIONS: usize = 8;
 
 /// Document metadata returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,11 +159,19 @@ pub async fn import_pdf(
         (pdf_hash.to_string(), text_hash.to_string())
     };
 
-    // Index in milli search
+    // Index in milli search (acquire mutex to serialize indexing operations)
     let search_guard = state.search.read().await;
     if let Some(index) = search_guard.as_ref() {
-        search::index_document(index, &doc_id, &file_name, &extracted.text, &collection_id)
-            .map_err(|e| e.to_string())?;
+        let indexer_config = state.indexer_config.lock().await;
+        search::index_document(
+            index,
+            &indexer_config,
+            &doc_id,
+            &file_name,
+            &extracted.text,
+            &collection_id,
+        )
+        .map_err(|e| e.to_string())?;
         tracing::info!("Indexed document {} in milli", doc_id);
     } else {
         tracing::warn!("Search not initialized, document not indexed");
@@ -181,6 +193,184 @@ pub async fn import_pdf(
         tags: vec![],
         created_at,
     })
+}
+
+/// Result of batch import
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchImportResult {
+    pub successful: Vec<DocumentInfo>,
+    pub failed: Vec<BatchImportError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchImportError {
+    pub path: String,
+    pub error: String,
+}
+
+/// Import multiple PDF files into a collection with parallel processing
+#[tauri::command]
+pub async fn import_pdfs_batch(
+    paths: Vec<String>,
+    collection_id: String,
+    state: State<'_, AppState>,
+) -> Result<BatchImportResult, String> {
+    tracing::info!(
+        "Batch importing {} PDFs into collection {}",
+        paths.len(),
+        collection_id
+    );
+
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| "Invalid collection ID")?;
+
+    // Phase 1: Extract text from PDFs with bounded concurrency
+    let mut extractions = Vec::new();
+    let mut failed = Vec::new();
+
+    let results: Vec<_> = stream::iter(paths)
+        .map(|path| async move {
+            tokio::task::spawn_blocking(move || {
+                let path_ref = std::path::Path::new(&path);
+                let file_name = path_ref
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown.pdf")
+                    .to_string();
+
+                match pdf::extract_text(path_ref) {
+                    Ok(extracted) => Ok((path, file_name, extracted)),
+                    Err(e) => Err((path, e.to_string())),
+                }
+            })
+            .await
+        })
+        .buffer_unordered(MAX_CONCURRENT_EXTRACTIONS)
+        .collect()
+        .await;
+
+    for result in results {
+        match result {
+            Ok(Ok((path, file_name, extracted))) => {
+                extractions.push((path, file_name, extracted));
+            }
+            Ok(Err((path, error))) => {
+                failed.push(BatchImportError { path, error });
+            }
+            Err(e) => {
+                failed.push(BatchImportError {
+                    path: "unknown".to_string(),
+                    error: format!("Task join error: {}", e),
+                });
+            }
+        }
+    }
+
+    tracing::info!(
+        "Extracted {} PDFs successfully, {} failed",
+        extractions.len(),
+        failed.len()
+    );
+
+    // Phase 2: Store all blobs and create metadata
+    let mut docs_to_index = Vec::new();
+    let mut successful = Vec::new();
+
+    {
+        let mut storage_guard = state.storage.write().await;
+        let storage = storage_guard
+            .as_mut()
+            .ok_or_else(|| "Storage not initialized".to_string())?;
+
+        for (_path, file_name, extracted) in extractions {
+            let doc_id = uuid::Uuid::new_v4().to_string();
+            let created_at = chrono::Utc::now().to_rfc3339();
+
+            // Store PDF blob
+            let pdf_hash = match storage.store_blob(&extracted.pdf_bytes).await {
+                Ok(h) => h.to_string(),
+                Err(e) => {
+                    failed.push(BatchImportError {
+                        path: file_name.clone(),
+                        error: format!("Failed to store PDF: {}", e),
+                    });
+                    continue;
+                }
+            };
+
+            // Store text blob
+            let text_hash = match storage.store_blob(extracted.text.as_bytes()).await {
+                Ok(h) => h.to_string(),
+                Err(e) => {
+                    failed.push(BatchImportError {
+                        path: file_name.clone(),
+                        error: format!("Failed to store text: {}", e),
+                    });
+                    continue;
+                }
+            };
+
+            // Create and store document metadata
+            let metadata = DocumentMetadata {
+                id: doc_id.clone(),
+                name: file_name.clone(),
+                pdf_hash: pdf_hash.clone(),
+                text_hash: text_hash.clone(),
+                page_count: extracted.page_count,
+                tags: vec![],
+                created_at: created_at.clone(),
+            };
+
+            if let Err(e) = storage.add_document(namespace_id, metadata).await {
+                failed.push(BatchImportError {
+                    path: file_name.clone(),
+                    error: format!("Failed to add metadata: {}", e),
+                });
+                continue;
+            }
+
+            // Collect for batch indexing
+            docs_to_index.push(search::DocToIndex {
+                id: doc_id.clone(),
+                name: file_name.clone(),
+                content: extracted.text.clone(),
+                collection_id: collection_id.clone(),
+            });
+
+            successful.push(DocumentInfo {
+                id: doc_id,
+                name: file_name,
+                pdf_hash,
+                text_hash,
+                page_count: extracted.page_count,
+                tags: vec![],
+                created_at,
+            });
+        }
+    }
+
+    // Phase 3: Batch index all documents at once
+    if !docs_to_index.is_empty() {
+        let search_guard = state.search.read().await;
+        if let Some(index) = search_guard.as_ref() {
+            let indexer_config = state.indexer_config.lock().await;
+            let doc_count = docs_to_index.len();
+            search::index_documents_batch(index, &indexer_config, docs_to_index)
+                .map_err(|e| e.to_string())?;
+            tracing::info!("Batch indexed {} documents in milli", doc_count);
+        } else {
+            tracing::warn!("Search not initialized, documents not indexed");
+        }
+    }
+
+    tracing::info!(
+        "Batch import complete: {} successful, {} failed",
+        successful.len(),
+        failed.len()
+    );
+
+    Ok(BatchImportResult { successful, failed })
 }
 
 /// Get all documents in a collection

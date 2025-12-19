@@ -31,6 +31,7 @@ pub fn run() {
                 config: state.config.clone(),
                 storage: state.storage.clone(),
                 search: state.search.clone(),
+                indexer_config: state.indexer_config.clone(),
             };
 
             // Initialize storage and search in background
@@ -48,6 +49,7 @@ pub fn run() {
             commands::delete_collection,
             commands::get_documents,
             commands::import_pdf,
+            commands::import_pdfs_batch,
             commands::delete_document,
             commands::search,
             commands::get_node_id,

@@ -4,8 +4,9 @@ pub mod search;
 pub mod storage;
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
+use milli::update::IndexerConfig;
 use milli::Index;
 
 pub use config::Config;
@@ -16,6 +17,8 @@ pub struct AppState {
     pub config: Config,
     pub storage: Arc<RwLock<Option<Storage>>>,
     pub search: Arc<RwLock<Option<Index>>>,
+    /// Shared indexer config with thread pool - use Mutex to serialize indexing operations
+    pub indexer_config: Arc<Mutex<IndexerConfig>>,
 }
 
 impl AppState {
@@ -23,10 +26,14 @@ impl AppState {
         let config = Config::load_or_default();
         config.ensure_dirs().expect("Failed to create data directories");
 
+        // Create a shared IndexerConfig with thread pool for all indexing operations
+        let indexer_config = IndexerConfig::default();
+
         Self {
             config,
             storage: Arc::new(RwLock::new(None)),
             search: Arc::new(RwLock::new(None)),
+            indexer_config: Arc::new(Mutex::new(indexer_config)),
         }
     }
 

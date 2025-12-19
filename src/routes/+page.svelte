@@ -85,13 +85,20 @@
     importing = true;
     const paths = Array.isArray(files) ? files : [files];
 
-    for (const path of paths) {
-      try {
-        const doc = await invoke("import_pdf", { path, collectionId: selectedCollection });
-        documents = [...documents, doc];
-      } catch (e) {
-        console.error("Failed to import:", path, e);
+    try {
+      // Use batch import for parallel processing and single-batch indexing
+      const result: { successful: any[]; failed: { path: string; error: string }[] } = await invoke(
+        "import_pdfs_batch",
+        { paths, collectionId: selectedCollection }
+      );
+
+      documents = [...documents, ...result.successful];
+
+      if (result.failed.length > 0) {
+        console.error("Some imports failed:", result.failed);
       }
+    } catch (e) {
+      console.error("Batch import failed:", e);
     }
     importing = false;
   }

@@ -9,7 +9,7 @@ use milli::update::new::indexer::{self, DocumentOperation};
 use milli::update::IndexerConfig;
 use milli::vector::RuntimeEmbedders;
 use milli::{FilterableAttributesRule, Index};
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 /// Open or create a milli search index
 pub fn open_index(path: &Path) -> Result<Index> {
@@ -49,35 +49,84 @@ pub fn open_index(path: &Path) -> Result<Index> {
     Ok(index)
 }
 
-/// Index a document in milli
+/// Document to be indexed
+pub struct DocToIndex {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    pub collection_id: String,
+}
+
+/// Index a single document in milli (uses shared IndexerConfig)
 pub fn index_document(
     index: &Index,
+    indexer_config: &IndexerConfig,
     doc_id: &str,
     name: &str,
     content: &str,
     collection_id: &str,
 ) -> Result<()> {
-    let indexer_config = IndexerConfig::default();
+    index_documents_batch(
+        index,
+        indexer_config,
+        vec![DocToIndex {
+            id: doc_id.to_string(),
+            name: name.to_string(),
+            content: content.to_string(),
+            collection_id: collection_id.to_string(),
+        }],
+    )
+}
 
-    let mut doc = Map::new();
-    doc.insert(
-        "id".to_string(),
-        serde_json::Value::String(doc_id.to_string()),
-    );
-    doc.insert(
-        "name".to_string(),
-        serde_json::Value::String(name.to_string()),
-    );
-    doc.insert(
-        "content".to_string(),
-        serde_json::Value::String(content.to_string()),
-    );
-    doc.insert(
-        "collection_id".to_string(),
-        serde_json::Value::String(collection_id.to_string()),
-    );
+/// Maximum documents per indexing chunk to avoid stack overflow
+const BATCH_CHUNK_SIZE: usize = 100;
 
-    let mmap = mmap_from_objects([doc]);
+/// Index multiple documents in a single batch operation
+pub fn index_documents_batch(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    docs: Vec<DocToIndex>,
+) -> Result<()> {
+    if docs.is_empty() {
+        return Ok(());
+    }
+
+    let total = docs.len();
+
+    // Process in chunks to avoid stack overflow with large batches
+    for (chunk_idx, chunk) in docs.chunks(BATCH_CHUNK_SIZE).enumerate() {
+        index_chunk(index, indexer_config, chunk)?;
+        tracing::debug!(
+            "Indexed chunk {}/{} ({} documents)",
+            chunk_idx + 1,
+            (total + BATCH_CHUNK_SIZE - 1) / BATCH_CHUNK_SIZE,
+            chunk.len()
+        );
+    }
+
+    tracing::debug!("Indexed batch of {} documents total", total);
+
+    Ok(())
+}
+
+/// Index a single chunk of documents
+fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex]) -> Result<()> {
+    let json_docs: Vec<Map<String, Value>> = docs
+        .iter()
+        .map(|doc| {
+            let mut m = Map::new();
+            m.insert("id".to_string(), Value::String(doc.id.clone()));
+            m.insert("name".to_string(), Value::String(doc.name.clone()));
+            m.insert("content".to_string(), Value::String(doc.content.clone()));
+            m.insert(
+                "collection_id".to_string(),
+                Value::String(doc.collection_id.clone()),
+            );
+            m
+        })
+        .collect();
+
+    let mmap = mmap_from_objects(json_docs);
 
     let rtxn = index.read_txn()?;
     let db_fields_ids_map = index.fields_ids_map(&rtxn)?;
@@ -106,13 +155,14 @@ pub fn index_document(
 
     let mut wtxn = index.write_txn()?;
 
+    // Use the shared thread pool from IndexerConfig for both outer and inner operations
     indexer_config
         .thread_pool
         .install(|| {
             indexer::index(
                 &mut wtxn,
                 index,
-                &milli::ThreadPoolNoAbortBuilder::new().build().unwrap(),
+                &indexer_config.thread_pool,
                 indexer_config.grenad_parameters(),
                 &db_fields_ids_map,
                 new_fields_ids_map,
@@ -196,6 +246,10 @@ pub fn get_document_field(index: &Index, doc_id: u32, field: &str) -> Result<Opt
 mod tests {
     use super::*;
 
+    fn test_indexer_config() -> IndexerConfig {
+        IndexerConfig::default()
+    }
+
     #[test]
     fn test_open_index() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -224,9 +278,11 @@ mod tests {
     fn test_index_and_search_document() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
 
         index_document(
             &index,
+            &config,
             "doc1",
             "test.pdf",
             "This is a test document about climate change.",
@@ -250,8 +306,9 @@ mod tests {
     fn test_search_no_results() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
 
-        index_document(&index, "doc1", "test.pdf", "Hello world", "col1").unwrap();
+        index_document(&index, &config, "doc1", "test.pdf", "Hello world", "col1").unwrap();
 
         let results = search_index(&index, "nonexistent", 10, None).unwrap();
         assert!(results.is_empty());
@@ -261,10 +318,13 @@ mod tests {
     fn test_filter_by_collection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
 
-        index_document(&index, "doc1", "a.pdf", "Climate research paper", "climate").unwrap();
-        index_document(&index, "doc2", "b.pdf", "Climate news article", "news").unwrap();
-        index_document(&index, "doc3", "c.pdf", "Climate policy document", "policy").unwrap();
+        index_document(&index, &config, "doc1", "a.pdf", "Climate research paper", "climate")
+            .unwrap();
+        index_document(&index, &config, "doc2", "b.pdf", "Climate news article", "news").unwrap();
+        index_document(&index, &config, "doc3", "c.pdf", "Climate policy document", "policy")
+            .unwrap();
 
         // Search all collections
         let all = search_index(&index, "climate", 10, None).unwrap();
@@ -292,12 +352,49 @@ mod tests {
     fn test_empty_filter_returns_all() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
 
-        index_document(&index, "doc1", "a.pdf", "Test content", "col1").unwrap();
-        index_document(&index, "doc2", "b.pdf", "Test content", "col2").unwrap();
+        index_document(&index, &config, "doc1", "a.pdf", "Test content", "col1").unwrap();
+        index_document(&index, &config, "doc2", "b.pdf", "Test content", "col2").unwrap();
 
         // Empty filter should return all
         let results = search_index(&index, "test", 10, Some(&[])).unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_batch_indexing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let docs = vec![
+            DocToIndex {
+                id: "doc1".to_string(),
+                name: "a.pdf".to_string(),
+                content: "First document about science".to_string(),
+                collection_id: "col1".to_string(),
+            },
+            DocToIndex {
+                id: "doc2".to_string(),
+                name: "b.pdf".to_string(),
+                content: "Second document about science".to_string(),
+                collection_id: "col1".to_string(),
+            },
+            DocToIndex {
+                id: "doc3".to_string(),
+                name: "c.pdf".to_string(),
+                content: "Third document about science".to_string(),
+                collection_id: "col1".to_string(),
+            },
+        ];
+
+        index_documents_batch(&index, &config, docs).unwrap();
+
+        let rtxn = index.read_txn().unwrap();
+        assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
+
+        let results = search_index(&index, "science", 10, None).unwrap();
+        assert_eq!(results.len(), 3);
     }
 }

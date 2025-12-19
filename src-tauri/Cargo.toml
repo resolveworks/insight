@@ -20,6 +20,7 @@ tauri-plugin-dialog = "2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 
 # iroh P2P
 iroh = "0.35"
