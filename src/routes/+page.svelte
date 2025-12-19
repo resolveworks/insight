@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { onMount } from "svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
 
   type Tab = "trajectory" | "search" | "files";
@@ -86,13 +88,11 @@
     const paths = Array.isArray(files) ? files : [files];
 
     try {
-      // Use batch import for parallel processing and single-batch indexing
+      // Use batch import - documents are added via events as they're processed
       const result: { successful: any[]; failed: { path: string; error: string }[] } = await invoke(
         "import_pdfs_batch",
         { paths, collectionId: selectedCollection }
       );
-
-      documents = [...documents, ...result.successful];
 
       if (result.failed.length > 0) {
         console.error("Some imports failed:", result.failed);
@@ -169,6 +169,27 @@
 
   $effect(() => {
     loadCollections();
+  });
+
+  // Listen for document-added events from backend
+  onMount(() => {
+    let unlisten: UnlistenFn | undefined;
+
+    listen<{ collection_id: string; document: any }>("document-added", (event) => {
+      // Only add if we're viewing the same collection
+      if (selectedCollection === event.payload.collection_id) {
+        // Avoid duplicates (in case event arrives after batch returns)
+        if (!documents.some((d) => d.id === event.payload.document.id)) {
+          documents = [...documents, event.payload.document];
+        }
+      }
+      // Update collection document count in sidebar
+      collections = collections.map((c) =>
+        c.id === event.payload.collection_id ? { ...c, document_count: c.document_count + 1 } : c
+      );
+    }).then((fn) => (unlisten = fn));
+
+    return () => unlisten?.();
   });
 
   const tabs: { id: Tab; label: string }[] = [
