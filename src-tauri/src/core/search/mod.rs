@@ -508,7 +508,8 @@ mod tests {
         assert_eq!(results.hits.len(), 1);
 
         // Verify we can retrieve the document fields
-        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+        let name =
+            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
         assert_eq!(name, Some("test.pdf".to_string()));
     }
 
@@ -566,7 +567,8 @@ mod tests {
         let climate_only =
             search_index(&index, "climate", 10, 0, Some(&["climate".to_string()])).unwrap();
         assert_eq!(climate_only.hits.len(), 1);
-        let name = get_document_field_by_internal_id(&index, climate_only.hits[0].doc_id, "name").unwrap();
+        let name =
+            get_document_field_by_internal_id(&index, climate_only.hits[0].doc_id, "name").unwrap();
         assert_eq!(name, Some("a.pdf".to_string()));
 
         // Filter to multiple collections
@@ -654,7 +656,8 @@ mod tests {
         // Search should only find the remaining document
         let results = search_index(&index, "document", 10, 0, None).unwrap();
         assert_eq!(results.hits.len(), 1);
-        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+        let name =
+            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
         assert_eq!(name, Some("b.pdf".to_string()));
     }
 
@@ -683,7 +686,8 @@ mod tests {
         // Only col2 document should remain
         let results = search_index(&index, "document", 10, 0, None).unwrap();
         assert_eq!(results.hits.len(), 1);
-        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+        let name =
+            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
         assert_eq!(name, Some("c.pdf".to_string()));
     }
 }

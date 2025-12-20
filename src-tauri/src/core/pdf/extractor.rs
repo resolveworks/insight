@@ -247,7 +247,10 @@ mod tests {
         let result = extract_text(&pdf_path);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to parse PDF"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse PDF"));
     }
 
     #[test]
