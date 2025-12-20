@@ -49,8 +49,7 @@ pub fn list_conversations(conversations_dir: &Path) -> Result<Vec<ConversationSu
 
 /// Load a full conversation from disk
 pub fn load_conversation(path: &Path) -> Result<Conversation> {
-    let content =
-        std::fs::read_to_string(path).context("Failed to read conversation file")?;
+    let content = std::fs::read_to_string(path).context("Failed to read conversation file")?;
     let conversation: Conversation =
         serde_json::from_str(&content).context("Failed to parse conversation JSON")?;
     Ok(conversation)
