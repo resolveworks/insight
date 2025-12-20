@@ -1,4 +1,7 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hf_hub::api::tokio::{Api, ApiBuilder};
@@ -30,10 +33,10 @@ const OPTIONAL_FILES: &[&str] = &["generation_config.json"];
 /// Get the default model
 pub fn default_model() -> ModelInfo {
     ModelInfo {
-        id: "phi-3.5-mini".to_string(),
-        name: "Phi 3.5 Mini".to_string(),
-        repo_id: "microsoft/Phi-3.5-mini-instruct".to_string(),
-        description: "Fast, capable 3.8B parameter model".to_string(),
+        id: "phi-4-mini".to_string(),
+        name: "Phi 4 Mini".to_string(),
+        repo_id: "microsoft/Phi-4-mini-instruct".to_string(),
+        description: "Fast, capable 3.8B parameter model with 128K context".to_string(),
         size_gb: 7.6,
     }
 }
@@ -74,45 +77,80 @@ pub enum ModelStatus {
     Failed { error: String },
 }
 
-/// Progress tracker that sends events via channel
+/// Minimum interval between progress updates (100ms)
+const PROGRESS_THROTTLE: Duration = Duration::from_millis(100);
+
+/// Shared state for progress tracking across parallel chunk downloads
+struct SharedProgress {
+    file: Mutex<String>,
+    downloaded: AtomicU64,
+    total: AtomicU64,
+    last_emit: Mutex<Instant>,
+}
+
+/// Progress tracker that sends events via channel (throttled)
+/// Uses Arc for shared state since hf-hub clones the tracker for parallel chunk downloads
 #[derive(Clone)]
 struct ProgressTracker {
-    file: String,
     file_index: usize,
     total_files: usize,
-    downloaded: u64,
-    total: u64,
+    shared: Arc<SharedProgress>,
     tx: mpsc::Sender<DownloadProgress>,
 }
 
 impl hf_hub::api::tokio::Progress for ProgressTracker {
     async fn init(&mut self, size: usize, filename: &str) {
-        self.total = size as u64;
-        self.downloaded = 0;
-        self.file = filename.to_string();
+        self.shared.total.store(size as u64, Ordering::SeqCst);
+        self.shared.downloaded.store(0, Ordering::SeqCst);
+        *self.shared.file.lock().unwrap() = filename.to_string();
+        // Always emit on file start
+        self.emit_progress().await;
     }
 
     async fn update(&mut self, size: usize) {
-        self.downloaded += size as u64;
+        // Atomically add to the shared downloaded counter
+        self.shared
+            .downloaded
+            .fetch_add(size as u64, Ordering::SeqCst);
+
+        // Throttle updates to avoid flooding the UI
+        let should_emit = {
+            let last = self.shared.last_emit.lock().unwrap();
+            last.elapsed() >= PROGRESS_THROTTLE
+        };
+        if should_emit {
+            self.emit_progress().await;
+        }
+    }
+
+    async fn finish(&mut self) {
+        // Always emit on file complete
+        self.emit_progress().await;
+    }
+}
+
+impl ProgressTracker {
+    async fn emit_progress(&self) {
+        let downloaded = self.shared.downloaded.load(Ordering::SeqCst);
+        let total = self.shared.total.load(Ordering::SeqCst);
+        let file = self.shared.file.lock().unwrap().clone();
+
         let progress = DownloadProgress {
-            file: self.file.clone(),
-            downloaded: self.downloaded,
-            total: self.total,
-            overall_progress: self.calculate_overall(),
+            file,
+            downloaded,
+            total,
+            overall_progress: self.calculate_overall(downloaded, total),
             file_index: self.file_index,
             total_files: self.total_files,
         };
         let _ = self.tx.send(progress).await;
+        *self.shared.last_emit.lock().unwrap() = Instant::now();
     }
 
-    async fn finish(&mut self) {}
-}
-
-impl ProgressTracker {
-    fn calculate_overall(&self) -> f32 {
+    fn calculate_overall(&self, downloaded: u64, total: u64) -> f32 {
         let files_done = (self.file_index - 1) as f32;
-        let current_file_progress = if self.total > 0 {
-            self.downloaded as f32 / self.total as f32
+        let current_file_progress = if total > 0 {
+            downloaded as f32 / total as f32
         } else {
             0.0
         };
@@ -228,12 +266,17 @@ impl ModelManager {
         let mut downloaded_paths = Vec::new();
 
         for (idx, filename) in all_files.iter().enumerate() {
+            let shared = Arc::new(SharedProgress {
+                file: Mutex::new(filename.clone()),
+                downloaded: AtomicU64::new(0),
+                total: AtomicU64::new(0),
+                last_emit: Mutex::new(Instant::now()),
+            });
+
             let progress = ProgressTracker {
-                file: filename.clone(),
                 file_index: idx + 1,
                 total_files,
-                downloaded: 0,
-                total: 0,
+                shared,
                 tx: progress_tx.clone(),
             };
 
@@ -309,6 +352,6 @@ mod tests {
     fn test_available_models() {
         let models = available_models();
         assert!(!models.is_empty());
-        assert_eq!(models[0].id, "phi-3.5-mini");
+        assert_eq!(models[0].id, "phi-4-mini");
     }
 }
