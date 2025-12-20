@@ -98,7 +98,7 @@ pub fn index_documents_batch(
     let total = docs.len();
 
     // Process in chunks to avoid stack overflow with large batches
-    let num_chunks = (total + BATCH_CHUNK_SIZE - 1) / BATCH_CHUNK_SIZE;
+    let num_chunks = total.div_ceil(BATCH_CHUNK_SIZE);
     for (chunk_idx, chunk) in docs.chunks(BATCH_CHUNK_SIZE).enumerate() {
         index_chunk(index, indexer_config, chunk)?;
         tracing::info!(
@@ -223,16 +223,14 @@ pub fn search_index(
     search.terms_matching_strategy(TermsMatchingStrategy::Last);
 
     // Build filter string (must outlive the search)
-    let filter_str = collection_ids
-        .filter(|ids| !ids.is_empty())
-        .map(|ids| {
-            let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
-            format!("collection_id IN [{}]", quoted.join(", "))
-        });
+    let filter_str = collection_ids.filter(|ids| !ids.is_empty()).map(|ids| {
+        let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
+        format!("collection_id IN [{}]", quoted.join(", "))
+    });
 
     if let Some(ref fs) = filter_str {
-        let filter = milli::Filter::from_str(fs)
-            .map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?;
+        let filter =
+            milli::Filter::from_str(fs).map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?;
         if let Some(f) = filter {
             search.filter(f);
         }
@@ -253,12 +251,26 @@ pub fn search_index(
     })
 }
 
-/// Extract a string field from an indexed document
-pub fn get_document_field(index: &Index, doc_id: u32, field: &str) -> Result<Option<String>> {
+/// Extract a string field from an indexed document (opens its own transaction)
+pub fn get_document_field_by_internal_id(
+    index: &Index,
+    doc_id: u32,
+    field: &str,
+) -> Result<Option<String>> {
     let rtxn = index.read_txn()?;
-    let fields_ids_map = index.fields_ids_map(&rtxn)?;
+    get_document_field(index, &rtxn, doc_id, field)
+}
 
-    let docs = index.documents(&rtxn, [doc_id])?;
+/// Extract a string field from an indexed document using an existing transaction
+pub fn get_document_field(
+    index: &Index,
+    rtxn: &milli::heed::RoTxn,
+    doc_id: u32,
+    field: &str,
+) -> Result<Option<String>> {
+    let fields_ids_map = index.fields_ids_map(rtxn)?;
+
+    let docs = index.documents(rtxn, [doc_id])?;
     if let Some((_id, obkv)) = docs.first() {
         let value = fields_ids_map
             .id(field)
@@ -268,6 +280,45 @@ pub fn get_document_field(index: &Index, doc_id: u32, field: &str) -> Result<Opt
     } else {
         Ok(None)
     }
+}
+
+/// Get the content of a document by its external ID
+pub fn get_document_by_external_id(index: &Index, external_id: &str) -> Result<Option<String>> {
+    let rtxn = index.read_txn()?;
+    let fields_ids_map = index.fields_ids_map(&rtxn)?;
+
+    let id_fid = match fields_ids_map.id("id") {
+        Some(fid) => fid,
+        None => return Ok(None),
+    };
+    let content_fid = match fields_ids_map.id("content") {
+        Some(fid) => fid,
+        None => return Ok(None),
+    };
+
+    // Iterate through all documents to find the one with matching external ID
+    let all_doc_ids: Vec<u32> = index.documents_ids(&rtxn)?.iter().collect();
+
+    for internal_id in all_doc_ids {
+        let docs = index.documents(&rtxn, [internal_id])?;
+        if let Some((_, obkv)) = docs.first() {
+            if let Some(id_bytes) = obkv.get(id_fid) {
+                if let Ok(doc_ext_id) = serde_json::from_slice::<String>(id_bytes) {
+                    if doc_ext_id == external_id {
+                        // Found the document, get its content
+                        if let Some(content_bytes) = obkv.get(content_fid) {
+                            if let Ok(content) = serde_json::from_slice::<String>(content_bytes) {
+                                return Ok(Some(content));
+                            }
+                        }
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Delete a single document from the index by its external ID
@@ -479,11 +530,33 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(&index, &config, "doc1", "a.pdf", "Climate research paper", "climate")
-            .unwrap();
-        index_document(&index, &config, "doc2", "b.pdf", "Climate news article", "news").unwrap();
-        index_document(&index, &config, "doc3", "c.pdf", "Climate policy document", "policy")
-            .unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc1",
+            "a.pdf",
+            "Climate research paper",
+            "climate",
+        )
+        .unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc2",
+            "b.pdf",
+            "Climate news article",
+            "news",
+        )
+        .unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc3",
+            "c.pdf",
+            "Climate policy document",
+            "policy",
+        )
+        .unwrap();
 
         // Search all collections
         let all = search_index(&index, "climate", 10, 0, None).unwrap();

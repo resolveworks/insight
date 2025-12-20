@@ -65,7 +65,11 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
         for doc in documents {
             // Fetch text content from blob storage
             let text_hash: iroh_blobs::Hash = doc.text_hash.parse().map_err(|_| {
-                anyhow::anyhow!("Invalid text hash for document {}: {}", doc.id, doc.text_hash)
+                anyhow::anyhow!(
+                    "Invalid text hash for document {}: {}",
+                    doc.id,
+                    doc.text_hash
+                )
             })?;
 
             match storage.get_blob(&text_hash).await? {
@@ -132,8 +136,16 @@ async fn do_index_status() -> anyhow::Result<()> {
 
     // Check if paths exist
     println!("Data directories:");
-    println!("  iroh:   {:?} (exists: {})", config.iroh_dir, config.iroh_dir.exists());
-    println!("  search: {:?} (exists: {})", config.search_dir, config.search_dir.exists());
+    println!(
+        "  iroh:   {:?} (exists: {})",
+        config.iroh_dir,
+        config.iroh_dir.exists()
+    );
+    println!(
+        "  search: {:?} (exists: {})",
+        config.search_dir,
+        config.search_dir.exists()
+    );
     println!();
 
     // Open storage to count documents
@@ -144,7 +156,12 @@ async fn do_index_status() -> anyhow::Result<()> {
     println!("Collections in storage: {}", collections.len());
     for (namespace_id, collection_meta) in &collections {
         let documents = storage.list_documents(*namespace_id).await?;
-        println!("  - '{}' ({}) : {} documents", collection_meta.name, namespace_id, documents.len());
+        println!(
+            "  - '{}' ({}) : {} documents",
+            collection_meta.name,
+            namespace_id,
+            documents.len()
+        );
         storage_doc_count += documents.len();
     }
     println!("Total documents in storage: {}", storage_doc_count);
@@ -158,7 +175,10 @@ async fn do_index_status() -> anyhow::Result<()> {
         println!();
 
         if storage_doc_count as u64 != index_doc_count {
-            println!("⚠️  MISMATCH: Storage has {} documents, index has {}", storage_doc_count, index_doc_count);
+            println!(
+                "⚠️  MISMATCH: Storage has {} documents, index has {}",
+                storage_doc_count, index_doc_count
+            );
             println!("   Run 'insight index rebuild' to fix this.");
         } else {
             println!("✓ Storage and index are in sync");
@@ -166,7 +186,10 @@ async fn do_index_status() -> anyhow::Result<()> {
     } else {
         println!("Search index does not exist yet.");
         if storage_doc_count > 0 {
-            println!("⚠️  {} documents in storage are not indexed!", storage_doc_count);
+            println!(
+                "⚠️  {} documents in storage are not indexed!",
+                storage_doc_count
+            );
             println!("   Run 'insight index rebuild' to create the index.");
         }
     }

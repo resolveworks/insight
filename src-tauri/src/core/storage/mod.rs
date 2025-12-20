@@ -50,8 +50,7 @@ impl Storage {
             .await
             .context("Failed to open blob store")?;
 
-        let mut docs = DocStore::persistent(&docs_path)
-            .context("Failed to open docs store")?;
+        let mut docs = DocStore::persistent(&docs_path).context("Failed to open docs store")?;
 
         // Get or create a local author for this node
         let author = {
@@ -69,7 +68,11 @@ impl Storage {
             author.id().fmt_short()
         );
 
-        Ok(Self { blobs, docs, author })
+        Ok(Self {
+            blobs,
+            docs,
+            author,
+        })
     }
 
     /// Store bytes in blob storage and return the hash

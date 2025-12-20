@@ -1,1 +1,2 @@
-cd src-tauri && cargo test --quiet
+pnpm lint-staged
+cd src-tauri && cargo fmt && cargo clippy -- -D warnings

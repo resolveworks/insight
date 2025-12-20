@@ -32,6 +32,9 @@ pub fn run() {
                 storage: state.storage.clone(),
                 search: state.search.clone(),
                 indexer_config: state.indexer_config.clone(),
+                agent_model: state.agent_model.clone(),
+                conversations: state.conversations.clone(),
+                active_generations: state.active_generations.clone(),
             };
 
             let app_handle = app.handle().clone();
@@ -60,6 +63,11 @@ pub fn run() {
             commands::delete_document,
             commands::search,
             commands::get_node_id,
+            // Agent chat commands
+            commands::start_chat,
+            commands::send_message,
+            commands::cancel_generation,
+            commands::unload_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

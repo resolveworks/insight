@@ -16,7 +16,9 @@ pub fn run() {
 
     rt.block_on(async {
         let config = Config::load_or_default();
-        config.ensure_dirs().expect("Failed to create data directories");
+        config
+            .ensure_dirs()
+            .expect("Failed to create data directories");
 
         tracing::info!("Data directory: {:?}", config.data_dir);
 

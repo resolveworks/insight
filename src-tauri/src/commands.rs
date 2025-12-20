@@ -113,9 +113,7 @@ pub async fn import_pdf(
 ) -> Result<DocumentInfo, String> {
     tracing::info!("Importing PDF: {} into collection {}", path, collection_id);
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
     let path_ref = std::path::Path::new(&path);
     let file_name = path_ref
@@ -247,9 +245,7 @@ pub async fn import_pdfs_batch(
         collection_id
     );
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
     // Create extraction stream with bounded concurrency
     let mut extraction_stream = stream::iter(paths)
@@ -467,9 +463,7 @@ pub async fn get_documents(
     collection_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<DocumentInfo>, String> {
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
     let mut storage_guard = state.storage.write().await;
     let storage = storage_guard
@@ -508,9 +502,7 @@ pub async fn delete_document(
         collection_id
     );
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
     // Delete from storage first
     {
@@ -532,7 +524,11 @@ pub async fn delete_document(
         if let Some(index) = search_guard.as_ref() {
             let indexer_config = indexer_config.lock().await;
             if let Err(e) = search::delete_document(index, &indexer_config, &document_id) {
-                tracing::error!("Failed to remove document {} from search index: {}", document_id, e);
+                tracing::error!(
+                    "Failed to remove document {} from search index: {}",
+                    document_id,
+                    e
+                );
             } else {
                 tracing::info!("Removed document {} from search index", document_id);
             }
@@ -550,9 +546,7 @@ pub async fn delete_collection(
 ) -> Result<(), String> {
     tracing::info!("Deleting collection {}", collection_id);
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
     // Delete from storage first
     {
@@ -628,9 +622,8 @@ pub async fn search(
         doc_count
     );
 
-    let results =
-        search::search_index(index, &query, page_size, offset, collection_ids.as_deref())
-            .map_err(|e| e.to_string())?;
+    let results = search::search_index(index, &query, page_size, offset, collection_ids.as_deref())
+        .map_err(|e| e.to_string())?;
 
     tracing::info!(
         "Search returned: {} hits, total_hits={}",
@@ -640,22 +633,22 @@ pub async fn search(
 
     let mut hits = Vec::new();
     for hit in results.hits {
-        let id = search::get_document_field(index, hit.doc_id, "id")
+        let id = search::get_document_field_by_internal_id(index, hit.doc_id, "id")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        let name = search::get_document_field(index, hit.doc_id, "name")
+        let name = search::get_document_field_by_internal_id(index, hit.doc_id, "name")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        let content = search::get_document_field(index, hit.doc_id, "content")
+        let content = search::get_document_field_by_internal_id(index, hit.doc_id, "content")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        let collection_id = search::get_document_field(index, hit.doc_id, "collection_id")
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default();
+        let collection_id =
+            search::get_document_field_by_internal_id(index, hit.doc_id, "collection_id")
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
 
         let snippet = content.chars().take(200).collect::<String>();
-        let score =
-            milli::score_details::ScoreDetails::global_score(hit.scores.iter()) as f32;
+        let score = milli::score_details::ScoreDetails::global_score(hit.scores.iter()) as f32;
 
         hits.push(SearchHit {
             document: DocumentInfo {
@@ -691,4 +684,164 @@ pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
 
     // TODO: Get node ID from iroh endpoint
     Ok("initializing...".to_string())
+}
+
+// ============================================================================
+// Agent Chat Commands
+// ============================================================================
+
+use crate::core::agent;
+use tokio_util::sync::CancellationToken;
+
+/// Start a new chat conversation
+#[tauri::command]
+pub async fn start_chat(state: State<'_, AppState>) -> Result<String, String> {
+    // Ensure model is loaded
+    let mut model_guard = state.agent_model.write().await;
+    if model_guard.is_none() {
+        tracing::info!("Loading LLM model...");
+        let model = agent::AgentModel::load(&state.config.models_dir)
+            .await
+            .map_err(|e| format!("Failed to load model: {}", e))?;
+        *model_guard = Some(model);
+        tracing::info!("LLM model loaded");
+    }
+    drop(model_guard);
+
+    // Create new conversation
+    let conversation_id = uuid::Uuid::new_v4().to_string();
+    let conversation = agent::Conversation::new(conversation_id.clone());
+
+    state
+        .conversations
+        .write()
+        .await
+        .insert(conversation_id.clone(), conversation);
+
+    tracing::info!("Started new chat conversation: {}", conversation_id);
+    Ok(conversation_id)
+}
+
+/// Send a message to a conversation and stream the response
+#[tauri::command]
+pub async fn send_message(
+    conversation_id: String,
+    message: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    tracing::info!(
+        "Sending message to conversation {}: {}",
+        conversation_id,
+        message
+    );
+
+    // Get conversation
+    let mut conversations = state.conversations.write().await;
+    let conversation = conversations
+        .get_mut(&conversation_id)
+        .ok_or("Conversation not found")?
+        .clone();
+    drop(conversations);
+
+    // Get model
+    let model_guard = state.agent_model.read().await;
+    let model = model_guard
+        .as_ref()
+        .ok_or("Model not loaded")?
+        .model()
+        .clone();
+    drop(model_guard);
+
+    // Create cancellation token
+    let cancel_token = CancellationToken::new();
+    state
+        .active_generations
+        .write()
+        .await
+        .insert(conversation_id.clone(), cancel_token.clone());
+
+    // Create event channel
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<agent::AgentEvent>(100);
+
+    // Spawn event forwarder to Tauri
+    let app_handle = app.clone();
+    let conv_id = conversation_id.clone();
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let event_name = format!("agent-event-{}", conv_id);
+            if let Err(e) = app_handle.emit(&event_name, &event) {
+                tracing::error!("Failed to emit agent event: {}", e);
+            }
+        }
+    });
+
+    // Clone state fields for the agent loop
+    let config = state.config.clone();
+    let storage = state.storage.clone();
+    let search = state.search.clone();
+    let indexer_config = state.indexer_config.clone();
+    let agent_model = state.agent_model.clone();
+    let conversations_arc = state.conversations.clone();
+    let active_generations = state.active_generations.clone();
+
+    let conv_id = conversation_id.clone();
+    let mut conversation = conversation;
+
+    // Run agent loop in background
+    tokio::spawn(async move {
+        let state_clone = crate::core::AppState {
+            config,
+            storage,
+            search,
+            indexer_config,
+            agent_model,
+            conversations: conversations_arc.clone(),
+            active_generations,
+        };
+
+        if let Err(e) = agent::run_agent_loop(
+            &model,
+            &mut conversation,
+            message,
+            &state_clone,
+            tx,
+            cancel_token,
+        )
+        .await
+        {
+            tracing::error!("Agent loop error: {}", e);
+        }
+
+        // Update conversation in state
+        conversations_arc
+            .write()
+            .await
+            .insert(conv_id, conversation);
+    });
+
+    Ok(())
+}
+
+/// Cancel an in-progress generation
+#[tauri::command]
+pub async fn cancel_generation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let generations = state.active_generations.read().await;
+    if let Some(token) = generations.get(&conversation_id) {
+        token.cancel();
+        tracing::info!("Cancelled generation for conversation {}", conversation_id);
+    }
+    Ok(())
+}
+
+/// Unload the model to free memory
+#[tauri::command]
+pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
+    let mut model_guard = state.agent_model.write().await;
+    *model_guard = None;
+    tracing::info!("LLM model unloaded");
+    Ok(())
 }

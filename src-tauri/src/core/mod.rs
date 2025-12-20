@@ -1,14 +1,18 @@
+pub mod agent;
 pub mod config;
 pub mod pdf;
 pub mod search;
 pub mod storage;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use milli::update::IndexerConfig;
 use milli::Index;
 
+pub use agent::{AgentEvent, AgentModel, Conversation};
 pub use config::Config;
 pub use storage::Storage;
 
@@ -19,12 +23,20 @@ pub struct AppState {
     pub search: Arc<RwLock<Option<Index>>>,
     /// Shared indexer config with thread pool - use Mutex to serialize indexing operations
     pub indexer_config: Arc<Mutex<IndexerConfig>>,
+    /// Loaded LLM model for agent
+    pub agent_model: Arc<RwLock<Option<AgentModel>>>,
+    /// Active conversations
+    pub conversations: Arc<RwLock<HashMap<String, Conversation>>>,
+    /// Cancellation tokens for active generations
+    pub active_generations: Arc<RwLock<HashMap<String, CancellationToken>>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         let config = Config::load_or_default();
-        config.ensure_dirs().expect("Failed to create data directories");
+        config
+            .ensure_dirs()
+            .expect("Failed to create data directories");
 
         // Create a shared IndexerConfig with thread pool for all indexing operations
         let indexer_config = IndexerConfig::default();
@@ -34,6 +46,9 @@ impl AppState {
             storage: Arc::new(RwLock::new(None)),
             search: Arc::new(RwLock::new(None)),
             indexer_config: Arc::new(Mutex::new(indexer_config)),
+            agent_model: Arc::new(RwLock::new(None)),
+            conversations: Arc::new(RwLock::new(HashMap::new())),
+            active_generations: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
