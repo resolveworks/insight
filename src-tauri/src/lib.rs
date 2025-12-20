@@ -63,7 +63,9 @@ pub fn run() {
             commands::delete_document,
             commands::search,
             commands::get_node_id,
-            // Agent chat commands
+            // Conversation commands
+            commands::list_conversations,
+            commands::load_conversation,
             commands::start_chat,
             commands::send_message,
             commands::cancel_generation,

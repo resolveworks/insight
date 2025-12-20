@@ -9,6 +9,8 @@ pub struct Config {
     pub iroh_dir: PathBuf,
     /// Search index directory
     pub search_dir: PathBuf,
+    /// Conversations storage directory
+    pub conversations_dir: PathBuf,
     /// Embedding models cache directory
     pub models_dir: PathBuf,
 }
@@ -28,6 +30,7 @@ impl Config {
         Self {
             iroh_dir: data_dir.join("iroh"),
             search_dir: data_dir.join("search"),
+            conversations_dir: data_dir.join("conversations"),
             data_dir,
             models_dir,
         }
@@ -38,6 +41,7 @@ impl Config {
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.iroh_dir)?;
         std::fs::create_dir_all(&self.search_dir)?;
+        std::fs::create_dir_all(&self.conversations_dir)?;
         std::fs::create_dir_all(&self.models_dir)?;
         Ok(())
     }

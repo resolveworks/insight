@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod config;
+pub mod conversations;
 pub mod models;
 pub mod pdf;
 pub mod search;

@@ -54,6 +54,30 @@
 		total_files: number;
 	}
 
+	interface Conversation {
+		id: string;
+		title: string;
+		messages: {
+			role: 'system' | 'user' | 'assistant' | 'tool';
+			content: string;
+			tool_call_id?: string;
+			tool_calls?: {
+				index: number;
+				id: string;
+				name: string;
+				arguments: string;
+			}[];
+		}[];
+		created_at: string;
+		updated_at: string;
+	}
+
+	type Props = {
+		onConversationStart?: (id: string) => void;
+	};
+
+	let { onConversationStart }: Props = $props();
+
 	let conversationId = $state<string | null>(null);
 	let messages = $state<ChatMessage[]>([]);
 	let inputValue = $state('');
@@ -144,21 +168,78 @@
 		try {
 			isLoadingModel = true;
 			error = null;
-			conversationId = await invoke<string>('start_chat', {
+			const conv = await invoke<Conversation>('start_chat', {
 				modelId: selectedModelId,
 			});
+			conversationId = conv.id;
+			messages = [];
 
 			if (conversationId) {
 				unlistenAgent = await listen<AgentEvent>(
 					`agent-event-${conversationId}`,
 					handleAgentEvent,
 				);
+				onConversationStart?.(conversationId);
 			}
 		} catch (e) {
 			error = `Failed to start chat: ${e}`;
 			console.error('Failed to start chat:', e);
 		} finally {
 			isLoadingModel = false;
+		}
+	}
+
+	/** Load an existing conversation by ID */
+	export async function loadConversation(id: string) {
+		try {
+			isLoadingModel = true;
+			error = null;
+
+			// Clean up existing listener
+			unlistenAgent?.();
+
+			const conv = await invoke<Conversation>('load_conversation', {
+				conversationId: id,
+			});
+			conversationId = conv.id;
+
+			// Convert backend messages to ChatMessage format (skip system messages)
+			messages = conv.messages
+				.filter((m) => m.role === 'user' || m.role === 'assistant')
+				.map((m) => ({
+					role: m.role as 'user' | 'assistant',
+					content: m.content,
+					toolCalls: m.tool_calls?.map((tc) => ({
+						id: tc.id,
+						name: tc.name,
+						arguments: JSON.parse(tc.arguments || '{}'),
+					})),
+				}));
+
+			// Set up event listener for this conversation
+			unlistenAgent = await listen<AgentEvent>(
+				`agent-event-${conversationId}`,
+				handleAgentEvent,
+			);
+		} catch (e) {
+			error = `Failed to load conversation: ${e}`;
+			console.error('Failed to load conversation:', e);
+		} finally {
+			isLoadingModel = false;
+		}
+	}
+
+	/** Start a new conversation (reset state) */
+	export async function newConversation() {
+		unlistenAgent?.();
+		conversationId = null;
+		messages = [];
+		streamingContent = '';
+		activeToolCalls = new SvelteMap();
+		error = null;
+
+		if (modelStatus === 'Ready') {
+			await startChat();
 		}
 	}
 

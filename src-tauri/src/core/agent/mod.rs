@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use mistralrs::{
-    GgufModelBuilder, Model, PagedAttentionMetaBuilder, RequestBuilder, TextMessageRole, Tool,
-    ToolCallResponse, ToolChoice,
+    CalledFunction, GgufModelBuilder, Model, PagedAttentionMetaBuilder, RequestBuilder,
+    TextMessageRole, Tool, ToolCallResponse, ToolCallType, ToolChoice,
 };
 
 pub use tools::{
@@ -69,6 +69,41 @@ pub enum MessageRole {
     Tool,
 }
 
+/// A tool call made by the assistant
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageToolCall {
+    pub index: usize,
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+impl From<&ToolCallResponse> for MessageToolCall {
+    fn from(tc: &ToolCallResponse) -> Self {
+        Self {
+            index: tc.index,
+            id: tc.id.clone(),
+            name: tc.function.name.clone(),
+            arguments: tc.function.arguments.clone(),
+        }
+    }
+}
+
+impl MessageToolCall {
+    /// Convert to mistralrs ToolCallResponse for request building
+    pub fn to_tool_call_response(&self) -> ToolCallResponse {
+        ToolCallResponse {
+            index: self.index,
+            id: self.id.clone(),
+            tp: ToolCallType::Function,
+            function: CalledFunction {
+                name: self.name.clone(),
+                arguments: self.arguments.clone(),
+            },
+        }
+    }
+}
+
 /// A message in the conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -78,30 +113,51 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// For Assistant role: tool calls made by the assistant
-    #[serde(skip)]
-    pub tool_calls: Option<Vec<ToolCallResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<MessageToolCall>>,
 }
 
 /// A conversation with message history
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
+    pub title: String,
     pub messages: Vec<Message>,
     pub created_at: String,
+    pub updated_at: String,
 }
 
 impl Conversation {
     pub fn new(id: String) -> Self {
+        let now = chrono::Utc::now().to_rfc3339();
         Self {
             id,
+            title: "New conversation".to_string(),
             messages: vec![Message {
                 role: MessageRole::System,
                 content: SYSTEM_PROMPT.to_string(),
                 tool_call_id: None,
                 tool_calls: None,
             }],
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: now.clone(),
+            updated_at: now,
         }
+    }
+
+    /// Generate title from first user message (truncated to 50 chars)
+    pub fn generate_title(&mut self) {
+        if let Some(first_user_msg) = self.messages.iter().find(|m| m.role == MessageRole::User) {
+            let mut title = first_user_msg.content.clone();
+            if title.len() > 50 {
+                title.truncate(47);
+                title.push_str("...");
+            }
+            self.title = title;
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.updated_at = chrono::Utc::now().to_rfc3339();
     }
 
     pub fn add_user_message(&mut self, content: String) {
@@ -111,6 +167,7 @@ impl Conversation {
             tool_call_id: None,
             tool_calls: None,
         });
+        self.touch();
     }
 
     pub fn add_assistant_message(&mut self, content: String) {
@@ -120,6 +177,7 @@ impl Conversation {
             tool_call_id: None,
             tool_calls: None,
         });
+        self.touch();
     }
 
     pub fn add_assistant_message_with_tool_calls(
@@ -131,8 +189,9 @@ impl Conversation {
             role: MessageRole::Assistant,
             content,
             tool_call_id: None,
-            tool_calls: Some(tool_calls),
+            tool_calls: Some(tool_calls.iter().map(MessageToolCall::from).collect()),
         });
+        self.touch();
     }
 
     pub fn add_tool_result(&mut self, tool_call_id: String, content: String) {
@@ -142,6 +201,7 @@ impl Conversation {
             tool_call_id: Some(tool_call_id),
             tool_calls: None,
         });
+        self.touch();
     }
 }
 
@@ -292,19 +352,21 @@ fn build_request_from_conversation(conversation: &Conversation, tools: &[Tool]) 
             }
             MessageRole::Assistant => {
                 if let Some(ref tool_calls) = msg.tool_calls {
-                    // Assistant message with tool calls
+                    // Convert to mistralrs format
+                    let responses: Vec<ToolCallResponse> = tool_calls
+                        .iter()
+                        .map(|tc| tc.to_tool_call_response())
+                        .collect();
                     request = request.add_message_with_tool_call(
                         TextMessageRole::Assistant,
                         msg.content.clone(),
-                        tool_calls.clone(),
+                        responses,
                     );
                 } else {
-                    // Regular assistant message
                     request = request.add_message(TextMessageRole::Assistant, &msg.content);
                 }
             }
             MessageRole::Tool => {
-                // Tool result message
                 if let Some(ref id) = msg.tool_call_id {
                     request = request.add_tool_message(msg.content.clone(), id.clone());
                 }

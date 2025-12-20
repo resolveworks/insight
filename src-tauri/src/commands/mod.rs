@@ -687,18 +687,45 @@ pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 // ============================================================================
-// Agent Chat Commands
+// Conversation Commands
 // ============================================================================
 
-use crate::core::agent;
+use crate::core::{agent, conversations};
 use tokio_util::sync::CancellationToken;
+
+/// List all saved conversations
+#[tauri::command]
+pub async fn list_conversations(
+    state: State<'_, AppState>,
+) -> Result<Vec<conversations::ConversationSummary>, String> {
+    conversations::list_conversations(&state.config.conversations_dir).map_err(|e| e.to_string())
+}
+
+/// Load a conversation by ID
+#[tauri::command]
+pub async fn load_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<agent::Conversation, String> {
+    let path = conversations::conversation_path(&state.config.conversations_dir, &conversation_id);
+    let conversation = conversations::load_conversation(&path).map_err(|e| e.to_string())?;
+
+    // Add to in-memory cache
+    state
+        .conversations
+        .write()
+        .await
+        .insert(conversation_id, conversation.clone());
+
+    Ok(conversation)
+}
 
 /// Start a new chat conversation
 #[tauri::command]
 pub async fn start_chat(
     model_id: Option<String>,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<agent::Conversation, String> {
     // Get model info
     let model_info = if let Some(id) = model_id {
         models::get_model(&id).ok_or_else(|| format!("Model not found: {}", id))?
@@ -735,14 +762,18 @@ pub async fn start_chat(
     let conversation_id = uuid::Uuid::new_v4().to_string();
     let conversation = agent::Conversation::new(conversation_id.clone());
 
+    // Save to disk
+    conversations::save_conversation(&state.config.conversations_dir, &conversation)
+        .map_err(|e| e.to_string())?;
+
     state
         .conversations
         .write()
         .await
-        .insert(conversation_id.clone(), conversation);
+        .insert(conversation_id.clone(), conversation.clone());
 
     tracing::info!("Started new chat conversation: {}", conversation_id);
-    Ok(conversation_id)
+    Ok(conversation)
 }
 
 /// Send a message to a conversation and stream the response
@@ -807,6 +838,7 @@ pub async fn send_message(
     let agent_model = state.agent_model.clone();
     let conversations_arc = state.conversations.clone();
     let active_generations = state.active_generations.clone();
+    let conversations_dir = state.config.conversations_dir.clone();
 
     let conv_id = conversation_id.clone();
     let mut conversation = conversation;
@@ -834,6 +866,21 @@ pub async fn send_message(
         .await
         {
             tracing::error!("Agent loop error: {}", e);
+        }
+
+        // Generate title on first user message
+        let user_count = conversation
+            .messages
+            .iter()
+            .filter(|m| m.role == agent::MessageRole::User)
+            .count();
+        if user_count == 1 {
+            conversation.generate_title();
+        }
+
+        // Save to disk
+        if let Err(e) = conversations::save_conversation(&conversations_dir, &conversation) {
+            tracing::error!("Failed to save conversation: {}", e);
         }
 
         // Update conversation in state

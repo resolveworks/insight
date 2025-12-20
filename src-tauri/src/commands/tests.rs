@@ -205,12 +205,7 @@ async fn test_import_pdf_file_not_found() {
         .await
         .unwrap();
 
-    let result = import_pdf(
-        "/nonexistent/file.pdf".to_string(),
-        collection.id,
-        state,
-    )
-    .await;
+    let result = import_pdf("/nonexistent/file.pdf".to_string(), collection.id, state).await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Failed to read PDF file"));
@@ -439,7 +434,11 @@ async fn test_search_pagination() {
     // Create and import multiple PDFs
     for i in 0..5 {
         let pdf_path = temp_dir.path().join(format!("doc{}.pdf", i));
-        std::fs::write(&pdf_path, create_test_pdf(&format!("Document number {}", i))).unwrap();
+        std::fs::write(
+            &pdf_path,
+            create_test_pdf(&format!("Document number {}", i)),
+        )
+        .unwrap();
         import_pdf(
             pdf_path.to_string_lossy().to_string(),
             collection.id.clone(),
@@ -466,15 +465,9 @@ async fn test_search_pagination() {
     assert_eq!(page0.total_hits, 5);
 
     // Get second page
-    let page1 = search(
-        "document".to_string(),
-        Some(1),
-        Some(2),
-        None,
-        state,
-    )
-    .await
-    .unwrap();
+    let page1 = search("document".to_string(), Some(1), Some(2), None, state)
+        .await
+        .unwrap();
 
     assert_eq!(page1.hits.len(), 2);
     assert_eq!(page1.page, 1);

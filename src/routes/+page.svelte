@@ -6,6 +6,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import Chat from '$lib/components/Chat.svelte';
+	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
 
 	interface Collection {
 		id: string;
@@ -53,6 +54,11 @@
 	let selectedCollection = $state<string | null>(null);
 	let selectedSearchCollections = new SvelteSet<string>();
 	let searching = $state(false);
+
+	// Conversation state
+	let chatComponent: Chat;
+	let conversationSidebar: ConversationSidebar;
+	let activeConversationId = $state<string | null>(null);
 
 	// Debounced search-as-you-type
 	let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -295,7 +301,29 @@
 	<div class="flex-1 overflow-hidden">
 		{#if activeTab === 'trajectory'}
 			<!-- Trajectory Tab -->
-			<Chat />
+			<div class="flex h-full">
+				<ConversationSidebar
+					bind:this={conversationSidebar}
+					{activeConversationId}
+					onSelect={async (id) => {
+						activeConversationId = id;
+						await chatComponent.loadConversation(id);
+					}}
+					onNew={async () => {
+						activeConversationId = null;
+						await chatComponent.newConversation();
+					}}
+				/>
+				<div class="flex-1">
+					<Chat
+						bind:this={chatComponent}
+						onConversationStart={(id) => {
+							activeConversationId = id;
+							conversationSidebar?.refresh();
+						}}
+					/>
+				</div>
+			</div>
 		{:else if activeTab === 'search'}
 			<!-- Search Tab -->
 			<div class="flex h-full">
