@@ -1,20 +1,87 @@
-# Tauri + SvelteKit + TypeScript
+# Insight
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
+**Local-first document search for journalists and newsrooms.**
 
-## Building (CPU and GPU)
+A research project exploring how peer-to-peer technology can give journalists control over their documents without relying on cloud services.
 
-- CPU default: `pnpm tauri build` (or `cargo tauri build` inside `src-tauri`) builds a portable CPU-only binary.
-- NVIDIA GPU: enable CUDA + flash attention + cuDNN:  
-  `pnpm tauri build -- --features "cuda flash-attn cudnn"`  
-  (requires CUDA toolkit/cuDNN and matching drivers on the build machine)
-- Apple Silicon GPU: use Metal:  
-  `pnpm tauri build -- --features metal`
-- Intel CPU acceleration: `pnpm tauri build -- --features mkl`
-- Apple Accelerate (CPU): `pnpm tauri build -- --features accelerate`
+## The Problem
 
-If a feature isn’t available on the build machine, stick to the CPU default. GPU builds are optional; CPU builds still work for users without a GPU.
+Newsrooms accumulate documents—leaks, court filings, FOIA responses, research papers. Searching and sharing them usually means uploading to cloud services you don't control. That's a problem when sources trust you with sensitive material.
 
-## Recommended IDE Setup
+## What Insight Does
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+- **Search across documents** with full-text and semantic search (finds related concepts, not just keywords)
+- **Share with colleagues** directly, laptop-to-laptop, no server required
+- **Work offline** — your documents and search index live on your machine
+- **Run a newsroom server** — same app in headless mode for always-on availability
+
+## How It Works
+
+Documents sync peer-to-peer using [iroh](https://iroh.computer/). Each machine builds its own search index locally using [milli](https://github.com/meilisearch/milli) (the engine behind Meilisearch). No central server sees your files.
+
+```
+You add a PDF → Text extracted → Indexed locally → Syncs to colleagues
+Colleague searches → Their local index → Finds your document → Fetches from you
+```
+
+## Project Status
+
+This is a **research project** exploring:
+
+- Practical P2P sync for document workflows
+- Local semantic search with embeddings
+- Trust models for journalist collaboration
+
+Not production-ready. Built to learn and prototype.
+
+## Technology
+
+| Layer    | Choice       | Why                                          |
+| -------- | ------------ | -------------------------------------------- |
+| App      | Tauri + Rust | Single binary, cross-platform, no Electron   |
+| Frontend | Svelte 5     | Fast, minimal                                |
+| P2P      | iroh         | Modern QUIC-based, handles NAT traversal     |
+| Search   | milli        | Full-text + vector search, runs locally      |
+| PDF      | lopdf        | Text extraction (opens in system PDF viewer) |
+
+## Building
+
+```bash
+pnpm install
+pnpm tauri dev          # Desktop app with hot reload
+pnpm tauri build        # Release build (CPU)
+```
+
+GPU-accelerated builds (optional):
+
+```bash
+# NVIDIA (requires CUDA toolkit)
+pnpm tauri build -- --features "cuda flash-attn cudnn"
+
+# Apple Silicon
+pnpm tauri build -- --features metal
+
+# Intel MKL
+pnpm tauri build -- --features mkl
+```
+
+Headless server mode:
+
+```bash
+cd src-tauri && cargo run -- --headless
+```
+
+## Who This Is For
+
+- **Journalists** managing sensitive document collections
+- **Newsrooms** wanting to share documents internally without cloud dependencies
+- **Civic tech researchers** interested in P2P collaboration tools
+- **Anyone** exploring alternatives to centralized document platforms
+
+## License
+
+[TBD]
+
+---
+
+_Built as a research exploration of local-first software for journalism._
