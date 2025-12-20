@@ -1,32 +1,70 @@
-# Insight - Local-First Document Search
+# Insight - Local-First Research Agent
 
-A local-first, P2P document management and search application.
+A local-first research agent for evidence-based journalism. Think Claude Code, but for documents and investigations.
 
 ## Vision
 
-A local-first document search tool for journalists. The problem: newsrooms have documents but no good way to search and share them without relying on cloud services they don't trust.
+Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight combines local LLM inference with P2P document sync to give journalists an AI research assistant that runs entirely on their hardware.
 
 ## Core Stack
 
-| Component           | Library     | Purpose                                                   |
-| ------------------- | ----------- | --------------------------------------------------------- |
-| App framework       | Tauri 2.0   | Desktop app (Rust backend, web frontend)                  |
-| UI                  | Svelte 5    | Frontend                                                  |
-| P2P / Sync          | iroh        | Connections, NAT traversal, sync                          |
-| Content storage     | iroh-blobs  | Content-addressed file storage                            |
-| Metadata sync       | iroh-docs   | CRDT key-value store for metadata                         |
-| Real-time           | iroh-gossip | Pub/sub for live updates                                  |
-| Search + embeddings | milli       | Full-text + vector hybrid search (uses candle internally) |
-| PDF processing      | lopdf       | Text extraction (no built-in viewer, open in system apps) |
+| Component       | Library     | Purpose                                                   |
+| --------------- | ----------- | --------------------------------------------------------- |
+| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                  |
+| UI              | Svelte 5    | Frontend                                                  |
+| LLM inference   | mistralrs   | Local model loading and inference (GGUF format)           |
+| Model download  | hf-hub      | Fetch models from HuggingFace                             |
+| P2P / Sync      | iroh        | Connections, NAT traversal, sync                          |
+| Content storage | iroh-blobs  | Content-addressed file storage                            |
+| Metadata sync   | iroh-docs   | CRDT key-value store for metadata                         |
+| Real-time       | iroh-gossip | Pub/sub for live updates                                  |
+| Search          | milli       | Full-text + vector hybrid search (uses candle internally) |
+| PDF processing  | lopdf       | Text extraction                                           |
 
 ## Architecture
 
-One binary, two modes—Core (iroh + milli) is shared:
+One binary, two modes—Core (iroh + milli + agent) is shared:
 
 ```
 insight              → GUI mode (Tauri + Svelte)
 insight --headless   → Server mode (no UI)
 ```
+
+### Agent Architecture
+
+```
+User Query
+    ↓
+Local LLM (via mistralrs)
+    ↓
+Tool Calling Loop
+    ↓
+Synthesized Answer (with citations)
+```
+
+With local models, the agent runs entirely on-device—no data leaves your machine.
+
+## Models
+
+Insight is batteries-included: local models are downloaded from HuggingFace and run on-device via mistralrs. Remote model providers (OpenAI, Anthropic, etc.) will also be supported for users who prefer them.
+
+### Local Models
+
+| Model           | Size   | Notes                  |
+| --------------- | ------ | ---------------------- |
+| Qwen3 8B Q4_K_M | 5 GB   | Default, good balance  |
+| Qwen3 4B Q4_K_M | 2.5 GB | Lightweight, faster    |
+| Qwen3 8B Q8_0   | 8.5 GB | Higher quality, slower |
+
+GPU acceleration available via feature flags:
+
+- `cuda` - NVIDIA GPUs
+- `metal` - Apple Silicon
+- `flash-attn` - Flash attention optimization
+
+## Agent Tools
+
+The agent can search and read documents from the indexed collections. It iteratively gathers evidence to answer questions, citing sources.
 
 ## Data Model
 
@@ -46,24 +84,25 @@ Namespace: 7f3a8b2c... ("Climate Research")
 
 ```json
 {
-  "name": "paper.pdf",
-  "pdf_hash": "blake3-hash-of-pdf",
-  "text_hash": "blake3-hash-of-extracted-text",
-  "tags": ["research", "climate"],
-  "created_at": "2024-01-15T10:30:00Z"
+	"name": "paper.pdf",
+	"pdf_hash": "blake3-hash-of-pdf",
+	"text_hash": "blake3-hash-of-extracted-text",
+	"tags": ["research", "climate"],
+	"created_at": "2024-01-15T10:30:00Z"
 }
 ```
 
 ### What Syncs vs What's Local
 
-| Data            | Syncs        | Stored in  |
-| --------------- | ------------ | ---------- |
-| PDF files       | Yes          | iroh-blobs |
-| Extracted text  | Yes          | iroh-blobs |
-| File metadata   | Yes          | iroh-docs  |
-| Collection info | Yes          | iroh-docs  |
-| Embeddings      | No (derived) | milli      |
-| Search index    | No (derived) | milli      |
+| Data            | Syncs        | Stored in        |
+| --------------- | ------------ | ---------------- |
+| PDF files       | Yes          | iroh-blobs       |
+| Extracted text  | Yes          | iroh-blobs       |
+| File metadata   | Yes          | iroh-docs        |
+| Collection info | Yes          | iroh-docs        |
+| Embeddings      | No (derived) | milli            |
+| Search index    | No (derived) | milli            |
+| LLM models      | No           | ~/.cache/insight |
 
 ## Document Ingestion
 
@@ -96,14 +135,6 @@ On-demand - fetch files when needed, server is always available.
 
 The "server" is just the same app running in headless mode with better uptime.
 
-## Search
-
-Each node builds its own milli index from synced data:
-
-1. Receive synced metadata (includes extracted text hash)
-2. Fetch extracted text blob
-3. Index in milli (embeddings generated internally via candle)
-
 ## Development
 
 ```bash
@@ -111,6 +142,16 @@ pnpm install
 pnpm tauri dev          # GUI mode
 cargo run -- --headless # Headless mode (from src-tauri/)
 pnpm tauri build        # Release build
+```
+
+### GPU Builds
+
+```bash
+# NVIDIA
+cargo build --release --features cuda
+
+# Apple Silicon
+cargo build --release --features metal
 ```
 
 ## Testing
@@ -123,9 +164,9 @@ cd src-tauri && cargo test
 
 ### What to Test
 
-1. **Core modules** (unit tests) - Storage, sync, search operations
+1. **Core modules** (unit tests) - Storage, sync, search, agent operations
 2. **Tauri commands** (integration tests) - The frontend ↔ backend bridge
-3. **Critical path** - Collection CRUD, document ingestion, search queries
+3. **Critical path** - Collection CRUD, document ingestion, search queries, chat flow
 
 ### Guidelines
 
@@ -140,6 +181,9 @@ cd src-tauri && cargo test
 ~/.local/share/insight/
 ├── iroh/               # iroh data (blobs, docs)
 └── search/             # milli index
+
+~/.cache/insight/
+└── models/             # Downloaded LLM files (GGUF + tokenizers)
 ```
 
 ## Conventions
@@ -147,3 +191,4 @@ cd src-tauri && cargo test
 - Prefer Rust stdlib where possible
 - `tokio` runtime (required by iroh)
 - Svelte 5 runes, TypeScript
+- Agent events streamed via Tauri emit system

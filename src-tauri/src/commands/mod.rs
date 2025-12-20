@@ -875,6 +875,9 @@ pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
 
 use crate::core::models::{self, DownloadProgress, ModelInfo, ModelManager, ModelStatus};
 
+#[cfg(test)]
+mod tests;
+
 /// Get list of available models
 #[tauri::command]
 pub async fn get_available_models() -> Result<Vec<ModelInfo>, String> {
