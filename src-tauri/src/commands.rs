@@ -512,7 +512,7 @@ pub async fn delete_document(
         .parse()
         .map_err(|_| "Invalid collection ID")?;
 
-    // Delete from storage
+    // Delete from storage first
     {
         let mut storage_guard = state.storage.write().await;
         let storage = storage_guard
@@ -524,14 +524,20 @@ pub async fn delete_document(
             .map_err(|e| e.to_string())?;
     }
 
-    // Delete from search index
-    let search_guard = state.search.read().await;
-    if let Some(index) = search_guard.as_ref() {
-        let indexer_config = state.indexer_config.lock().await;
-        search::delete_document(index, &indexer_config, &document_id)
-            .map_err(|e| e.to_string())?;
-        tracing::info!("Removed document {} from search index", document_id);
-    }
+    // Delete from search index in background
+    let search = state.search.clone();
+    let indexer_config = state.indexer_config.clone();
+    tokio::spawn(async move {
+        let search_guard = search.read().await;
+        if let Some(index) = search_guard.as_ref() {
+            let indexer_config = indexer_config.lock().await;
+            if let Err(e) = search::delete_document(index, &indexer_config, &document_id) {
+                tracing::error!("Failed to remove document {} from search index: {}", document_id, e);
+            } else {
+                tracing::info!("Removed document {} from search index", document_id);
+            }
+        }
+    });
 
     Ok(())
 }
@@ -548,7 +554,7 @@ pub async fn delete_collection(
         .parse()
         .map_err(|_| "Invalid collection ID")?;
 
-    // Delete from storage
+    // Delete from storage first
     {
         let mut storage_guard = state.storage.write().await;
         let storage = storage_guard
@@ -560,19 +566,31 @@ pub async fn delete_collection(
             .map_err(|e| e.to_string())?;
     }
 
-    // Delete all documents from search index for this collection
-    let search_guard = state.search.read().await;
-    if let Some(index) = search_guard.as_ref() {
-        let indexer_config = state.indexer_config.lock().await;
-        let deleted_count =
-            search::delete_documents_by_collection(index, &indexer_config, &collection_id)
-                .map_err(|e| e.to_string())?;
-        tracing::info!(
-            "Removed {} documents from search index for collection {}",
-            deleted_count,
-            collection_id
-        );
-    }
+    // Delete from search index in background
+    let search = state.search.clone();
+    let indexer_config = state.indexer_config.clone();
+    tokio::spawn(async move {
+        let search_guard = search.read().await;
+        if let Some(index) = search_guard.as_ref() {
+            let indexer_config = indexer_config.lock().await;
+            match search::delete_documents_by_collection(index, &indexer_config, &collection_id) {
+                Ok(deleted_count) => {
+                    tracing::info!(
+                        "Removed {} documents from search index for collection {}",
+                        deleted_count,
+                        collection_id
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to remove documents from search index for collection {}: {}",
+                        collection_id,
+                        e
+                    );
+                }
+            }
+        }
+    });
 
     Ok(())
 }

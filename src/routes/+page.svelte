@@ -161,28 +161,35 @@
     }
   }
 
-  async function deleteCollection(collectionId: string, event: MouseEvent) {
+  function deleteCollection(collectionId: string, event: MouseEvent) {
     event.stopPropagation();
-    try {
-      await invoke("delete_collection", { collectionId });
-      collections = collections.filter((c) => c.id !== collectionId);
-      if (selectedCollection === collectionId) {
-        selectedCollection = null;
-        documents = [];
-      }
-    } catch (e) {
-      console.error("Failed to delete collection:", e);
+    // Optimistic update - remove from UI immediately
+    const previousCollections = collections;
+    collections = collections.filter((c) => c.id !== collectionId);
+    if (selectedCollection === collectionId) {
+      selectedCollection = null;
+      documents = [];
     }
+    // Fire and forget - index cleanup happens in background
+    invoke("delete_collection", { collectionId }).catch((e) => {
+      console.error("Failed to delete collection:", e);
+      // Rollback on error
+      collections = previousCollections;
+    });
   }
 
-  async function deleteDocument(documentId: string) {
+  function deleteDocument(documentId: string) {
     if (!selectedCollection) return;
-    try {
-      await invoke("delete_document", { collectionId: selectedCollection, documentId });
-      documents = documents.filter((d) => d.id !== documentId);
-    } catch (e) {
+    // Optimistic update - remove from UI immediately
+    const previousDocuments = documents;
+    documents = documents.filter((d) => d.id !== documentId);
+    const collectionId = selectedCollection;
+    // Fire and forget - index cleanup happens in background
+    invoke("delete_document", { collectionId, documentId }).catch((e) => {
       console.error("Failed to delete document:", e);
-    }
+      // Rollback on error
+      documents = previousDocuments;
+    });
   }
 
   // Subscribe to backend events
@@ -250,7 +257,7 @@
             <p class="text-sm italic text-slate-500">No collections</p>
           {:else}
             <ul class="space-y-1">
-              {#each collections as collection}
+              {#each collections as collection (collection.id)}
                 <li>
                   <label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-slate-700">
                     <input
@@ -301,7 +308,7 @@
                 {totalHits} result{totalHits === 1 ? '' : 's'} found
               </div>
               <ul class="flex-1 space-y-4 overflow-y-auto">
-                {#each results as result}
+                {#each results as result (result.document.id)}
                   <li class="rounded-lg border border-slate-700 bg-slate-800 p-4">
                     <div class="mb-2 flex items-center justify-between">
                       <h3 class="font-medium text-rose-500">{result.document.name}</h3>
@@ -362,7 +369,7 @@
             <p class="text-sm italic text-slate-500">No collections yet</p>
           {:else}
             <ul class="space-y-1">
-              {#each collections as collection}
+              {#each collections as collection (collection.id)}
                 <li
                   class="group flex cursor-pointer items-center justify-between rounded px-3 py-2 text-sm {selectedCollection === collection.id
                     ? 'bg-rose-600/20 text-rose-400'
@@ -407,7 +414,7 @@
             <p class="text-sm italic text-slate-500">No documents yet</p>
           {:else}
             <ul class="space-y-2">
-              {#each documents as doc}
+              {#each documents as doc (doc.id)}
                 <li class="group flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-4 py-3">
                   <div>
                     <span class="text-slate-200">{doc.name}</span>
