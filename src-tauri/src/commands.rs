@@ -695,16 +695,39 @@ use tokio_util::sync::CancellationToken;
 
 /// Start a new chat conversation
 #[tauri::command]
-pub async fn start_chat(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn start_chat(
+    model_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    // Get model info
+    let model_info = if let Some(id) = model_id {
+        models::get_model(&id).ok_or_else(|| format!("Model not found: {}", id))?
+    } else {
+        models::default_model()
+    };
+
     // Ensure model is loaded
     let mut model_guard = state.agent_model.write().await;
     if model_guard.is_none() {
-        tracing::info!("Loading LLM model...");
-        let model = agent::AgentModel::load(&state.config.models_dir)
+        // Get the path to the downloaded model
+        let manager = ModelManager::new(state.config.models_dir.clone())
+            .await
+            .map_err(|e| format!("Failed to create model manager: {}", e))?;
+
+        let model_path = manager
+            .get_model_path(&model_info)
+            .ok_or_else(|| format!("Model not downloaded: {}", model_info.id))?;
+
+        tracing::info!(
+            "Loading LLM model: {} from {:?}",
+            model_info.name,
+            model_path
+        );
+        let model = agent::AgentModel::load(&model_path, &model_info)
             .await
             .map_err(|e| format!("Failed to load model: {}", e))?;
         *model_guard = Some(model);
-        tracing::info!("LLM model loaded");
+        tracing::info!("LLM model loaded: {}", model_info.name);
     }
     drop(model_guard);
 
@@ -858,14 +881,22 @@ pub async fn get_available_models() -> Result<Vec<ModelInfo>, String> {
     Ok(models::available_models())
 }
 
-/// Get download status for the default model
+/// Get download status for a specific model
 #[tauri::command]
-pub async fn get_model_status(state: State<'_, AppState>) -> Result<ModelStatus, String> {
+pub async fn get_model_status(
+    model_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ModelStatus, String> {
     let manager = ModelManager::new(state.config.models_dir.clone())
         .await
         .map_err(|e| e.to_string())?;
 
-    let model = models::default_model();
+    // Use specified model or default
+    let model = if let Some(id) = model_id {
+        models::get_model(&id).ok_or_else(|| format!("Model not found: {}", id))?
+    } else {
+        models::default_model()
+    };
 
     if manager.is_downloaded(&model) {
         let path = manager
@@ -877,14 +908,19 @@ pub async fn get_model_status(state: State<'_, AppState>) -> Result<ModelStatus,
     }
 }
 
-/// Download the default model with progress events
+/// Download a specific model with progress events
 #[tauri::command]
-pub async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn download_model(
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let manager = ModelManager::new(state.config.models_dir.clone())
         .await
         .map_err(|e| e.to_string())?;
 
-    let model = models::default_model();
+    let model =
+        models::get_model(&model_id).ok_or_else(|| format!("Model not found: {}", model_id))?;
 
     // Check if already downloaded
     if manager.is_downloaded(&model) {
@@ -892,7 +928,11 @@ pub async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Resul
         return Ok(());
     }
 
-    tracing::info!("Starting download of model: {}", model.repo_id);
+    tracing::info!(
+        "Starting download of model: {} ({})",
+        model.name,
+        model.gguf_file
+    );
 
     // Create progress channel
     let (tx, mut rx) = tokio::sync::mpsc::channel::<DownloadProgress>(100);

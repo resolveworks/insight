@@ -31,6 +31,13 @@
 		};
 	}
 
+	interface ModelInfo {
+		id: string;
+		name: string;
+		description: string;
+		size_gb: number;
+	}
+
 	interface ModelStatus {
 		status: 'NotDownloaded' | 'Downloading' | 'Ready' | 'Failed';
 		path?: string;
@@ -56,7 +63,9 @@
 	let activeToolCalls = new SvelteMap<string, ToolCall>();
 	let error = $state<string | null>(null);
 
-	// Model download state
+	// Model selection and download state
+	let availableModels = $state<ModelInfo[]>([]);
+	let selectedModelId = $state<string | null>(null);
 	let modelStatus = $state<ModelStatus['status']>('NotDownloaded');
 	let downloadProgress = $state<DownloadProgress | null>(null);
 	let isCheckingModel = $state(true);
@@ -66,10 +75,24 @@
 	let unlistenDownloadComplete: UnlistenFn | undefined;
 	let messagesContainer: HTMLElement | undefined;
 
+	async function loadAvailableModels() {
+		try {
+			availableModels = await invoke<ModelInfo[]>('get_available_models');
+			if (availableModels.length > 0 && !selectedModelId) {
+				selectedModelId = availableModels[0].id;
+			}
+		} catch (e) {
+			console.error('Failed to load available models:', e);
+			error = `Failed to load models: ${e}`;
+		}
+	}
+
 	async function checkModelStatus() {
 		try {
 			isCheckingModel = true;
-			const status = await invoke<ModelStatus>('get_model_status');
+			const status = await invoke<ModelStatus>('get_model_status', {
+				modelId: selectedModelId,
+			});
 			modelStatus = status.status;
 		} catch (e) {
 			console.error('Failed to check model status:', e);
@@ -80,6 +103,8 @@
 	}
 
 	async function downloadModel() {
+		if (!selectedModelId) return;
+
 		try {
 			modelStatus = 'Downloading';
 			downloadProgress = null;
@@ -105,7 +130,7 @@
 				},
 			);
 
-			await invoke('download_model');
+			await invoke('download_model', { modelId: selectedModelId });
 		} catch (e) {
 			modelStatus = 'Failed';
 			error = `Download failed: ${e}`;
@@ -119,7 +144,9 @@
 		try {
 			isLoadingModel = true;
 			error = null;
-			conversationId = await invoke<string>('start_chat');
+			conversationId = await invoke<string>('start_chat', {
+				modelId: selectedModelId,
+			});
 
 			if (conversationId) {
 				unlistenAgent = await listen<AgentEvent>(
@@ -243,6 +270,7 @@
 	}
 
 	onMount(async () => {
+		await loadAvailableModels();
 		await checkModelStatus();
 		if (modelStatus === 'Ready') {
 			await startChat();
@@ -278,17 +306,37 @@
 			</div>
 		{:else if modelStatus === 'NotDownloaded' || modelStatus === 'Failed'}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center">
-					<div class="mb-4 text-lg text-slate-300">AI Model Required</div>
+				<div class="w-full max-w-md px-4 text-center">
+					<div class="mb-4 text-lg text-slate-300">Select AI Model</div>
 					<div class="mb-6 text-sm text-slate-400">
-						The chat assistant requires a language model to be downloaded (~7.6
-						GB)
+						Choose a model to download. Smaller models are faster but less
+						capable.
 					</div>
+
+					<div class="mb-6 space-y-2">
+						{#each availableModels as model (model.id)}
+							<button
+								onclick={() => {
+									selectedModelId = model.id;
+									checkModelStatus();
+								}}
+								class="w-full rounded-lg border p-3 text-left transition
+									{selectedModelId === model.id
+									? 'border-rose-500 bg-rose-900/30'
+									: 'border-slate-600 hover:border-slate-500'}"
+							>
+								<div class="font-medium text-slate-200">{model.name}</div>
+								<div class="text-sm text-slate-400">{model.description}</div>
+							</button>
+						{/each}
+					</div>
+
 					<button
 						onclick={downloadModel}
-						class="rounded-md bg-rose-600 px-6 py-3 font-medium text-white hover:bg-rose-700"
+						disabled={!selectedModelId}
+						class="rounded-md bg-rose-600 px-6 py-3 font-medium text-white hover:bg-rose-700 disabled:opacity-50"
 					>
-						Download Model
+						Download Selected Model
 					</button>
 					{#if modelStatus === 'Failed'}
 						<div class="mt-4 text-sm text-red-400">

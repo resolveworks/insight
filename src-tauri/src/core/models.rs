@@ -9,41 +9,70 @@ use hf_hub::Cache;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-/// Information about a model available for use
+/// Information about a GGUF model available for use
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// Unique identifier for this model
     pub id: String,
     /// Display name
     pub name: String,
-    /// HuggingFace repo ID (e.g., "microsoft/Phi-3.5-mini-instruct")
-    pub repo_id: String,
     /// Description for the user
     pub description: String,
     /// Approximate size in GB (for display)
     pub size_gb: f32,
+    /// HuggingFace repo ID containing GGUF files (e.g., "Qwen/Qwen3-8B-GGUF")
+    pub gguf_repo_id: String,
+    /// GGUF filename within the repo
+    pub gguf_file: String,
+    /// Repo ID for tokenizer (e.g., "Qwen/Qwen3-8B")
+    pub tokenizer_repo_id: String,
 }
-
-/// Files required for a text model
-const REQUIRED_FILES: &[&str] = &["config.json", "tokenizer.json", "tokenizer_config.json"];
-
-/// Optional files to download if present
-const OPTIONAL_FILES: &[&str] = &["generation_config.json"];
 
 /// Get the default model
 pub fn default_model() -> ModelInfo {
-    ModelInfo {
-        id: "phi-4-mini".to_string(),
-        name: "Phi 4 Mini".to_string(),
-        repo_id: "microsoft/Phi-4-mini-instruct".to_string(),
-        description: "Fast, capable 3.8B parameter model with 128K context".to_string(),
-        size_gb: 7.6,
-    }
+    available_models().into_iter().next().unwrap()
+}
+
+/// Get a model by ID
+pub fn get_model(id: &str) -> Option<ModelInfo> {
+    available_models().into_iter().find(|m| m.id == id)
 }
 
 /// Available models registry
 pub fn available_models() -> Vec<ModelInfo> {
-    vec![default_model()]
+    vec![
+        // Default: Qwen3-8B Q4_K_M - Best balance of size and quality
+        ModelInfo {
+            id: "qwen3-8b-q4km".to_string(),
+            name: "Qwen3 8B (Q4_K_M)".to_string(),
+            description: "Recommended. Fast 8B model with tool calling. ~5GB download.".to_string(),
+            size_gb: 5.0,
+            gguf_repo_id: "Qwen/Qwen3-8B-GGUF".to_string(),
+            gguf_file: "Qwen3-8B-Q4_K_M.gguf".to_string(),
+            tokenizer_repo_id: "Qwen/Qwen3-8B".to_string(),
+        },
+        // Smaller option for constrained systems
+        ModelInfo {
+            id: "qwen3-4b-q4km".to_string(),
+            name: "Qwen3 4B (Q4_K_M)".to_string(),
+            description: "Lighter model for systems with less memory. ~2.5GB download.".to_string(),
+            size_gb: 2.5,
+            gguf_repo_id: "Qwen/Qwen3-4B-GGUF".to_string(),
+            gguf_file: "Qwen3-4B-Q4_K_M.gguf".to_string(),
+            tokenizer_repo_id: "Qwen/Qwen3-4B".to_string(),
+        },
+        // Higher quality option
+        ModelInfo {
+            id: "qwen3-8b-q8".to_string(),
+            name: "Qwen3 8B (Q8_0)".to_string(),
+            description: "Higher quality 8-bit quantization. Better accuracy. ~8.5GB download."
+                .to_string(),
+            size_gb: 8.5,
+            gguf_repo_id: "Qwen/Qwen3-8B-GGUF".to_string(),
+            gguf_file: "Qwen3-8B-Q8_0.gguf".to_string(),
+            tokenizer_repo_id: "Qwen/Qwen3-8B".to_string(),
+        },
+    ]
 }
 
 /// Download progress event
@@ -178,67 +207,29 @@ impl ModelManager {
 
     /// Check if a model is fully downloaded
     pub fn is_downloaded(&self, model: &ModelInfo) -> bool {
-        let cache_repo = self.cache.model(model.repo_id.clone());
-
-        // Check required files
-        for file in REQUIRED_FILES {
-            if cache_repo.get(file).is_none() {
-                return false;
-            }
+        // Check GGUF file is present
+        let gguf_cache = self.cache.model(model.gguf_repo_id.clone());
+        if gguf_cache.get(&model.gguf_file).is_none() {
+            return false;
         }
 
-        // Check for at least one safetensors file
-        // We can't enumerate cache, so we check common patterns
-        cache_repo.get("model.safetensors").is_some()
-            || cache_repo.get("model-00001-of-00002.safetensors").is_some()
-            || cache_repo.get("pytorch_model.bin").is_some()
+        // Check tokenizer files
+        let tok_cache = self.cache.model(model.tokenizer_repo_id.clone());
+        tok_cache.get("tokenizer.json").is_some()
+            && tok_cache.get("tokenizer_config.json").is_some()
     }
 
     /// Get the cache path for a model (if downloaded)
     pub fn get_model_path(&self, model: &ModelInfo) -> Option<PathBuf> {
-        if self.is_downloaded(model) {
-            // Return the directory containing the model files
-            self.cache
-                .model(model.repo_id.clone())
-                .get("config.json")
-                .map(|p| p.parent().unwrap().to_path_buf())
-        } else {
-            None
-        }
-    }
-
-    /// Get paths to all model files (for LocalModelPaths)
-    pub async fn get_model_files(&self, model: &ModelInfo) -> Result<ModelFiles> {
-        let repo = self.api.model(model.repo_id.clone());
-
-        // Get repo info to find all files
-        let info = repo.info().await.context("Failed to get repo info")?;
-
-        let mut weight_files = Vec::new();
-        for sibling in &info.siblings {
-            if sibling.rfilename.ends_with(".safetensors") {
-                weight_files.push(sibling.rfilename.clone());
-            }
+        if !self.is_downloaded(model) {
+            return None;
         }
 
-        // Fall back to pytorch if no safetensors
-        if weight_files.is_empty() {
-            for sibling in &info.siblings {
-                if sibling.rfilename.ends_with(".bin")
-                    && sibling.rfilename.contains("pytorch_model")
-                {
-                    weight_files.push(sibling.rfilename.clone());
-                }
-            }
-        }
-
-        Ok(ModelFiles {
-            config: "config.json".to_string(),
-            tokenizer: "tokenizer.json".to_string(),
-            tokenizer_config: "tokenizer_config.json".to_string(),
-            generation_config: Some("generation_config.json".to_string()),
-            weights: weight_files,
-        })
+        // Return the directory containing the GGUF file
+        self.cache
+            .model(model.gguf_repo_id.clone())
+            .get(&model.gguf_file)
+            .map(|p| p.parent().unwrap().to_path_buf())
     }
 
     /// Download a model with progress tracking
@@ -247,25 +238,25 @@ impl ModelManager {
         model: &ModelInfo,
         progress_tx: mpsc::Sender<DownloadProgress>,
     ) -> Result<PathBuf> {
-        let repo = self.api.model(model.repo_id.clone());
-
-        // Get list of files to download
-        let files = self.get_model_files(model).await?;
-        let mut all_files: Vec<String> = REQUIRED_FILES.iter().map(|s| s.to_string()).collect();
-        all_files.extend(files.weights.clone());
-
-        // Add optional files if they exist in the repo
-        let info = repo.info().await?;
-        for optional in OPTIONAL_FILES {
-            if info.siblings.iter().any(|s| s.rfilename == *optional) {
-                all_files.push(optional.to_string());
-            }
-        }
+        // Files to download: (repo_id, filename)
+        let all_files = [
+            (model.gguf_repo_id.clone(), model.gguf_file.clone()),
+            (
+                model.tokenizer_repo_id.clone(),
+                "tokenizer.json".to_string(),
+            ),
+            (
+                model.tokenizer_repo_id.clone(),
+                "tokenizer_config.json".to_string(),
+            ),
+        ];
 
         let total_files = all_files.len();
-        let mut downloaded_paths = Vec::new();
+        let mut first_path: Option<PathBuf> = None;
 
-        for (idx, filename) in all_files.iter().enumerate() {
+        for (idx, (repo_id, filename)) in all_files.iter().enumerate() {
+            let repo = self.api.model(repo_id.clone());
+
             let shared = Arc::new(SharedProgress {
                 file: Mutex::new(filename.clone()),
                 downloaded: AtomicU64::new(0),
@@ -285,12 +276,13 @@ impl ModelManager {
                 .await
                 .with_context(|| format!("Failed to download {}", filename))?;
 
-            downloaded_paths.push(path);
+            if first_path.is_none() {
+                first_path = Some(path);
+            }
         }
 
-        // Return the directory containing the files
-        let model_dir = downloaded_paths
-            .first()
+        // Return the directory containing the GGUF file
+        let model_dir = first_path
             .context("No files downloaded")?
             .parent()
             .context("Invalid path")?
@@ -298,50 +290,6 @@ impl ModelManager {
 
         Ok(model_dir)
     }
-
-    /// Download model without progress (uses hf-hub's built-in caching)
-    pub async fn ensure_downloaded(&self, model: &ModelInfo) -> Result<PathBuf> {
-        let repo = self.api.model(model.repo_id.clone());
-
-        // Get list of files
-        let files = self.get_model_files(model).await?;
-
-        // Download required files (hf-hub caches automatically)
-        for file in REQUIRED_FILES {
-            repo.get(file)
-                .await
-                .with_context(|| format!("Failed to download {}", file))?;
-        }
-
-        // Download weight files
-        for weight_file in &files.weights {
-            repo.get(weight_file)
-                .await
-                .with_context(|| format!("Failed to download {}", weight_file))?;
-        }
-
-        // Download optional files if they exist
-        let info = repo.info().await?;
-        for optional in OPTIONAL_FILES {
-            if info.siblings.iter().any(|s| s.rfilename == *optional) {
-                let _ = repo.get(optional).await; // Ignore errors for optional files
-            }
-        }
-
-        // Return path to config.json's directory
-        let config_path = repo.get("config.json").await?;
-        Ok(config_path.parent().unwrap().to_path_buf())
-    }
-}
-
-/// Collection of paths to model files
-#[derive(Debug, Clone)]
-pub struct ModelFiles {
-    pub config: String,
-    pub tokenizer: String,
-    pub tokenizer_config: String,
-    pub generation_config: Option<String>,
-    pub weights: Vec<String>,
 }
 
 #[cfg(test)]
@@ -352,6 +300,23 @@ mod tests {
     fn test_available_models() {
         let models = available_models();
         assert!(!models.is_empty());
-        assert_eq!(models[0].id, "phi-4-mini");
+        assert_eq!(models[0].id, "qwen3-8b-q4km");
+    }
+
+    #[test]
+    fn test_get_model() {
+        let model = get_model("qwen3-4b-q4km");
+        assert!(model.is_some());
+        assert_eq!(model.unwrap().name, "Qwen3 4B (Q4_K_M)");
+
+        let missing = get_model("nonexistent");
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_default_model() {
+        let model = default_model();
+        assert_eq!(model.id, "qwen3-8b-q4km");
+        assert!(!model.gguf_file.is_empty());
     }
 }

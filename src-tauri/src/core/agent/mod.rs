@@ -3,34 +3,27 @@ pub mod tools;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use mistralrs::{
-    Model, PagedAttentionMetaBuilder, RequestBuilder, Response, TextMessageRole, TextModelBuilder,
+    GgufModelBuilder, Model, PagedAttentionMetaBuilder, RequestBuilder, TextMessageRole, Tool,
+    ToolCallResponse, ToolChoice,
 };
 
-pub use tools::{execute_tool, get_tool_definitions, ToolCall, ToolDefinition, ToolResult};
+pub use tools::{
+    execute_tool, get_mistralrs_tools, get_tool_definitions, ToolCall, ToolDefinition, ToolResult,
+};
 
-use super::models;
+use super::models::ModelInfo;
 
 /// System prompt for the agent
 const SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists analyze documents.
 You have access to a document collection that you can search and read.
 
-Available tools:
-- search: Search for documents by query. Returns document names, IDs, and snippets.
-- read_document: Read the full text of a document by its ID.
-
-Always use the search tool first to find relevant documents, then read specific
-documents to get detailed information. Cite document names when providing information.
-
-When you want to call a tool, respond with a JSON object in this exact format:
-{"tool": "tool_name", "arguments": {"arg1": "value1"}}
-
-Only output one tool call at a time. After receiving tool results, you can call another tool or provide your final answer."#;
+Always use the search tool first to find relevant documents, then read specific documents to get detailed information. Cite document names when providing information."#;
 
 /// Wrapper around mistral.rs Model
 pub struct AgentModel {
@@ -38,21 +31,22 @@ pub struct AgentModel {
 }
 
 impl AgentModel {
-    /// Load a model from local cache
+    /// Load a GGUF model from local cache
     ///
-    /// The model must be downloaded first using ModelManager::download_model
-    /// or ModelManager::ensure_downloaded.
-    pub async fn load(cache_dir: &Path) -> Result<Self> {
-        let model_info = models::default_model();
-
-        // Build model using our cache directory
-        // mistralrs will find the already-downloaded files in the HF cache format
-        let model = TextModelBuilder::new(&model_info.repo_id)
-            .from_hf_cache_pathf(cache_dir.to_path_buf())
-            .with_logging()
-            .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())?
-            .build()
-            .await?;
+    /// The model must be downloaded first using ModelManager::download_model.
+    /// The model_path should point to the directory containing the GGUF file.
+    pub async fn load(model_path: &Path, model_info: &ModelInfo) -> Result<Self> {
+        // GgufModelBuilder takes a local directory path and filename(s)
+        let model = GgufModelBuilder::new(
+            model_path.to_string_lossy().to_string(),
+            vec![model_info.gguf_file.clone()],
+        )
+        .with_tok_model_id(&model_info.tokenizer_repo_id)
+        .with_logging()
+        .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())?
+        .build()
+        .await
+        .context("Failed to load GGUF model")?;
 
         Ok(Self {
             model: Arc::new(model),
@@ -80,8 +74,12 @@ pub enum MessageRole {
 pub struct Message {
     pub role: MessageRole,
     pub content: String,
+    /// For Tool role: the ID of the tool call this is a response to
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// For Assistant role: tool calls made by the assistant
+    #[serde(skip)]
+    pub tool_calls: Option<Vec<ToolCallResponse>>,
 }
 
 /// A conversation with message history
@@ -100,6 +98,7 @@ impl Conversation {
                 role: MessageRole::System,
                 content: SYSTEM_PROMPT.to_string(),
                 tool_call_id: None,
+                tool_calls: None,
             }],
             created_at: chrono::Utc::now().to_rfc3339(),
         }
@@ -110,6 +109,7 @@ impl Conversation {
             role: MessageRole::User,
             content,
             tool_call_id: None,
+            tool_calls: None,
         });
     }
 
@@ -118,6 +118,20 @@ impl Conversation {
             role: MessageRole::Assistant,
             content,
             tool_call_id: None,
+            tool_calls: None,
+        });
+    }
+
+    pub fn add_assistant_message_with_tool_calls(
+        &mut self,
+        content: String,
+        tool_calls: Vec<ToolCallResponse>,
+    ) {
+        self.messages.push(Message {
+            role: MessageRole::Assistant,
+            content,
+            tool_call_id: None,
+            tool_calls: Some(tool_calls),
         });
     }
 
@@ -126,6 +140,7 @@ impl Conversation {
             role: MessageRole::Tool,
             content,
             tool_call_id: Some(tool_call_id),
+            tool_calls: None,
         });
     }
 }
@@ -156,7 +171,7 @@ pub enum AgentEvent {
 /// Maximum number of tool call iterations
 const MAX_ITERATIONS: usize = 10;
 
-/// Run the agent loop
+/// Run the agent loop with structured tool calling
 pub async fn run_agent_loop(
     model: &Arc<Model>,
     conversation: &mut Conversation,
@@ -167,110 +182,88 @@ pub async fn run_agent_loop(
 ) -> Result<()> {
     conversation.add_user_message(user_message);
 
+    // Get tools for this session
+    let tools = get_mistralrs_tools();
+
     for _iteration in 0..MAX_ITERATIONS {
         if cancel_token.is_cancelled() {
             return Ok(());
         }
 
-        // Build request from conversation
-        let mut request = RequestBuilder::new();
+        // Build request from conversation with tools
+        let request = build_request_from_conversation(conversation, &tools);
 
-        for msg in &conversation.messages {
-            let role = match msg.role {
-                MessageRole::System => TextMessageRole::System,
-                MessageRole::User => TextMessageRole::User,
-                MessageRole::Assistant => TextMessageRole::Assistant,
-                MessageRole::Tool => TextMessageRole::User, // Tool results sent as user messages
-            };
-            request = request.add_message(role, &msg.content);
-        }
+        // Use non-streaming request for tool calling (more reliable)
+        // Tool calls need to be complete before execution
+        let response = model.send_chat_request(request).await?;
 
-        // Send streaming request
-        let mut stream = model.stream_chat_request(request).await?;
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No response from model"))?;
 
-        // Collect response
-        let mut full_response = String::new();
+        let message = &choice.message;
+        let content = message.content.clone().unwrap_or_default();
 
-        while let Some(response) = stream.next().await {
-            if cancel_token.is_cancelled() {
-                return Ok(());
-            }
-
-            match response {
-                Response::Chunk(chunk) => {
-                    for choice in chunk.choices {
-                        if let Some(delta) = choice.delta.content.as_ref() {
-                            full_response.push_str(delta);
-                            let _ = event_tx
-                                .send(AgentEvent::TextDelta {
-                                    content: delta.clone(),
-                                })
-                                .await;
-                        }
-                    }
-                }
-                Response::Done(_) => break,
-                Response::InternalError(e) => {
-                    let _ = event_tx
-                        .send(AgentEvent::Error {
-                            message: e.to_string(),
-                        })
-                        .await;
-                    return Err(anyhow::anyhow!("Model error: {}", e));
-                }
-                Response::ValidationError(e) => {
-                    let _ = event_tx
-                        .send(AgentEvent::Error {
-                            message: e.to_string(),
-                        })
-                        .await;
-                    return Err(anyhow::anyhow!("Validation error: {}", e));
-                }
-                Response::ModelError(msg, _) | Response::CompletionModelError(msg, _) => {
-                    let _ = event_tx
-                        .send(AgentEvent::Error {
-                            message: msg.clone(),
-                        })
-                        .await;
-                    return Err(anyhow::anyhow!("Model error: {}", msg));
-                }
-                // Ignore other response types (completions, embeddings, speech, etc.)
-                _ => {}
-            }
-        }
-
-        conversation.add_assistant_message(full_response.clone());
-
-        // Check if the response contains a tool call
-        if let Some(tool_call) = parse_tool_call(&full_response) {
-            // Emit tool call start
+        // Emit text content if present
+        if !content.is_empty() {
             let _ = event_tx
-                .send(AgentEvent::ToolCallStart {
-                    id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    arguments: tool_call.arguments.clone(),
+                .send(AgentEvent::TextDelta {
+                    content: content.clone(),
                 })
                 .await;
-
-            // Execute tool
-            let result = execute_tool(&tool_call, state).await;
-
-            // Emit tool result
-            let _ = event_tx
-                .send(AgentEvent::ToolCallResult {
-                    id: result.tool_call_id.clone(),
-                    content: result.content.clone(),
-                    is_error: result.is_error,
-                })
-                .await;
-
-            // Add tool result to conversation
-            conversation.add_tool_result(result.tool_call_id, result.content);
-        } else {
-            // No tool call, we're done
-            let _ = event_tx.send(AgentEvent::Done).await;
-            return Ok(());
         }
+
+        // Check for tool calls
+        if let Some(ref tool_calls) = message.tool_calls {
+            if !tool_calls.is_empty() {
+                // Store assistant message with tool calls for conversation history
+                conversation
+                    .add_assistant_message_with_tool_calls(content.clone(), tool_calls.clone());
+
+                // Execute each tool call
+                for called in tool_calls {
+                    let tool_call = ToolCall {
+                        id: called.id.clone(),
+                        name: called.function.name.clone(),
+                        arguments: serde_json::from_str(&called.function.arguments)
+                            .unwrap_or(serde_json::json!({})),
+                    };
+
+                    // Emit tool call start
+                    let _ = event_tx
+                        .send(AgentEvent::ToolCallStart {
+                            id: tool_call.id.clone(),
+                            name: tool_call.name.clone(),
+                            arguments: tool_call.arguments.clone(),
+                        })
+                        .await;
+
+                    // Execute tool
+                    let result = execute_tool(&tool_call, state).await;
+
+                    // Emit tool result
+                    let _ = event_tx
+                        .send(AgentEvent::ToolCallResult {
+                            id: result.tool_call_id.clone(),
+                            content: result.content.clone(),
+                            is_error: result.is_error,
+                        })
+                        .await;
+
+                    // Add tool result to conversation
+                    conversation.add_tool_result(result.tool_call_id, result.content);
+                }
+
+                // Continue loop to let model process tool results
+                continue;
+            }
+        }
+
+        // No tool calls - add regular assistant message and we're done
+        conversation.add_assistant_message(content);
+        let _ = event_tx.send(AgentEvent::Done).await;
+        return Ok(());
     }
 
     // Max iterations reached
@@ -283,39 +276,41 @@ pub async fn run_agent_loop(
     Ok(())
 }
 
-/// Parse a tool call from the model's response
-fn parse_tool_call(response: &str) -> Option<ToolCall> {
-    // Look for JSON object with "tool" field
-    // Try to find a JSON object in the response
-    let trimmed = response.trim();
+/// Build a RequestBuilder from the conversation history
+fn build_request_from_conversation(conversation: &Conversation, tools: &[Tool]) -> RequestBuilder {
+    let mut request = RequestBuilder::new()
+        .set_tools(tools.to_vec())
+        .set_tool_choice(ToolChoice::Auto);
 
-    // Try parsing the entire response as JSON first
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return extract_tool_call_from_json(&v);
-    }
-
-    // Try to find JSON embedded in the response
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            if end > start {
-                let json_str = &trimmed[start..=end];
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    return extract_tool_call_from_json(&v);
+    for msg in &conversation.messages {
+        match msg.role {
+            MessageRole::System => {
+                request = request.add_message(TextMessageRole::System, &msg.content);
+            }
+            MessageRole::User => {
+                request = request.add_message(TextMessageRole::User, &msg.content);
+            }
+            MessageRole::Assistant => {
+                if let Some(ref tool_calls) = msg.tool_calls {
+                    // Assistant message with tool calls
+                    request = request.add_message_with_tool_call(
+                        TextMessageRole::Assistant,
+                        msg.content.clone(),
+                        tool_calls.clone(),
+                    );
+                } else {
+                    // Regular assistant message
+                    request = request.add_message(TextMessageRole::Assistant, &msg.content);
+                }
+            }
+            MessageRole::Tool => {
+                // Tool result message
+                if let Some(ref id) = msg.tool_call_id {
+                    request = request.add_tool_message(msg.content.clone(), id.clone());
                 }
             }
         }
     }
 
-    None
-}
-
-fn extract_tool_call_from_json(v: &serde_json::Value) -> Option<ToolCall> {
-    let tool_name = v.get("tool")?.as_str()?;
-    let arguments = v.get("arguments").cloned().unwrap_or(serde_json::json!({}));
-
-    Some(ToolCall {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: tool_name.to_string(),
-        arguments,
-    })
+    request
 }

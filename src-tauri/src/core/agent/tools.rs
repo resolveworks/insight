@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
+use mistralrs::{Function, Tool, ToolType};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::core::search;
 use crate::core::AppState;
@@ -28,7 +31,7 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// Get tool definitions for the LLM
+/// Get tool definitions for the LLM (legacy format)
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -65,6 +68,63 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
     ]
+}
+
+/// Get tools in mistralrs format for structured tool calling
+pub fn get_mistralrs_tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            tp: ToolType::Function,
+            function: Function {
+                name: "search".to_string(),
+                description: Some(
+                    "Search documents in the collection. Returns document names, IDs, and relevant snippets. Use this to find documents related to a topic.".to_string()
+                ),
+                parameters: Some(json_to_hashmap(json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query"
+                        },
+                        "collection_ids": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional: filter to specific collection IDs"
+                        }
+                    },
+                    "required": ["query"]
+                }))),
+            },
+        },
+        Tool {
+            tp: ToolType::Function,
+            function: Function {
+                name: "read_document".to_string(),
+                description: Some(
+                    "Read the full text content of a document by its ID. Use this after searching to get the complete text of a relevant document.".to_string()
+                ),
+                parameters: Some(json_to_hashmap(json!({
+                    "type": "object",
+                    "properties": {
+                        "document_id": {
+                            "type": "string",
+                            "description": "The document ID to read"
+                        }
+                    },
+                    "required": ["document_id"]
+                }))),
+            },
+        },
+    ]
+}
+
+/// Convert a serde_json::Value to HashMap<String, Value> for mistralrs
+fn json_to_hashmap(value: Value) -> HashMap<String, Value> {
+    match value {
+        Value::Object(map) => map.into_iter().collect(),
+        _ => HashMap::new(),
+    }
 }
 
 /// Execute a tool call and return the result
