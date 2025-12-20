@@ -845,3 +845,78 @@ pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
     tracing::info!("LLM model unloaded");
     Ok(())
 }
+
+// ============================================================================
+// Model Management Commands
+// ============================================================================
+
+use crate::core::models::{self, DownloadProgress, ModelInfo, ModelManager, ModelStatus};
+
+/// Get list of available models
+#[tauri::command]
+pub async fn get_available_models() -> Result<Vec<ModelInfo>, String> {
+    Ok(models::available_models())
+}
+
+/// Get download status for the default model
+#[tauri::command]
+pub async fn get_model_status(state: State<'_, AppState>) -> Result<ModelStatus, String> {
+    let manager = ModelManager::new(state.config.models_dir.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let model = models::default_model();
+
+    if manager.is_downloaded(&model) {
+        let path = manager
+            .get_model_path(&model)
+            .ok_or("Model path not found")?;
+        Ok(ModelStatus::Ready { path })
+    } else {
+        Ok(ModelStatus::NotDownloaded)
+    }
+}
+
+/// Download the default model with progress events
+#[tauri::command]
+pub async fn download_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let manager = ModelManager::new(state.config.models_dir.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let model = models::default_model();
+
+    // Check if already downloaded
+    if manager.is_downloaded(&model) {
+        tracing::info!("Model {} is already downloaded", model.id);
+        return Ok(());
+    }
+
+    tracing::info!("Starting download of model: {}", model.repo_id);
+
+    // Create progress channel
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<DownloadProgress>(100);
+
+    // Spawn event forwarder
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            if let Err(e) = app_handle.emit("model-download-progress", &progress) {
+                tracing::error!("Failed to emit download progress: {}", e);
+            }
+        }
+    });
+
+    // Download with progress
+    manager
+        .download_model(&model, tx)
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    tracing::info!("Model download complete: {}", model.id);
+
+    // Emit completion event
+    let _ = app.emit("model-download-complete", &model);
+
+    Ok(())
+}

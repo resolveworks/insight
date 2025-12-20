@@ -68,6 +68,10 @@ pub fn run() {
             commands::send_message,
             commands::cancel_generation,
             commands::unload_model,
+            // Model management commands
+            commands::get_available_models,
+            commands::get_model_status,
+            commands::download_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

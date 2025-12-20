@@ -31,6 +31,22 @@
 		};
 	}
 
+	interface ModelStatus {
+		status: 'NotDownloaded' | 'Downloading' | 'Ready' | 'Failed';
+		path?: string;
+		progress?: DownloadProgress;
+		error?: string;
+	}
+
+	interface DownloadProgress {
+		file: string;
+		downloaded: number;
+		total: number;
+		overall_progress: number;
+		file_index: number;
+		total_files: number;
+	}
+
 	let conversationId = $state<string | null>(null);
 	let messages = $state<ChatMessage[]>([]);
 	let inputValue = $state('');
@@ -40,8 +56,64 @@
 	let activeToolCalls = new SvelteMap<string, ToolCall>();
 	let error = $state<string | null>(null);
 
+	// Model download state
+	let modelStatus = $state<ModelStatus['status']>('NotDownloaded');
+	let downloadProgress = $state<DownloadProgress | null>(null);
+	let isCheckingModel = $state(true);
+
 	let unlistenAgent: UnlistenFn | undefined;
+	let unlistenDownloadProgress: UnlistenFn | undefined;
+	let unlistenDownloadComplete: UnlistenFn | undefined;
 	let messagesContainer: HTMLElement | undefined;
+
+	async function checkModelStatus() {
+		try {
+			isCheckingModel = true;
+			const status = await invoke<ModelStatus>('get_model_status');
+			modelStatus = status.status;
+		} catch (e) {
+			console.error('Failed to check model status:', e);
+			error = `Failed to check model status: ${e}`;
+		} finally {
+			isCheckingModel = false;
+		}
+	}
+
+	async function downloadModel() {
+		try {
+			modelStatus = 'Downloading';
+			downloadProgress = null;
+			error = null;
+
+			// Set up progress listener
+			unlistenDownloadProgress = await listen<DownloadProgress>(
+				'model-download-progress',
+				(event) => {
+					downloadProgress = event.payload;
+				},
+			);
+
+			unlistenDownloadComplete = await listen(
+				'model-download-complete',
+				async () => {
+					modelStatus = 'Ready';
+					downloadProgress = null;
+					unlistenDownloadProgress?.();
+					unlistenDownloadComplete?.();
+					// Start chat now that model is downloaded
+					await startChat();
+				},
+			);
+
+			await invoke('download_model');
+		} catch (e) {
+			modelStatus = 'Failed';
+			error = `Download failed: ${e}`;
+			console.error('Failed to download model:', e);
+			unlistenDownloadProgress?.();
+			unlistenDownloadComplete?.();
+		}
+	}
 
 	async function startChat() {
 		try {
@@ -170,13 +242,26 @@
 		}
 	}
 
-	onMount(() => {
-		startChat();
+	onMount(async () => {
+		await checkModelStatus();
+		if (modelStatus === 'Ready') {
+			await startChat();
+		}
 	});
 
 	onDestroy(() => {
 		unlistenAgent?.();
+		unlistenDownloadProgress?.();
+		unlistenDownloadComplete?.();
 	});
+
+	function formatBytes(bytes: number): string {
+		if (bytes === 0) return '0 B';
+		const k = 1024;
+		const sizes = ['B', 'KB', 'MB', 'GB'];
+		const i = Math.floor(Math.log(bytes) / Math.log(k));
+		return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -185,11 +270,66 @@
 		bind:this={messagesContainer}
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
-		{#if isLoadingModel}
+		{#if isCheckingModel}
+			<div class="flex h-full items-center justify-center">
+				<div class="text-center text-slate-400">
+					<div class="mb-2 text-lg">Checking model status...</div>
+				</div>
+			</div>
+		{:else if modelStatus === 'NotDownloaded' || modelStatus === 'Failed'}
+			<div class="flex h-full items-center justify-center">
+				<div class="text-center">
+					<div class="mb-4 text-lg text-slate-300">AI Model Required</div>
+					<div class="mb-6 text-sm text-slate-400">
+						The chat assistant requires a language model to be downloaded (~7.6
+						GB)
+					</div>
+					<button
+						onclick={downloadModel}
+						class="rounded-md bg-rose-600 px-6 py-3 font-medium text-white hover:bg-rose-700"
+					>
+						Download Model
+					</button>
+					{#if modelStatus === 'Failed'}
+						<div class="mt-4 text-sm text-red-400">
+							Previous download failed. Click to retry.
+						</div>
+					{/if}
+				</div>
+			</div>
+		{:else if modelStatus === 'Downloading'}
+			<div class="flex h-full items-center justify-center">
+				<div class="w-full max-w-md text-center">
+					<div class="mb-4 text-lg text-slate-300">Downloading Model</div>
+					{#if downloadProgress}
+						<div class="mb-2 text-sm text-slate-400">
+							File {downloadProgress.file_index} of {downloadProgress.total_files}:
+							{downloadProgress.file.split('/').pop()}
+						</div>
+						<div
+							class="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-700"
+						>
+							<div
+								class="h-full bg-rose-500 transition-all duration-300"
+								style="width: {downloadProgress.overall_progress * 100}%"
+							></div>
+						</div>
+						<div class="text-xs text-slate-500">
+							{formatBytes(downloadProgress.downloaded)} / {formatBytes(
+								downloadProgress.total,
+							)}
+							({Math.round(downloadProgress.overall_progress * 100)}% overall)
+						</div>
+					{:else}
+						<div class="text-sm text-slate-400">Starting download...</div>
+					{/if}
+				</div>
+			</div>
+		{:else if isLoadingModel}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-slate-400">
 					<div class="mb-2 text-lg">Loading model...</div>
-					<div class="text-sm">This may take a moment on first run</div>
+					<div class="text-sm">This may take a moment</div>
 				</div>
 			</div>
 		{:else if messages.length === 0}
@@ -289,7 +429,7 @@
 				bind:value={inputValue}
 				onkeydown={handleKeydown}
 				placeholder="Ask about your documents..."
-				disabled={isGenerating || isLoadingModel}
+				disabled={isGenerating || isLoadingModel || modelStatus !== 'Ready'}
 				class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2
                text-slate-100 placeholder-slate-500 focus:border-rose-500
                focus:outline-none disabled:opacity-50"
@@ -304,7 +444,9 @@
 			{:else}
 				<button
 					onclick={sendMessage}
-					disabled={!inputValue.trim() || isLoadingModel}
+					disabled={!inputValue.trim() ||
+						isLoadingModel ||
+						modelStatus !== 'Ready'}
 					class="rounded-md bg-rose-600 px-4 py-2 font-medium text-white
                  hover:bg-rose-700 disabled:opacity-50"
 				>

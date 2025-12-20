@@ -47,6 +47,7 @@ rand = "0.8"
 
 # LLM inference
 mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs" }
+hf-hub = { version = "0.4", features = ["tokio"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 

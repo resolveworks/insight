@@ -14,8 +14,7 @@ use mistralrs::{
 
 pub use tools::{execute_tool, get_tool_definitions, ToolCall, ToolDefinition, ToolResult};
 
-/// Default model to use
-const DEFAULT_MODEL_ID: &str = "microsoft/Phi-3.5-mini-instruct";
+use super::models;
 
 /// System prompt for the agent
 const SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists analyze documents.
@@ -39,9 +38,17 @@ pub struct AgentModel {
 }
 
 impl AgentModel {
-    /// Load a model from Hugging Face Hub
-    pub async fn load(_cache_dir: &Path) -> Result<Self> {
-        let model = TextModelBuilder::new(DEFAULT_MODEL_ID)
+    /// Load a model from local cache
+    ///
+    /// The model must be downloaded first using ModelManager::download_model
+    /// or ModelManager::ensure_downloaded.
+    pub async fn load(cache_dir: &Path) -> Result<Self> {
+        let model_info = models::default_model();
+
+        // Build model using our cache directory
+        // mistralrs will find the already-downloaded files in the HF cache format
+        let model = TextModelBuilder::new(&model_info.repo_id)
+            .from_hf_cache_pathf(cache_dir.to_path_buf())
             .with_logging()
             .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())?
             .build()
