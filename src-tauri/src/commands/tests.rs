@@ -14,6 +14,7 @@ async fn create_test_state(temp_dir: &std::path::Path) -> AppState {
         iroh_dir: temp_dir.join("iroh"),
         search_dir: temp_dir.join("search"),
         models_dir: temp_dir.join("models"),
+        conversations_dir: temp_dir.join("conversations"),
     };
     config.ensure_dirs().unwrap();
 

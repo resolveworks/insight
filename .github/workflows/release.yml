@@ -62,7 +62,8 @@ jobs:
         if: matrix.cuda
         uses: Jimver/cuda-toolkit@v0.2.29
         with:
-          cuda: '12.5.0'
+          cuda: '13.0.2'
+          method: network
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

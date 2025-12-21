@@ -1,12 +1,10 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use iroh_blobs::store::fs::Store as BlobStore;
-use iroh_blobs::store::{Map, MapEntry, Store as BlobStoreTrait};
-use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
+use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::Hash;
 use iroh_docs::store::fs::Store as DocStore;
 use iroh_docs::{Author, NamespaceId, NamespaceSecret};
-use iroh_io::AsyncSliceReader;
 use serde::{Deserialize, Serialize};
 
 /// Collection metadata stored in iroh-docs under `_collection` key
@@ -31,7 +29,7 @@ pub struct DocumentMetadata {
 /// Storage layer using iroh for P2P content-addressed storage
 pub struct Storage {
     /// Content-addressed blob storage (PDFs, extracted text)
-    pub blobs: BlobStore,
+    pub blobs: FsStore,
     /// CRDT document store (metadata, collections)
     pub docs: DocStore,
     /// Local author for writing entries
@@ -46,7 +44,7 @@ impl Storage {
         let blobs_path = path.join("blobs");
         let docs_path = path.join("docs.redb");
 
-        let blobs = BlobStore::load(&blobs_path)
+        let blobs = FsStore::load(&blobs_path)
             .await
             .context("Failed to open blob store")?;
 
@@ -58,7 +56,7 @@ impl Storage {
             if let Some(existing) = authors.next() {
                 existing?
             } else {
-                docs.new_author(&mut rand::thread_rng())?
+                docs.new_author(&mut rand::rng())?
             }
         };
 
@@ -78,36 +76,30 @@ impl Storage {
     /// Store bytes in blob storage and return the hash
     /// Creates a permanent tag to prevent garbage collection
     pub async fn store_blob(&self, data: &[u8]) -> Result<Hash> {
-        let bytes = bytes::Bytes::copy_from_slice(data);
-        let temp_tag = self.blobs.import_bytes(bytes, BlobFormat::Raw).await?;
-        let hash = *temp_tag.hash();
+        // add_slice returns a TempTag that will keep the blob alive
+        let tag = self.blobs.add_slice(data).await?;
+        let hash = tag.hash;
 
         // Create a permanent tag so the blob isn't garbage collected
         // Use the hash hex as the tag name
-        let hash_and_format = HashAndFormat::raw(hash);
-        let tag_name = iroh_blobs::Tag::from(hash.to_string());
-        self.blobs.set_tag(tag_name, hash_and_format).await?;
+        self.blobs
+            .tags()
+            .set(hash.to_string(), tag.hash_and_format())
+            .await?;
 
         Ok(hash)
     }
 
     /// Get bytes from blob storage by hash
     pub async fn get_blob(&self, hash: &Hash) -> Result<Option<Vec<u8>>> {
-        let entry = match self.blobs.get(hash).await? {
-            Some(e) => e,
-            None => return Ok(None),
-        };
-
-        if !entry.is_complete() {
+        // Check if blob exists and is complete
+        if !self.blobs.has(*hash).await? {
             return Ok(None);
         }
 
-        let size = entry.size().value();
-        // Use inherent data_reader method which returns DataReader directly
-        let mut reader = entry.data_reader();
-        let data = reader.read_at(0, size as usize).await?;
-
-        Ok(Some(data.to_vec()))
+        // get_bytes returns the full blob content
+        let bytes = self.blobs.get_bytes(*hash).await?;
+        Ok(Some(bytes.to_vec()))
     }
 
     /// Create a new collection (namespace) with the given name
@@ -126,7 +118,7 @@ impl Storage {
         let len = metadata_bytes.len() as u64;
 
         // Now create the namespace and store the reference
-        let namespace_secret = NamespaceSecret::new(&mut rand::thread_rng());
+        let namespace_secret = NamespaceSecret::new(&mut rand::rng());
         let mut replica = self.docs.new_replica(namespace_secret)?;
 
         // Store reference in iroh-docs under `_collection` key

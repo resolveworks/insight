@@ -10,8 +10,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use mistralrs::{
-    CalledFunction, GgufModelBuilder, Model, PagedAttentionMetaBuilder, RequestBuilder,
-    TextMessageRole, Tool, ToolCallResponse, ToolCallType, ToolChoice,
+    CalledFunction, ChatCompletionChunkResponse, Delta, GgufModelBuilder, Model,
+    PagedAttentionMetaBuilder, RequestBuilder, Response, TextMessageRole, Tool, ToolCallResponse,
+    ToolCallType, ToolChoice,
 };
 
 pub use tools::{
@@ -268,11 +269,10 @@ pub async fn run_agent_loop(
         // Build request from conversation with tools
         let request = build_request_from_conversation(conversation, &tools);
 
-        // Use non-streaming request for tool calling (more reliable)
-        // Tool calls need to be complete before execution
-        debug!("Sending request to model");
-        let response = match model.send_chat_request(request).await {
-            Ok(r) => r,
+        // Use streaming request for responsive UI
+        debug!("Sending streaming request to model");
+        let mut stream = match model.stream_chat_request(request).await {
+            Ok(s) => s,
             Err(e) => {
                 tracing::error!(
                     conversation_id = %conversation.id,
@@ -285,99 +285,146 @@ pub async fn run_agent_loop(
             }
         };
 
-        let choice = response
-            .choices
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No response from model"))?;
+        // Accumulate content and tool calls as we stream
+        let mut content = String::new();
+        let mut tool_calls: Vec<ToolCallResponse> = Vec::new();
 
-        let message = &choice.message;
-        let content = message.content.clone().unwrap_or_default();
-        let tool_call_count = message.tool_calls.as_ref().map(|tc| tc.len()).unwrap_or(0);
+        // Stream response chunks
+        while let Some(chunk) = stream.next().await {
+            if cancel_token.is_cancelled() {
+                info!(conversation_id = %conversation.id, "Agent loop cancelled during streaming");
+                return Ok(());
+            }
 
+            match chunk {
+                Response::Chunk(ChatCompletionChunkResponse { choices, .. }) => {
+                    if let Some(choice) = choices.first() {
+                        let Delta {
+                            content: delta_content,
+                            tool_calls: delta_tool_calls,
+                            ..
+                        } = &choice.delta;
+
+                        // Stream text content immediately
+                        if let Some(text) = delta_content {
+                            if !text.is_empty() {
+                                content.push_str(text);
+                                let _ = event_tx
+                                    .send(AgentEvent::TextDelta {
+                                        content: text.clone(),
+                                    })
+                                    .await;
+                            }
+                        }
+
+                        // Accumulate tool calls
+                        if let Some(calls) = delta_tool_calls {
+                            for call in calls {
+                                // Merge or append tool call data
+                                if let Some(existing) =
+                                    tool_calls.iter_mut().find(|tc| tc.index == call.index)
+                                {
+                                    // Append to existing tool call's arguments
+                                    existing
+                                        .function
+                                        .arguments
+                                        .push_str(&call.function.arguments);
+                                } else {
+                                    tool_calls.push(call.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                Response::Done(_) => {
+                    debug!("Streaming complete");
+                    break;
+                }
+                Response::ModelError(msg, _) => {
+                    tracing::error!(error = %msg, "Model error during streaming");
+                    let _ = event_tx
+                        .send(AgentEvent::Error {
+                            message: msg.clone(),
+                        })
+                        .await;
+                    return Err(anyhow::anyhow!("Model error: {}", msg));
+                }
+                _ => {}
+            }
+        }
+
+        let tool_call_count = tool_calls.len();
         debug!(
             content_len = content.len(),
             tool_calls = tool_call_count,
             "Received model response"
         );
 
-        // Emit text content if present
-        if !content.is_empty() {
-            debug!(content_len = content.len(), "Emitting text delta");
-            let _ = event_tx
-                .send(AgentEvent::TextDelta {
-                    content: content.clone(),
-                })
-                .await;
-        }
-
         // Check for tool calls
-        if let Some(ref tool_calls) = message.tool_calls {
-            if !tool_calls.is_empty() {
-                info!(tool_count = tool_calls.len(), "Model requested tool calls");
+        if !tool_calls.is_empty() {
+            info!(tool_count = tool_calls.len(), "Model requested tool calls");
 
-                // Store assistant message with tool calls for conversation history
-                conversation
-                    .add_assistant_message_with_tool_calls(content.clone(), tool_calls.clone());
+            // Store assistant message with tool calls for conversation history
+            conversation.add_assistant_message_with_tool_calls(content.clone(), tool_calls.clone());
 
-                // Execute each tool call
-                for called in tool_calls {
-                    let tool_call = ToolCall {
-                        id: called.id.clone(),
-                        name: called.function.name.clone(),
-                        arguments: serde_json::from_str(&called.function.arguments)
-                            .unwrap_or(serde_json::json!({})),
-                    };
+            // Execute each tool call
+            for called in &tool_calls {
+                let tool_call = ToolCall {
+                    id: called.id.clone(),
+                    name: called.function.name.clone(),
+                    arguments: serde_json::from_str(&called.function.arguments)
+                        .unwrap_or(serde_json::json!({})),
+                };
 
-                    info!(
+                info!(
+                    tool_name = %tool_call.name,
+                    tool_id = %tool_call.id,
+                    "Executing tool"
+                );
+                debug!(arguments = %tool_call.arguments, "Tool arguments");
+
+                // Emit tool call start
+                let _ = event_tx
+                    .send(AgentEvent::ToolCallStart {
+                        id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        arguments: tool_call.arguments.clone(),
+                    })
+                    .await;
+
+                // Execute tool
+                let result = execute_tool(&tool_call, state).await;
+
+                if result.is_error {
+                    warn!(
                         tool_name = %tool_call.name,
-                        tool_id = %tool_call.id,
-                        "Executing tool"
+                        error = %result.content,
+                        "Tool execution failed"
                     );
-                    debug!(arguments = %tool_call.arguments, "Tool arguments");
-
-                    // Emit tool call start
-                    let _ = event_tx
-                        .send(AgentEvent::ToolCallStart {
-                            id: tool_call.id.clone(),
-                            name: tool_call.name.clone(),
-                            arguments: tool_call.arguments.clone(),
-                        })
-                        .await;
-
-                    // Execute tool
-                    let result = execute_tool(&tool_call, state).await;
-
-                    if result.is_error {
-                        warn!(
-                            tool_name = %tool_call.name,
-                            error = %result.content,
-                            "Tool execution failed"
-                        );
-                    } else {
-                        debug!(
-                            tool_name = %tool_call.name,
-                            result_len = result.content.len(),
-                            "Tool execution succeeded"
-                        );
-                    }
-
-                    // Emit tool result
-                    let _ = event_tx
-                        .send(AgentEvent::ToolCallResult {
-                            id: result.tool_call_id.clone(),
-                            content: result.content.clone(),
-                            is_error: result.is_error,
-                        })
-                        .await;
-
-                    // Add tool result to conversation
-                    conversation.add_tool_result(result.tool_call_id, result.content);
+                } else {
+                    debug!(
+                        tool_name = %tool_call.name,
+                        result_len = result.content.len(),
+                        "Tool execution succeeded"
+                    );
                 }
 
-                // Continue loop to let model process tool results
-                debug!("Continuing to next iteration for tool result processing");
-                continue;
+                // Emit tool result
+                let _ = event_tx
+                    .send(AgentEvent::ToolCallResult {
+                        id: result.tool_call_id.clone(),
+                        content: result.content.clone(),
+                        is_error: result.is_error,
+                    })
+                    .await;
+
+                // Add tool result to conversation
+                conversation.add_tool_result(result.tool_call_id, result.content);
             }
+
+            // Continue loop to let model process tool results
+            debug!("Continuing to next iteration for tool result processing");
+            continue;
         }
 
         // No tool calls - add regular assistant message and we're done
