@@ -7,6 +7,7 @@
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import Chat from '$lib/components/Chat.svelte';
 	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
+	import Settings from '$lib/components/Settings.svelte';
 
 	interface Collection {
 		id: string;
@@ -39,7 +40,7 @@
 		failed: { path: string; error: string }[];
 	}
 
-	type Tab = 'trajectory' | 'search' | 'files';
+	type Tab = 'trajectory' | 'search' | 'files' | 'settings';
 	let activeTab = $state<Tab>('search');
 
 	let searchQuery = $state('');
@@ -278,6 +279,7 @@
 		{ id: 'trajectory', label: 'Trajectory' },
 		{ id: 'search', label: 'Search' },
 		{ id: 'files', label: 'Files' },
+		{ id: 'settings', label: 'Settings' },
 	];
 </script>
 
@@ -531,6 +533,9 @@
 					{/if}
 				</section>
 			</div>
+		{:else if activeTab === 'settings'}
+			<!-- Settings Tab -->
+			<Settings />
 		{/if}
 	</div>
 </main>

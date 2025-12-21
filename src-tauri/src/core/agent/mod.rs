@@ -10,9 +10,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use mistralrs::{
-    CalledFunction, ChatCompletionChunkResponse, Delta, GgufModelBuilder, Model,
-    PagedAttentionMetaBuilder, RequestBuilder, Response, TextMessageRole, Tool, ToolCallResponse,
-    ToolCallType, ToolChoice,
+    CalledFunction, ChatCompletionChunkResponse, Delta, GgufModelBuilder, Model, RequestBuilder,
+    Response, TextMessageRole, Tool, ToolCallResponse, ToolCallType, ToolChoice,
 };
 
 pub use tools::{
@@ -45,7 +44,6 @@ impl AgentModel {
         )
         .with_tok_model_id(&model_info.tokenizer_repo_id)
         .with_logging()
-        .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())?
         .build()
         .await
         .context("Failed to load GGUF model")?;
