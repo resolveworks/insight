@@ -2780,6 +2780,9 @@ name = "esaxx-rs"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "event-listener"
@@ -4785,6 +4788,9 @@ dependencies = [
  "anyhow",
  "bumpalo",
  "bytes",
+ "candle-core 0.9.1",
+ "candle-nn 0.9.1",
+ "candle-transformers",
  "chrono",
  "clap",
  "dirs 6.0.0",
@@ -4807,6 +4813,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "thiserror 2.0.17",
+ "tokenizers 0.21.4",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -10923,10 +10930,12 @@ dependencies = [
  "esaxx-rs",
  "fancy-regex 0.14.0",
  "getrandom 0.3.4",
+ "indicatif",
  "itertools 0.14.0",
  "log",
  "macro_rules_attribute",
  "monostate",
+ "onig",
  "paste",
  "rand 0.9.2",
  "rayon",

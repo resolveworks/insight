@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ModelSelector from './ModelSelector.svelte';
+	import EmbeddingModelSelector from './EmbeddingModelSelector.svelte';
 </script>
 
 <div class="flex h-full flex-col">
@@ -15,6 +16,17 @@
 				</p>
 				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
 					<ModelSelector showTitle={false} />
+				</div>
+			</section>
+
+			<section class="mb-8">
+				<h2 class="mb-4 text-lg font-medium text-slate-200">Semantic Search</h2>
+				<p class="mb-6 text-sm text-slate-400">
+					Enable semantic search to find documents by meaning, not just
+					keywords. Requires downloading an embedding model.
+				</p>
+				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
+					<EmbeddingModelSelector showTitle={false} />
 				</div>
 			</section>
 		</div>

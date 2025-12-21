@@ -170,15 +170,15 @@ pub async fn import_pdf(
     let search_guard = state.search.read().await;
     if let Some(index) = search_guard.as_ref() {
         let indexer_config = state.indexer_config.lock().await;
-        let embedders = state.embedders.read().await;
+        // TODO: Generate embedding if embedder is configured
         search::index_document(
             index,
             &indexer_config,
-            &embedders,
             &doc_id,
             &file_name,
             &extracted.text,
             &collection_id,
+            None, // Vector embedding (to be implemented)
         )
         .map_err(|e| e.to_string())?;
         tracing::info!("Indexed document {} in milli", doc_id);
@@ -291,9 +291,8 @@ pub async fn import_pdfs_batch(
                 let search_guard = state.search.read().await;
                 if let Some(index) = search_guard.as_ref() {
                     let indexer_config = state.indexer_config.lock().await;
-                    let embedders = state.embedders.read().await;
 
-                    match search::index_documents_batch(index, &indexer_config, &embedders, docs_to_index) {
+                    match search::index_documents_batch(index, &indexer_config, docs_to_index) {
                         Ok(()) => {
                             for doc_info in doc_infos {
                                 let _ = app.emit(
@@ -438,6 +437,7 @@ pub async fn import_pdfs_batch(
             name: file_name,
             content: text_content,
             collection_id: collection_id.clone(),
+            vector: None, // TODO: Generate embedding if embedder is configured
         };
 
         pending_index.push((doc_info, doc_to_index));
@@ -589,14 +589,11 @@ pub async fn delete_document(
     // Delete from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
-    let embedders = state.embedders.clone();
     tokio::spawn(async move {
         let search_guard = search.read().await;
         if let Some(index) = search_guard.as_ref() {
             let indexer_config = indexer_config.lock().await;
-            let embedders = embedders.read().await;
-            if let Err(e) = search::delete_document(index, &indexer_config, &embedders, &document_id)
-            {
+            if let Err(e) = search::delete_document(index, &indexer_config, &document_id) {
                 tracing::error!(
                     "Failed to remove document {} from search index: {}",
                     document_id,
@@ -636,18 +633,11 @@ pub async fn delete_collection(
     // Delete from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
-    let embedders = state.embedders.clone();
     tokio::spawn(async move {
         let search_guard = search.read().await;
         if let Some(index) = search_guard.as_ref() {
             let indexer_config = indexer_config.lock().await;
-            let embedders = embedders.read().await;
-            match search::delete_documents_by_collection(
-                index,
-                &indexer_config,
-                &embedders,
-                &collection_id,
-            ) {
+            match search::delete_documents_by_collection(index, &indexer_config, &collection_id) {
                 Ok(deleted_count) => {
                     tracing::info!(
                         "Removed {} documents from search index for collection {}",
@@ -915,7 +905,7 @@ pub async fn send_message(
     let storage = state.storage.clone();
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
-    let embedders = state.embedders.clone();
+    let embedder = state.embedder.clone();
     let embedding_model_id = state.embedding_model_id.clone();
     let agent_model = state.agent_model.clone();
     let conversations_arc = state.conversations.clone();
@@ -932,7 +922,7 @@ pub async fn send_message(
             storage,
             search,
             indexer_config,
-            embedders,
+            embedder,
             embedding_model_id,
             agent_model,
             conversations: conversations_arc.clone(),
@@ -1009,7 +999,7 @@ pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
 // Model Management Commands
 // ============================================================================
 
-use crate::core::models::{self, DownloadProgress, ModelInfo, ModelManager, ModelStatus};
+use crate::core::models::{self, DownloadProgress, EmbeddingModelInfo, ModelInfo, ModelManager, ModelStatus};
 
 #[cfg(test)]
 mod tests;
@@ -1096,6 +1086,151 @@ pub async fn download_model(
 
     // Emit completion event
     let _ = app.emit("model-download-complete", &model);
+
+    Ok(())
+}
+
+// ============================================================================
+// Embedding Model Commands
+// ============================================================================
+
+/// Get list of available embedding models
+#[tauri::command]
+pub async fn get_available_embedding_models() -> Result<Vec<EmbeddingModelInfo>, String> {
+    Ok(models::available_embedding_models())
+}
+
+/// Get the currently configured embedding model ID
+#[tauri::command]
+pub async fn get_current_embedding_model(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let model_id = state.embedding_model_id.read().await;
+    Ok(model_id.clone())
+}
+
+/// Embedding model status response
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status")]
+pub enum EmbeddingModelStatus {
+    NotDownloaded,
+    Ready,
+}
+
+/// Get download status for an embedding model
+#[tauri::command]
+pub async fn get_embedding_model_status(
+    model_id: String,
+    state: State<'_, AppState>,
+) -> Result<EmbeddingModelStatus, String> {
+    let manager = ModelManager::new(state.config.models_dir.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let model = models::get_embedding_model(&model_id)
+        .ok_or_else(|| format!("Embedding model not found: {}", model_id))?;
+
+    if manager.is_embedding_model_downloaded(&model) {
+        Ok(EmbeddingModelStatus::Ready)
+    } else {
+        Ok(EmbeddingModelStatus::NotDownloaded)
+    }
+}
+
+/// Download an embedding model with progress events
+#[tauri::command]
+pub async fn download_embedding_model(
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = ModelManager::new(state.config.models_dir.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let model = models::get_embedding_model(&model_id)
+        .ok_or_else(|| format!("Embedding model not found: {}", model_id))?;
+
+    // Check if already downloaded
+    if manager.is_embedding_model_downloaded(&model) {
+        tracing::info!("Embedding model {} is already downloaded", model.id);
+        return Ok(());
+    }
+
+    tracing::info!(
+        "Starting download of embedding model: {} ({})",
+        model.name,
+        model.hf_repo_id
+    );
+
+    // Create progress channel
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<DownloadProgress>(100);
+
+    // Spawn event forwarder
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        while let Some(progress) = rx.recv().await {
+            if let Err(e) = app_handle.emit("embedding-model-download-progress", &progress) {
+                tracing::error!("Failed to emit embedding download progress: {}", e);
+            }
+        }
+    });
+
+    // Download with progress
+    manager
+        .download_embedding_model(&model, tx)
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    tracing::info!("Embedding model download complete: {}", model.id);
+
+    // Emit completion event
+    let _ = app.emit("embedding-model-download-complete", &model);
+
+    Ok(())
+}
+
+/// Configure and load an embedding model for semantic search
+#[tauri::command]
+pub async fn configure_embedding_model(
+    model_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use crate::core::{embeddings::Embedder, Settings};
+
+    if let Some(ref id) = model_id {
+        // Verify the model exists
+        let model = models::get_embedding_model(id)
+            .ok_or_else(|| format!("Embedding model not found: {}", id))?;
+
+        tracing::info!(
+            "Configuring embedding model: {} ({})",
+            model.name,
+            model.hf_repo_id
+        );
+
+        // Create embedder using HuggingFace model
+        let embedder = Embedder::from_hf(&model.hf_repo_id)
+            .map_err(|e| format!("Failed to load embedder: {}", e))?;
+
+        // Update state
+        *state.embedder.write().await = Some(embedder);
+        *state.embedding_model_id.write().await = Some(id.clone());
+
+        tracing::info!("Embedding model configured: {}", id);
+    } else {
+        // Disable embeddings
+        tracing::info!("Disabling embedding model");
+        *state.embedder.write().await = None;
+        *state.embedding_model_id.write().await = None;
+    }
+
+    // Persist setting
+    let mut settings = Settings::load(&state.config.settings_file);
+    settings.embedding_model_id = model_id;
+    settings
+        .save(&state.config.settings_file)
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

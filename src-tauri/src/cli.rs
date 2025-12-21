@@ -2,7 +2,7 @@ use milli::update::IndexerConfig;
 
 use crate::core::{
     config::Config,
-    search::{create_empty_embedders, get_document_count, index_documents_batch, open_index, DocToIndex},
+    search::{get_document_count, index_documents_batch, open_index, DocToIndex},
     storage::Storage,
 };
 
@@ -45,10 +45,6 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
     // Create a single IndexerConfig for all indexing operations
     let indexer_config = IndexerConfig::default();
 
-    // Use empty embedders for now (full-text only during rebuild)
-    // TODO: Support embedding model selection during rebuild
-    let embedders = create_empty_embedders();
-
     // Get all collections
     let collections = storage.list_collections().await?;
     tracing::info!("Found {} collections", collections.len());
@@ -86,6 +82,7 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
                         name: doc.name.clone(),
                         content: text,
                         collection_id,
+                        vector: None, // TODO: Generate embeddings during rebuild
                     });
                     tracing::debug!("Prepared document '{}' ({})", doc.name, doc.id);
                 }
@@ -104,7 +101,7 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
     let indexed_count = docs_to_index.len();
     if !docs_to_index.is_empty() {
         tracing::info!("Batch indexing {} documents...", indexed_count);
-        index_documents_batch(&index, &indexer_config, &embedders, docs_to_index)?;
+        index_documents_batch(&index, &indexer_config, docs_to_index)?;
     }
 
     tracing::info!(

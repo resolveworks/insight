@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod config;
 pub mod conversations;
+pub mod embeddings;
 pub mod models;
 pub mod pdf;
 pub mod search;
@@ -12,11 +13,11 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use milli::update::IndexerConfig;
-use milli::vector::RuntimeEmbedders;
 use milli::Index;
 
 pub use agent::{AgentEvent, AgentModel, Conversation};
-pub use config::Config;
+pub use config::{Config, Settings};
+pub use embeddings::Embedder;
 pub use storage::Storage;
 
 /// Application state shared across Tauri commands
@@ -26,8 +27,8 @@ pub struct AppState {
     pub search: Arc<RwLock<Option<Index>>>,
     /// Shared indexer config with thread pool - use Mutex to serialize indexing operations
     pub indexer_config: Arc<Mutex<IndexerConfig>>,
-    /// Embedders for semantic search (empty = full-text only)
-    pub embedders: Arc<RwLock<RuntimeEmbedders>>,
+    /// Embedder for semantic search (None = full-text only)
+    pub embedder: Arc<RwLock<Option<Embedder>>>,
     /// Currently configured embedding model ID (None = no embeddings)
     pub embedding_model_id: Arc<RwLock<Option<String>>>,
     /// Loaded LLM model for agent
@@ -48,16 +49,12 @@ impl AppState {
         // Create a shared IndexerConfig with thread pool for all indexing operations
         let indexer_config = IndexerConfig::default();
 
-        // Start with empty embedders (full-text search only)
-        // Embedding model can be configured later
-        let embedders = search::create_empty_embedders();
-
         Self {
             config,
             storage: Arc::new(RwLock::new(None)),
             search: Arc::new(RwLock::new(None)),
             indexer_config: Arc::new(Mutex::new(indexer_config)),
-            embedders: Arc::new(RwLock::new(embedders)),
+            embedder: Arc::new(RwLock::new(None)), // Configured later via settings
             embedding_model_id: Arc::new(RwLock::new(None)),
             agent_model: Arc::new(RwLock::new(None)),
             conversations: Arc::new(RwLock::new(HashMap::new())),
@@ -74,6 +71,26 @@ impl AppState {
         // Initialize search index
         let index = search::open_index(&self.config.search_dir)?;
         *self.search.write().await = Some(index);
+
+        // Load user settings and configure embedding model if set
+        let settings = Settings::load(&self.config.settings_file);
+        if let Some(ref model_id) = settings.embedding_model_id {
+            tracing::info!("Loading configured embedding model: {}", model_id);
+            if let Some(model) = models::get_embedding_model(model_id) {
+                match Embedder::from_hf(&model.hf_repo_id) {
+                    Ok(embedder) => {
+                        *self.embedder.write().await = Some(embedder);
+                        *self.embedding_model_id.write().await = Some(model_id.clone());
+                        tracing::info!("Embedding model loaded: {}", model_id);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load embedding model {}: {}", model_id, e);
+                    }
+                }
+            } else {
+                tracing::warn!("Configured embedding model not found: {}", model_id);
+            }
+        }
 
         tracing::info!("AppState initialized");
         Ok(())

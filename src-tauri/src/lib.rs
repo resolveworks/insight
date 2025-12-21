@@ -32,7 +32,7 @@ pub fn run() {
                 storage: state.storage.clone(),
                 search: state.search.clone(),
                 indexer_config: state.indexer_config.clone(),
-                embedders: state.embedders.clone(),
+                embedder: state.embedder.clone(),
                 embedding_model_id: state.embedding_model_id.clone(),
                 agent_model: state.agent_model.clone(),
                 conversations: state.conversations.clone(),
@@ -78,6 +78,12 @@ pub fn run() {
             commands::get_available_models,
             commands::get_model_status,
             commands::download_model,
+            // Embedding model commands
+            commands::get_available_embedding_models,
+            commands::get_current_embedding_model,
+            commands::get_embedding_model_status,
+            commands::download_embedding_model,
+            commands::configure_embedding_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
