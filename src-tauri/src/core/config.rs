@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-/// Application configuration
+use serde::{Deserialize, Serialize};
+
+/// Application configuration (paths, computed at runtime)
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Root data directory (~/.local/share/insight)
@@ -13,6 +15,8 @@ pub struct Config {
     pub conversations_dir: PathBuf,
     /// Embedding models cache directory
     pub models_dir: PathBuf,
+    /// Settings file path
+    pub settings_file: PathBuf,
 }
 
 impl Config {
@@ -31,6 +35,7 @@ impl Config {
             iroh_dir: data_dir.join("iroh"),
             search_dir: data_dir.join("search"),
             conversations_dir: data_dir.join("conversations"),
+            settings_file: data_dir.join("settings.json"),
             data_dir,
             models_dir,
         }
@@ -44,5 +49,30 @@ impl Config {
         std::fs::create_dir_all(&self.conversations_dir)?;
         std::fs::create_dir_all(&self.models_dir)?;
         Ok(())
+    }
+}
+
+/// User settings (persisted to disk)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Settings {
+    /// Configured embedding model ID (None = disabled)
+    #[serde(default)]
+    pub embedding_model_id: Option<String>,
+}
+
+impl Settings {
+    /// Load settings from file, or return defaults if not found
+    pub fn load(path: &PathBuf) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Save settings to file
+    pub fn save(&self, path: &PathBuf) -> std::io::Result<()> {
+        let contents = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, contents)
     }
 }

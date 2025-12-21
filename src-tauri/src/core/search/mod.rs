@@ -10,7 +10,7 @@ use milli::update::new::indexer::{self, DocumentOperation};
 use milli::update::IndexerConfig;
 use milli::vector::RuntimeEmbedders;
 use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 /// Default map size for the LMDB environment (10 GB)
 /// This is the maximum size the database can grow to
@@ -53,15 +53,21 @@ pub fn open_index(path: &Path) -> Result<Index> {
     Ok(index)
 }
 
-/// Document to be indexed
+// ============================================================================
+// Document Indexing
+// ============================================================================
+
+/// Document to be indexed (with optional pre-computed embedding)
 pub struct DocToIndex {
     pub id: String,
     pub name: String,
     pub content: String,
     pub collection_id: String,
+    /// Pre-computed embedding vector (if semantic search is enabled)
+    pub vector: Option<Vec<f32>>,
 }
 
-/// Index a single document in milli (uses shared IndexerConfig)
+/// Index a single document in milli
 pub fn index_document(
     index: &Index,
     indexer_config: &IndexerConfig,
@@ -69,6 +75,7 @@ pub fn index_document(
     name: &str,
     content: &str,
     collection_id: &str,
+    vector: Option<Vec<f32>>,
 ) -> Result<()> {
     index_documents_batch(
         index,
@@ -78,6 +85,7 @@ pub fn index_document(
             name: name.to_string(),
             content: content.to_string(),
             collection_id: collection_id.to_string(),
+            vector,
         }],
     )
 }
@@ -128,6 +136,13 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
                 "collection_id".to_string(),
                 Value::String(doc.collection_id.clone()),
             );
+            // Add pre-computed vector if present
+            if let Some(ref vector) = doc.vector {
+                m.insert(
+                    "_vectors".to_string(),
+                    json!({ "default": vector }),
+                );
+            }
             m
         })
         .collect();
@@ -137,8 +152,6 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
     let rtxn = index.read_txn()?;
     let db_fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut new_fields_ids_map = db_fields_ids_map.clone();
-
-    let embedders = RuntimeEmbedders::default();
 
     let mut operation = DocumentOperation::new();
     operation.replace_documents(&mmap)?;
@@ -162,6 +175,8 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
     let mut wtxn = index.write_txn()?;
 
     // Use the shared thread pool from IndexerConfig for both outer and inner operations
+    // Pass empty embedders - we provide pre-computed vectors in the document's _vectors field
+    let empty_embedders = RuntimeEmbedders::default();
     indexer_config
         .thread_pool
         .install(|| {
@@ -174,7 +189,7 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
                 new_fields_ids_map,
                 primary_key,
                 &document_changes,
-                embedders,
+                empty_embedders,
                 &|| false,
                 &Progress::default(),
                 &Default::default(),
@@ -343,8 +358,6 @@ pub fn delete_documents(
     let db_fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut new_fields_ids_map = db_fields_ids_map.clone();
 
-    let embedders = RuntimeEmbedders::default();
-
     let mut operation = DocumentOperation::new();
     operation.delete_documents(&doc_ids_refs);
 
@@ -366,6 +379,7 @@ pub fn delete_documents(
 
     let mut wtxn = index.write_txn()?;
 
+    let empty_embedders = RuntimeEmbedders::default();
     indexer_config
         .thread_pool
         .install(|| {
@@ -378,7 +392,7 @@ pub fn delete_documents(
                 new_fields_ids_map,
                 primary_key,
                 &document_changes,
-                embedders,
+                empty_embedders,
                 &|| false,
                 &Progress::default(),
                 &Default::default(),
@@ -497,6 +511,7 @@ mod tests {
             "test.pdf",
             "This is a test document about climate change.",
             "collection1",
+            None,
         )
         .unwrap();
 
@@ -519,7 +534,16 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(&index, &config, "doc1", "test.pdf", "Hello world", "col1").unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc1",
+            "test.pdf",
+            "Hello world",
+            "col1",
+            None,
+        )
+        .unwrap();
 
         let results = search_index(&index, "nonexistent", 10, 0, None).unwrap();
         assert!(results.hits.is_empty());
@@ -538,6 +562,7 @@ mod tests {
             "a.pdf",
             "Climate research paper",
             "climate",
+            None,
         )
         .unwrap();
         index_document(
@@ -547,6 +572,7 @@ mod tests {
             "b.pdf",
             "Climate news article",
             "news",
+            None,
         )
         .unwrap();
         index_document(
@@ -556,6 +582,7 @@ mod tests {
             "c.pdf",
             "Climate policy document",
             "policy",
+            None,
         )
         .unwrap();
 
@@ -589,8 +616,8 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(&index, &config, "doc1", "a.pdf", "Test content", "col1").unwrap();
-        index_document(&index, &config, "doc2", "b.pdf", "Test content", "col2").unwrap();
+        index_document(&index, &config, "doc1", "a.pdf", "Test content", "col1", None).unwrap();
+        index_document(&index, &config, "doc2", "b.pdf", "Test content", "col2", None).unwrap();
 
         // Empty filter should return all
         let results = search_index(&index, "test", 10, 0, Some(&[])).unwrap();
@@ -609,18 +636,21 @@ mod tests {
                 name: "a.pdf".to_string(),
                 content: "First document about science".to_string(),
                 collection_id: "col1".to_string(),
+                vector: None,
             },
             DocToIndex {
                 id: "doc2".to_string(),
                 name: "b.pdf".to_string(),
                 content: "Second document about science".to_string(),
                 collection_id: "col1".to_string(),
+                vector: None,
             },
             DocToIndex {
                 id: "doc3".to_string(),
                 name: "c.pdf".to_string(),
                 content: "Third document about science".to_string(),
                 collection_id: "col1".to_string(),
+                vector: None,
             },
         ];
 
@@ -640,8 +670,26 @@ mod tests {
         let config = test_indexer_config();
 
         // Index two documents
-        index_document(&index, &config, "doc1", "a.pdf", "First document", "col1").unwrap();
-        index_document(&index, &config, "doc2", "b.pdf", "Second document", "col1").unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc1",
+            "a.pdf",
+            "First document",
+            "col1",
+            None,
+        )
+        .unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc2",
+            "b.pdf",
+            "Second document",
+            "col1",
+            None,
+        )
+        .unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 2);
@@ -668,9 +716,36 @@ mod tests {
         let config = test_indexer_config();
 
         // Index documents in different collections
-        index_document(&index, &config, "doc1", "a.pdf", "Document alpha", "col1").unwrap();
-        index_document(&index, &config, "doc2", "b.pdf", "Document beta", "col1").unwrap();
-        index_document(&index, &config, "doc3", "c.pdf", "Document gamma", "col2").unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc1",
+            "a.pdf",
+            "Document alpha",
+            "col1",
+            None,
+        )
+        .unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc2",
+            "b.pdf",
+            "Document beta",
+            "col1",
+            None,
+        )
+        .unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc3",
+            "c.pdf",
+            "Document gamma",
+            "col2",
+            None,
+        )
+        .unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);

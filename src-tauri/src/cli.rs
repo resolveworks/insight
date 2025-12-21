@@ -82,6 +82,7 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
                         name: doc.name.clone(),
                         content: text,
                         collection_id,
+                        vector: None, // TODO: Generate embeddings during rebuild
                     });
                     tracing::debug!("Prepared document '{}' ({})", doc.name, doc.id);
                 }

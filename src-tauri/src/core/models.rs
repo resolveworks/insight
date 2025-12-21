@@ -9,7 +9,7 @@ use hf_hub::Cache;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-/// Information about a GGUF model available for use
+/// Information about a GGUF model available for use (LLM)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// Unique identifier for this model
@@ -71,6 +71,70 @@ pub fn available_models() -> Vec<ModelInfo> {
             gguf_repo_id: "Qwen/Qwen3-8B-GGUF".to_string(),
             gguf_file: "Qwen3-8B-Q8_0.gguf".to_string(),
             tokenizer_repo_id: "Qwen/Qwen3-8B".to_string(),
+        },
+    ]
+}
+
+// ============================================================================
+// Embedding Models
+// ============================================================================
+
+/// Information about an embedding model for semantic search
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingModelInfo {
+    /// Unique identifier for this model
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Description for the user
+    pub description: String,
+    /// Approximate size in GB (for display)
+    pub size_gb: f32,
+    /// HuggingFace repo ID (e.g., "BAAI/bge-base-en-v1.5")
+    pub hf_repo_id: String,
+    /// Vector dimensions produced by this model
+    pub dimensions: usize,
+}
+
+/// Get the default embedding model
+pub fn default_embedding_model() -> EmbeddingModelInfo {
+    available_embedding_models().into_iter().next().unwrap()
+}
+
+/// Get an embedding model by ID
+pub fn get_embedding_model(id: &str) -> Option<EmbeddingModelInfo> {
+    available_embedding_models().into_iter().find(|m| m.id == id)
+}
+
+/// Available embedding models registry
+pub fn available_embedding_models() -> Vec<EmbeddingModelInfo> {
+    vec![
+        // Default: BGE Base - Good balance
+        EmbeddingModelInfo {
+            id: "bge-base-en".to_string(),
+            name: "BGE Base EN v1.5".to_string(),
+            description: "Recommended. Good balance of speed and quality.".to_string(),
+            size_gb: 0.44,
+            hf_repo_id: "BAAI/bge-base-en-v1.5".to_string(),
+            dimensions: 768,
+        },
+        // Smaller option
+        EmbeddingModelInfo {
+            id: "bge-small-en".to_string(),
+            name: "BGE Small EN v1.5".to_string(),
+            description: "Faster, smaller footprint for constrained systems.".to_string(),
+            size_gb: 0.13,
+            hf_repo_id: "BAAI/bge-small-en-v1.5".to_string(),
+            dimensions: 384,
+        },
+        // Higher quality option
+        EmbeddingModelInfo {
+            id: "bge-large-en".to_string(),
+            name: "BGE Large EN v1.5".to_string(),
+            description: "Higher quality, slower. Best for accuracy.".to_string(),
+            size_gb: 1.3,
+            hf_repo_id: "BAAI/bge-large-en-v1.5".to_string(),
+            dimensions: 1024,
         },
     ]
 }
@@ -290,6 +354,92 @@ impl ModelManager {
 
         Ok(model_dir)
     }
+
+    // ========================================================================
+    // Embedding Model Methods
+    // ========================================================================
+
+    /// Check if an embedding model is fully downloaded
+    pub fn is_embedding_model_downloaded(&self, model: &EmbeddingModelInfo) -> bool {
+        let cache = self.cache.model(model.hf_repo_id.clone());
+        // HuggingFace transformer models need these core files
+        cache.get("config.json").is_some()
+            && (cache.get("model.safetensors").is_some()
+                || cache.get("pytorch_model.bin").is_some())
+            && cache.get("tokenizer.json").is_some()
+    }
+
+    /// Get the cache path for an embedding model (if downloaded)
+    pub fn get_embedding_model_path(&self, model: &EmbeddingModelInfo) -> Option<PathBuf> {
+        if !self.is_embedding_model_downloaded(model) {
+            return None;
+        }
+
+        // Return the directory containing the model files
+        self.cache
+            .model(model.hf_repo_id.clone())
+            .get("config.json")
+            .map(|p| p.parent().unwrap().to_path_buf())
+    }
+
+    /// Download an embedding model with progress tracking
+    pub async fn download_embedding_model(
+        &self,
+        model: &EmbeddingModelInfo,
+        progress_tx: mpsc::Sender<DownloadProgress>,
+    ) -> Result<PathBuf> {
+        // Files needed for HuggingFace transformer embedding models
+        let all_files = [
+            (model.hf_repo_id.clone(), "config.json".to_string()),
+            (model.hf_repo_id.clone(), "model.safetensors".to_string()),
+            (model.hf_repo_id.clone(), "tokenizer.json".to_string()),
+            (model.hf_repo_id.clone(), "tokenizer_config.json".to_string()),
+        ];
+
+        let total_files = all_files.len();
+        let mut first_path: Option<PathBuf> = None;
+
+        for (idx, (repo_id, filename)) in all_files.iter().enumerate() {
+            let repo = self.api.model(repo_id.clone());
+
+            let shared = Arc::new(SharedProgress {
+                file: Mutex::new(filename.clone()),
+                downloaded: AtomicU64::new(0),
+                total: AtomicU64::new(0),
+                last_emit: Mutex::new(Instant::now()),
+            });
+
+            let progress = ProgressTracker {
+                file_index: idx + 1,
+                total_files,
+                shared,
+                tx: progress_tx.clone(),
+            };
+
+            let path = repo
+                .download_with_progress(filename, progress)
+                .await
+                .with_context(|| format!("Failed to download {}", filename))?;
+
+            if first_path.is_none() {
+                first_path = Some(path);
+            }
+        }
+
+        // Return the directory containing the model files
+        let model_dir = first_path
+            .context("No files downloaded")?
+            .parent()
+            .context("Invalid path")?
+            .to_path_buf();
+
+        Ok(model_dir)
+    }
+
+    /// Get the HuggingFace cache directory path
+    pub fn cache_path(&self) -> PathBuf {
+        self.cache.path().clone()
+    }
 }
 
 #[cfg(test)]
@@ -318,5 +468,30 @@ mod tests {
         let model = default_model();
         assert_eq!(model.id, "qwen3-8b-q4km");
         assert!(!model.gguf_file.is_empty());
+    }
+
+    #[test]
+    fn test_available_embedding_models() {
+        let models = available_embedding_models();
+        assert!(!models.is_empty());
+        assert_eq!(models[0].id, "bge-base-en");
+        assert_eq!(models[0].dimensions, 768);
+    }
+
+    #[test]
+    fn test_get_embedding_model() {
+        let model = get_embedding_model("bge-small-en");
+        assert!(model.is_some());
+        assert_eq!(model.unwrap().dimensions, 384);
+
+        let missing = get_embedding_model("nonexistent");
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_default_embedding_model() {
+        let model = default_embedding_model();
+        assert_eq!(model.id, "bge-base-en");
+        assert_eq!(model.hf_repo_id, "BAAI/bge-base-en-v1.5");
     }
 }
