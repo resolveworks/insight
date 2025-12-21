@@ -68,13 +68,6 @@ pub enum MessageRole {
     Assistant,
 }
 
-/// Result of a tool execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolUseResult {
-    pub content: String,
-    pub is_error: bool,
-}
-
 /// A content block within a message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -82,16 +75,15 @@ pub enum ContentBlock {
     Text {
         text: String,
     },
-    Thinking {
-        thinking: String,
-    },
     ToolUse {
         id: String,
         name: String,
         arguments: serde_json::Value,
-        /// Result of the tool execution, None while pending
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<ToolUseResult>,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
     },
 }
 
@@ -132,14 +124,12 @@ impl Conversation {
     /// Generate title from first user message (truncated to 50 chars)
     pub fn generate_title(&mut self) {
         if let Some(first_user_msg) = self.messages.iter().find(|m| m.role == MessageRole::User) {
-            // Extract text from content blocks (excluding thinking)
             let text: String = first_user_msg
                 .content
                 .iter()
                 .filter_map(|b| match b {
                     ContentBlock::Text { text } => Some(text.as_str()),
-                    ContentBlock::Thinking { .. } => None,
-                    ContentBlock::ToolUse { .. } => None,
+                    _ => None,
                 })
                 .collect::<Vec<_>>()
                 .join("");
@@ -165,29 +155,12 @@ impl Conversation {
         self.touch();
     }
 
-    /// Add an assistant message with content blocks (text/thinking + tool uses)
+    /// Add an assistant message with content blocks
     pub fn add_assistant_message(&mut self, content: Vec<ContentBlock>) {
         self.messages.push(Message {
             role: MessageRole::Assistant,
             content,
         });
-        self.touch();
-    }
-
-    /// Set the result on a ToolUse block in the last assistant message
-    pub fn set_tool_result(&mut self, tool_use_id: &str, content: String, is_error: bool) {
-        if let Some(last_msg) = self.messages.last_mut() {
-            if last_msg.role == MessageRole::Assistant {
-                for block in &mut last_msg.content {
-                    if let ContentBlock::ToolUse { id, result, .. } = block {
-                        if id == tool_use_id {
-                            *result = Some(ToolUseResult { content, is_error });
-                            break;
-                        }
-                    }
-                }
-            }
-        }
         self.touch();
     }
 }
@@ -197,7 +170,6 @@ impl Conversation {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentDelta {
     Text { text: String },
-    Thinking { thinking: String },
 }
 
 /// Events emitted during agent execution
@@ -205,11 +177,11 @@ pub enum ContentDelta {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// A new block has started streaming
-    ContentBlockStart { index: usize, block: ContentBlock },
-    /// Delta content for a block at index
-    ContentBlockDelta { index: usize, delta: ContentDelta },
-    /// Block streaming is complete
-    ContentBlockStop { index: usize },
+    ContentBlockStart { block: ContentBlock },
+    /// Delta content for the current block
+    ContentBlockDelta { delta: ContentDelta },
+    /// Current block streaming is complete
+    ContentBlockStop,
     /// Agent turn is complete
     Done,
     /// An error occurred
@@ -218,218 +190,6 @@ pub enum AgentEvent {
 
 /// Maximum number of tool call iterations
 const MAX_ITERATIONS: usize = 10;
-
-/// State for streaming text with think tag detection
-#[derive(Debug)]
-enum StreamState {
-    /// Normal text mode
-    Text,
-    /// Inside <think>...</think> block
-    Thinking,
-}
-
-/// Parses streaming text and emits block lifecycle events
-///
-/// Handles Qwen3-style `<think>...</think>` tags by detecting transitions
-/// and emitting appropriate ContentBlockStart/Delta/Stop events.
-struct StreamingBlockParser {
-    state: StreamState,
-    buffer: String,
-    block_index: usize,
-    block_started: bool,
-    /// Accumulated content for each block (for building final ContentBlocks)
-    blocks: Vec<ContentBlock>,
-    /// Current block's accumulated content
-    current_content: String,
-}
-
-impl StreamingBlockParser {
-    fn new(starting_index: usize) -> Self {
-        Self {
-            state: StreamState::Text,
-            buffer: String::new(),
-            block_index: starting_index,
-            block_started: false,
-            blocks: Vec::new(),
-            current_content: String::new(),
-        }
-    }
-
-    /// Returns the next available block index (for tool calls after streaming)
-    fn next_index(&self) -> usize {
-        if self.block_started {
-            self.block_index + 1
-        } else {
-            self.block_index
-        }
-    }
-
-    /// Push new text and return any events to emit
-    fn push(&mut self, text: &str) -> Vec<AgentEvent> {
-        self.buffer.push_str(text);
-        self.process_buffer()
-    }
-
-    /// Finish parsing and return any final events
-    fn finish(&mut self) -> Vec<AgentEvent> {
-        let mut events = Vec::new();
-
-        // Emit any remaining buffered content
-        if !self.buffer.is_empty() {
-            let remaining = std::mem::take(&mut self.buffer);
-            events.extend(self.emit_content(&remaining));
-        }
-
-        // Close current block if open
-        if self.block_started {
-            self.finalize_current_block();
-            events.push(AgentEvent::ContentBlockStop {
-                index: self.block_index,
-            });
-        }
-
-        events
-    }
-
-    /// Get the final content blocks
-    fn into_blocks(self) -> Vec<ContentBlock> {
-        self.blocks
-    }
-
-    fn process_buffer(&mut self) -> Vec<AgentEvent> {
-        let mut events = Vec::new();
-
-        loop {
-            match self.state {
-                StreamState::Text => {
-                    // Look for <think> tag
-                    if let Some(pos) = self.buffer.find("<think>") {
-                        // Emit text before the tag
-                        if pos > 0 {
-                            let before = self.buffer[..pos].to_string();
-                            events.extend(self.emit_content(&before));
-                        }
-
-                        // Close text block if open, switch to thinking
-                        if self.block_started {
-                            self.finalize_current_block();
-                            events.push(AgentEvent::ContentBlockStop {
-                                index: self.block_index,
-                            });
-                            self.block_index += 1;
-                            self.block_started = false;
-                        }
-
-                        self.state = StreamState::Thinking;
-                        self.buffer = self.buffer[pos + 7..].to_string(); // skip "<think>"
-                    } else if self.buffer.len() > 7 && !self.buffer.ends_with('<') {
-                        // Safe to emit if we have content and it doesn't end with potential tag start
-                        // Keep last 7 chars in case of partial "<think>"
-                        let safe_len = self.buffer.len() - 7;
-                        let to_emit = self.buffer[..safe_len].to_string();
-                        self.buffer = self.buffer[safe_len..].to_string();
-                        if !to_emit.is_empty() {
-                            events.extend(self.emit_content(&to_emit));
-                        }
-                        break;
-                    } else {
-                        // Not enough content or might be partial tag, wait for more
-                        break;
-                    }
-                }
-                StreamState::Thinking => {
-                    // Look for </think> tag
-                    if let Some(pos) = self.buffer.find("</think>") {
-                        // Emit thinking content before the tag
-                        if pos > 0 {
-                            let before = self.buffer[..pos].to_string();
-                            events.extend(self.emit_content(&before));
-                        }
-
-                        // Close thinking block, switch to text
-                        if self.block_started {
-                            self.finalize_current_block();
-                            events.push(AgentEvent::ContentBlockStop {
-                                index: self.block_index,
-                            });
-                            self.block_index += 1;
-                            self.block_started = false;
-                        }
-
-                        self.state = StreamState::Text;
-                        self.buffer = self.buffer[pos + 8..].to_string(); // skip "</think>"
-                    } else if self.buffer.len() > 8 && !self.buffer.ends_with('<') {
-                        // Safe to emit thinking content
-                        let safe_len = self.buffer.len() - 8;
-                        let to_emit = self.buffer[..safe_len].to_string();
-                        self.buffer = self.buffer[safe_len..].to_string();
-                        if !to_emit.is_empty() {
-                            events.extend(self.emit_content(&to_emit));
-                        }
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-
-        events
-    }
-
-    fn emit_content(&mut self, content: &str) -> Vec<AgentEvent> {
-        let mut events = Vec::new();
-
-        if !self.block_started {
-            // Start a new block
-            let block = match self.state {
-                StreamState::Text => ContentBlock::Text {
-                    text: String::new(),
-                },
-                StreamState::Thinking => ContentBlock::Thinking {
-                    thinking: String::new(),
-                },
-            };
-            events.push(AgentEvent::ContentBlockStart {
-                index: self.block_index,
-                block,
-            });
-            self.block_started = true;
-            self.current_content.clear();
-        }
-
-        // Emit delta
-        let delta = match self.state {
-            StreamState::Text => ContentDelta::Text {
-                text: content.to_string(),
-            },
-            StreamState::Thinking => ContentDelta::Thinking {
-                thinking: content.to_string(),
-            },
-        };
-        events.push(AgentEvent::ContentBlockDelta {
-            index: self.block_index,
-            delta,
-        });
-
-        self.current_content.push_str(content);
-        events
-    }
-
-    fn finalize_current_block(&mut self) {
-        if !self.current_content.is_empty() {
-            let block = match self.state {
-                StreamState::Text => ContentBlock::Text {
-                    text: std::mem::take(&mut self.current_content),
-                },
-                StreamState::Thinking => ContentBlock::Thinking {
-                    thinking: std::mem::take(&mut self.current_content),
-                },
-            };
-            self.blocks.push(block);
-        }
-    }
-}
 
 /// Run the agent loop with structured tool calling
 pub async fn run_agent_loop(
@@ -450,9 +210,6 @@ pub async fn run_agent_loop(
     // Get tools for this session
     let tools = get_mistralrs_tools();
     debug!(tool_count = tools.len(), "Loaded tools");
-
-    // Global block index across all iterations - frontend sees one flat stream
-    let mut next_block_index = 0usize;
 
     for iteration in 0..MAX_ITERATIONS {
         if cancel_token.is_cancelled() {
@@ -488,7 +245,8 @@ pub async fn run_agent_loop(
 
         // Streaming state
         let mut tool_calls: Vec<ToolCallResponse> = Vec::new();
-        let mut streamer = StreamingBlockParser::new(next_block_index);
+        let mut text_started = false;
+        let mut text_content = String::new();
 
         // Stream response chunks
         while let Some(chunk) = stream.next().await {
@@ -506,12 +264,25 @@ pub async fn run_agent_loop(
                             ..
                         } = &choice.delta;
 
-                        // Process text content through streaming parser
+                        // Stream text content
                         if let Some(text) = delta_content {
                             if !text.is_empty() {
-                                for event in streamer.push(text) {
-                                    let _ = event_tx.send(event).await;
+                                if !text_started {
+                                    let _ = event_tx
+                                        .send(AgentEvent::ContentBlockStart {
+                                            block: ContentBlock::Text {
+                                                text: String::new(),
+                                            },
+                                        })
+                                        .await;
+                                    text_started = true;
                                 }
+                                let _ = event_tx
+                                    .send(AgentEvent::ContentBlockDelta {
+                                        delta: ContentDelta::Text { text: text.clone() },
+                                    })
+                                    .await;
+                                text_content.push_str(text);
                             }
                         }
 
@@ -549,15 +320,14 @@ pub async fn run_agent_loop(
             }
         }
 
-        // Finalize streaming (close any open blocks)
-        let finish_events = streamer.finish();
-        for event in &finish_events {
-            let _ = event_tx.send(event.clone()).await;
+        // Finalize text block
+        let mut content_blocks = Vec::new();
+        if text_started {
+            let _ = event_tx.send(AgentEvent::ContentBlockStop).await;
+            if !text_content.is_empty() {
+                content_blocks.push(ContentBlock::Text { text: text_content });
+            }
         }
-
-        // Update global index before consuming streamer
-        next_block_index = streamer.next_index();
-        let mut content_blocks = streamer.into_blocks();
         let tool_call_count = tool_calls.len();
         debug!(
             block_count = content_blocks.len(),
@@ -571,9 +341,8 @@ pub async fn run_agent_loop(
 
             // Process each tool call
             for called in &tool_calls {
-                let arguments: serde_json::Value =
-                    serde_json::from_str(&called.function.arguments)
-                        .unwrap_or(serde_json::json!({}));
+                let arguments: serde_json::Value = serde_json::from_str(&called.function.arguments)
+                    .unwrap_or(serde_json::json!({}));
 
                 info!(
                     tool_name = %called.function.name,
@@ -582,21 +351,19 @@ pub async fn run_agent_loop(
                 );
                 debug!(arguments = %arguments, "Tool arguments");
 
-                // Create ToolUse block (without result yet)
+                // Emit ToolUse block
                 let tool_use_block = ContentBlock::ToolUse {
                     id: called.id.clone(),
                     name: called.function.name.clone(),
                     arguments: arguments.clone(),
-                    result: None,
                 };
-
-                // Emit block start (shows loading state in UI)
                 let _ = event_tx
                     .send(AgentEvent::ContentBlockStart {
-                        index: next_block_index,
                         block: tool_use_block.clone(),
                     })
                     .await;
+                let _ = event_tx.send(AgentEvent::ContentBlockStop).await;
+                content_blocks.push(tool_use_block);
 
                 // Execute tool
                 let tool_call = ToolCall {
@@ -620,32 +387,19 @@ pub async fn run_agent_loop(
                     );
                 }
 
-                // Create final block with result
-                let final_block = ContentBlock::ToolUse {
-                    id: called.id.clone(),
-                    name: called.function.name.clone(),
-                    arguments: tool_call.arguments.clone(),
-                    result: Some(ToolUseResult {
-                        content: result.content,
-                        is_error: result.is_error,
-                    }),
+                // Emit ToolResult block
+                let tool_result_block = ContentBlock::ToolResult {
+                    tool_use_id: called.id.clone(),
+                    content: result.content,
+                    is_error: result.is_error,
                 };
-
-                // Emit updated block with result, then stop
                 let _ = event_tx
                     .send(AgentEvent::ContentBlockStart {
-                        index: next_block_index,
-                        block: final_block.clone(),
+                        block: tool_result_block.clone(),
                     })
                     .await;
-                let _ = event_tx
-                    .send(AgentEvent::ContentBlockStop {
-                        index: next_block_index,
-                    })
-                    .await;
-
-                content_blocks.push(final_block);
-                next_block_index += 1;
+                let _ = event_tx.send(AgentEvent::ContentBlockStop).await;
+                content_blocks.push(tool_result_block);
             }
 
             // Store assistant message with all content blocks (including tool uses with results)
@@ -697,17 +451,13 @@ fn build_request_from_conversation(conversation: &Conversation, tools: &[Tool]) 
         .set_tool_choice(ToolChoice::Auto);
 
     for msg in &conversation.messages {
-        // Extract text content from blocks (including thinking wrapped in tags for context)
+        // Extract text content from blocks
         let text: String = msg
             .content
             .iter()
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),
-                ContentBlock::Thinking { thinking } => {
-                    // Re-wrap thinking in tags so model maintains context
-                    Some(format!("<think>{}</think>", thinking))
-                }
-                ContentBlock::ToolUse { .. } => None,
+                _ => None,
             })
             .collect::<Vec<_>>()
             .join("");
@@ -730,7 +480,6 @@ fn build_request_from_conversation(conversation: &Conversation, tools: &[Tool]) 
                             id,
                             name,
                             arguments,
-                            ..
                         } => Some(ToolCallResponse {
                             index: idx,
                             id: id.clone(),
@@ -745,19 +494,22 @@ fn build_request_from_conversation(conversation: &Conversation, tools: &[Tool]) 
                     .collect();
 
                 if !tool_uses.is_empty() {
-                    request = request
-                        .add_message_with_tool_call(TextMessageRole::Assistant, text, tool_uses);
+                    request = request.add_message_with_tool_call(
+                        TextMessageRole::Assistant,
+                        text,
+                        tool_uses,
+                    );
 
-                    // Add tool result messages for each ToolUse that has a result
+                    // Add tool result messages from ToolResult blocks
                     for block in &msg.content {
-                        if let ContentBlock::ToolUse {
-                            id,
-                            result: Some(tool_result),
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
                             ..
                         } = block
                         {
                             request =
-                                request.add_tool_message(tool_result.content.clone(), id.clone());
+                                request.add_tool_message(content.clone(), tool_use_id.clone());
                         }
                     }
                 } else {

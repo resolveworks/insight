@@ -4,22 +4,15 @@
 	import { onDestroy } from 'svelte';
 	import ModelSelector from './ModelSelector.svelte';
 
-	// Tool result embedded in ToolUse
-	interface ToolUseResult {
-		content: string;
-		is_error: boolean;
-	}
-
 	// Content block types matching backend
 	type ContentBlock =
 		| { type: 'text'; text: string }
-		| { type: 'thinking'; thinking: string }
+		| { type: 'tool_use'; id: string; name: string; arguments: object }
 		| {
-				type: 'tool_use';
-				id: string;
-				name: string;
-				arguments: object;
-				result?: ToolUseResult;
+				type: 'tool_result';
+				tool_use_id: string;
+				content: string;
+				is_error: boolean;
 		  };
 
 	// A chat message is a block with a role attached
@@ -29,21 +22,13 @@
 	}
 
 	// Delta content for streaming
-	type ContentDelta =
-		| { type: 'text'; text: string }
-		| { type: 'thinking'; thinking: string };
+	type ContentDelta = { type: 'text'; text: string };
 
 	// Agent events matching backend
 	type AgentEvent =
-		| {
-				type: 'content_block_start';
-				data: { index: number; block: ContentBlock };
-		  }
-		| {
-				type: 'content_block_delta';
-				data: { index: number; delta: ContentDelta };
-		  }
-		| { type: 'content_block_stop'; data: { index: number } }
+		| { type: 'content_block_start'; data: { block: ContentBlock } }
+		| { type: 'content_block_delta'; data: { delta: ContentDelta } }
+		| { type: 'content_block_stop' }
 		| { type: 'done' }
 		| { type: 'error'; data: { message: string } };
 
@@ -204,37 +189,21 @@
 		const payload = event.payload;
 
 		switch (payload.type) {
-			case 'content_block_start': {
-				const { index, block } = payload.data;
-				// Ensure array is large enough
-				while (streamingBlocks.length <= index) {
-					streamingBlocks.push({ type: 'text', text: '' });
-				}
-				// Replace block at index (handles both new blocks and tool updates)
-				streamingBlocks = [
-					...streamingBlocks.slice(0, index),
-					block,
-					...streamingBlocks.slice(index + 1),
-				];
+			case 'content_block_start':
+				// Push new block
+				streamingBlocks = [...streamingBlocks, payload.data.block];
 				break;
-			}
 
 			case 'content_block_delta': {
-				const { index, delta } = payload.data;
-				if (index < streamingBlocks.length) {
-					const block = streamingBlocks[index];
-					// Append delta content to existing block
+				// Update last block
+				const lastIdx = streamingBlocks.length - 1;
+				if (lastIdx >= 0) {
+					const block = streamingBlocks[lastIdx];
+					const delta = payload.data.delta;
 					if (delta.type === 'text' && block.type === 'text') {
 						streamingBlocks = [
-							...streamingBlocks.slice(0, index),
+							...streamingBlocks.slice(0, lastIdx),
 							{ type: 'text', text: block.text + delta.text },
-							...streamingBlocks.slice(index + 1),
-						];
-					} else if (delta.type === 'thinking' && block.type === 'thinking') {
-						streamingBlocks = [
-							...streamingBlocks.slice(0, index),
-							{ type: 'thinking', thinking: block.thinking + delta.thinking },
-							...streamingBlocks.slice(index + 1),
 						];
 					}
 				}
@@ -242,11 +211,11 @@
 			}
 
 			case 'content_block_stop':
-				// Block is complete, nothing to do (block already has final content)
+				// Block complete, nothing to do
 				break;
 
 			case 'done': {
-				// Flatten streaming blocks into individual messages
+				// Move streaming blocks to messages
 				const newMessages = streamingBlocks.map((block) => ({
 					role: 'assistant' as const,
 					block,
@@ -330,28 +299,12 @@
 							<p class="whitespace-pre-wrap">{block.text}</p>
 						</div>
 					</div>
-				{:else if block.type === 'thinking'}
-					<details class="mx-4 rounded border border-slate-600 bg-slate-800/50">
-						<summary
-							class="cursor-pointer px-2 py-1 text-xs italic text-slate-500 hover:text-slate-400"
-						>
-							Thinking...
-						</summary>
-						<p class="whitespace-pre-wrap p-2 text-xs text-slate-400">
-							{block.thinking}
-						</p>
-					</details>
 				{:else if block.type === 'tool_use'}
 					<details class="mx-4 rounded border border-slate-600 bg-slate-800">
 						<summary
 							class="cursor-pointer px-2 py-1 text-xs text-slate-400 hover:text-slate-300"
 						>
 							Tool: {block.name}
-							{#if block.result?.is_error}
-								<span class="text-red-400">(error)</span>
-							{:else if block.result}
-								<span class="text-green-400">(done)</span>
-							{/if}
 						</summary>
 						<div class="p-2">
 							<pre
@@ -360,15 +313,19 @@
 									null,
 									2,
 								)}</pre>
-							{#if block.result}
-								<div class="mt-2 border-t border-slate-700 pt-2">
-									<pre
-										class="max-h-48 overflow-auto text-xs text-slate-300">{block
-											.result.content}</pre>
-								</div>
-							{/if}
 						</div>
 					</details>
+				{:else if block.type === 'tool_result'}
+					<div
+						class="mx-4 rounded border border-slate-600 bg-slate-800/50 p-2 text-xs {block.is_error
+							? 'border-red-600/50'
+							: ''}"
+					>
+						<pre
+							class="max-h-48 overflow-auto text-slate-300 {block.is_error
+								? 'text-red-300'
+								: ''}">{block.content}</pre>
+					</div>
 				{/if}
 			{/each}
 		{/if}
