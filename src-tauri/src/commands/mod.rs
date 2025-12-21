@@ -170,9 +170,11 @@ pub async fn import_pdf(
     let search_guard = state.search.read().await;
     if let Some(index) = search_guard.as_ref() {
         let indexer_config = state.indexer_config.lock().await;
+        let embedders = state.embedders.read().await;
         search::index_document(
             index,
             &indexer_config,
+            &embedders,
             &doc_id,
             &file_name,
             &extracted.text,
@@ -289,8 +291,9 @@ pub async fn import_pdfs_batch(
                 let search_guard = state.search.read().await;
                 if let Some(index) = search_guard.as_ref() {
                     let indexer_config = state.indexer_config.lock().await;
+                    let embedders = state.embedders.read().await;
 
-                    match search::index_documents_batch(index, &indexer_config, docs_to_index) {
+                    match search::index_documents_batch(index, &indexer_config, &embedders, docs_to_index) {
                         Ok(()) => {
                             for doc_info in doc_infos {
                                 let _ = app.emit(
@@ -586,11 +589,14 @@ pub async fn delete_document(
     // Delete from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
+    let embedders = state.embedders.clone();
     tokio::spawn(async move {
         let search_guard = search.read().await;
         if let Some(index) = search_guard.as_ref() {
             let indexer_config = indexer_config.lock().await;
-            if let Err(e) = search::delete_document(index, &indexer_config, &document_id) {
+            let embedders = embedders.read().await;
+            if let Err(e) = search::delete_document(index, &indexer_config, &embedders, &document_id)
+            {
                 tracing::error!(
                     "Failed to remove document {} from search index: {}",
                     document_id,
@@ -630,11 +636,18 @@ pub async fn delete_collection(
     // Delete from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
+    let embedders = state.embedders.clone();
     tokio::spawn(async move {
         let search_guard = search.read().await;
         if let Some(index) = search_guard.as_ref() {
             let indexer_config = indexer_config.lock().await;
-            match search::delete_documents_by_collection(index, &indexer_config, &collection_id) {
+            let embedders = embedders.read().await;
+            match search::delete_documents_by_collection(
+                index,
+                &indexer_config,
+                &embedders,
+                &collection_id,
+            ) {
                 Ok(deleted_count) => {
                     tracing::info!(
                         "Removed {} documents from search index for collection {}",

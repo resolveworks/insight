@@ -12,6 +12,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use milli::update::IndexerConfig;
+use milli::vector::RuntimeEmbedders;
 use milli::Index;
 
 pub use agent::{AgentEvent, AgentModel, Conversation};
@@ -25,6 +26,10 @@ pub struct AppState {
     pub search: Arc<RwLock<Option<Index>>>,
     /// Shared indexer config with thread pool - use Mutex to serialize indexing operations
     pub indexer_config: Arc<Mutex<IndexerConfig>>,
+    /// Embedders for semantic search (empty = full-text only)
+    pub embedders: Arc<RwLock<RuntimeEmbedders>>,
+    /// Currently configured embedding model ID (None = no embeddings)
+    pub embedding_model_id: Arc<RwLock<Option<String>>>,
     /// Loaded LLM model for agent
     pub agent_model: Arc<RwLock<Option<AgentModel>>>,
     /// Active conversations
@@ -43,11 +48,17 @@ impl AppState {
         // Create a shared IndexerConfig with thread pool for all indexing operations
         let indexer_config = IndexerConfig::default();
 
+        // Start with empty embedders (full-text search only)
+        // Embedding model can be configured later
+        let embedders = search::create_empty_embedders();
+
         Self {
             config,
             storage: Arc::new(RwLock::new(None)),
             search: Arc::new(RwLock::new(None)),
             indexer_config: Arc::new(Mutex::new(indexer_config)),
+            embedders: Arc::new(RwLock::new(embedders)),
+            embedding_model_id: Arc::new(RwLock::new(None)),
             agent_model: Arc::new(RwLock::new(None)),
             conversations: Arc::new(RwLock::new(HashMap::new())),
             active_generations: Arc::new(RwLock::new(HashMap::new())),
