@@ -448,7 +448,8 @@ pub async fn run_agent_loop(
 fn build_request_from_conversation(conversation: &Conversation, tools: &[Tool]) -> RequestBuilder {
     let mut request = RequestBuilder::new()
         .set_tools(tools.to_vec())
-        .set_tool_choice(ToolChoice::Auto);
+        .set_tool_choice(ToolChoice::Auto)
+        .enable_thinking(false);
 
     for msg in &conversation.messages {
         // Extract text content from blocks

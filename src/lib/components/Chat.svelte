@@ -332,16 +332,6 @@
 
 		<!-- Streaming blocks -->
 		{#if isGenerating}
-			{#if streamingBlocks.length === 0}
-				<div class="flex justify-start">
-					<div
-						class="max-w-[80%] rounded-lg bg-slate-700 px-4 py-2 text-slate-100"
-					>
-						<span class="animate-pulse text-slate-400">Generating...</span>
-					</div>
-				</div>
-			{/if}
-
 			{#each streamingBlocks as block, blockIdx (blockIdx)}
 				{#if block.type === 'text'}
 					<div class="flex justify-start">
@@ -353,41 +343,27 @@
 							</p>
 						</div>
 					</div>
-				{:else if block.type === 'thinking'}
-					<details
-						class="mx-4 rounded border border-slate-600 bg-slate-800/50"
-						open
-					>
-						<summary
-							class="cursor-pointer px-2 py-1 text-xs italic text-slate-500 hover:text-slate-400"
-						>
-							Thinking...
-						</summary>
-						<p class="whitespace-pre-wrap p-2 text-xs text-slate-400">
-							{block.thinking}
-						</p>
-					</details>
 				{:else if block.type === 'tool_use'}
 					<div
 						class="mx-4 rounded border border-slate-600 bg-slate-800 p-2 text-xs"
 					>
 						<div class="flex items-center gap-2 font-medium text-slate-400">
 							<span>Tool: {block.name}</span>
-							{#if !block.result}
-								<span class="animate-pulse">...</span>
-							{:else if block.result.is_error}
-								<span class="text-red-400">(error)</span>
-							{:else}
-								<span class="text-green-400">(done)</span>
-							{/if}
+							<span class="animate-pulse">...</span>
 						</div>
-						{#if block.result}
-							<pre
-								class="mt-2 max-h-32 overflow-auto text-slate-300">{block.result.content.slice(
-									0,
-									300,
-								)}{block.result.content.length > 300 ? '...' : ''}</pre>
-						{/if}
+					</div>
+				{:else if block.type === 'tool_result'}
+					<div
+						class="mx-4 rounded border border-slate-600 bg-slate-800/50 p-2 text-xs {block.is_error
+							? 'border-red-600/50'
+							: ''}"
+					>
+						<pre
+							class="max-h-32 overflow-auto text-slate-300 {block.is_error
+								? 'text-red-300'
+								: ''}">{block.content.slice(0, 300)}{block.content.length > 300
+								? '...'
+								: ''}</pre>
 					</div>
 				{/if}
 			{/each}

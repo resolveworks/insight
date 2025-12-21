@@ -261,6 +261,33 @@ impl Storage {
         Ok(documents)
     }
 
+    /// Get a single document from a collection by ID
+    pub async fn get_document(
+        &mut self,
+        namespace_id: NamespaceId,
+        document_id: &str,
+    ) -> Result<Option<DocumentMetadata>> {
+        let key = format!("files/{}", document_id);
+        let query = iroh_docs::store::Query::key_exact(key.as_bytes()).build();
+        let mut entries = self.docs.get_many(namespace_id, query)?;
+
+        if let Some(entry) = entries.next() {
+            let entry = entry?;
+            let hash = entry.content_hash();
+
+            if let Some(data) = self.get_blob(&hash).await? {
+                match serde_json::from_slice::<DocumentMetadata>(&data) {
+                    Ok(metadata) => return Ok(Some(metadata)),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse document metadata: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Delete a document from a collection
     pub fn delete_document(&mut self, namespace_id: NamespaceId, document_id: &str) -> Result<()> {
         let key = format!("files/{}", document_id);

@@ -1,2 +1,2 @@
 pnpm lint-staged
-cd src-tauri && cargo fmt && cargo clippy -- -D warnings
+cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings

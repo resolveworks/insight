@@ -489,6 +489,73 @@ pub async fn get_documents(
         .collect())
 }
 
+/// Get a single document from a collection by ID
+#[tauri::command]
+pub async fn get_document(
+    collection_id: String,
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<DocumentInfo, String> {
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+
+    let mut storage_guard = state.storage.write().await;
+    let storage = storage_guard
+        .as_mut()
+        .ok_or_else(|| "Storage not initialized".to_string())?;
+
+    let document = storage
+        .get_document(namespace_id, &document_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Document not found".to_string())?;
+
+    Ok(DocumentInfo {
+        id: document.id,
+        name: document.name,
+        pdf_hash: document.pdf_hash,
+        text_hash: document.text_hash,
+        page_count: document.page_count,
+        tags: document.tags,
+        created_at: document.created_at,
+    })
+}
+
+/// Get the extracted text content of a document
+#[tauri::command]
+pub async fn get_document_text(
+    collection_id: String,
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+
+    let mut storage_guard = state.storage.write().await;
+    let storage = storage_guard
+        .as_mut()
+        .ok_or_else(|| "Storage not initialized".to_string())?;
+
+    // Get document metadata to find text hash
+    let document = storage
+        .get_document(namespace_id, &document_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Document not found".to_string())?;
+
+    // Parse the text hash and fetch the blob
+    let text_hash: iroh_blobs::Hash = document
+        .text_hash
+        .parse()
+        .map_err(|_| "Invalid text hash".to_string())?;
+
+    let text_bytes = storage
+        .get_blob(&text_hash)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Text content not found".to_string())?;
+
+    String::from_utf8(text_bytes).map_err(|e| format!("Invalid UTF-8 in text content: {}", e))
+}
+
 /// Delete a document from a collection
 #[tauri::command]
 pub async fn delete_document(

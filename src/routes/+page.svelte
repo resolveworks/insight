@@ -2,6 +2,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { open } from '@tauri-apps/plugin-dialog';
+	import { resolve } from '$app/paths';
 	import { onDestroy, onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import Sidebar from '$lib/components/Sidebar.svelte';
@@ -18,7 +19,11 @@
 	interface Document {
 		id: string;
 		name: string;
+		pdf_hash: string;
+		text_hash: string;
 		page_count: number;
+		tags: string[];
+		created_at: string;
 	}
 
 	interface SearchHit {
@@ -512,14 +517,20 @@
 						<ul class="space-y-2">
 							{#each documents as doc (doc.id)}
 								<li
-									class="group flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-4 py-3"
+									class="group flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 transition-colors hover:border-slate-600"
 								>
-									<div>
-										<span class="text-slate-200">{doc.name}</span>
+									<a
+										href={resolve(`/files/${selectedCollection}/${doc.id}`)}
+										class="flex-1"
+									>
+										<span
+											class="text-slate-200 hover:text-rose-400 transition-colors"
+											>{doc.name}</span
+										>
 										<span class="ml-2 text-xs text-slate-500"
 											>{doc.page_count} pages</span
 										>
-									</div>
+									</a>
 									<button
 										onclick={() => deleteDocument(doc.id)}
 										class="hidden text-slate-500 hover:text-red-400 group-hover:block"
