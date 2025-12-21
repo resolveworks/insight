@@ -2,50 +2,60 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { onDestroy } from 'svelte';
-	import { SvelteMap } from 'svelte/reactivity';
 	import ModelSelector from './ModelSelector.svelte';
 
-	interface ToolCall {
-		id: string;
-		name: string;
-		arguments: object;
-		result?: string;
-		isError?: boolean;
-		isLoading?: boolean;
+	// Tool result embedded in ToolUse
+	interface ToolUseResult {
+		content: string;
+		is_error: boolean;
 	}
 
+	// Content block types matching backend
+	type ContentBlock =
+		| { type: 'text'; text: string }
+		| { type: 'thinking'; thinking: string }
+		| {
+				type: 'tool_use';
+				id: string;
+				name: string;
+				arguments: object;
+				result?: ToolUseResult;
+		  };
+
+	// A chat message is a block with a role attached
 	interface ChatMessage {
 		role: 'user' | 'assistant';
-		content: string;
-		toolCalls?: ToolCall[];
+		block: ContentBlock;
 	}
 
-	interface AgentEvent {
-		type: 'TextDelta' | 'ToolCallStart' | 'ToolCallResult' | 'Done' | 'Error';
-		data?: {
-			content?: string;
-			id?: string;
-			name?: string;
-			arguments?: object;
-			is_error?: boolean;
-			message?: string;
-		};
+	// Delta content for streaming
+	type ContentDelta =
+		| { type: 'text'; text: string }
+		| { type: 'thinking'; thinking: string };
+
+	// Agent events matching backend
+	type AgentEvent =
+		| {
+				type: 'content_block_start';
+				data: { index: number; block: ContentBlock };
+		  }
+		| {
+				type: 'content_block_delta';
+				data: { index: number; delta: ContentDelta };
+		  }
+		| { type: 'content_block_stop'; data: { index: number } }
+		| { type: 'done' }
+		| { type: 'error'; data: { message: string } };
+
+	interface BackendMessage {
+		role: 'system' | 'user' | 'assistant';
+		content: ContentBlock[];
 	}
 
 	interface Conversation {
 		id: string;
 		title: string;
-		messages: {
-			role: 'system' | 'user' | 'assistant' | 'tool';
-			content: string;
-			tool_call_id?: string;
-			tool_calls?: {
-				index: number;
-				id: string;
-				name: string;
-				arguments: string;
-			}[];
-		}[];
+		messages: BackendMessage[];
 		created_at: string;
 		updated_at: string;
 	}
@@ -61,9 +71,10 @@
 	let inputValue = $state('');
 	let isGenerating = $state(false);
 	let isLoadingModel = $state(false);
-	let streamingContent = $state('');
-	let activeToolCalls = new SvelteMap<string, ToolCall>();
 	let error = $state<string | null>(null);
+
+	// Streaming state: blocks being built for current response
+	let streamingBlocks = $state<ContentBlock[]>([]);
 
 	// Model state
 	let modelSelector: ModelSelector;
@@ -119,18 +130,15 @@
 			});
 			conversationId = conv.id;
 
-			// Convert backend messages to ChatMessage format (skip system messages)
+			// Flatten backend messages into individual blocks
 			messages = conv.messages
 				.filter((m) => m.role === 'user' || m.role === 'assistant')
-				.map((m) => ({
-					role: m.role as 'user' | 'assistant',
-					content: m.content,
-					toolCalls: m.tool_calls?.map((tc) => ({
-						id: tc.id,
-						name: tc.name,
-						arguments: JSON.parse(tc.arguments || '{}'),
+				.flatMap((m) =>
+					m.content.map((block) => ({
+						role: m.role as 'user' | 'assistant',
+						block,
 					})),
-				}));
+				);
 
 			// Set up event listener for this conversation
 			unlistenAgent = await listen<AgentEvent>(
@@ -150,8 +158,7 @@
 		unlistenAgent?.();
 		conversationId = null;
 		messages = [];
-		streamingContent = '';
-		activeToolCalls = new SvelteMap();
+		streamingBlocks = [];
 		error = null;
 
 		if (modelReady) {
@@ -167,10 +174,12 @@
 		error = null;
 
 		// Add user message immediately
-		messages = [...messages, { role: 'user', content: userMessage }];
+		messages = [
+			...messages,
+			{ role: 'user', block: { type: 'text', text: userMessage } },
+		];
 		isGenerating = true;
-		streamingContent = '';
-		activeToolCalls = new SvelteMap();
+		streamingBlocks = [];
 
 		try {
 			await invoke('send_message', {
@@ -195,54 +204,60 @@
 		const payload = event.payload;
 
 		switch (payload.type) {
-			case 'TextDelta':
-				if (payload.data?.content) {
-					streamingContent += payload.data.content;
+			case 'content_block_start': {
+				const { index, block } = payload.data;
+				// Ensure array is large enough
+				while (streamingBlocks.length <= index) {
+					streamingBlocks.push({ type: 'text', text: '' });
 				}
+				// Replace block at index (handles both new blocks and tool updates)
+				streamingBlocks = [
+					...streamingBlocks.slice(0, index),
+					block,
+					...streamingBlocks.slice(index + 1),
+				];
 				break;
+			}
 
-			case 'ToolCallStart':
-				if (payload.data?.id && payload.data?.name) {
-					activeToolCalls.set(payload.data.id, {
-						id: payload.data.id,
-						name: payload.data.name,
-						arguments: payload.data.arguments || {},
-						isLoading: true,
-					});
-					activeToolCalls = new SvelteMap(activeToolCalls);
-				}
-				break;
-
-			case 'ToolCallResult':
-				if (payload.data?.id) {
-					const tc = activeToolCalls.get(payload.data.id);
-					if (tc) {
-						tc.result = payload.data.content;
-						tc.isError = payload.data.is_error;
-						tc.isLoading = false;
-						activeToolCalls = new SvelteMap(activeToolCalls);
+			case 'content_block_delta': {
+				const { index, delta } = payload.data;
+				if (index < streamingBlocks.length) {
+					const block = streamingBlocks[index];
+					// Append delta content to existing block
+					if (delta.type === 'text' && block.type === 'text') {
+						streamingBlocks = [
+							...streamingBlocks.slice(0, index),
+							{ type: 'text', text: block.text + delta.text },
+							...streamingBlocks.slice(index + 1),
+						];
+					} else if (delta.type === 'thinking' && block.type === 'thinking') {
+						streamingBlocks = [
+							...streamingBlocks.slice(0, index),
+							{ type: 'thinking', thinking: block.thinking + delta.thinking },
+							...streamingBlocks.slice(index + 1),
+						];
 					}
 				}
 				break;
+			}
 
-			case 'Done': {
-				// Finalize assistant message with all tool calls
-				const toolCallsArray = Array.from(activeToolCalls.values());
-				messages = [
-					...messages,
-					{
-						role: 'assistant',
-						content: streamingContent,
-						toolCalls: toolCallsArray.length > 0 ? toolCallsArray : undefined,
-					},
-				];
-				streamingContent = '';
-				activeToolCalls = new SvelteMap();
+			case 'content_block_stop':
+				// Block is complete, nothing to do (block already has final content)
+				break;
+
+			case 'done': {
+				// Flatten streaming blocks into individual messages
+				const newMessages = streamingBlocks.map((block) => ({
+					role: 'assistant' as const,
+					block,
+				}));
+				messages = [...messages, ...newMessages];
+				streamingBlocks = [];
 				isGenerating = false;
 				break;
 			}
 
-			case 'Error':
+			case 'error':
 				error = payload.data?.message || 'Unknown error';
 				console.error('Agent error:', payload.data?.message);
 				isGenerating = false;
@@ -300,74 +315,125 @@
 			</div>
 		{:else}
 			{#each messages as message, i (i)}
-				<div
-					class="flex {message.role === 'user'
-						? 'justify-end'
-						: 'justify-start'}"
-				>
+				{@const block = message.block}
+				{#if block.type === 'text'}
 					<div
-						class="max-w-[80%] rounded-lg px-4 py-2 {message.role === 'user'
-							? 'bg-rose-600 text-white'
-							: 'bg-slate-700 text-slate-100'}"
+						class="flex {message.role === 'user'
+							? 'justify-end'
+							: 'justify-start'}"
 					>
-						<p class="whitespace-pre-wrap">{message.content}</p>
-
-						{#if message.toolCalls && message.toolCalls.length > 0}
-							<div class="mt-2 space-y-2">
-								{#each message.toolCalls as tc (tc.id)}
-									<details class="rounded border border-slate-600 bg-slate-800">
-										<summary
-											class="cursor-pointer px-2 py-1 text-xs text-slate-400 hover:text-slate-300"
-										>
-											Tool: {tc.name}
-											{#if tc.isError}
-												<span class="text-red-400">(error)</span>
-											{/if}
-										</summary>
-										{#if tc.result}
-											<pre
-												class="max-h-48 overflow-auto p-2 text-xs text-slate-300">{tc.result}</pre>
-										{/if}
-									</details>
-								{/each}
-							</div>
-						{/if}
+						<div
+							class="max-w-[80%] rounded-lg px-4 py-2 {message.role === 'user'
+								? 'bg-rose-600 text-white'
+								: 'bg-slate-700 text-slate-100'}"
+						>
+							<p class="whitespace-pre-wrap">{block.text}</p>
+						</div>
 					</div>
-				</div>
+				{:else if block.type === 'thinking'}
+					<details class="mx-4 rounded border border-slate-600 bg-slate-800/50">
+						<summary
+							class="cursor-pointer px-2 py-1 text-xs italic text-slate-500 hover:text-slate-400"
+						>
+							Thinking...
+						</summary>
+						<p class="whitespace-pre-wrap p-2 text-xs text-slate-400">
+							{block.thinking}
+						</p>
+					</details>
+				{:else if block.type === 'tool_use'}
+					<details class="mx-4 rounded border border-slate-600 bg-slate-800">
+						<summary
+							class="cursor-pointer px-2 py-1 text-xs text-slate-400 hover:text-slate-300"
+						>
+							Tool: {block.name}
+							{#if block.result?.is_error}
+								<span class="text-red-400">(error)</span>
+							{:else if block.result}
+								<span class="text-green-400">(done)</span>
+							{/if}
+						</summary>
+						<div class="p-2">
+							<pre
+								class="max-h-24 overflow-auto text-xs text-slate-400">{JSON.stringify(
+									block.arguments,
+									null,
+									2,
+								)}</pre>
+							{#if block.result}
+								<div class="mt-2 border-t border-slate-700 pt-2">
+									<pre
+										class="max-h-48 overflow-auto text-xs text-slate-300">{block
+											.result.content}</pre>
+								</div>
+							{/if}
+						</div>
+					</details>
+				{/if}
 			{/each}
 		{/if}
 
-		<!-- Streaming message -->
-		{#if isGenerating && (streamingContent || activeToolCalls.size > 0)}
-			<div class="flex justify-start">
-				<div
-					class="max-w-[80%] rounded-lg bg-slate-700 px-4 py-2 text-slate-100"
-				>
-					{#if streamingContent}
-						<p class="whitespace-pre-wrap">{streamingContent}</p>
-					{/if}
+		<!-- Streaming blocks -->
+		{#if isGenerating}
+			{#if streamingBlocks.length === 0}
+				<div class="flex justify-start">
+					<div
+						class="max-w-[80%] rounded-lg bg-slate-700 px-4 py-2 text-slate-100"
+					>
+						<span class="animate-pulse text-slate-400">Generating...</span>
+					</div>
+				</div>
+			{/if}
 
-					{#each [...activeToolCalls.values()] as tc (tc.id)}
+			{#each streamingBlocks as block, blockIdx (blockIdx)}
+				{#if block.type === 'text'}
+					<div class="flex justify-start">
 						<div
-							class="mt-2 rounded border border-slate-600 bg-slate-800 p-2 text-xs"
+							class="max-w-[80%] rounded-lg bg-slate-700 px-4 py-2 text-slate-100"
 						>
-							<div class="flex items-center gap-2 font-medium text-slate-400">
-								<span>Tool: {tc.name}</span>
-								{#if tc.isLoading}
-									<span class="animate-pulse">...</span>
-								{/if}
-							</div>
-							{#if tc.result && !tc.isLoading}
-								<pre
-									class="mt-1 max-h-32 overflow-auto text-slate-300">{tc.result.slice(
-										0,
-										300,
-									)}{tc.result.length > 300 ? '...' : ''}</pre>
+							<p class="whitespace-pre-wrap">
+								{block.text}<span class="animate-pulse">▊</span>
+							</p>
+						</div>
+					</div>
+				{:else if block.type === 'thinking'}
+					<details
+						class="mx-4 rounded border border-slate-600 bg-slate-800/50"
+						open
+					>
+						<summary
+							class="cursor-pointer px-2 py-1 text-xs italic text-slate-500 hover:text-slate-400"
+						>
+							Thinking...
+						</summary>
+						<p class="whitespace-pre-wrap p-2 text-xs text-slate-400">
+							{block.thinking}
+						</p>
+					</details>
+				{:else if block.type === 'tool_use'}
+					<div
+						class="mx-4 rounded border border-slate-600 bg-slate-800 p-2 text-xs"
+					>
+						<div class="flex items-center gap-2 font-medium text-slate-400">
+							<span>Tool: {block.name}</span>
+							{#if !block.result}
+								<span class="animate-pulse">...</span>
+							{:else if block.result.is_error}
+								<span class="text-red-400">(error)</span>
+							{:else}
+								<span class="text-green-400">(done)</span>
 							{/if}
 						</div>
-					{/each}
-				</div>
-			</div>
+						{#if block.result}
+							<pre
+								class="mt-2 max-h-32 overflow-auto text-slate-300">{block.result.content.slice(
+									0,
+									300,
+								)}{block.result.content.length > 300 ? '...' : ''}</pre>
+						{/if}
+					</div>
+				{/if}
+			{/each}
 		{/if}
 	</div>
 
