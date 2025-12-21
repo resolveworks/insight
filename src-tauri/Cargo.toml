@@ -52,6 +52,10 @@ hf-hub = { version = "0.4", features = ["tokio"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 
+# Text chunking for embeddings
+text-splitter = { version = "0.28", features = ["tokenizers"] }
+tokenizers = "0.22"
+
 # Utilities
 anyhow = "1"
 thiserror = "2"

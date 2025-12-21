@@ -107,7 +107,7 @@ pub fn get_embedding_model(id: &str) -> Option<EmbeddingModelInfo> {
 }
 
 /// Available embedding models registry
-/// Note: Only models supported by mistralrs are listed (EmbeddingGemma, Qwen3Embedding)
+/// Note: Only models supported by mistralrs are listed
 pub fn available_embedding_models() -> Vec<EmbeddingModelInfo> {
     vec![
         // Default: Qwen3 Embedding - Apache 2.0, not gated
@@ -118,15 +118,6 @@ pub fn available_embedding_models() -> Vec<EmbeddingModelInfo> {
             size_gb: 1.2,
             hf_repo_id: "Qwen/Qwen3-Embedding-0.6B".to_string(),
             dimensions: 1024,
-        },
-        // EmbeddingGemma - Gated, requires HuggingFace login
-        EmbeddingModelInfo {
-            id: "embeddinggemma".to_string(),
-            name: "EmbeddingGemma 300M".to_string(),
-            description: "Lightweight Google model. Requires HuggingFace login.".to_string(),
-            size_gb: 0.6,
-            hf_repo_id: "google/embeddinggemma-300m".to_string(),
-            dimensions: 768,
         },
     ]
 }
