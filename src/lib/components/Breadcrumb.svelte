@@ -19,8 +19,9 @@
 			<span class="text-slate-600">/</span>
 		{/if}
 		{#if segment.href}
+			{@const href = resolve(segment.href as '/')}
 			<a
-				href={resolve(segment.href ?? '')}
+				{href}
 				class="hover:text-slate-200 transition-colors"
 			>
 				{segment.label}
