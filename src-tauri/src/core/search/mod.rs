@@ -1,20 +1,142 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bumpalo::Bump;
+use std::collections::BTreeMap;
+
 use milli::documents::mmap_from_objects;
 use milli::heed::EnvOpenOptions;
 use milli::progress::Progress;
 use milli::score_details::ScoringStrategy;
 use milli::update::new::indexer::{self, DocumentOperation};
-use milli::update::IndexerConfig;
-use milli::vector::RuntimeEmbedders;
+use milli::update::{IndexerConfig, Setting, Settings};
+use milli::vector::embedder::hf;
+use milli::vector::settings::{EmbedderSource, EmbeddingSettings};
+use milli::vector::{Embedder, EmbedderOptions, RuntimeEmbedder, RuntimeEmbedders};
 use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 /// Default map size for the LMDB environment (10 GB)
 /// This is the maximum size the database can grow to
 const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
+
+/// Default embedder cache capacity (number of cached embeddings)
+const EMBEDDER_CACHE_CAP: usize = 1000;
+
+// ============================================================================
+// Embedder Configuration
+// ============================================================================
+
+/// Create RuntimeEmbedders for a HuggingFace model
+///
+/// This creates the embedder that Milli will use during indexing to generate
+/// embeddings automatically.
+pub fn create_embedders(hf_model_id: &str) -> Result<RuntimeEmbedders> {
+    let options = hf::EmbedderOptions {
+        model: hf_model_id.to_string(),
+        revision: None,
+        distribution: None,
+        pooling: Default::default(),
+    };
+
+    let embedder = Embedder::new(EmbedderOptions::HuggingFace(options), EMBEDDER_CACHE_CAP)
+        .context("Failed to create HuggingFace embedder")?;
+
+    // Create a default document template (uses document content)
+    let prompt = milli::prompt::Prompt::default();
+
+    let runtime_embedder = RuntimeEmbedder::new(
+        Arc::new(embedder),
+        prompt,
+        vec![], // No fragments
+        false,  // Not quantized
+    );
+
+    let mut map = HashMap::new();
+    map.insert("default".to_string(), Arc::new(runtime_embedder));
+
+    Ok(RuntimeEmbedders::new(map))
+}
+
+/// Configure embedder settings in the index
+///
+/// This must be called before using RuntimeEmbedders for indexing.
+/// It tells the index about the embedder configuration so Milli knows
+/// how to handle embeddings.
+pub fn configure_index_embedder(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    hf_model_id: &str,
+) -> Result<()> {
+    let mut wtxn = index.write_txn()?;
+
+    // Create embedding settings for the HuggingFace model
+    let embedding_settings = EmbeddingSettings {
+        source: Setting::Set(EmbedderSource::HuggingFace),
+        model: Setting::Set(hf_model_id.to_string()),
+        revision: Setting::NotSet,
+        pooling: Setting::NotSet,
+        api_key: Setting::NotSet,
+        dimensions: Setting::NotSet,
+        binary_quantized: Setting::NotSet,
+        document_template: Setting::NotSet,
+        document_template_max_bytes: Setting::NotSet,
+        url: Setting::NotSet,
+        request: Setting::NotSet,
+        response: Setting::NotSet,
+        headers: Setting::NotSet,
+        search_embedder: Setting::NotSet,
+        indexing_embedder: Setting::NotSet,
+        distribution: Setting::NotSet,
+        indexing_fragments: Setting::NotSet,
+        search_fragments: Setting::NotSet,
+    };
+
+    let mut embedder_settings = BTreeMap::new();
+    embedder_settings.insert("default".to_string(), Setting::Set(embedding_settings));
+
+    let mut settings = Settings::new(
+        &mut wtxn,
+        index,
+        indexer_config,
+    );
+
+    settings.set_embedder_settings(embedder_settings);
+
+    // Execute settings with default progress and no cancellation
+    settings
+        .execute(&|| false, &Progress::default(), Default::default())
+        .context("Failed to apply embedder settings")?;
+
+    wtxn.commit()?;
+
+    tracing::info!("Configured index embedder: {}", hf_model_id);
+    Ok(())
+}
+
+/// Clear embedder settings from the index
+pub fn clear_index_embedder(index: &Index, indexer_config: &IndexerConfig) -> Result<()> {
+    let mut wtxn = index.write_txn()?;
+
+    let mut settings = Settings::new(
+        &mut wtxn,
+        index,
+        indexer_config,
+    );
+
+    settings.reset_embedder_settings();
+
+    settings
+        .execute(&|| false, &Progress::default(), Default::default())
+        .context("Failed to clear embedder settings")?;
+
+    wtxn.commit()?;
+
+    tracing::info!("Cleared index embedder settings");
+    Ok(())
+}
 
 /// Open or create a milli search index
 pub fn open_index(path: &Path) -> Result<Index> {
@@ -57,35 +179,33 @@ pub fn open_index(path: &Path) -> Result<Index> {
 // Document Indexing
 // ============================================================================
 
-/// Document to be indexed (with optional pre-computed embedding)
+/// Document to be indexed
 pub struct DocToIndex {
     pub id: String,
     pub name: String,
     pub content: String,
     pub collection_id: String,
-    /// Pre-computed embedding vector (if semantic search is enabled)
-    pub vector: Option<Vec<f32>>,
 }
 
 /// Index a single document in milli
 pub fn index_document(
     index: &Index,
     indexer_config: &IndexerConfig,
+    embedders: &RuntimeEmbedders,
     doc_id: &str,
     name: &str,
     content: &str,
     collection_id: &str,
-    vector: Option<Vec<f32>>,
 ) -> Result<()> {
     index_documents_batch(
         index,
         indexer_config,
+        embedders,
         vec![DocToIndex {
             id: doc_id.to_string(),
             name: name.to_string(),
             content: content.to_string(),
             collection_id: collection_id.to_string(),
-            vector,
         }],
     )
 }
@@ -97,6 +217,7 @@ const BATCH_CHUNK_SIZE: usize = 50;
 pub fn index_documents_batch(
     index: &Index,
     indexer_config: &IndexerConfig,
+    embedders: &RuntimeEmbedders,
     docs: Vec<DocToIndex>,
 ) -> Result<()> {
     if docs.is_empty() {
@@ -108,7 +229,7 @@ pub fn index_documents_batch(
     // Process in chunks to avoid stack overflow with large batches
     let num_chunks = total.div_ceil(BATCH_CHUNK_SIZE);
     for (chunk_idx, chunk) in docs.chunks(BATCH_CHUNK_SIZE).enumerate() {
-        index_chunk(index, indexer_config, chunk)?;
+        index_chunk(index, indexer_config, embedders, chunk)?;
         tracing::info!(
             "Indexed chunk {}/{} ({} documents, {}% complete)",
             chunk_idx + 1,
@@ -124,7 +245,12 @@ pub fn index_documents_batch(
 }
 
 /// Index a single chunk of documents
-fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex]) -> Result<()> {
+fn index_chunk(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    embedders: &RuntimeEmbedders,
+    docs: &[DocToIndex],
+) -> Result<()> {
     let json_docs: Vec<Map<String, Value>> = docs
         .iter()
         .map(|doc| {
@@ -136,13 +262,6 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
                 "collection_id".to_string(),
                 Value::String(doc.collection_id.clone()),
             );
-            // Add pre-computed vector if present
-            if let Some(ref vector) = doc.vector {
-                m.insert(
-                    "_vectors".to_string(),
-                    json!({ "default": vector }),
-                );
-            }
             m
         })
         .collect();
@@ -175,8 +294,7 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
     let mut wtxn = index.write_txn()?;
 
     // Use the shared thread pool from IndexerConfig for both outer and inner operations
-    // Pass empty embedders - we provide pre-computed vectors in the document's _vectors field
-    let empty_embedders = RuntimeEmbedders::default();
+    // Pass embedders for automatic embedding generation during indexing
     indexer_config
         .thread_pool
         .install(|| {
@@ -189,7 +307,7 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
                 new_fields_ids_map,
                 primary_key,
                 &document_changes,
-                empty_embedders,
+                embedders.clone(),
                 &|| false,
                 &Progress::default(),
                 &Default::default(),
@@ -337,14 +455,20 @@ pub fn get_document_by_external_id(index: &Index, external_id: &str) -> Result<O
 }
 
 /// Delete a single document from the index by its external ID
-pub fn delete_document(index: &Index, indexer_config: &IndexerConfig, doc_id: &str) -> Result<()> {
-    delete_documents(index, indexer_config, &[doc_id.to_string()])
+pub fn delete_document(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    embedders: &RuntimeEmbedders,
+    doc_id: &str,
+) -> Result<()> {
+    delete_documents(index, indexer_config, embedders, &[doc_id.to_string()])
 }
 
 /// Delete multiple documents from the index by their external IDs
 pub fn delete_documents(
     index: &Index,
     indexer_config: &IndexerConfig,
+    embedders: &RuntimeEmbedders,
     doc_ids: &[String],
 ) -> Result<()> {
     if doc_ids.is_empty() {
@@ -379,7 +503,6 @@ pub fn delete_documents(
 
     let mut wtxn = index.write_txn()?;
 
-    let empty_embedders = RuntimeEmbedders::default();
     indexer_config
         .thread_pool
         .install(|| {
@@ -392,7 +515,7 @@ pub fn delete_documents(
                 new_fields_ids_map,
                 primary_key,
                 &document_changes,
-                empty_embedders,
+                embedders.clone(),
                 &|| false,
                 &Progress::default(),
                 &Default::default(),
@@ -411,6 +534,7 @@ pub fn delete_documents(
 pub fn delete_documents_by_collection(
     index: &Index,
     indexer_config: &IndexerConfig,
+    embedders: &RuntimeEmbedders,
     collection_id: &str,
 ) -> Result<usize> {
     // First, find all document IDs in this collection
@@ -455,7 +579,7 @@ pub fn delete_documents_by_collection(
 
     let count = doc_ids_to_delete.len();
     if count > 0 {
-        delete_documents(index, indexer_config, &doc_ids_to_delete)?;
+        delete_documents(index, indexer_config, embedders, &doc_ids_to_delete)?;
         tracing::info!(
             "Deleted {} documents from index for collection {}",
             count,
@@ -472,6 +596,10 @@ mod tests {
 
     fn test_indexer_config() -> IndexerConfig {
         IndexerConfig::default()
+    }
+
+    fn empty_embedders() -> RuntimeEmbedders {
+        RuntimeEmbedders::default()
     }
 
     #[test]
@@ -503,15 +631,16 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
+        let embedders = empty_embedders();
 
         index_document(
             &index,
             &config,
+            &embedders,
             "doc1",
             "test.pdf",
             "This is a test document about climate change.",
             "collection1",
-            None,
         )
         .unwrap();
 
@@ -533,15 +662,16 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
+        let embedders = empty_embedders();
 
         index_document(
             &index,
             &config,
+            &embedders,
             "doc1",
             "test.pdf",
             "Hello world",
             "col1",
-            None,
         )
         .unwrap();
 
@@ -554,35 +684,36 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
+        let embedders = empty_embedders();
 
         index_document(
             &index,
             &config,
+            &embedders,
             "doc1",
             "a.pdf",
             "Climate research paper",
             "climate",
-            None,
         )
         .unwrap();
         index_document(
             &index,
             &config,
+            &embedders,
             "doc2",
             "b.pdf",
             "Climate news article",
             "news",
-            None,
         )
         .unwrap();
         index_document(
             &index,
             &config,
+            &embedders,
             "doc3",
             "c.pdf",
             "Climate policy document",
             "policy",
-            None,
         )
         .unwrap();
 
@@ -615,9 +746,10 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
+        let embedders = empty_embedders();
 
-        index_document(&index, &config, "doc1", "a.pdf", "Test content", "col1", None).unwrap();
-        index_document(&index, &config, "doc2", "b.pdf", "Test content", "col2", None).unwrap();
+        index_document(&index, &config, &embedders, "doc1", "a.pdf", "Test content", "col1").unwrap();
+        index_document(&index, &config, &embedders, "doc2", "b.pdf", "Test content", "col2").unwrap();
 
         // Empty filter should return all
         let results = search_index(&index, "test", 10, 0, Some(&[])).unwrap();
@@ -629,6 +761,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
+        let embedders = empty_embedders();
 
         let docs = vec![
             DocToIndex {
@@ -636,25 +769,22 @@ mod tests {
                 name: "a.pdf".to_string(),
                 content: "First document about science".to_string(),
                 collection_id: "col1".to_string(),
-                vector: None,
             },
             DocToIndex {
                 id: "doc2".to_string(),
                 name: "b.pdf".to_string(),
                 content: "Second document about science".to_string(),
                 collection_id: "col1".to_string(),
-                vector: None,
             },
             DocToIndex {
                 id: "doc3".to_string(),
                 name: "c.pdf".to_string(),
                 content: "Third document about science".to_string(),
                 collection_id: "col1".to_string(),
-                vector: None,
             },
         ];
 
-        index_documents_batch(&index, &config, docs).unwrap();
+        index_documents_batch(&index, &config, &embedders, docs).unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
@@ -668,26 +798,27 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
+        let embedders = empty_embedders();
 
         // Index two documents
         index_document(
             &index,
             &config,
+            &embedders,
             "doc1",
             "a.pdf",
             "First document",
             "col1",
-            None,
         )
         .unwrap();
         index_document(
             &index,
             &config,
+            &embedders,
             "doc2",
             "b.pdf",
             "Second document",
             "col1",
-            None,
         )
         .unwrap();
 
@@ -696,7 +827,7 @@ mod tests {
         drop(rtxn);
 
         // Delete one document
-        delete_document(&index, &config, "doc1").unwrap();
+        delete_document(&index, &config, &embedders, "doc1").unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
@@ -714,36 +845,37 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
+        let embedders = empty_embedders();
 
         // Index documents in different collections
         index_document(
             &index,
             &config,
+            &embedders,
             "doc1",
             "a.pdf",
             "Document alpha",
             "col1",
-            None,
         )
         .unwrap();
         index_document(
             &index,
             &config,
+            &embedders,
             "doc2",
             "b.pdf",
             "Document beta",
             "col1",
-            None,
         )
         .unwrap();
         index_document(
             &index,
             &config,
+            &embedders,
             "doc3",
             "c.pdf",
             "Document gamma",
             "col2",
-            None,
         )
         .unwrap();
 
@@ -752,7 +884,7 @@ mod tests {
         drop(rtxn);
 
         // Delete all documents from col1
-        let deleted = delete_documents_by_collection(&index, &config, "col1").unwrap();
+        let deleted = delete_documents_by_collection(&index, &config, &embedders, "col1").unwrap();
         assert_eq!(deleted, 2);
 
         let rtxn = index.read_txn().unwrap();

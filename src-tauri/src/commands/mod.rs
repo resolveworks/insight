@@ -191,8 +191,9 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
                 let search_guard = state.search.read().await;
                 if let Some(index) = search_guard.as_ref() {
                     let indexer_config = state.indexer_config.lock().await;
+                    let embedders = state.embedders.read().await;
 
-                    match search::index_documents_batch(index, &indexer_config, docs_to_index) {
+                    match search::index_documents_batch(index, &indexer_config, &embedders, docs_to_index) {
                         Ok(()) => {
                             for doc_info in doc_infos {
                                 let _ = app.emit(
@@ -322,29 +323,6 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         // Release storage lock
         drop(storage_guard);
 
-        // Generate embedding if embedder is configured
-        let embedding = {
-            let embedder_guard = state.embedder.read().await;
-            if let Some(ref embedder) = *embedder_guard {
-                match embedder.embed(&text_content) {
-                    Ok(vec) => {
-                        tracing::debug!(
-                            "Generated embedding for {} ({} dims)",
-                            file_name,
-                            vec.len()
-                        );
-                        Some(vec)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to generate embedding for {}: {}", file_name, e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        };
-
         let doc_info = DocumentInfo {
             id: doc_id.clone(),
             name: file_name.clone(),
@@ -355,12 +333,12 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
             created_at,
         };
 
+        // Milli will generate embeddings automatically during indexing
         let doc_to_index = search::DocToIndex {
             id: doc_id,
             name: file_name,
             content: text_content,
             collection_id: collection_id.clone(),
-            vector: embedding,
         };
 
         pending_index.push((doc_info, doc_to_index));
@@ -512,11 +490,13 @@ pub async fn delete_document(
     // Delete from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
+    let embedders = state.embedders.clone();
     tokio::spawn(async move {
         let search_guard = search.read().await;
         if let Some(index) = search_guard.as_ref() {
             let indexer_config = indexer_config.lock().await;
-            if let Err(e) = search::delete_document(index, &indexer_config, &document_id) {
+            let embedders = embedders.read().await;
+            if let Err(e) = search::delete_document(index, &indexer_config, &embedders, &document_id) {
                 tracing::error!(
                     "Failed to remove document {} from search index: {}",
                     document_id,
@@ -556,11 +536,13 @@ pub async fn delete_collection(
     // Delete from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
+    let embedders = state.embedders.clone();
     tokio::spawn(async move {
         let search_guard = search.read().await;
         if let Some(index) = search_guard.as_ref() {
             let indexer_config = indexer_config.lock().await;
-            match search::delete_documents_by_collection(index, &indexer_config, &collection_id) {
+            let embedders = embedders.read().await;
+            match search::delete_documents_by_collection(index, &indexer_config, &embedders, &collection_id) {
                 Ok(deleted_count) => {
                     tracing::info!(
                         "Removed {} documents from search index for collection {}",
@@ -828,7 +810,7 @@ pub async fn send_message(
     let storage = state.storage.clone();
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
-    let embedder = state.embedder.clone();
+    let embedders = state.embedders.clone();
     let embedding_model_id = state.embedding_model_id.clone();
     let agent_model = state.agent_model.clone();
     let conversations_arc = state.conversations.clone();
@@ -845,7 +827,7 @@ pub async fn send_message(
             storage,
             search,
             indexer_config,
-            embedder,
+            embedders,
             embedding_model_id,
             agent_model,
             conversations: conversations_arc.clone(),
@@ -937,7 +919,7 @@ pub async fn get_available_models() -> Result<Vec<ModelInfo>, String> {
 #[tauri::command]
 pub async fn get_model_status(
     model_id: Option<String>,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<ModelStatus, String> {
     let manager = ModelManager::new()
         .await
@@ -965,7 +947,7 @@ pub async fn get_model_status(
 pub async fn download_model(
     model_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<(), String> {
     let manager = ModelManager::new()
         .await
@@ -1044,7 +1026,7 @@ pub enum EmbeddingModelStatus {
 #[tauri::command]
 pub async fn get_embedding_model_status(
     model_id: String,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<EmbeddingModelStatus, String> {
     let manager = ModelManager::new()
         .await
@@ -1065,7 +1047,7 @@ pub async fn get_embedding_model_status(
 pub async fn download_embedding_model(
     model_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<(), String> {
     let manager = ModelManager::new()
         .await
@@ -1119,7 +1101,8 @@ pub async fn configure_embedding_model(
     model_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    use crate::core::{embeddings::Embedder, Settings};
+    use crate::core::Settings;
+    use milli::vector::RuntimeEmbedders;
 
     if let Some(ref id) = model_id {
         // Verify the model exists
@@ -1132,19 +1115,46 @@ pub async fn configure_embedding_model(
             model.hf_repo_id
         );
 
-        // Create embedder using HuggingFace model
-        let embedder = Embedder::from_hf(&model.hf_repo_id)
+        // Configure the embedder in the index settings
+        tracing::debug!("Step 1: Configuring index embedder settings");
+        {
+            let search_guard = state.search.read().await;
+            if let Some(index) = search_guard.as_ref() {
+                let indexer_config = state.indexer_config.lock().await;
+                tracing::debug!("Got locks, calling configure_index_embedder");
+                search::configure_index_embedder(index, &indexer_config, &model.hf_repo_id)
+                    .map_err(|e| format!("Failed to configure index embedder: {}", e))?;
+                tracing::debug!("configure_index_embedder completed");
+            }
+        }
+
+        // Create embedders using Milli's HuggingFace embedder
+        tracing::debug!("Step 2: Creating embedders");
+        let embedders = search::create_embedders(&model.hf_repo_id)
             .map_err(|e| format!("Failed to load embedder: {}", e))?;
+        tracing::debug!("create_embedders completed");
 
         // Update state
-        *state.embedder.write().await = Some(embedder);
+        tracing::debug!("Step 3: Updating state");
+        *state.embedders.write().await = embedders;
         *state.embedding_model_id.write().await = Some(id.clone());
 
         tracing::info!("Embedding model configured: {}", id);
     } else {
         // Disable embeddings
         tracing::info!("Disabling embedding model");
-        *state.embedder.write().await = None;
+
+        // Clear embedder from index settings
+        {
+            let search_guard = state.search.read().await;
+            if let Some(index) = search_guard.as_ref() {
+                let indexer_config = state.indexer_config.lock().await;
+                search::clear_index_embedder(index, &indexer_config)
+                    .map_err(|e| format!("Failed to clear index embedder: {}", e))?;
+            }
+        }
+
+        *state.embedders.write().await = RuntimeEmbedders::default();
         *state.embedding_model_id.write().await = None;
     }
 

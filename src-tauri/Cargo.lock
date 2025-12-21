@@ -1082,6 +1082,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9f51e2ecf6efe9737af8f993433c839f956d2b6ed4fd2dd4a7c6d8b0fa667ff"
 dependencies = [
  "byteorder",
+ "candle-kernels 0.9.1",
+ "cudarc 0.16.6",
  "gemm 0.17.1",
  "half",
  "memmap2",
@@ -1093,6 +1095,7 @@ dependencies = [
  "safetensors 0.4.5",
  "thiserror 1.0.69",
  "ug 0.4.0",
+ "ug-cuda 0.4.0",
  "yoke 0.7.5",
  "zip",
 ]
@@ -1104,7 +1107,7 @@ source = "git+https://github.com/huggingface/candle.git?rev=8839457#8839457c7031
 dependencies = [
  "accelerate-src",
  "byteorder",
- "candle-kernels",
+ "candle-kernels 0.9.2-alpha.2",
  "candle-metal-kernels",
  "cudarc 0.18.2",
  "float8 0.5.0",
@@ -1124,7 +1127,7 @@ dependencies = [
  "safetensors 0.6.2",
  "thiserror 1.0.69",
  "ug 0.5.0",
- "ug-cuda",
+ "ug-cuda 0.5.0",
  "ug-metal",
  "yoke 0.7.5",
  "zip",
@@ -1139,6 +1142,15 @@ dependencies = [
  "bindgen_cuda",
  "candle-core 0.9.2-alpha.2",
  "half",
+]
+
+[[package]]
+name = "candle-kernels"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fcd989c2143aa754370b5bfee309e35fbd259e83d9ecf7a73d23d8508430775"
+dependencies = [
+ "bindgen_cuda",
 ]
 
 [[package]]
@@ -1946,6 +1958,16 @@ checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
 dependencies = [
  "quote",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.16.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17200eb07e7d85a243aa1bf4569a7aa998385ba98d14833973a817a63cc86e92"
+dependencies = [
+ "half",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2780,9 +2802,6 @@ name = "esaxx-rs"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "event-listener"
@@ -4788,9 +4807,6 @@ dependencies = [
  "anyhow",
  "bumpalo",
  "bytes",
- "candle-core 0.9.1",
- "candle-nn 0.9.1",
- "candle-transformers",
  "chrono",
  "clap",
  "dirs 6.0.0",
@@ -4813,7 +4829,6 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "thiserror 2.0.17",
- "tokenizers 0.21.4",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -10930,12 +10945,10 @@ dependencies = [
  "esaxx-rs",
  "fancy-regex 0.14.0",
  "getrandom 0.3.4",
- "indicatif",
  "itertools 0.14.0",
  "log",
  "macro_rules_attribute",
  "monostate",
- "onig",
  "paste",
  "rand 0.9.2",
  "rayon",
@@ -11509,6 +11522,19 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "yoke 0.7.5",
+]
+
+[[package]]
+name = "ug-cuda"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14053653d0b7fa7b21015aa9a62edc8af2f60aa6f9c54e66386ecce55f22ed29"
+dependencies = [
+ "cudarc 0.16.6",
+ "half",
+ "serde",
+ "thiserror 1.0.69",
+ "ug 0.4.0",
 ]
 
 [[package]]
