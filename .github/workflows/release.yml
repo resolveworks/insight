@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - platform: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            features: ''
+            suffix: ''
+          - platform: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            features: 'cuda'
+            suffix: '-cuda'
+            cuda: true
+
+          # Windows
+          - platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            features: ''
+            suffix: ''
+          - platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            features: 'cuda'
+            suffix: '-cuda'
+            cuda: true
+
+          # macOS (universal binary for Intel + Apple Silicon)
+          - platform: macos-latest
+            rust_target: universal-apple-darwin
+            features: 'metal'
+            suffix: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Enable long paths (Windows)
+        if: contains(matrix.platform, 'windows')
+        run: git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: contains(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install CUDA toolkit
+        if: matrix.cuda
+        uses: Jimver/cuda-toolkit@v0.2.29
+        with:
+          cuda: '12.5.0'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.rust_target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: ${{ matrix.rust_target }}${{ matrix.suffix }}
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Insight ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download for your platform.'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.rust_target }} ${{ matrix.features && format('--features {0}', matrix.features) }}
+
+      - name: Rename artifacts with suffix
+        if: matrix.suffix != ''
+        shell: bash
+        run: |
+          # Rename artifacts to include GPU suffix
+          cd src-tauri/target/${{ matrix.rust_target }}/release/bundle
+
+          # Linux
+          if [ -d "deb" ]; then
+            for f in deb/*.deb; do
+              [ -f "$f" ] && mv "$f" "${f%.deb}${{ matrix.suffix }}.deb"
+            done
+          fi
+          if [ -d "appimage" ]; then
+            for f in appimage/*.AppImage; do
+              [ -f "$f" ] && mv "$f" "${f%.AppImage}${{ matrix.suffix }}.AppImage"
+            done
+          fi
+
+          # Windows
+          if [ -d "msi" ]; then
+            for f in msi/*.msi; do
+              [ -f "$f" ] && mv "$f" "${f%.msi}${{ matrix.suffix }}.msi"
+            done
+          fi
+          if [ -d "nsis" ]; then
+            for f in nsis/*.exe; do
+              [ -f "$f" ] && mv "$f" "${f%.exe}${{ matrix.suffix }}.exe"
+            done
+          fi
+
+      - name: Upload renamed CUDA artifacts
+        if: matrix.suffix != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          cd src-tauri/target/${{ matrix.rust_target }}/release/bundle
+
+          # Upload any renamed files
+          for ext in deb AppImage msi exe; do
+            for f in */*${{ matrix.suffix }}.$ext 2>/dev/null; do
+              [ -f "$f" ] && gh release upload ${{ github.ref_name }} "$f" --clobber
+            done
+          done
