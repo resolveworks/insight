@@ -915,6 +915,8 @@ pub async fn send_message(
     let storage = state.storage.clone();
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
+    let embedders = state.embedders.clone();
+    let embedding_model_id = state.embedding_model_id.clone();
     let agent_model = state.agent_model.clone();
     let conversations_arc = state.conversations.clone();
     let active_generations = state.active_generations.clone();
@@ -930,6 +932,8 @@ pub async fn send_message(
             storage,
             search,
             indexer_config,
+            embedders,
+            embedding_model_id,
             agent_model,
             conversations: conversations_arc.clone(),
             active_generations,

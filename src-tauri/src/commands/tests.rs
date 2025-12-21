@@ -21,12 +21,15 @@ async fn create_test_state(temp_dir: &std::path::Path) -> AppState {
     let storage = Storage::open(&config.iroh_dir).await.unwrap();
     let index = search::open_index(&config.search_dir).unwrap();
     let indexer_config = IndexerConfig::default();
+    let embedders = search::create_empty_embedders();
 
     AppState {
         config,
         storage: Arc::new(RwLock::new(Some(storage))),
         search: Arc::new(RwLock::new(Some(index))),
         indexer_config: Arc::new(Mutex::new(indexer_config)),
+        embedders: Arc::new(RwLock::new(embedders)),
+        embedding_model_id: Arc::new(RwLock::new(None)),
         agent_model: Arc::new(RwLock::new(None)),
         conversations: Arc::new(RwLock::new(HashMap::new())),
         active_generations: Arc::new(RwLock::new(HashMap::new())),

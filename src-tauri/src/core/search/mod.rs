@@ -59,24 +59,37 @@ pub fn open_index(path: &Path) -> Result<Index> {
 // Embedder Configuration
 // ============================================================================
 
+/// Default embedding cache capacity
+const EMBEDDING_CACHE_CAP: usize = 1000;
+
 /// Create a RuntimeEmbedders instance with a HuggingFace embedding model
 ///
 /// The model will be downloaded from HuggingFace Hub if not already cached.
 /// Uses the same cache directory as hf-hub, so pre-downloading via ModelManager
 /// means the files will already be available.
 pub fn create_embedders(hf_model_id: &str) -> Result<RuntimeEmbedders> {
+    use milli::prompt::Prompt;
     use milli::vector::embedder::hf;
 
     let options = EmbedderOptions::HuggingFace(hf::EmbedderOptions {
         model: hf_model_id.to_string(),
         revision: None,
-        distribution: None, // Use default distribution for the model
+        distribution: None,
+        pooling: Default::default(),
     });
 
-    let embedder = Embedder::new(options).context("Failed to create HuggingFace embedder")?;
+    let embedder =
+        Embedder::new(options, EMBEDDING_CACHE_CAP).context("Failed to create HuggingFace embedder")?;
 
-    let runtime_embedder = RuntimeEmbedder::new(Arc::new(embedder))
-        .context("Failed to create runtime embedder")?;
+    // Create a simple document template that uses the content field
+    let document_template = Prompt::default();
+
+    let runtime_embedder = RuntimeEmbedder::new(
+        Arc::new(embedder),
+        document_template,
+        vec![], // No fragments
+        false,  // Not quantized
+    );
 
     let mut embedders_map = HashMap::new();
     embedders_map.insert("default".to_string(), Arc::new(runtime_embedder));

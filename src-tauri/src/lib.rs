@@ -32,6 +32,8 @@ pub fn run() {
                 storage: state.storage.clone(),
                 search: state.search.clone(),
                 indexer_config: state.indexer_config.clone(),
+                embedders: state.embedders.clone(),
+                embedding_model_id: state.embedding_model_id.clone(),
                 agent_model: state.agent_model.clone(),
                 conversations: state.conversations.clone(),
                 active_generations: state.active_generations.clone(),
