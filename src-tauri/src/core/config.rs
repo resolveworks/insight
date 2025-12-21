@@ -13,8 +13,6 @@ pub struct Config {
     pub search_dir: PathBuf,
     /// Conversations storage directory
     pub conversations_dir: PathBuf,
-    /// Embedding models cache directory
-    pub models_dir: PathBuf,
     /// Settings file path
     pub settings_file: PathBuf,
 }
@@ -26,18 +24,12 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("insight");
 
-        let models_dir = dirs::cache_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("insight")
-            .join("models");
-
         Self {
             iroh_dir: data_dir.join("iroh"),
             search_dir: data_dir.join("search"),
             conversations_dir: data_dir.join("conversations"),
             settings_file: data_dir.join("settings.json"),
             data_dir,
-            models_dir,
         }
     }
 
@@ -47,7 +39,6 @@ impl Config {
         std::fs::create_dir_all(&self.iroh_dir)?;
         std::fs::create_dir_all(&self.search_dir)?;
         std::fs::create_dir_all(&self.conversations_dir)?;
-        std::fs::create_dir_all(&self.models_dir)?;
         Ok(())
     }
 }

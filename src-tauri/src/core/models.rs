@@ -258,11 +258,10 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
-    /// Create a new model manager with custom cache directory
-    pub async fn new(cache_dir: PathBuf) -> Result<Self> {
-        let cache = Cache::new(cache_dir);
+    /// Create a new model manager using the default HuggingFace cache
+    pub async fn new() -> Result<Self> {
+        let cache = Cache::default();
         let api = ApiBuilder::new()
-            .with_cache_dir(cache.path().clone())
             .build()
             .context("Failed to create HuggingFace API client")?;
 

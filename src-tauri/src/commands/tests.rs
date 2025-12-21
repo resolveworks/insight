@@ -13,22 +13,21 @@ async fn create_test_state(temp_dir: &std::path::Path) -> AppState {
         data_dir: temp_dir.to_path_buf(),
         iroh_dir: temp_dir.join("iroh"),
         search_dir: temp_dir.join("search"),
-        models_dir: temp_dir.join("models"),
         conversations_dir: temp_dir.join("conversations"),
+        settings_file: temp_dir.join("settings.json"),
     };
     config.ensure_dirs().unwrap();
 
     let storage = Storage::open(&config.iroh_dir).await.unwrap();
     let index = search::open_index(&config.search_dir).unwrap();
     let indexer_config = IndexerConfig::default();
-    let embedders = search::create_empty_embedders();
 
     AppState {
         config,
         storage: Arc::new(RwLock::new(Some(storage))),
         search: Arc::new(RwLock::new(Some(index))),
         indexer_config: Arc::new(Mutex::new(indexer_config)),
-        embedders: Arc::new(RwLock::new(embedders)),
+        embedder: Arc::new(RwLock::new(None)),
         embedding_model_id: Arc::new(RwLock::new(None)),
         agent_model: Arc::new(RwLock::new(None)),
         conversations: Arc::new(RwLock::new(HashMap::new())),
@@ -42,6 +41,26 @@ fn create_test_app(state: AppState) -> tauri::App<MockRuntime> {
         .manage(state)
         .build(tauri::generate_context!())
         .unwrap()
+}
+
+/// Helper to import a single PDF (wraps batch import)
+async fn import_pdf_helper(
+    app: &tauri::App<MockRuntime>,
+    path: String,
+    collection_id: String,
+) -> Result<DocumentInfo, String> {
+    let state = app.state::<AppState>();
+    let result = import_pdfs_batch(vec![path.clone()], collection_id, app.handle().clone(), state).await?;
+
+    if let Some(err) = result.failed.first() {
+        return Err(err.error.clone());
+    }
+
+    result
+        .successful
+        .into_iter()
+        .next()
+        .ok_or_else(|| "No document imported".to_string())
 }
 
 // ============================================================================
@@ -184,14 +203,7 @@ async fn test_import_pdf_invalid_collection() {
     let state = create_test_state(temp_dir.path()).await;
     let app = create_test_app(state);
 
-    let state = app.state::<AppState>();
-
-    let result = import_pdf(
-        "/some/path.pdf".to_string(),
-        "invalid-id".to_string(),
-        state,
-    )
-    .await;
+    let result = import_pdf_helper(&app, "/some/path.pdf".to_string(), "invalid-id".to_string()).await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Invalid collection ID"));
@@ -204,12 +216,11 @@ async fn test_import_pdf_file_not_found() {
     let app = create_test_app(state);
 
     let state = app.state::<AppState>();
-
     let collection = create_collection("Test".to_string(), state.clone())
         .await
         .unwrap();
 
-    let result = import_pdf("/nonexistent/file.pdf".to_string(), collection.id, state).await;
+    let result = import_pdf_helper(&app, "/nonexistent/file.pdf".to_string(), collection.id).await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Failed to read PDF file"));
@@ -228,15 +239,14 @@ async fn test_import_pdf_success() {
     let app = create_test_app(state);
 
     let state = app.state::<AppState>();
-
     let collection = create_collection("Test".to_string(), state.clone())
         .await
         .unwrap();
 
-    let doc = import_pdf(
+    let doc = import_pdf_helper(
+        &app,
         pdf_path.to_string_lossy().to_string(),
         collection.id.clone(),
-        state.clone(),
     )
     .await
     .unwrap();
@@ -273,23 +283,22 @@ async fn test_delete_document() {
     let app = create_test_app(state);
 
     let state = app.state::<AppState>();
-
     let collection = create_collection("Test".to_string(), state.clone())
         .await
         .unwrap();
 
-    let doc1 = import_pdf(
+    let doc1 = import_pdf_helper(
+        &app,
         pdf1_path.to_string_lossy().to_string(),
         collection.id.clone(),
-        state.clone(),
     )
     .await
     .unwrap();
 
-    let _doc2 = import_pdf(
+    let _doc2 = import_pdf_helper(
+        &app,
         pdf2_path.to_string_lossy().to_string(),
         collection.id.clone(),
-        state.clone(),
     )
     .await
     .unwrap();
@@ -342,15 +351,14 @@ async fn test_search_finds_document() {
     let app = create_test_app(state);
 
     let state = app.state::<AppState>();
-
     let collection = create_collection("Research".to_string(), state.clone())
         .await
         .unwrap();
 
-    import_pdf(
+    import_pdf_helper(
+        &app,
         pdf_path.to_string_lossy().to_string(),
         collection.id.clone(),
-        state.clone(),
     )
     .await
     .unwrap();
@@ -379,7 +387,6 @@ async fn test_search_with_collection_filter() {
     let app = create_test_app(state);
 
     let state = app.state::<AppState>();
-
     let col1 = create_collection("Collection A".to_string(), state.clone())
         .await
         .unwrap();
@@ -387,18 +394,18 @@ async fn test_search_with_collection_filter() {
         .await
         .unwrap();
 
-    import_pdf(
+    import_pdf_helper(
+        &app,
         pdf1_path.to_string_lossy().to_string(),
         col1.id.clone(),
-        state.clone(),
     )
     .await
     .unwrap();
 
-    import_pdf(
+    import_pdf_helper(
+        &app,
         pdf2_path.to_string_lossy().to_string(),
         col2.id.clone(),
-        state.clone(),
     )
     .await
     .unwrap();
@@ -430,7 +437,6 @@ async fn test_search_pagination() {
     let app = create_test_app(state);
 
     let state = app.state::<AppState>();
-
     let collection = create_collection("Test".to_string(), state.clone())
         .await
         .unwrap();
@@ -443,10 +449,10 @@ async fn test_search_pagination() {
             create_test_pdf(&format!("Document number {}", i)),
         )
         .unwrap();
-        import_pdf(
+        import_pdf_helper(
+            &app,
             pdf_path.to_string_lossy().to_string(),
             collection.id.clone(),
-            state.clone(),
         )
         .await
         .unwrap();

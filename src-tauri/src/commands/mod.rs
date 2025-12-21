@@ -104,106 +104,6 @@ pub async fn create_collection(
     })
 }
 
-/// Import a PDF file into a collection
-#[tauri::command]
-pub async fn import_pdf(
-    path: String,
-    collection_id: String,
-    state: State<'_, AppState>,
-) -> Result<DocumentInfo, String> {
-    tracing::info!("Importing PDF: {} into collection {}", path, collection_id);
-
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
-
-    let path_ref = std::path::Path::new(&path);
-    let file_name = path_ref
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown.pdf")
-        .to_string();
-
-    // Extract text from PDF
-    let extracted = pdf::extract_text(path_ref).map_err(|e| e.to_string())?;
-
-    let doc_id = uuid::Uuid::new_v4().to_string();
-    let created_at = chrono::Utc::now().to_rfc3339();
-
-    // Store PDF and text blobs, get hashes from iroh
-    let (pdf_hash, text_hash) = {
-        let mut storage_guard = state.storage.write().await;
-        let storage = storage_guard
-            .as_mut()
-            .ok_or_else(|| "Storage not initialized".to_string())?;
-
-        // Store PDF bytes as blob - iroh returns the BLAKE3 hash
-        let pdf_hash = storage
-            .store_blob(&extracted.pdf_bytes)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Store extracted text as blob
-        let text_hash = storage
-            .store_blob(extracted.text.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Create document metadata and store in collection
-        let metadata = DocumentMetadata {
-            id: doc_id.clone(),
-            name: file_name.clone(),
-            pdf_hash: pdf_hash.to_string(),
-            text_hash: text_hash.to_string(),
-            page_count: extracted.page_count,
-            tags: vec![],
-            created_at: created_at.clone(),
-        };
-
-        storage
-            .add_document(namespace_id, metadata)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        (pdf_hash.to_string(), text_hash.to_string())
-    };
-
-    // Index in milli search (acquire mutex to serialize indexing operations)
-    let search_guard = state.search.read().await;
-    if let Some(index) = search_guard.as_ref() {
-        let indexer_config = state.indexer_config.lock().await;
-        // TODO: Generate embedding if embedder is configured
-        search::index_document(
-            index,
-            &indexer_config,
-            &doc_id,
-            &file_name,
-            &extracted.text,
-            &collection_id,
-            None, // Vector embedding (to be implemented)
-        )
-        .map_err(|e| e.to_string())?;
-        tracing::info!("Indexed document {} in milli", doc_id);
-    } else {
-        tracing::warn!("Search not initialized, document not indexed");
-    }
-
-    tracing::info!(
-        "Imported {} ({} pages, {} chars)",
-        file_name,
-        extracted.page_count,
-        extracted.text.len()
-    );
-
-    Ok(DocumentInfo {
-        id: doc_id,
-        name: file_name,
-        pdf_hash,
-        text_hash,
-        page_count: extracted.page_count,
-        tags: vec![],
-        created_at,
-    })
-}
-
 /// Result of batch import
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchImportResult {
@@ -235,10 +135,10 @@ struct ExtractionResult {
 /// Each file is fully processed (extract → store → index) before being marked successful.
 /// This ensures no orphaned documents in storage without search index entries.
 #[tauri::command]
-pub async fn import_pdfs_batch(
+pub async fn import_pdfs_batch<R: tauri::Runtime>(
     paths: Vec<String>,
     collection_id: String,
-    app: AppHandle,
+    app: AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<BatchImportResult, String> {
     tracing::info!(
@@ -422,6 +322,29 @@ pub async fn import_pdfs_batch(
         // Release storage lock
         drop(storage_guard);
 
+        // Generate embedding if embedder is configured
+        let embedding = {
+            let embedder_guard = state.embedder.read().await;
+            if let Some(ref embedder) = *embedder_guard {
+                match embedder.embed(&text_content) {
+                    Ok(vec) => {
+                        tracing::debug!(
+                            "Generated embedding for {} ({} dims)",
+                            file_name,
+                            vec.len()
+                        );
+                        Some(vec)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to generate embedding for {}: {}", file_name, e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+
         let doc_info = DocumentInfo {
             id: doc_id.clone(),
             name: file_name.clone(),
@@ -437,7 +360,7 @@ pub async fn import_pdfs_batch(
             name: file_name,
             content: text_content,
             collection_id: collection_id.clone(),
-            vector: None, // TODO: Generate embedding if embedder is configured
+            vector: embedding,
         };
 
         pending_index.push((doc_info, doc_to_index));
@@ -807,7 +730,7 @@ pub async fn start_chat(
     let mut model_guard = state.agent_model.write().await;
     if model_guard.is_none() {
         // Get the path to the downloaded model
-        let manager = ModelManager::new(state.config.models_dir.clone())
+        let manager = ModelManager::new()
             .await
             .map_err(|e| format!("Failed to create model manager: {}", e))?;
 
@@ -1016,7 +939,7 @@ pub async fn get_model_status(
     model_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ModelStatus, String> {
-    let manager = ModelManager::new(state.config.models_dir.clone())
+    let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1044,7 +967,7 @@ pub async fn download_model(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let manager = ModelManager::new(state.config.models_dir.clone())
+    let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1123,7 +1046,7 @@ pub async fn get_embedding_model_status(
     model_id: String,
     state: State<'_, AppState>,
 ) -> Result<EmbeddingModelStatus, String> {
-    let manager = ModelManager::new(state.config.models_dir.clone())
+    let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1144,7 +1067,7 @@ pub async fn download_embedding_model(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let manager = ModelManager::new(state.config.models_dir.clone())
+    let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
 
