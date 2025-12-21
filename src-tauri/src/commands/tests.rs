@@ -1,7 +1,6 @@
 use super::*;
 use crate::core::{search, AppState, Config, Storage};
 use milli::update::IndexerConfig;
-use milli::vector::RuntimeEmbedders;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::test::MockRuntime;
@@ -28,7 +27,7 @@ async fn create_test_state(temp_dir: &std::path::Path) -> AppState {
         storage: Arc::new(RwLock::new(Some(storage))),
         search: Arc::new(RwLock::new(Some(index))),
         indexer_config: Arc::new(Mutex::new(indexer_config)),
-        embedders: Arc::new(RwLock::new(RuntimeEmbedders::default())),
+        embedder: Arc::new(RwLock::new(None)),
         embedding_model_id: Arc::new(RwLock::new(None)),
         agent_model: Arc::new(RwLock::new(None)),
         conversations: Arc::new(RwLock::new(HashMap::new())),

@@ -154,6 +154,16 @@ cargo build --release --features cuda
 cargo build --release --features metal
 ```
 
+## Understanding Dependencies
+
+Prefer local tools over web searches for understanding Rust dependencies:
+
+- `cargo doc --open` - Generate and browse docs for exact dependency versions
+- `cargo tree` - View dependency graph and enabled features
+- Source at `~/.cargo/registry/src/` or `~/.cargo/git/checkouts/`
+
+This ensures version accuracy and works offline.
+
 ## Testing
 
 Minimal strategy focused on Rust backend where critical logic lives.

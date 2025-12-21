@@ -33,7 +33,7 @@ pub fn run() {
                 storage: state.storage.clone(),
                 search: state.search.clone(),
                 indexer_config: state.indexer_config.clone(),
-                embedders: state.embedders.clone(),
+                embedder: state.embedder.clone(),
                 embedding_model_id: state.embedding_model_id.clone(),
                 agent_model: state.agent_model.clone(),
                 conversations: state.conversations.clone(),

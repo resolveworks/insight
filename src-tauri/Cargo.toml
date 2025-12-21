@@ -65,7 +65,7 @@ uuid = { version = "1", features = ["v4"] }
 default = []
 headless = []
 # GPU/accelerated builds (optional; CPU-only by default)
-cuda = ["mistralrs/cuda", "mistralrs/flash-attn", "mistralrs/cudnn", "milli/cuda"]
+cuda = ["mistralrs/cuda", "mistralrs/flash-attn", "mistralrs/cudnn"]
 flash-attn = ["mistralrs/flash-attn"]
 cudnn = ["mistralrs/cudnn"]
 metal = ["mistralrs/metal"]

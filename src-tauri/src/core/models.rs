@@ -107,34 +107,26 @@ pub fn get_embedding_model(id: &str) -> Option<EmbeddingModelInfo> {
 }
 
 /// Available embedding models registry
+/// Note: Only models supported by mistralrs are listed (EmbeddingGemma, Qwen3Embedding)
 pub fn available_embedding_models() -> Vec<EmbeddingModelInfo> {
     vec![
-        // Default: BGE Base - Good balance
+        // Default: Qwen3 Embedding - Apache 2.0, not gated
         EmbeddingModelInfo {
-            id: "bge-base-en".to_string(),
-            name: "BGE Base EN v1.5".to_string(),
-            description: "Recommended. Good balance of speed and quality.".to_string(),
-            size_gb: 0.44,
-            hf_repo_id: "BAAI/bge-base-en-v1.5".to_string(),
-            dimensions: 768,
-        },
-        // Smaller option
-        EmbeddingModelInfo {
-            id: "bge-small-en".to_string(),
-            name: "BGE Small EN v1.5".to_string(),
-            description: "Faster, smaller footprint for constrained systems.".to_string(),
-            size_gb: 0.13,
-            hf_repo_id: "BAAI/bge-small-en-v1.5".to_string(),
-            dimensions: 384,
-        },
-        // Higher quality option
-        EmbeddingModelInfo {
-            id: "bge-large-en".to_string(),
-            name: "BGE Large EN v1.5".to_string(),
-            description: "Higher quality, slower. Best for accuracy.".to_string(),
-            size_gb: 1.3,
-            hf_repo_id: "BAAI/bge-large-en-v1.5".to_string(),
+            id: "qwen3-embedding".to_string(),
+            name: "Qwen3 Embedding 0.6B".to_string(),
+            description: "Recommended. High quality Qwen3-based embedding model.".to_string(),
+            size_gb: 1.2,
+            hf_repo_id: "Qwen/Qwen3-Embedding-0.6B".to_string(),
             dimensions: 1024,
+        },
+        // EmbeddingGemma - Gated, requires HuggingFace login
+        EmbeddingModelInfo {
+            id: "embeddinggemma".to_string(),
+            name: "EmbeddingGemma 300M".to_string(),
+            description: "Lightweight Google model. Requires HuggingFace login.".to_string(),
+            size_gb: 0.6,
+            hf_repo_id: "google/embeddinggemma-300m".to_string(),
+            dimensions: 768,
         },
     ]
 }
@@ -473,15 +465,15 @@ mod tests {
     fn test_available_embedding_models() {
         let models = available_embedding_models();
         assert!(!models.is_empty());
-        assert_eq!(models[0].id, "bge-base-en");
-        assert_eq!(models[0].dimensions, 768);
+        assert_eq!(models[0].id, "qwen3-embedding");
+        assert_eq!(models[0].dimensions, 1024);
     }
 
     #[test]
     fn test_get_embedding_model() {
-        let model = get_embedding_model("bge-small-en");
+        let model = get_embedding_model("qwen3-embedding");
         assert!(model.is_some());
-        assert_eq!(model.unwrap().dimensions, 384);
+        assert_eq!(model.unwrap().dimensions, 1024);
 
         let missing = get_embedding_model("nonexistent");
         assert!(missing.is_none());
@@ -490,7 +482,7 @@ mod tests {
     #[test]
     fn test_default_embedding_model() {
         let model = default_embedding_model();
-        assert_eq!(model.id, "bge-base-en");
-        assert_eq!(model.hf_repo_id, "BAAI/bge-base-en-v1.5");
+        assert_eq!(model.id, "qwen3-embedding");
+        assert_eq!(model.hf_repo_id, "Qwen/Qwen3-Embedding-0.6B");
     }
 }

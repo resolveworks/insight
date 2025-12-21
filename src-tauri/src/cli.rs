@@ -1,5 +1,4 @@
 use milli::update::IndexerConfig;
-use milli::vector::RuntimeEmbedders;
 
 use crate::core::{
     config::Config,
@@ -83,6 +82,7 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
                         name: doc.name.clone(),
                         content: text,
                         collection_id,
+                        vectors: None, // CLI rebuild doesn't generate embeddings
                     });
                     tracing::debug!("Prepared document '{}' ({})", doc.name, doc.id);
                 }
@@ -98,13 +98,12 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
     }
 
     // Batch index all documents at once
-    // Note: Empty embedders = no semantic search, just full-text indexing
+    // Note: No embeddings = full-text only search
     // To rebuild with embeddings, configure the model first and use the app
-    let embedders = RuntimeEmbedders::default();
     let indexed_count = docs_to_index.len();
     if !docs_to_index.is_empty() {
         tracing::info!("Batch indexing {} documents...", indexed_count);
-        index_documents_batch(&index, &indexer_config, &embedders, docs_to_index)?;
+        index_documents_batch(&index, &indexer_config, docs_to_index)?;
     }
 
     tracing::info!(
