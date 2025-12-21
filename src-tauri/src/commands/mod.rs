@@ -865,7 +865,12 @@ pub async fn send_message(
         )
         .await
         {
-            tracing::error!("Agent loop error: {}", e);
+            tracing::error!(
+                conversation_id = %conv_id,
+                error = %e,
+                error_chain = ?e,
+                "Agent loop error"
+            );
         }
 
         // Generate title on first user message

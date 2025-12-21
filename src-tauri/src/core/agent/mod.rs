@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 use mistralrs::{
     CalledFunction, GgufModelBuilder, Model, PagedAttentionMetaBuilder, RequestBuilder,
@@ -240,22 +241,49 @@ pub async fn run_agent_loop(
     event_tx: mpsc::Sender<AgentEvent>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
+    info!(
+        conversation_id = %conversation.id,
+        message_len = user_message.len(),
+        "Starting agent loop"
+    );
     conversation.add_user_message(user_message);
 
     // Get tools for this session
     let tools = get_mistralrs_tools();
+    debug!(tool_count = tools.len(), "Loaded tools");
 
-    for _iteration in 0..MAX_ITERATIONS {
+    for iteration in 0..MAX_ITERATIONS {
         if cancel_token.is_cancelled() {
+            info!(conversation_id = %conversation.id, "Agent loop cancelled");
             return Ok(());
         }
+
+        debug!(
+            iteration = iteration + 1,
+            max_iterations = MAX_ITERATIONS,
+            message_count = conversation.messages.len(),
+            "Starting iteration"
+        );
 
         // Build request from conversation with tools
         let request = build_request_from_conversation(conversation, &tools);
 
         // Use non-streaming request for tool calling (more reliable)
         // Tool calls need to be complete before execution
-        let response = model.send_chat_request(request).await?;
+        debug!("Sending request to model");
+        let response = match model.send_chat_request(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(
+                    conversation_id = %conversation.id,
+                    iteration = iteration + 1,
+                    error = %e,
+                    error_debug = ?e,
+                    "Model request failed"
+                );
+                return Err(e);
+            }
+        };
 
         let choice = response
             .choices
@@ -264,9 +292,17 @@ pub async fn run_agent_loop(
 
         let message = &choice.message;
         let content = message.content.clone().unwrap_or_default();
+        let tool_call_count = message.tool_calls.as_ref().map(|tc| tc.len()).unwrap_or(0);
+
+        debug!(
+            content_len = content.len(),
+            tool_calls = tool_call_count,
+            "Received model response"
+        );
 
         // Emit text content if present
         if !content.is_empty() {
+            debug!(content_len = content.len(), "Emitting text delta");
             let _ = event_tx
                 .send(AgentEvent::TextDelta {
                     content: content.clone(),
@@ -277,6 +313,8 @@ pub async fn run_agent_loop(
         // Check for tool calls
         if let Some(ref tool_calls) = message.tool_calls {
             if !tool_calls.is_empty() {
+                info!(tool_count = tool_calls.len(), "Model requested tool calls");
+
                 // Store assistant message with tool calls for conversation history
                 conversation
                     .add_assistant_message_with_tool_calls(content.clone(), tool_calls.clone());
@@ -290,6 +328,13 @@ pub async fn run_agent_loop(
                             .unwrap_or(serde_json::json!({})),
                     };
 
+                    info!(
+                        tool_name = %tool_call.name,
+                        tool_id = %tool_call.id,
+                        "Executing tool"
+                    );
+                    debug!(arguments = %tool_call.arguments, "Tool arguments");
+
                     // Emit tool call start
                     let _ = event_tx
                         .send(AgentEvent::ToolCallStart {
@@ -301,6 +346,20 @@ pub async fn run_agent_loop(
 
                     // Execute tool
                     let result = execute_tool(&tool_call, state).await;
+
+                    if result.is_error {
+                        warn!(
+                            tool_name = %tool_call.name,
+                            error = %result.content,
+                            "Tool execution failed"
+                        );
+                    } else {
+                        debug!(
+                            tool_name = %tool_call.name,
+                            result_len = result.content.len(),
+                            "Tool execution succeeded"
+                        );
+                    }
 
                     // Emit tool result
                     let _ = event_tx
@@ -316,17 +375,28 @@ pub async fn run_agent_loop(
                 }
 
                 // Continue loop to let model process tool results
+                debug!("Continuing to next iteration for tool result processing");
                 continue;
             }
         }
 
         // No tool calls - add regular assistant message and we're done
+        info!(
+            conversation_id = %conversation.id,
+            iterations = iteration + 1,
+            "Agent loop completed"
+        );
         conversation.add_assistant_message(content);
         let _ = event_tx.send(AgentEvent::Done).await;
         return Ok(());
     }
 
     // Max iterations reached
+    warn!(
+        conversation_id = %conversation.id,
+        max_iterations = MAX_ITERATIONS,
+        "Agent loop reached maximum iterations"
+    );
     let _ = event_tx
         .send(AgentEvent::Error {
             message: "Maximum iterations reached".to_string(),

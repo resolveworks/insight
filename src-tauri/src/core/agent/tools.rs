@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use mistralrs::{Function, Tool, ToolType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{debug, info, warn};
 
 use crate::core::search;
 use crate::core::AppState;
@@ -149,15 +150,21 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
                 .collect()
         });
 
+    info!(query = %query, "Executing search");
+    if let Some(ref ids) = collection_ids {
+        debug!(collection_ids = ?ids, "Filtering by collections");
+    }
+
     let search_guard = state.search.read().await;
     let index = match search_guard.as_ref() {
         Some(i) => i,
         None => {
+            warn!("Search index not initialized");
             return ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: "Search index not initialized".to_string(),
                 is_error: true,
-            }
+            };
         }
     };
 
@@ -165,6 +172,11 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
         Ok(results) => {
             // Format results for LLM consumption
             let doc_ids: Vec<u32> = results.hits.iter().map(|h| h.doc_id).collect();
+            info!(
+                query = %query,
+                hits = doc_ids.len(),
+                "Search completed"
+            );
             let formatted = format_search_results(index, &doc_ids);
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
@@ -172,11 +184,14 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
                 is_error: false,
             }
         }
-        Err(e) => ToolResult {
-            tool_call_id: tool_call.id.clone(),
-            content: format!("Search error: {}", e),
-            is_error: true,
-        },
+        Err(e) => {
+            warn!(query = %query, error = %e, "Search failed");
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Search error: {}", e),
+                is_error: true,
+            }
+        }
     }
 }
 
@@ -229,34 +244,50 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
 async fn execute_read_document(tool_call: &ToolCall, state: &AppState) -> ToolResult {
     let doc_id = tool_call.arguments["document_id"].as_str().unwrap_or("");
 
+    info!(document_id = %doc_id, "Reading document");
+
     let search_guard = state.search.read().await;
     let index = match search_guard.as_ref() {
         Some(i) => i,
         None => {
+            warn!("Search index not initialized");
             return ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: "Search index not initialized".to_string(),
                 is_error: true,
-            }
+            };
         }
     };
 
     // Get content field from search index by external ID
     match search::get_document_by_external_id(index, doc_id) {
-        Ok(Some(content)) => ToolResult {
-            tool_call_id: tool_call.id.clone(),
-            content,
-            is_error: false,
-        },
-        Ok(None) => ToolResult {
-            tool_call_id: tool_call.id.clone(),
-            content: format!("Document not found: {}", doc_id),
-            is_error: true,
-        },
-        Err(e) => ToolResult {
-            tool_call_id: tool_call.id.clone(),
-            content: format!("Error reading document: {}", e),
-            is_error: true,
-        },
+        Ok(Some(content)) => {
+            info!(
+                document_id = %doc_id,
+                content_len = content.len(),
+                "Document read successfully"
+            );
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content,
+                is_error: false,
+            }
+        }
+        Ok(None) => {
+            warn!(document_id = %doc_id, "Document not found");
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Document not found: {}", doc_id),
+                is_error: true,
+            }
+        }
+        Err(e) => {
+            warn!(document_id = %doc_id, error = %e, "Error reading document");
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Error reading document: {}", e),
+                is_error: true,
+            }
+        }
     }
 }
