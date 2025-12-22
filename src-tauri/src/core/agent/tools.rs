@@ -8,14 +8,6 @@ use tracing::{debug, info, warn};
 use crate::core::search;
 use crate::core::AppState;
 
-/// Tool definition for LLM
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
 /// A tool call from the LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -30,45 +22,6 @@ pub struct ToolResult {
     pub tool_call_id: String,
     pub content: String,
     pub is_error: bool,
-}
-
-/// Get tool definitions for the LLM (legacy format)
-pub fn get_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        ToolDefinition {
-            name: "search".to_string(),
-            description: "Search documents in the collection. Returns document names, IDs, and relevant snippets. Use this to find documents related to a topic.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    },
-                    "collection_ids": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional: filter to specific collection IDs"
-                    }
-                },
-                "required": ["query"]
-            }),
-        },
-        ToolDefinition {
-            name: "read_document".to_string(),
-            description: "Read the full text content of a document by its ID. Use this after searching to get the complete text of a relevant document.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "document_id": {
-                        "type": "string",
-                        "description": "The document ID to read"
-                    }
-                },
-                "required": ["document_id"]
-            }),
-        },
-    ]
 }
 
 /// Get tools in mistralrs format for structured tool calling
@@ -117,6 +70,30 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
                 }))),
             },
         },
+        Tool {
+            tp: ToolType::Function,
+            function: Function {
+                name: "semantic_search".to_string(),
+                description: Some(
+                    "Search documents by meaning and concepts, not just keywords. Use this when looking for documents about a topic, theme, or idea - even if they don't contain the exact words. For exact phrases or specific terms, use the regular search tool instead.".to_string()
+                ),
+                parameters: Some(json_to_hashmap(json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "A description of what you're looking for (concepts, themes, topics)"
+                        },
+                        "collection_ids": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional: filter to specific collection IDs"
+                        }
+                    },
+                    "required": ["query"]
+                }))),
+            },
+        },
     ]
 }
 
@@ -132,6 +109,7 @@ fn json_to_hashmap(value: Value) -> HashMap<String, Value> {
 pub async fn execute_tool(tool_call: &ToolCall, state: &AppState) -> ToolResult {
     match tool_call.name.as_str() {
         "search" => execute_search(tool_call, state).await,
+        "semantic_search" => execute_semantic_search(tool_call, state).await,
         "read_document" => execute_read_document(tool_call, state).await,
         _ => ToolResult {
             tool_call_id: tool_call.id.clone(),
@@ -187,6 +165,79 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: format!("Search error: {}", e),
+                is_error: true,
+            }
+        }
+    }
+}
+
+async fn execute_semantic_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
+    let query = tool_call.arguments["query"].as_str().unwrap_or("");
+    let collection_ids: Option<Vec<String>> =
+        tool_call.arguments["collection_ids"].as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
+
+    info!(query = %query, "Executing semantic search");
+    if let Some(ref ids) = collection_ids {
+        debug!(collection_ids = ?ids, "Filtering by collections");
+    }
+
+    // Get embedder to encode the query
+    let embedder_guard = state.embedder.read().await;
+    let query_vector = match embedder_guard.as_ref() {
+        Some(embedder) => match embedder.embed(query).await {
+            Ok(vec) => {
+                debug!(dimensions = vec.len(), "Query embedded");
+                Some(vec)
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to embed query, falling back to keyword search");
+                None
+            }
+        },
+        None => {
+            warn!("No embedder configured, falling back to keyword search");
+            None
+        }
+    };
+    drop(embedder_guard);
+
+    let index = state.search.read().await;
+
+    // Use semantic search with ratio 1.0 (pure semantic) if we have embeddings
+    let search_params = search::SearchParams {
+        query,
+        limit: 10,
+        collection_ids: collection_ids.as_deref(),
+        query_vector,
+        semantic_ratio: 1.0,
+        min_score: Some(0.3), // Filter out low-relevance results
+        ..Default::default()
+    };
+
+    match search::search_index(&index, search_params) {
+        Ok(results) => {
+            let doc_ids: Vec<u32> = results.hits.iter().map(|h| h.doc_id).collect();
+            info!(
+                query = %query,
+                hits = doc_ids.len(),
+                "Semantic search completed"
+            );
+            let formatted = format_search_results(&index, &doc_ids);
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: formatted,
+                is_error: false,
+            }
+        }
+        Err(e) => {
+            warn!(query = %query, error = %e, "Semantic search failed");
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Semantic search error: {}", e),
                 is_error: true,
             }
         }
