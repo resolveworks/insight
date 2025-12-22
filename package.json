@@ -42,6 +42,7 @@
 		"@tauri-apps/cli": "^2",
 		"@testing-library/jest-dom": "^6.9.1",
 		"@testing-library/svelte": "^5.2.10",
+		"@testing-library/user-event": "^14.6.1",
 		"eslint": "^9.39.2",
 		"eslint-plugin-svelte": "^3.13.1",
 		"globals": "^16.5.0",

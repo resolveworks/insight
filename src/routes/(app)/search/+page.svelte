@@ -106,13 +106,11 @@
 	const totalPages = $derived(Math.ceil(totalHits / pageSize));
 
 	function toggleSearchCollection(collectionId: string) {
-		const newSet = new SvelteSet(selectedSearchCollections);
-		if (newSet.has(collectionId)) {
-			newSet.delete(collectionId);
+		if (selectedSearchCollections.has(collectionId)) {
+			selectedSearchCollections.delete(collectionId);
 		} else {
-			newSet.add(collectionId);
+			selectedSearchCollections.add(collectionId);
 		}
-		selectedSearchCollections = newSet;
 	}
 
 	function getCollectionName(collectionId: string): string {
@@ -163,7 +161,7 @@
 			</ul>
 			{#if selectedSearchCollections.size > 0}
 				<button
-					onclick={() => (selectedSearchCollections = new SvelteSet())}
+					onclick={() => selectedSearchCollections.clear()}
 					class="mt-3 text-xs text-slate-500 hover:text-slate-300"
 				>
 					Clear filters
