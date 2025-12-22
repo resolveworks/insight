@@ -159,22 +159,47 @@ This ensures version accuracy and works offline.
 
 ## Testing
 
-Minimal strategy focused on Rust backend where critical logic lives.
+### Backend (Rust)
 
 ```bash
 cd src-tauri && cargo test
 ```
 
-### What to Test
+Focus on core modules, Tauri commands, and critical paths.
 
-1. **Core modules** (unit tests) - Storage, sync, search, agent operations
-2. **Tauri commands** (integration tests) - The frontend ↔ backend bridge
-3. **Critical path** - Collection CRUD, document ingestion, search queries, chat flow
+### Frontend (Svelte)
+
+```bash
+pnpm test        # Watch mode
+pnpm test:run    # Single run (CI)
+```
+
+Stack: Vitest + @testing-library/svelte + jsdom
+
+- Tests co-located with components: `Component.test.ts`
+- SvelteKit mocks in `src/tests/mocks/` (`$app/paths`, `$app/environment`)
+- Tauri API mocking via `@tauri-apps/api/mocks`
+
+```ts
+import { mockIPC } from '@tauri-apps/api/mocks';
+
+mockIPC((cmd, args) => {
+	if (cmd === 'search_documents') {
+		return [{ title: 'Test Doc' }];
+	}
+});
+```
+
+Focus on:
+
+- Critical user flows (search, document ingestion, chat)
+- Complex logic that's hard to verify manually
+- Bug fixes (prevent regressions)
 
 ### Guidelines
 
 - Test behavior, not implementation details
-- Use `#[tokio::test]` for async tests
+- Use `#[tokio::test]` for async Rust tests
 - Temporary directories for test data (avoid polluting real data)
 - Mock iroh/milli only when necessary for isolation
 

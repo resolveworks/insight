@@ -171,19 +171,21 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
 
     let mut successful = Vec::new();
     let mut failed = Vec::new();
-    let mut pending_index: Vec<(DocumentInfo, search::DocToIndex)> = Vec::new();
+    // Pending chunks to index, along with the document info they belong to
+    let mut pending_chunks: Vec<search::ChunkToIndex> = Vec::new();
+    let mut pending_doc_infos: Vec<DocumentInfo> = Vec::new();
 
-    // Macro to flush pending documents to index
+    // Macro to flush pending chunks to index
     macro_rules! flush_pending {
         () => {
-            if !pending_index.is_empty() {
-                let (doc_infos, docs_to_index): (Vec<_>, Vec<_>) =
-                    std::mem::take(&mut pending_index).into_iter().unzip();
+            if !pending_chunks.is_empty() {
+                let chunks_to_index = std::mem::take(&mut pending_chunks);
+                let doc_infos = std::mem::take(&mut pending_doc_infos);
 
                 let index = state.search.read().await;
                 let indexer_config = state.indexer_config.lock().await;
 
-                match search::index_documents_batch(&index, &indexer_config, docs_to_index) {
+                match search::index_chunks_batch(&index, &indexer_config, chunks_to_index) {
                     Ok(()) => {
                         for doc_info in doc_infos {
                             let _ = app.emit(
@@ -197,11 +199,7 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
                         }
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "Failed to batch index {} documents: {}",
-                            doc_infos.len(),
-                            e
-                        );
+                        tracing::error!("Failed to batch index chunks: {}", e);
                         for doc_info in doc_infos {
                             failed.push(BatchImportError {
                                 path: doc_info.name,
@@ -297,34 +295,65 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
             created_at,
         };
 
-        // Generate embeddings if embedder is available
-        let vectors = {
-            let embedder_guard = state.embedder.read().await;
+        // Generate chunks and embeddings
+        let embedder_guard = state.embedder.read().await;
+        let chunks_with_vectors: Vec<(usize, String, Option<Vec<f32>>)> =
             if let Some(ref embedder) = *embedder_guard {
-                match embedder.embed_document(&text_content).await {
-                    Ok(vecs) => Some(vecs),
-                    Err(e) => {
-                        tracing::warn!("Failed to generate embeddings for {}: {}", file_name, e);
-                        None
+                // Get text chunks
+                let text_chunks = embedder.chunk_text(&text_content);
+                if text_chunks.is_empty() {
+                    // Empty document - create single chunk with no content
+                    vec![(0, String::new(), None)]
+                } else {
+                    // Embed each chunk
+                    match embedder.embed_document(&text_content).await {
+                        Ok(vectors) => {
+                            // Pair chunks with their vectors
+                            text_chunks
+                                .into_iter()
+                                .enumerate()
+                                .zip(vectors.into_iter())
+                                .map(|((idx, text), vec)| (idx, text, Some(vec)))
+                                .collect()
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to generate embeddings for {}: {}",
+                                file_name,
+                                e
+                            );
+                            // Fall back to chunks without vectors
+                            text_chunks
+                                .into_iter()
+                                .enumerate()
+                                .map(|(idx, text)| (idx, text, None))
+                                .collect()
+                        }
                     }
                 }
             } else {
-                None
-            }
-        };
+                // No embedder - create single chunk with full text (for keyword search)
+                vec![(0, text_content.clone(), None)]
+            };
+        drop(embedder_guard);
 
-        let doc_to_index = search::DocToIndex {
-            id: doc_id,
-            name: file_name,
-            content: text_content,
-            collection_id: collection_id.clone(),
-            vectors,
-        };
+        // Create ChunkToIndex entries
+        for (chunk_index, chunk_content, vector) in chunks_with_vectors {
+            pending_chunks.push(search::ChunkToIndex {
+                id: format!("{}_chunk_{}", doc_id, chunk_index),
+                parent_id: doc_id.clone(),
+                parent_name: file_name.clone(),
+                chunk_index,
+                content: chunk_content,
+                collection_id: collection_id.clone(),
+                vector,
+            });
+        }
 
-        pending_index.push((doc_info, doc_to_index));
+        pending_doc_infos.push(doc_info);
 
-        // Flush batch when it reaches INDEX_BATCH_SIZE
-        if pending_index.len() >= INDEX_BATCH_SIZE {
+        // Flush batch when it reaches INDEX_BATCH_SIZE chunks
+        if pending_chunks.len() >= INDEX_BATCH_SIZE {
             flush_pending!();
         }
     }
@@ -498,20 +527,27 @@ pub async fn delete_document(
             .map_err(|e| e.to_string())?;
     }
 
-    // Delete from search index in background
+    // Delete all chunks for this document from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
     tokio::spawn(async move {
         let index = search.read().await;
         let indexer_config = indexer_config.lock().await;
-        if let Err(e) = search::delete_document(&index, &indexer_config, &document_id) {
-            tracing::error!(
-                "Failed to remove document {} from search index: {}",
-                document_id,
-                e
-            );
-        } else {
-            tracing::info!("Removed document {} from search index", document_id);
+        match search::delete_document_chunks(&index, &indexer_config, &document_id) {
+            Ok(count) => {
+                tracing::info!(
+                    "Removed {} chunks for document {} from search index",
+                    count,
+                    document_id
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to remove chunks for document {} from search index: {}",
+                    document_id,
+                    e
+                );
+            }
         }
     });
 
@@ -536,23 +572,23 @@ pub async fn delete_collection(
             .map_err(|e| e.to_string())?;
     }
 
-    // Delete from search index in background
+    // Delete all chunks from search index in background
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
     tokio::spawn(async move {
         let index = search.read().await;
         let indexer_config = indexer_config.lock().await;
-        match search::delete_documents_by_collection(&index, &indexer_config, &collection_id) {
+        match search::delete_chunks_by_collection(&index, &indexer_config, &collection_id) {
             Ok(deleted_count) => {
                 tracing::info!(
-                    "Removed {} documents from search index for collection {}",
+                    "Removed {} chunks from search index for collection {}",
                     deleted_count,
                     collection_id
                 );
             }
             Err(e) => {
                 tracing::error!(
-                    "Failed to remove documents from search index for collection {}: {}",
+                    "Failed to remove chunks from search index for collection {}: {}",
                     collection_id,
                     e
                 );
@@ -635,10 +671,11 @@ pub async fn search(
 
     let mut hits = Vec::new();
     for hit in results.hits {
-        let id = search::get_document_field_by_internal_id(&index, hit.doc_id, "id")
+        // Get chunk fields (chunks have parent_id and parent_name)
+        let id = search::get_document_field_by_internal_id(&index, hit.doc_id, "parent_id")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        let name = search::get_document_field_by_internal_id(&index, hit.doc_id, "name")
+        let name = search::get_document_field_by_internal_id(&index, hit.doc_id, "parent_name")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
         let content = search::get_document_field_by_internal_id(&index, hit.doc_id, "content")
@@ -649,7 +686,8 @@ pub async fn search(
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
 
-        let snippet = content.chars().take(200).collect::<String>();
+        // Content is now chunk text - use it as the snippet
+        let snippet = content.chars().take(500).collect::<String>();
         let score = milli::score_details::ScoreDetails::global_score(hit.scores.iter()) as f32;
 
         hits.push(SearchHit {

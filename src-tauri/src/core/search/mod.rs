@@ -90,13 +90,18 @@ pub fn open_index(path: &Path) -> Result<Index> {
 
     let index = Index::new(env_options, path, true).context("Failed to create milli index")?;
 
-    // Configure filterable attributes for collection faceting
+    // Configure filterable attributes for collection and document filtering
     let needs_setup = {
         let rtxn = index.read_txn()?;
         let current_rules = index.filterable_attributes_rules(&rtxn)?;
-        !current_rules
+        // Check if both collection_id and parent_id are configured
+        let has_collection = current_rules
             .iter()
-            .any(|rule| matches!(rule, FilterableAttributesRule::Field(f) if f == "collection_id"))
+            .any(|rule| matches!(rule, FilterableAttributesRule::Field(f) if f == "collection_id"));
+        let has_parent = current_rules
+            .iter()
+            .any(|rule| matches!(rule, FilterableAttributesRule::Field(f) if f == "parent_id"));
+        !has_collection || !has_parent
     };
 
     if needs_setup {
@@ -104,12 +109,13 @@ pub fn open_index(path: &Path) -> Result<Index> {
         let mut wtxn = index.write_txn()?;
         let mut settings = milli::update::Settings::new(&mut wtxn, &index, &indexer_config);
         settings.set_primary_key("id".to_string());
-        settings.set_filterable_fields(vec![FilterableAttributesRule::Field(
-            "collection_id".to_string(),
-        )]);
+        settings.set_filterable_fields(vec![
+            FilterableAttributesRule::Field("collection_id".to_string()),
+            FilterableAttributesRule::Field("parent_id".to_string()),
+        ]);
         settings.execute(&|| false, &Progress::default(), Default::default())?;
         wtxn.commit()?;
-        tracing::info!("Configured primary key and filterable attribute");
+        tracing::info!("Configured primary key and filterable attributes");
     }
 
     tracing::info!("Search index opened at {:?}", path);
@@ -245,91 +251,94 @@ pub fn check_embedder_ready(index: &Index, embedder_name: &str) -> Result<bool> 
 }
 
 // ============================================================================
-// Document Indexing
+// Indexing
 // ============================================================================
 
-/// Document to be indexed
-pub struct DocToIndex {
+/// A text chunk to be indexed (for search)
+///
+/// Documents are split into chunks for more precise search results.
+/// Each chunk is indexed separately with its own embedding vector.
+pub struct ChunkToIndex {
+    /// Unique chunk ID: "{parent_id}_chunk_{chunk_index}"
     pub id: String,
-    pub name: String,
+    /// Original document ID (for grouping and full-text retrieval)
+    pub parent_id: String,
+    /// Document filename (for display in results)
+    pub parent_name: String,
+    /// Position of this chunk in the document (0-indexed)
+    pub chunk_index: usize,
+    /// The chunk text content (~450 tokens)
     pub content: String,
+    /// Collection this chunk belongs to
     pub collection_id: String,
-    /// Pre-computed embedding vectors (one per chunk). If None, no vectors stored.
-    pub vectors: Option<Vec<Vec<f32>>>,
+    /// Pre-computed embedding vector for this chunk
+    pub vector: Option<Vec<f32>>,
 }
 
-/// Index a single document in milli
-pub fn index_document(
-    index: &Index,
-    indexer_config: &IndexerConfig,
-    doc_id: &str,
-    name: &str,
-    content: &str,
-    collection_id: &str,
-    vectors: Option<Vec<Vec<f32>>>,
-) -> Result<()> {
-    index_documents_batch(
-        index,
-        indexer_config,
-        vec![DocToIndex {
-            id: doc_id.to_string(),
-            name: name.to_string(),
-            content: content.to_string(),
-            collection_id: collection_id.to_string(),
-            vectors,
-        }],
-    )
-}
-
-/// Maximum documents per indexing chunk
+/// Maximum chunks per indexing batch
 const BATCH_CHUNK_SIZE: usize = 50;
 
-/// Index multiple documents in a single batch operation
-pub fn index_documents_batch(
+/// Index multiple chunks in a single batch operation
+pub fn index_chunks_batch(
     index: &Index,
     indexer_config: &IndexerConfig,
-    docs: Vec<DocToIndex>,
+    chunks: Vec<ChunkToIndex>,
 ) -> Result<()> {
-    if docs.is_empty() {
+    if chunks.is_empty() {
         return Ok(());
     }
 
-    let total = docs.len();
+    let total = chunks.len();
 
-    // Process in chunks to avoid stack overflow with large batches
-    let num_chunks = total.div_ceil(BATCH_CHUNK_SIZE);
-    for (chunk_idx, chunk) in docs.chunks(BATCH_CHUNK_SIZE).enumerate() {
-        index_chunk(index, indexer_config, chunk)?;
+    // Process in batches to avoid stack overflow with large batches
+    let num_batches = total.div_ceil(BATCH_CHUNK_SIZE);
+    for (batch_idx, batch) in chunks.chunks(BATCH_CHUNK_SIZE).enumerate() {
+        index_chunk_batch(index, indexer_config, batch)?;
         tracing::info!(
-            "Indexed chunk {}/{} ({} documents, {}% complete)",
-            chunk_idx + 1,
-            num_chunks,
-            chunk.len(),
-            ((chunk_idx + 1) * 100) / num_chunks
+            "Indexed batch {}/{} ({} chunks, {}% complete)",
+            batch_idx + 1,
+            num_batches,
+            batch.len(),
+            ((batch_idx + 1) * 100) / num_batches
         );
     }
 
-    tracing::debug!("Indexed batch of {} documents total", total);
+    tracing::debug!("Indexed batch of {} chunks total", total);
 
     Ok(())
 }
 
-/// Index a single chunk of documents
-fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex]) -> Result<()> {
-    let json_docs: Vec<Map<String, Value>> = docs
+/// Index a batch of chunks
+fn index_chunk_batch(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    chunks: &[ChunkToIndex],
+) -> Result<()> {
+    let json_docs: Vec<Map<String, Value>> = chunks
         .iter()
-        .map(|doc| {
+        .map(|chunk| {
             let mut m = Map::new();
-            m.insert("id".to_string(), Value::String(doc.id.clone()));
-            m.insert("name".to_string(), Value::String(doc.name.clone()));
-            m.insert("content".to_string(), Value::String(doc.content.clone()));
+            m.insert("id".to_string(), Value::String(chunk.id.clone()));
+            m.insert(
+                "parent_id".to_string(),
+                Value::String(chunk.parent_id.clone()),
+            );
+            m.insert(
+                "parent_name".to_string(),
+                Value::String(chunk.parent_name.clone()),
+            );
+            m.insert(
+                "chunk_index".to_string(),
+                Value::Number(chunk.chunk_index.into()),
+            );
+            m.insert("content".to_string(), Value::String(chunk.content.clone()));
             m.insert(
                 "collection_id".to_string(),
-                Value::String(doc.collection_id.clone()),
+                Value::String(chunk.collection_id.clone()),
             );
-            // Add pre-computed vectors if present
-            if let Some(ref vectors) = doc.vectors {
-                m.insert("_vectors".to_string(), json!({ "default": vectors }));
+            // Add pre-computed vector if present (single vector, not array)
+            if let Some(ref vector) = chunk.vector {
+                m.insert("_vectors".to_string(), json!({ "default": [vector] }));
             }
             m
         })
@@ -362,15 +371,11 @@ fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex
 
     let mut wtxn = index.write_txn()?;
 
-    // Create RuntimeEmbedders if any documents have vectors
+    // Create RuntimeEmbedders if any chunks have vectors
     // We need to tell milli about the embedder so it indexes the pre-computed vectors
-    let embedders = docs
+    let embedders = chunks
         .iter()
-        .find_map(|doc| {
-            doc.vectors
-                .as_ref()
-                .and_then(|vecs| vecs.first().map(|v| v.len()))
-        })
+        .find_map(|chunk| chunk.vector.as_ref().map(|v| v.len()))
         .map(|dimensions| create_user_provided_embedders("default", dimensions))
         .unwrap_or_default();
 
@@ -611,30 +616,70 @@ pub fn get_document_by_external_id(index: &Index, external_id: &str) -> Result<O
     }
 }
 
-/// Delete a single document from the index by its external ID
-pub fn delete_document(index: &Index, indexer_config: &IndexerConfig, doc_id: &str) -> Result<()> {
-    delete_documents(index, indexer_config, &[doc_id.to_string()])
-}
-
-/// Delete multiple documents from the index by their external IDs
-pub fn delete_documents(
+/// Delete all chunks belonging to a document by its parent ID
+pub fn delete_document_chunks(
     index: &Index,
     indexer_config: &IndexerConfig,
-    doc_ids: &[String],
+    parent_id: &str,
+) -> Result<usize> {
+    // Find all chunks with this parent_id
+    let rtxn = index.read_txn()?;
+
+    // Build filter for parent_id
+    let filter_str = format!("parent_id = \"{}\"", parent_id);
+    let mut search = milli::Search::new(&rtxn, index);
+    search.query("");
+    search.limit(usize::MAX);
+    if let Some(f) = milli::Filter::from_str(&filter_str)
+        .map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?
+    {
+        search.filter(f);
+    }
+
+    let result = search.execute()?;
+    if result.documents_ids.is_empty() {
+        return Ok(0);
+    }
+
+    // Get chunk IDs to delete
+    let chunk_ids: Vec<String> = result
+        .documents_ids
+        .iter()
+        .filter_map(|&doc_id| {
+            get_document_field(index, &rtxn, doc_id, "id")
+                .ok()
+                .flatten()
+        })
+        .collect();
+    drop(rtxn);
+
+    let count = chunk_ids.len();
+    if count > 0 {
+        delete_chunks_by_id(index, indexer_config, &chunk_ids)?;
+        tracing::debug!("Deleted {} chunks for document {}", count, parent_id);
+    }
+
+    Ok(count)
+}
+
+/// Delete chunks by their IDs
+fn delete_chunks_by_id(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    chunk_ids: &[String],
 ) -> Result<()> {
-    if doc_ids.is_empty() {
+    if chunk_ids.is_empty() {
         return Ok(());
     }
 
-    // Convert to slice of &str for the API
-    let doc_ids_refs: Vec<&str> = doc_ids.iter().map(|s| s.as_str()).collect();
+    let chunk_ids_refs: Vec<&str> = chunk_ids.iter().map(|s| s.as_str()).collect();
 
     let rtxn = index.read_txn()?;
     let db_fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut new_fields_ids_map = db_fields_ids_map.clone();
 
     let mut operation = DocumentOperation::new();
-    operation.delete_documents(&doc_ids_refs);
+    operation.delete_documents(&chunk_ids_refs);
 
     let indexer_alloc = Bump::new();
     let (document_changes, operation_stats, primary_key) = operation.into_changes(
@@ -649,7 +694,7 @@ pub fn delete_documents(
     )?;
 
     if let Some(error) = operation_stats.into_iter().find_map(|stat| stat.error) {
-        anyhow::bail!("Document deletion error: {}", error);
+        anyhow::bail!("Chunk deletion error: {}", error);
     }
 
     let mut wtxn = index.write_txn()?;
@@ -676,18 +721,18 @@ pub fn delete_documents(
 
     wtxn.commit()?;
 
-    tracing::debug!("Deleted {} documents from index", doc_ids.len());
+    tracing::debug!("Deleted {} chunks from index", chunk_ids.len());
 
     Ok(())
 }
 
-/// Delete all documents belonging to a specific collection
-pub fn delete_documents_by_collection(
+/// Delete all chunks belonging to a specific collection
+pub fn delete_chunks_by_collection(
     index: &Index,
     indexer_config: &IndexerConfig,
     collection_id: &str,
 ) -> Result<usize> {
-    // Use milli's filter to find documents in this collection
+    // Find all chunks in this collection
     let collection_ids = [collection_id.to_string()];
     let results = search_index(
         index,
@@ -703,9 +748,9 @@ pub fn delete_documents_by_collection(
         return Ok(0);
     }
 
-    // Extract external IDs from search results
+    // Extract chunk IDs from search results
     let rtxn = index.read_txn()?;
-    let doc_ids_to_delete: Vec<String> = results
+    let chunk_ids_to_delete: Vec<String> = results
         .hits
         .iter()
         .filter_map(|hit| {
@@ -716,11 +761,11 @@ pub fn delete_documents_by_collection(
         .collect();
     drop(rtxn);
 
-    let count = doc_ids_to_delete.len();
+    let count = chunk_ids_to_delete.len();
     if count > 0 {
-        delete_documents(index, indexer_config, &doc_ids_to_delete)?;
+        delete_chunks_by_id(index, indexer_config, &chunk_ids_to_delete)?;
         tracing::info!(
-            "Deleted {} documents from index for collection {}",
+            "Deleted {} chunks from index for collection {}",
             count,
             collection_id
         );
@@ -735,6 +780,25 @@ mod tests {
 
     fn test_indexer_config() -> IndexerConfig {
         IndexerConfig::default()
+    }
+
+    /// Helper to create a single chunk for a document (for testing)
+    fn make_chunk(
+        parent_id: &str,
+        parent_name: &str,
+        content: &str,
+        collection_id: &str,
+        vector: Option<Vec<f32>>,
+    ) -> ChunkToIndex {
+        ChunkToIndex {
+            id: format!("{}_chunk_0", parent_id),
+            parent_id: parent_id.to_string(),
+            parent_name: parent_name.to_string(),
+            chunk_index: 0,
+            content: content.to_string(),
+            collection_id: collection_id.to_string(),
+            vector,
+        }
     }
 
     #[test]
@@ -762,26 +826,24 @@ mod tests {
     }
 
     #[test]
-    fn test_index_and_search_document() {
+    fn test_index_and_search_chunk() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(
-            &index,
-            &config,
+        let chunk = make_chunk(
             "doc1",
             "test.pdf",
             "This is a test document about climate change.",
             "collection1",
-            None, // No vectors for text-only search
-        )
-        .unwrap();
+            None,
+        );
+        index_chunks_batch(&index, &config, vec![chunk]).unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
-        // Search should find the document (keyword-only, no semantic)
+        // Search should find the chunk (keyword-only, no semantic)
         let results = search_index(
             &index,
             SearchParams {
@@ -793,9 +855,9 @@ mod tests {
         .unwrap();
         assert_eq!(results.hits.len(), 1);
 
-        // Verify we can retrieve the document fields
-        let name =
-            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+        // Verify we can retrieve the chunk fields
+        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
+            .unwrap();
         assert_eq!(name, Some("test.pdf".to_string()));
     }
 
@@ -805,16 +867,8 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(
-            &index,
-            &config,
-            "doc1",
-            "test.pdf",
-            "Hello world",
-            "col1",
-            None,
-        )
-        .unwrap();
+        let chunk = make_chunk("doc1", "test.pdf", "Hello world", "col1", None);
+        index_chunks_batch(&index, &config, vec![chunk]).unwrap();
 
         let results = search_index(
             &index,
@@ -834,36 +888,12 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(
-            &index,
-            &config,
-            "doc1",
-            "a.pdf",
-            "Climate research paper",
-            "climate",
-            None,
-        )
-        .unwrap();
-        index_document(
-            &index,
-            &config,
-            "doc2",
-            "b.pdf",
-            "Climate news article",
-            "news",
-            None,
-        )
-        .unwrap();
-        index_document(
-            &index,
-            &config,
-            "doc3",
-            "c.pdf",
-            "Climate policy document",
-            "policy",
-            None,
-        )
-        .unwrap();
+        let chunks = vec![
+            make_chunk("doc1", "a.pdf", "Climate research paper", "climate", None),
+            make_chunk("doc2", "b.pdf", "Climate news article", "news", None),
+            make_chunk("doc3", "c.pdf", "Climate policy document", "policy", None),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
 
         // Search all collections
         let all = search_index(
@@ -890,7 +920,8 @@ mod tests {
         .unwrap();
         assert_eq!(climate_only.hits.len(), 1);
         let name =
-            get_document_field_by_internal_id(&index, climate_only.hits[0].doc_id, "name").unwrap();
+            get_document_field_by_internal_id(&index, climate_only.hits[0].doc_id, "parent_name")
+                .unwrap();
         assert_eq!(name, Some("a.pdf".to_string()));
 
         // Filter to multiple collections
@@ -913,26 +944,11 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(
-            &index,
-            &config,
-            "doc1",
-            "a.pdf",
-            "Test content",
-            "col1",
-            None,
-        )
-        .unwrap();
-        index_document(
-            &index,
-            &config,
-            "doc2",
-            "b.pdf",
-            "Test content",
-            "col2",
-            None,
-        )
-        .unwrap();
+        let chunks = vec![
+            make_chunk("doc1", "a.pdf", "Test content", "col1", None),
+            make_chunk("doc2", "b.pdf", "Test content", "col2", None),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
 
         // Empty filter should return all
         let results = search_index(
@@ -954,31 +970,31 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        let docs = vec![
-            DocToIndex {
-                id: "doc1".to_string(),
-                name: "a.pdf".to_string(),
-                content: "First document about science".to_string(),
-                collection_id: "col1".to_string(),
-                vectors: None,
-            },
-            DocToIndex {
-                id: "doc2".to_string(),
-                name: "b.pdf".to_string(),
-                content: "Second document about science".to_string(),
-                collection_id: "col1".to_string(),
-                vectors: None,
-            },
-            DocToIndex {
-                id: "doc3".to_string(),
-                name: "c.pdf".to_string(),
-                content: "Third document about science".to_string(),
-                collection_id: "col1".to_string(),
-                vectors: None,
-            },
+        let chunks = vec![
+            make_chunk(
+                "doc1",
+                "a.pdf",
+                "First document about science",
+                "col1",
+                None,
+            ),
+            make_chunk(
+                "doc2",
+                "b.pdf",
+                "Second document about science",
+                "col1",
+                None,
+            ),
+            make_chunk(
+                "doc3",
+                "c.pdf",
+                "Third document about science",
+                "col1",
+                None,
+            ),
         ];
 
-        index_documents_batch(&index, &config, docs).unwrap();
+        index_chunks_batch(&index, &config, chunks).unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
@@ -996,44 +1012,30 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_document() {
+    fn test_delete_document_chunks() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        // Index two documents
-        index_document(
-            &index,
-            &config,
-            "doc1",
-            "a.pdf",
-            "First document",
-            "col1",
-            None,
-        )
-        .unwrap();
-        index_document(
-            &index,
-            &config,
-            "doc2",
-            "b.pdf",
-            "Second document",
-            "col1",
-            None,
-        )
-        .unwrap();
+        // Index chunks for two documents
+        let chunks = vec![
+            make_chunk("doc1", "a.pdf", "First document", "col1", None),
+            make_chunk("doc2", "b.pdf", "Second document", "col1", None),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 2);
         drop(rtxn);
 
-        // Delete one document
-        delete_document(&index, &config, "doc1").unwrap();
+        // Delete chunks for one document
+        let deleted = delete_document_chunks(&index, &config, "doc1").unwrap();
+        assert_eq!(deleted, 1);
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
-        // Search should only find the remaining document
+        // Search should only find the remaining document's chunks
         let results = search_index(
             &index,
             SearchParams {
@@ -1044,61 +1046,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(results.hits.len(), 1);
-        let name =
-            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
+            .unwrap();
         assert_eq!(name, Some("b.pdf".to_string()));
     }
 
     #[test]
-    fn test_delete_documents_by_collection() {
+    fn test_delete_chunks_by_collection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        // Index documents in different collections
-        index_document(
-            &index,
-            &config,
-            "doc1",
-            "a.pdf",
-            "Document alpha",
-            "col1",
-            None,
-        )
-        .unwrap();
-        index_document(
-            &index,
-            &config,
-            "doc2",
-            "b.pdf",
-            "Document beta",
-            "col1",
-            None,
-        )
-        .unwrap();
-        index_document(
-            &index,
-            &config,
-            "doc3",
-            "c.pdf",
-            "Document gamma",
-            "col2",
-            None,
-        )
-        .unwrap();
+        // Index chunks in different collections
+        let chunks = vec![
+            make_chunk("doc1", "a.pdf", "Document alpha", "col1", None),
+            make_chunk("doc2", "b.pdf", "Document beta", "col1", None),
+            make_chunk("doc3", "c.pdf", "Document gamma", "col2", None),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
         drop(rtxn);
 
-        // Delete all documents from col1
-        let deleted = delete_documents_by_collection(&index, &config, "col1").unwrap();
+        // Delete all chunks from col1
+        let deleted = delete_chunks_by_collection(&index, &config, "col1").unwrap();
         assert_eq!(deleted, 2);
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
-        // Only col2 document should remain
+        // Only col2 chunk should remain
         let results = search_index(
             &index,
             SearchParams {
@@ -1109,8 +1087,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(results.hits.len(), 1);
-        let name =
-            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
+            .unwrap();
         assert_eq!(name, Some("c.pdf".to_string()));
     }
 
@@ -1140,55 +1118,43 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        // IMPORTANT: Configure embedder BEFORE indexing documents with vectors
+        // IMPORTANT: Configure embedder BEFORE indexing chunks with vectors
         configure_embedder(&index, &config, "default", 3).unwrap();
 
         // Create simple 3D vectors for testing
         // doc1: about cats [1, 0, 0]
         // doc2: about dogs [0, 1, 0]
         // doc3: also about cats [0.9, 0.1, 0]
-        let cat_vec = vec![vec![1.0, 0.0, 0.0]];
-        let dog_vec = vec![vec![0.0, 1.0, 0.0]];
-        let also_cat_vec = vec![vec![0.9, 0.1, 0.0]];
-
-        index_document(
-            &index,
-            &config,
-            "doc1",
-            "cats.pdf",
-            "A document about cats and felines.",
-            "collection1",
-            Some(cat_vec),
-        )
-        .unwrap();
-
-        index_document(
-            &index,
-            &config,
-            "doc2",
-            "dogs.pdf",
-            "A document about dogs and canines.",
-            "collection1",
-            Some(dog_vec),
-        )
-        .unwrap();
-
-        index_document(
-            &index,
-            &config,
-            "doc3",
-            "more_cats.pdf",
-            "Another document about cats.",
-            "collection1",
-            Some(also_cat_vec),
-        )
-        .unwrap();
+        let chunks = vec![
+            make_chunk(
+                "doc1",
+                "cats.pdf",
+                "A document about cats and felines.",
+                "collection1",
+                Some(vec![1.0, 0.0, 0.0]),
+            ),
+            make_chunk(
+                "doc2",
+                "dogs.pdf",
+                "A document about dogs and canines.",
+                "collection1",
+                Some(vec![0.0, 1.0, 0.0]),
+            ),
+            make_chunk(
+                "doc3",
+                "more_cats.pdf",
+                "Another document about cats.",
+                "collection1",
+                Some(vec![0.9, 0.1, 0.0]),
+            ),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
 
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
         drop(rtxn);
 
-        // Query with a cat-like vector [1, 0, 0] - should rank cat documents higher
+        // Query with a cat-like vector [1, 0, 0] - should rank cat chunks higher
         let query_vector = vec![1.0, 0.0, 0.0];
         let results = search_index(
             &index,
@@ -1202,12 +1168,13 @@ mod tests {
         )
         .unwrap();
 
-        // Should find all 3 documents
-        assert!(results.hits.len() >= 2, "Should find at least 2 documents");
+        // Should find all 3 chunks
+        assert!(results.hits.len() >= 2, "Should find at least 2 chunks");
 
-        // The cat documents should be ranked higher (first)
+        // The cat chunks should be ranked higher (first)
         let first_name =
-            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
+                .unwrap();
         assert!(
             first_name == Some("cats.pdf".to_string())
                 || first_name == Some("more_cats.pdf".to_string()),

@@ -51,17 +51,21 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
             function: Function {
                 name: "read_document".to_string(),
                 description: Some(
-                    "Read the full text content of a document by its ID. Use this after searching to get the complete text of a relevant document.".to_string()
+                    "Read the full text content of a document. Use the document_id and collection_id from search results.".to_string()
                 ),
                 parameters: Some(json_to_hashmap(json!({
                     "type": "object",
                     "properties": {
                         "document_id": {
                             "type": "string",
-                            "description": "The document ID to read"
+                            "description": "The document ID from search results"
+                        },
+                        "collection_id": {
+                            "type": "string",
+                            "description": "The collection ID from search results"
                         }
                     },
-                    "required": ["document_id"]
+                    "required": ["document_id", "collection_id"]
                 }))),
             },
         },
@@ -216,7 +220,7 @@ async fn execute_semantic_search(tool_call: &ToolCall, state: &AppState) -> Tool
 
 fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
     if doc_ids.is_empty() {
-        return "No documents found.".to_string();
+        return "No matching passages found.".to_string();
     }
 
     let mut results = Vec::new();
@@ -226,11 +230,16 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
     };
 
     for &doc_id in doc_ids {
-        let id = search::get_document_field(index, &rtxn, doc_id, "id")
+        // Get chunk fields
+        let parent_id = search::get_document_field(index, &rtxn, doc_id, "parent_id")
             .ok()
             .flatten()
             .unwrap_or_default();
-        let name = search::get_document_field(index, &rtxn, doc_id, "name")
+        let parent_name = search::get_document_field(index, &rtxn, doc_id, "parent_name")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let collection_id = search::get_document_field(index, &rtxn, doc_id, "collection_id")
             .ok()
             .flatten()
             .unwrap_or_default();
@@ -239,22 +248,22 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
             .flatten()
             .unwrap_or_default();
 
-        // Create snippet from first 200 chars
-        let snippet: String = content.chars().take(200).collect();
-        let snippet = if content.len() > 200 {
-            format!("{}...", snippet)
+        // Content is already the chunk text - show it directly (truncate if very long)
+        let passage: String = content.chars().take(500).collect();
+        let passage = if content.len() > 500 {
+            format!("{}...", passage)
         } else {
-            snippet
+            passage
         };
 
         results.push(format!(
-            "- Document: {}\n  ID: {}\n  Snippet: {}",
-            name, id, snippet
+            "- Document: {}\n  ID: {}\n  Collection: {}\n  Passage: {}",
+            parent_name, parent_id, collection_id, passage
         ));
     }
 
     format!(
-        "Found {} documents:\n\n{}",
+        "Found {} relevant passages:\n\n{}",
         doc_ids.len(),
         results.join("\n\n")
     )
@@ -262,35 +271,91 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
 
 async fn execute_read_document(tool_call: &ToolCall, state: &AppState) -> ToolResult {
     let doc_id = tool_call.arguments["document_id"].as_str().unwrap_or("");
+    let collection_id = tool_call.arguments["collection_id"].as_str().unwrap_or("");
 
-    info!(document_id = %doc_id, "Reading document");
+    info!(document_id = %doc_id, collection_id = %collection_id, "Reading document");
 
-    let index = state.search.read().await;
-
-    // Get content field from search index by external ID
-    match search::get_document_by_external_id(&index, doc_id) {
-        Ok(Some(content)) => {
-            info!(
-                document_id = %doc_id,
-                content_len = content.len(),
-                "Document read successfully"
-            );
-            ToolResult {
+    // Parse collection_id as namespace
+    let namespace_id: iroh_docs::NamespaceId = match collection_id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            warn!(collection_id = %collection_id, "Invalid collection ID");
+            return ToolResult {
                 tool_call_id: tool_call.id.clone(),
-                content,
-                is_error: false,
-            }
+                content: format!("Invalid collection ID: {}", collection_id),
+                is_error: true,
+            };
         }
+    };
+
+    // Fetch document metadata from storage
+    let mut storage = state.storage.write().await;
+    let document = match storage.get_document(namespace_id, doc_id).await {
+        Ok(Some(doc)) => doc,
         Ok(None) => {
             warn!(document_id = %doc_id, "Document not found");
-            ToolResult {
+            return ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: format!("Document not found: {}", doc_id),
+                is_error: true,
+            };
+        }
+        Err(e) => {
+            warn!(document_id = %doc_id, error = %e, "Error finding document");
+            return ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Error finding document: {}", e),
+                is_error: true,
+            };
+        }
+    };
+
+    // Get text content from blob storage
+    let text_hash: iroh_blobs::Hash = match document.text_hash.parse() {
+        Ok(h) => h,
+        Err(_) => {
+            warn!(document_id = %doc_id, "Invalid text hash");
+            return ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Invalid text hash for document: {}", doc_id),
+                is_error: true,
+            };
+        }
+    };
+
+    match storage.get_blob(&text_hash).await {
+        Ok(Some(bytes)) => match String::from_utf8(bytes) {
+            Ok(content) => {
+                info!(
+                    document_id = %doc_id,
+                    content_len = content.len(),
+                    "Document read successfully"
+                );
+                ToolResult {
+                    tool_call_id: tool_call.id.clone(),
+                    content,
+                    is_error: false,
+                }
+            }
+            Err(e) => {
+                warn!(document_id = %doc_id, error = %e, "Invalid UTF-8 in document");
+                ToolResult {
+                    tool_call_id: tool_call.id.clone(),
+                    content: format!("Invalid text encoding in document: {}", doc_id),
+                    is_error: true,
+                }
+            }
+        },
+        Ok(None) => {
+            warn!(document_id = %doc_id, "Text content not found in storage");
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Text content not found for document: {}", doc_id),
                 is_error: true,
             }
         }
         Err(e) => {
-            warn!(document_id = %doc_id, error = %e, "Error reading document");
+            warn!(document_id = %doc_id, error = %e, "Error reading text content");
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: format!("Error reading document: {}", e),
