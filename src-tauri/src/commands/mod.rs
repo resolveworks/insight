@@ -460,8 +460,8 @@ pub async fn get_document_chunks(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Text content not found".to_string())?;
 
-    let text =
-        String::from_utf8(text_bytes).map_err(|e| format!("Invalid UTF-8 in text content: {}", e))?;
+    let text = String::from_utf8(text_bytes)
+        .map_err(|e| format!("Invalid UTF-8 in text content: {}", e))?;
 
     // Drop storage lock before accessing embedder
     drop(storage);
@@ -574,9 +574,11 @@ pub async fn search(
     page_size: Option<usize>,
     collection_ids: Option<Vec<String>>,
     semantic_ratio: Option<f32>,
+    min_score: Option<f32>,
     state: State<'_, AppState>,
 ) -> Result<SearchResponse, String> {
     let semantic_ratio = semantic_ratio.unwrap_or(0.0).clamp(0.0, 1.0);
+    let min_score = min_score.map(|s| s.clamp(0.0, 1.0));
 
     tracing::info!(
         "Searching for: {} (collections: {:?}, semantic_ratio: {})",
@@ -603,30 +605,25 @@ pub async fn search(
     // Generate query embedding if semantic search is requested
     let query_vector = if semantic_ratio > 0.0 {
         let embedder_guard = state.embedder.read().await;
-        if let Some(ref embedder) = *embedder_guard {
-            match embedder.embed(&query).await {
-                Ok(vec) => Some(vec),
-                Err(e) => {
-                    tracing::warn!("Failed to embed query, falling back to keyword search: {}", e);
-                    None
-                }
-            }
-        } else {
-            tracing::debug!("No embedder configured, using keyword-only search");
-            None
-        }
+        let embedder = embedder_guard
+            .as_ref()
+            .ok_or("Semantic search requires a configured embedding model")?;
+        Some(embedder.embed(&query).await.map_err(|e| e.to_string())?)
     } else {
         None
     };
 
     let results = search::search_index(
         &index,
-        &query,
-        page_size,
-        offset,
-        collection_ids.as_deref(),
-        query_vector,
-        semantic_ratio,
+        search::SearchParams {
+            query: &query,
+            limit: page_size,
+            offset,
+            collection_ids: collection_ids.as_deref(),
+            query_vector,
+            semantic_ratio,
+            min_score,
+        },
     )
     .map_err(|e| e.to_string())?;
 
@@ -721,7 +718,9 @@ pub async fn start_chat(state: State<'_, AppState>) -> Result<agent::Conversatio
     // Verify model is loaded
     let model_guard = state.agent_model.read().await;
     if model_guard.is_none() {
-        return Err("No language model configured. Call configure_language_model first.".to_string());
+        return Err(
+            "No language model configured. Call configure_language_model first.".to_string(),
+        );
     }
     drop(model_guard);
 
@@ -914,9 +913,7 @@ pub async fn get_available_language_models() -> Result<Vec<LanguageModelInfo>, S
 /// Get download status for a language model
 #[tauri::command]
 pub async fn get_language_model_status(model_id: Option<String>) -> Result<ModelStatus, String> {
-    let manager = ModelManager::new()
-        .await
-        .map_err(|e| e.to_string())?;
+    let manager = ModelManager::new().await.map_err(|e| e.to_string())?;
 
     // Use specified model or default
     let model = if let Some(id) = model_id {
@@ -926,9 +923,7 @@ pub async fn get_language_model_status(model_id: Option<String>) -> Result<Model
     };
 
     if manager.is_downloaded(&model) {
-        let path = manager
-            .get_path(&model)
-            .ok_or("Model path not found")?;
+        let path = manager.get_path(&model).ok_or("Model path not found")?;
         Ok(ModelStatus::Ready { path })
     } else {
         Ok(ModelStatus::NotDownloaded)
@@ -938,9 +933,7 @@ pub async fn get_language_model_status(model_id: Option<String>) -> Result<Model
 /// Download a language model with progress events
 #[tauri::command]
 pub async fn download_language_model(model_id: String, app: AppHandle) -> Result<(), String> {
-    let manager = ModelManager::new()
-        .await
-        .map_err(|e| e.to_string())?;
+    let manager = ModelManager::new().await.map_err(|e| e.to_string())?;
 
     let model = models::get_language_model(&model_id)
         .ok_or_else(|| format!("Model not found: {}", model_id))?;
@@ -1075,9 +1068,7 @@ pub enum EmbeddingModelStatus {
 /// Get download status for an embedding model
 #[tauri::command]
 pub async fn get_embedding_model_status(model_id: String) -> Result<EmbeddingModelStatus, String> {
-    let manager = ModelManager::new()
-        .await
-        .map_err(|e| e.to_string())?;
+    let manager = ModelManager::new().await.map_err(|e| e.to_string())?;
 
     let model = models::get_embedding_model(&model_id)
         .ok_or_else(|| format!("Embedding model not found: {}", model_id))?;
@@ -1092,9 +1083,7 @@ pub async fn get_embedding_model_status(model_id: String) -> Result<EmbeddingMod
 /// Download an embedding model with progress events
 #[tauri::command]
 pub async fn download_embedding_model(model_id: String, app: AppHandle) -> Result<(), String> {
-    let manager = ModelManager::new()
-        .await
-        .map_err(|e| e.to_string())?;
+    let manager = ModelManager::new().await.map_err(|e| e.to_string())?;
 
     let model = models::get_embedding_model(&model_id)
         .ok_or_else(|| format!("Embedding model not found: {}", model_id))?;

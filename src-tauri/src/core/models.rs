@@ -210,7 +210,9 @@ pub fn default_embedding_model() -> EmbeddingModelInfo {
 
 /// Get an embedding model by ID
 pub fn get_embedding_model(id: &str) -> Option<EmbeddingModelInfo> {
-    available_embedding_models().into_iter().find(|m| m.id == id)
+    available_embedding_models()
+        .into_iter()
+        .find(|m| m.id == id)
 }
 
 /// Available embedding models registry
@@ -356,9 +358,12 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
-    /// Create a new model manager using the default HuggingFace cache
+    /// Create a new model manager using the HuggingFace cache
+    ///
+    /// Respects the `HF_HOME` environment variable if set, otherwise uses
+    /// the default cache location (`~/.cache/huggingface/hub`).
     pub async fn new() -> Result<Self> {
-        let cache = Cache::default();
+        let cache = Cache::from_env();
         let api = ApiBuilder::new()
             .build()
             .context("Failed to create HuggingFace API client")?;

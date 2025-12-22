@@ -51,7 +51,13 @@ async fn import_pdf_helper(
     collection_id: String,
 ) -> Result<DocumentInfo, String> {
     let state = app.state::<AppState>();
-    let result = import_pdfs_batch(vec![path.clone()], collection_id, app.handle().clone(), state).await?;
+    let result = import_pdfs_batch(
+        vec![path.clone()],
+        collection_id,
+        app.handle().clone(),
+        state,
+    )
+    .await?;
 
     if let Some(err) = result.failed.first() {
         return Err(err.error.clone());
@@ -204,7 +210,8 @@ async fn test_import_pdf_invalid_collection() {
     let state = create_test_state(temp_dir.path()).await;
     let app = create_test_app(state);
 
-    let result = import_pdf_helper(&app, "/some/path.pdf".to_string(), "invalid-id".to_string()).await;
+    let result =
+        import_pdf_helper(&app, "/some/path.pdf".to_string(), "invalid-id".to_string()).await;
 
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Invalid collection ID"));
@@ -330,9 +337,17 @@ async fn test_search_empty_index() {
 
     let state = app.state::<AppState>();
 
-    let result = search("test query".to_string(), None, None, None, None, state)
-        .await
-        .unwrap();
+    let result = search(
+        "test query".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        state,
+    )
+    .await
+    .unwrap();
 
     assert!(result.hits.is_empty());
     assert_eq!(result.total_hits, 0);
@@ -365,7 +380,7 @@ async fn test_search_finds_document() {
     .unwrap();
 
     // Search for content
-    let result = search("climate".to_string(), None, None, None, None, state)
+    let result = search("climate".to_string(), None, None, None, None, None, state)
         .await
         .unwrap();
 
@@ -412,9 +427,17 @@ async fn test_search_with_collection_filter() {
     .unwrap();
 
     // Search all - should find both
-    let all = search("research".to_string(), None, None, None, None, state.clone())
-        .await
-        .unwrap();
+    let all = search(
+        "research".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        state.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(all.hits.len(), 2);
 
     // Search with filter - should find only one
@@ -423,6 +446,7 @@ async fn test_search_with_collection_filter() {
         None,
         None,
         Some(vec![col1.id.clone()]),
+        None,
         None,
         state,
     )
@@ -467,6 +491,7 @@ async fn test_search_pagination() {
         Some(2),
         None,
         None,
+        None,
         state.clone(),
     )
     .await
@@ -478,9 +503,17 @@ async fn test_search_pagination() {
     assert_eq!(page0.total_hits, 5);
 
     // Get second page
-    let page1 = search("document".to_string(), Some(1), Some(2), None, None, state)
-        .await
-        .unwrap();
+    let page1 = search(
+        "document".to_string(),
+        Some(1),
+        Some(2),
+        None,
+        None,
+        None,
+        state,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(page1.hits.len(), 2);
     assert_eq!(page1.page, 1);
@@ -509,6 +542,9 @@ async fn test_get_language_model_status_not_downloaded() {
     let app = create_test_app(state);
 
     let _state = app.state::<AppState>();
+
+    // Point HF cache to empty temp dir so ModelManager won't find any models
+    std::env::set_var("HF_HOME", temp_dir.path());
 
     let status = get_language_model_status(None).await.unwrap();
 

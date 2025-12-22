@@ -24,13 +24,19 @@ pub use embeddings::Embedder;
 #[serde(tag = "phase")]
 pub enum BootPhase {
     /// Language model is being loaded (only if configured)
-    LanguageModelLoading { model_id: String, model_name: String },
+    LanguageModelLoading {
+        model_id: String,
+        model_name: String,
+    },
     /// Language model loaded successfully
     LanguageModelReady { model_id: String },
     /// Language model failed to load
     LanguageModelFailed { model_id: String, error: String },
     /// Embedding model is being loaded (only if configured)
-    EmbedderLoading { model_id: String, model_name: String },
+    EmbedderLoading {
+        model_id: String,
+        model_name: String,
+    },
     /// Embedding model loaded successfully
     EmbedderReady { model_id: String },
     /// Embedding model failed to load

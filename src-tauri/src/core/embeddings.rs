@@ -58,11 +58,7 @@ impl Embedder {
             .await
             .context("Failed to load embedding model")?;
 
-        tracing::info!(
-            "Embedding model loaded: {} ({}D)",
-            hf_repo_id,
-            dimensions
-        );
+        tracing::info!("Embedding model loaded: {} ({}D)", hf_repo_id, dimensions);
 
         Ok(Self {
             model: Arc::new(model),
@@ -79,7 +75,10 @@ impl Embedder {
         if content.is_empty() {
             return vec![];
         }
-        self.splitter.chunks(content).map(|s| s.to_string()).collect()
+        self.splitter
+            .chunks(content)
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Embed a single text (for queries)
@@ -92,10 +91,7 @@ impl Embedder {
             return Ok(vec![0.0; self.dimensions]);
         }
 
-        tracing::debug!(
-            text_len = text.len(),
-            "Embedding single text"
-        );
+        tracing::debug!(text_len = text.len(), "Embedding single text");
 
         let start = std::time::Instant::now();
         let result = self
@@ -164,15 +160,11 @@ impl Embedder {
             return Ok(vec![]);
         }
 
-        tracing::debug!(
-            batch_size = texts.len(),
-            "Embedding batch"
-        );
+        tracing::debug!(batch_size = texts.len(), "Embedding batch");
 
         let start = std::time::Instant::now();
 
-        let request = EmbeddingRequest::builder()
-            .add_prompts(texts.iter().map(|s| s.to_string()));
+        let request = EmbeddingRequest::builder().add_prompts(texts.iter().map(|s| s.to_string()));
 
         let result = self
             .model

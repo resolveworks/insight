@@ -6,12 +6,12 @@ use anyhow::{Context, Result};
 use bumpalo::Bump;
 
 use milli::documents::mmap_from_objects;
-use milli::heed::EnvOpenOptions;
+use milli::heed::{EnvOpenOptions, RoTxn};
 use milli::progress::Progress;
+use milli::prompt::Prompt;
 use milli::score_details::ScoringStrategy;
 use milli::update::new::indexer::{self, DocumentOperation};
 use milli::update::{IndexerConfig, Setting};
-use milli::prompt::Prompt;
 use milli::vector::settings::{EmbedderSource, EmbeddingSettings};
 use milli::vector::{embedder::manual, Embedder, RuntimeEmbedder, RuntimeEmbedders};
 use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
@@ -22,6 +22,39 @@ use std::collections::HashMap;
 /// Default map size for the LMDB environment (10 GB)
 /// This is the maximum size the database can grow to
 const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
+
+/// Get an embedder from the index's stored configuration
+///
+/// This reads the embedder settings from the index and creates an `Embedder` instance.
+/// Returns None if the embedder is not configured.
+fn get_embedder_from_index(
+    index: &Index,
+    rtxn: &RoTxn<'_>,
+    embedder_name: &str,
+) -> Result<Option<(Arc<Embedder>, bool)>> {
+    let embedders = index.embedding_configs();
+
+    // Check if embedder has an ID (meaning it's properly registered)
+    let embedder_id = embedders.embedder_id(rtxn, embedder_name)?;
+    if embedder_id.is_none() {
+        return Ok(None);
+    }
+
+    // Get the embedder config
+    let configs = embedders.embedding_configs(rtxn)?;
+    let config = configs.iter().find(|c| c.name == embedder_name);
+
+    match config {
+        Some(cfg) => {
+            // Create embedder from stored options
+            let embedder = Embedder::new(cfg.config.embedder_options.clone(), 0)
+                .map_err(|e| anyhow::anyhow!("Failed to create embedder: {}", e))?;
+            let quantized = cfg.config.quantized.unwrap_or(false);
+            Ok(Some((Arc::new(embedder), quantized)))
+        }
+        None => Ok(None),
+    }
+}
 
 /// Create RuntimeEmbedders for user-provided vectors
 ///
@@ -126,14 +159,30 @@ pub fn configure_embedder(
     };
 
     // Set the embedder configuration
-    let mut embedders = BTreeMap::new();
-    embedders.insert(embedder_name.to_string(), Setting::Set(embedder_settings));
-    settings.set_embedder_settings(embedders);
+    let mut embedders_map = BTreeMap::new();
+    embedders_map.insert(embedder_name.to_string(), Setting::Set(embedder_settings));
+    settings.set_embedder_settings(embedders_map);
 
     settings.execute(&|| false, &Progress::default(), Default::default())?;
     wtxn.commit()?;
 
-    tracing::info!("Embedder configured successfully");
+    // Verify the embedder was registered with an ID
+    let rtxn = index.read_txn()?;
+    let embedders = index.embedding_configs();
+    let embedder_id = embedders.embedder_id(&rtxn, embedder_name)?;
+    let configs = embedders.embedding_configs(&rtxn)?;
+
+    tracing::info!(
+        embedder_name = embedder_name,
+        embedder_id = ?embedder_id,
+        config_count = configs.len(),
+        "Embedder configured successfully"
+    );
+
+    if embedder_id.is_none() {
+        tracing::error!("Embedder was not assigned an ID!");
+    }
+
     Ok(())
 }
 
@@ -160,14 +209,39 @@ pub fn log_embedder_configs(index: &Index) -> Result<()> {
     if configs.is_empty() {
         tracing::info!("No embedders configured in index");
     } else {
-        for config in configs {
+        for config in &configs {
+            // Check if embedder has an ID assigned
+            let embedder_id = embedders.embedder_id(&rtxn, &config.name)?;
             tracing::info!(
                 name = config.name,
+                embedder_id = ?embedder_id,
                 "Embedder configured in index"
             );
         }
     }
     Ok(())
+}
+
+/// Check if embedder is properly configured for vector search
+pub fn check_embedder_ready(index: &Index, embedder_name: &str) -> Result<bool> {
+    let rtxn = index.read_txn()?;
+    let embedders = index.embedding_configs();
+
+    // Check if embedder config exists
+    let configs = embedders.embedding_configs(&rtxn)?;
+    let has_config = configs.iter().any(|c| c.name == embedder_name);
+
+    // Check if embedder has an ID
+    let embedder_id = embedders.embedder_id(&rtxn, embedder_name)?;
+
+    tracing::debug!(
+        embedder_name = embedder_name,
+        has_config = has_config,
+        embedder_id = ?embedder_id,
+        "Embedder readiness check"
+    );
+
+    Ok(has_config && embedder_id.is_some())
 }
 
 // ============================================================================
@@ -241,11 +315,7 @@ pub fn index_documents_batch(
 }
 
 /// Index a single chunk of documents
-fn index_chunk(
-    index: &Index,
-    indexer_config: &IndexerConfig,
-    docs: &[DocToIndex],
-) -> Result<()> {
+fn index_chunk(index: &Index, indexer_config: &IndexerConfig, docs: &[DocToIndex]) -> Result<()> {
     let json_docs: Vec<Map<String, Value>> = docs
         .iter()
         .map(|doc| {
@@ -297,9 +367,9 @@ fn index_chunk(
     let embedders = docs
         .iter()
         .find_map(|doc| {
-            doc.vectors.as_ref().and_then(|vecs| {
-                vecs.first().map(|v| v.len())
-            })
+            doc.vectors
+                .as_ref()
+                .and_then(|vecs| vecs.first().map(|v| v.len()))
         })
         .map(|dimensions| create_user_provided_embedders("default", dimensions))
         .unwrap_or_default();
@@ -347,6 +417,40 @@ pub fn get_document_count(index: &Index) -> Result<u64> {
     Ok(index.number_of_documents(&rtxn)?)
 }
 
+/// Extract the global score from a list of score details.
+/// For hybrid search, this combines keyword and semantic scores.
+fn compute_hit_score(scores: &[milli::score_details::ScoreDetails]) -> f64 {
+    milli::score_details::ScoreDetails::global_score(scores.iter())
+}
+
+/// Parameters for searching the index
+pub struct SearchParams<'a> {
+    pub query: &'a str,
+    pub limit: usize,
+    pub offset: usize,
+    pub collection_ids: Option<&'a [String]>,
+    /// Pre-computed query embedding for semantic search
+    pub query_vector: Option<Vec<f32>>,
+    /// Balance between keyword (0.0) and semantic (1.0) search
+    pub semantic_ratio: f32,
+    /// Filter out results below this score threshold
+    pub min_score: Option<f32>,
+}
+
+impl Default for SearchParams<'_> {
+    fn default() -> Self {
+        Self {
+            query: "",
+            limit: 20,
+            offset: 0,
+            collection_ids: None,
+            query_vector: None,
+            semantic_ratio: 0.0,
+            min_score: None,
+        }
+    }
+}
+
 /// Search the milli index
 ///
 /// When `semantic_ratio > 0` and `query_vector` is provided, performs hybrid search
@@ -354,15 +458,19 @@ pub fn get_document_count(index: &Index) -> Result<u64> {
 /// - 0.0 = pure keyword search
 /// - 1.0 = pure semantic search
 /// - 0.5 = equal weight to both
-pub fn search_index(
-    index: &Index,
-    query: &str,
-    limit: usize,
-    offset: usize,
-    collection_ids: Option<&[String]>,
-    query_vector: Option<Vec<f32>>,
-    semantic_ratio: f32,
-) -> Result<SearchResults> {
+///
+/// The `min_score` parameter filters out results below the threshold (0.0 to 1.0).
+/// This is especially useful for semantic search to avoid returning irrelevant documents.
+pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchResults> {
+    let SearchParams {
+        query,
+        limit,
+        offset,
+        collection_ids,
+        query_vector,
+        semantic_ratio,
+        min_score,
+    } = params;
     let rtxn = index.read_txn()?;
     let mut search = milli::Search::new(&rtxn, index);
     search.query(query);
@@ -387,63 +495,92 @@ pub fn search_index(
     }
 
     // Use hybrid search when semantic_ratio > 0 and query vector is available
-    let result = if semantic_ratio > 0.0 && query_vector.is_some() {
-        let query_vec = query_vector.unwrap();
-        let dimensions = query_vec.len();
+    let result = if let Some(query_vec) = query_vector.filter(|_| semantic_ratio > 0.0) {
+        let embedder_name = "default";
 
-        tracing::debug!(
-            query = query,
-            semantic_ratio = semantic_ratio,
-            vector_dims = dimensions,
-            "Executing hybrid search"
-        );
-
-        // Create a manual embedder (placeholder - won't be called since we provide vector)
-        let manual_embedder = manual::Embedder::new(manual::EmbedderOptions {
-            dimensions,
-            distribution: None,
-        });
-        let embedder = Arc::new(Embedder::UserProvided(manual_embedder));
-
-        // Configure semantic search with pre-computed query vector
-        search.semantic(
-            "default".to_string(), // matches the embedder name used during indexing
-            embedder,
-            false, // not quantized
-            Some(query_vec),
-            None, // no media
-        );
-
-        match search.execute_hybrid(semantic_ratio) {
-            Ok((result, semantic_hit_count)) => {
+        // Get embedder from index config (the proper way, matching meilisearch)
+        match get_embedder_from_index(index, &rtxn, embedder_name)? {
+            Some((embedder, quantized)) => {
                 tracing::debug!(
-                    total_candidates = result.candidates.len(),
-                    doc_count = result.documents_ids.len(),
-                    semantic_hits = ?semantic_hit_count,
-                    "Hybrid search completed"
+                    query = query,
+                    semantic_ratio = semantic_ratio,
+                    vector_dims = query_vec.len(),
+                    quantized = quantized,
+                    "Executing hybrid search with index embedder"
                 );
-                result
+
+                // Configure semantic search with pre-computed query vector
+                search.semantic(
+                    embedder_name.to_string(),
+                    embedder,
+                    quantized,
+                    Some(query_vec),
+                    None, // no media
+                );
+
+                match search.execute_hybrid(semantic_ratio) {
+                    Ok((result, semantic_hit_count)) => {
+                        tracing::debug!(
+                            total_candidates = result.candidates.len(),
+                            doc_count = result.documents_ids.len(),
+                            semantic_hits = ?semantic_hit_count,
+                            "Hybrid search completed"
+                        );
+                        result
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Hybrid search failed, falling back to keyword");
+                        search.execute()?
+                    }
+                }
             }
-            Err(e) => {
-                tracing::error!(error = %e, "Hybrid search failed");
-                return Err(e.into());
+            None => {
+                tracing::warn!(
+                    embedder_name = embedder_name,
+                    "Embedder not configured in index, falling back to keyword search"
+                );
+                search.execute()?
             }
         }
     } else {
         search.execute()?
     };
 
-    let hits = result
+    // Collect all hits with their scores
+    let all_hits: Vec<SearchHit> = result
         .documents_ids
         .into_iter()
         .zip(result.document_scores)
         .map(|(doc_id, scores)| SearchHit { doc_id, scores })
         .collect();
 
-    Ok(SearchResults {
-        hits,
-        total_hits: result.candidates.len() as usize,
-    })
+    // Filter by minimum score if specified
+    let (hits, total_hits) = if let Some(threshold) = min_score {
+        let threshold_f64 = threshold as f64;
+        let filtered: Vec<SearchHit> = all_hits
+            .into_iter()
+            .filter(|hit| compute_hit_score(&hit.scores) >= threshold_f64)
+            .collect();
+        let count = filtered.len();
+        tracing::debug!(
+            threshold = threshold,
+            filtered_count = count,
+            "Applied minimum score filter"
+        );
+        (filtered, count)
+    } else {
+        // No filtering - use candidates count as before for keyword search
+        let count = if semantic_ratio > 0.0 {
+            // For semantic search without min_score, count actual hits
+            all_hits.len()
+        } else {
+            // For keyword search, use the full candidate count
+            result.candidates.len() as usize
+        };
+        (all_hits, count)
+    };
+
+    Ok(SearchResults { hits, total_hits })
 }
 
 /// Extract a string field from an indexed document (opens its own transaction)
@@ -517,11 +654,7 @@ pub fn get_document_by_external_id(index: &Index, external_id: &str) -> Result<O
 }
 
 /// Delete a single document from the index by its external ID
-pub fn delete_document(
-    index: &Index,
-    indexer_config: &IndexerConfig,
-    doc_id: &str,
-) -> Result<()> {
+pub fn delete_document(index: &Index, indexer_config: &IndexerConfig, doc_id: &str) -> Result<()> {
     delete_documents(index, indexer_config, &[doc_id.to_string()])
 }
 
@@ -702,7 +835,15 @@ mod tests {
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
         // Search should find the document (keyword-only, no semantic)
-        let results = search_index(&index, "climate", 10, 0, None, None, 0.0).unwrap();
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "climate",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(results.hits.len(), 1);
 
         // Verify we can retrieve the document fields
@@ -728,7 +869,15 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_index(&index, "nonexistent", 10, 0, None, None, 0.0).unwrap();
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "nonexistent",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(results.hits.is_empty());
     }
 
@@ -770,12 +919,28 @@ mod tests {
         .unwrap();
 
         // Search all collections
-        let all = search_index(&index, "climate", 10, 0, None, None, 0.0).unwrap();
+        let all = search_index(
+            &index,
+            SearchParams {
+                query: "climate",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(all.hits.len(), 3);
 
         // Filter to single collection
-        let climate_only =
-            search_index(&index, "climate", 10, 0, Some(&["climate".to_string()]), None, 0.0).unwrap();
+        let climate_only = search_index(
+            &index,
+            SearchParams {
+                query: "climate",
+                limit: 10,
+                collection_ids: Some(&["climate".to_string()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(climate_only.hits.len(), 1);
         let name =
             get_document_field_by_internal_id(&index, climate_only.hits[0].doc_id, "name").unwrap();
@@ -784,12 +949,12 @@ mod tests {
         // Filter to multiple collections
         let two = search_index(
             &index,
-            "climate",
-            10,
-            0,
-            Some(&["climate".to_string(), "news".to_string()]),
-            None,
-            0.0,
+            SearchParams {
+                query: "climate",
+                limit: 10,
+                collection_ids: Some(&["climate".to_string(), "news".to_string()]),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(two.hits.len(), 2);
@@ -801,11 +966,38 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        index_document(&index, &config, "doc1", "a.pdf", "Test content", "col1", None).unwrap();
-        index_document(&index, &config, "doc2", "b.pdf", "Test content", "col2", None).unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc1",
+            "a.pdf",
+            "Test content",
+            "col1",
+            None,
+        )
+        .unwrap();
+        index_document(
+            &index,
+            &config,
+            "doc2",
+            "b.pdf",
+            "Test content",
+            "col2",
+            None,
+        )
+        .unwrap();
 
         // Empty filter should return all
-        let results = search_index(&index, "test", 10, 0, Some(&[]), None, 0.0).unwrap();
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "test",
+                limit: 10,
+                collection_ids: Some(&[]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(results.hits.len(), 2);
     }
 
@@ -844,7 +1036,15 @@ mod tests {
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
 
-        let results = search_index(&index, "science", 10, 0, None, None, 0.0).unwrap();
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "science",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(results.hits.len(), 3);
     }
 
@@ -887,7 +1087,15 @@ mod tests {
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
         // Search should only find the remaining document
-        let results = search_index(&index, "document", 10, 0, None, None, 0.0).unwrap();
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "document",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(results.hits.len(), 1);
         let name =
             get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
@@ -944,10 +1152,120 @@ mod tests {
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
         // Only col2 document should remain
-        let results = search_index(&index, "document", 10, 0, None, None, 0.0).unwrap();
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "document",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(results.hits.len(), 1);
         let name =
             get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
         assert_eq!(name, Some("c.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_configure_embedder() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Configure embedder
+        configure_embedder(&index, &config, "default", 384).unwrap();
+
+        // Verify embedder is registered
+        let rtxn = index.read_txn().unwrap();
+        let embedders = index.embedding_configs();
+        let embedder_id = embedders.embedder_id(&rtxn, "default").unwrap();
+        assert!(embedder_id.is_some(), "Embedder should have an ID assigned");
+
+        let configs = embedders.embedding_configs(&rtxn).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "default");
+    }
+
+    #[test]
+    fn test_semantic_search_with_vectors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // IMPORTANT: Configure embedder BEFORE indexing documents with vectors
+        configure_embedder(&index, &config, "default", 3).unwrap();
+
+        // Create simple 3D vectors for testing
+        // doc1: about cats [1, 0, 0]
+        // doc2: about dogs [0, 1, 0]
+        // doc3: also about cats [0.9, 0.1, 0]
+        let cat_vec = vec![vec![1.0, 0.0, 0.0]];
+        let dog_vec = vec![vec![0.0, 1.0, 0.0]];
+        let also_cat_vec = vec![vec![0.9, 0.1, 0.0]];
+
+        index_document(
+            &index,
+            &config,
+            "doc1",
+            "cats.pdf",
+            "A document about cats and felines.",
+            "collection1",
+            Some(cat_vec),
+        )
+        .unwrap();
+
+        index_document(
+            &index,
+            &config,
+            "doc2",
+            "dogs.pdf",
+            "A document about dogs and canines.",
+            "collection1",
+            Some(dog_vec),
+        )
+        .unwrap();
+
+        index_document(
+            &index,
+            &config,
+            "doc3",
+            "more_cats.pdf",
+            "Another document about cats.",
+            "collection1",
+            Some(also_cat_vec),
+        )
+        .unwrap();
+
+        let rtxn = index.read_txn().unwrap();
+        assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
+        drop(rtxn);
+
+        // Query with a cat-like vector [1, 0, 0] - should rank cat documents higher
+        let query_vector = vec![1.0, 0.0, 0.0];
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "document",
+                limit: 10,
+                query_vector: Some(query_vector),
+                semantic_ratio: 0.8, // High semantic ratio
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Should find all 3 documents
+        assert!(results.hits.len() >= 2, "Should find at least 2 documents");
+
+        // The cat documents should be ranked higher (first)
+        let first_name =
+            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
+        assert!(
+            first_name == Some("cats.pdf".to_string())
+                || first_name == Some("more_cats.pdf".to_string()),
+            "First result should be a cat document, got {:?}",
+            first_name
+        );
     }
 }
