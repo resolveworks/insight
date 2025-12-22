@@ -37,7 +37,7 @@ pub fn spawn(
     let (tx, mut rx) = mpsc::channel::<ExtractRequest>(64);
 
     tokio::spawn(async move {
-        let mut in_flight: JoinSet<Option<Result<Extracted, DocumentFailed>>> = JoinSet::new();
+        let mut in_flight: JoinSet<()> = JoinSet::new();
 
         loop {
             tokio::select! {
@@ -72,27 +72,18 @@ pub fn spawn(
 
                                 if output_tx.blocking_send(extracted).is_err() {
                                     tracing::warn!("Failed to send extracted document - channel closed");
-                                    return None;
                                 }
-                                Some(Ok(Extracted {
-                                    name: String::new(),
-                                    collection_id: String::new(),
-                                    pdf_bytes: vec![],
-                                    text: String::new(),
-                                    page_count: 0,
-                                }))
                             }
                             Err(e) => {
+                                tracing::error!("Extraction failed for {:?}: {}", req.path, e);
+
                                 let failed = DocumentFailed {
                                     path: req.path.to_string_lossy().to_string(),
                                     error: e.to_string(),
                                 };
-                                tracing::error!("Extraction failed for {:?}: {}", req.path, e);
-
-                                if error_tx.blocking_send(failed.clone()).is_err() {
+                                if error_tx.blocking_send(failed).is_err() {
                                     tracing::warn!("Failed to send error - channel closed");
                                 }
-                                Some(Err(failed))
                             }
                         }
                     });
@@ -100,13 +91,8 @@ pub fn spawn(
 
                 // Reap completed tasks
                 Some(result) = in_flight.join_next() => {
-                    match result {
-                        Ok(_) => {
-                            // Task completed (success or failure already handled)
-                        }
-                        Err(e) => {
-                            tracing::error!("Extraction task panicked: {}", e);
-                        }
+                    if let Err(e) = result {
+                        tracing::error!("Extraction task panicked: {}", e);
                     }
                 }
 

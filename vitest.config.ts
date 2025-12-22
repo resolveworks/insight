@@ -10,6 +10,7 @@ export default defineConfig({
 			$lib: path.resolve('./src/lib'),
 			'$app/paths': path.resolve('./src/tests/mocks/app-paths.ts'),
 			'$app/environment': path.resolve('./src/tests/mocks/app-environment.ts'),
+			'$app/stores': path.resolve('./src/tests/mocks/app-stores.ts'),
 		},
 	},
 	test: {
