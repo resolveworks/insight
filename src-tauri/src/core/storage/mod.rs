@@ -6,7 +6,7 @@ use iroh::{Endpoint, RelayMode};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::Hash;
 use iroh_docs::api::DocsApi;
-use iroh_docs::engine::LiveEvent;
+pub use iroh_docs::engine::LiveEvent;
 use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
 use iroh_docs::{AuthorId, NamespaceId};

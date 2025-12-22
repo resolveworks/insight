@@ -134,6 +134,9 @@ impl AppState {
     pub async fn load_models_if_configured(&self, app_handle: &AppHandle) {
         let settings = Settings::load(&self.config.settings_file);
 
+        // Start watching existing collections for indexing events
+        self.watch_existing_collections().await;
+
         // Emit StorageReady so frontend knows initialization is complete
         let _ = app_handle.emit(
             "boot-phase",
@@ -186,5 +189,37 @@ impl AppState {
 
         let _ = app_handle.emit("boot-phase", BootPhase::AppReady);
         tracing::info!("Backend ready");
+    }
+
+    /// Start watching all existing collections for document events.
+    async fn watch_existing_collections(&self) {
+        let storage = self.storage.read().await;
+        let collections = match storage.list_collections().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to list collections for watching: {}", e);
+                return;
+            }
+        };
+        drop(storage);
+
+        let mut coordinator_guard = self.job_coordinator.write().await;
+        let coordinator = match coordinator_guard.as_mut() {
+            Some(c) => c,
+            None => {
+                tracing::warn!("Job coordinator not available for watching collections");
+                return;
+            }
+        };
+
+        for (namespace_id, metadata) in collections {
+            coordinator.watch_namespace(namespace_id);
+            tracing::debug!("Watching collection '{}' ({})", metadata.name, namespace_id);
+        }
+
+        tracing::info!(
+            "Started watching {} existing collections",
+            coordinator.watcher_count()
+        );
     }
 }

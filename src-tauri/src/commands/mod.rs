@@ -83,6 +83,16 @@ pub async fn create_collection(
         .await
         .map_err(|e| e.to_string())?;
 
+    drop(storage);
+
+    // Start watching the new collection for document events
+    {
+        let mut coordinator_guard = state.job_coordinator.write().await;
+        if let Some(coordinator) = coordinator_guard.as_mut() {
+            coordinator.watch_namespace(namespace_id);
+        }
+    }
+
     Ok(CollectionInfo {
         id: namespace_id.to_string(),
         name: metadata.name,
@@ -113,7 +123,7 @@ pub struct DocumentAddedEvent {
 
 /// Import multiple PDF files into a collection using the job pipeline.
 ///
-/// Files flow through: extraction → storage → embedding → indexing
+/// Files flow through: extraction → storage → (iroh event) → embedding → indexing
 /// Progress and completion events are emitted to the frontend.
 #[tauri::command]
 pub async fn import_pdfs_batch<R: tauri::Runtime>(
@@ -137,6 +147,11 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         .as_mut()
         .ok_or("Job coordinator not initialized")?;
 
+    // Ensure the collection is being watched for indexing events
+    if !coordinator.is_watching(&namespace_id) {
+        coordinator.watch_namespace(namespace_id);
+    }
+
     // Convert paths to PathBuf
     let path_bufs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
     let total = path_bufs.len();
@@ -155,62 +170,78 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         // Small delay to avoid busy-waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        // Re-acquire coordinator for polling
-        let mut coordinator_guard = state.job_coordinator.write().await;
-        let coordinator = match coordinator_guard.as_mut() {
-            Some(c) => c,
-            None => break,
+        // Collect completions and failures while holding coordinator lock
+        let (completed_batch, failed_batch) = {
+            let mut coordinator_guard = state.job_coordinator.write().await;
+            let coordinator = match coordinator_guard.as_mut() {
+                Some(c) => c,
+                None => break,
+            };
+
+            let mut completed = Vec::new();
+            let mut failures = Vec::new();
+
+            while let Some(c) = coordinator.try_recv_completed() {
+                completed.push(c);
+            }
+            while let Some(f) = coordinator.try_recv_failed() {
+                failures.push(f);
+            }
+
+            (completed, failures)
         };
+        // Coordinator lock released here
 
-        // Drain all available completions
-        while let Some(completed) = coordinator.try_recv_completed() {
-            // Fetch full metadata from storage
+        // Process completions with storage lock (acquired once for entire batch)
+        if !completed_batch.is_empty() {
             let storage = state.storage.read().await;
-            match storage.get_document(namespace_id, &completed.doc_id).await {
-                Ok(Some(metadata)) => {
-                    let doc_info = DocumentInfo {
-                        id: metadata.id,
-                        name: metadata.name.clone(),
-                        pdf_hash: metadata.pdf_hash,
-                        text_hash: metadata.text_hash,
-                        page_count: metadata.page_count,
-                        tags: metadata.tags,
-                        created_at: metadata.created_at,
-                    };
+            for completed in completed_batch {
+                match storage.get_document(namespace_id, &completed.doc_id).await {
+                    Ok(Some(metadata)) => {
+                        let doc_info = DocumentInfo {
+                            id: metadata.id,
+                            name: metadata.name.clone(),
+                            pdf_hash: metadata.pdf_hash,
+                            text_hash: metadata.text_hash,
+                            page_count: metadata.page_count,
+                            tags: metadata.tags,
+                            created_at: metadata.created_at,
+                        };
 
-                    // Emit event to frontend
-                    let _ = app.emit(
-                        "document-added",
-                        DocumentAddedEvent {
-                            collection_id: collection_id.clone(),
-                            document: doc_info.clone(),
-                        },
-                    );
+                        // Emit event to frontend
+                        let _ = app.emit(
+                            "document-added",
+                            DocumentAddedEvent {
+                                collection_id: collection_id.clone(),
+                                document: doc_info.clone(),
+                            },
+                        );
 
-                    successful.push(doc_info);
-                }
-                Ok(None) => {
-                    tracing::warn!(
-                        "Document {} completed but not found in storage",
-                        completed.doc_id
-                    );
-                    failed.push(BatchImportError {
-                        path: completed.doc_id,
-                        error: "Document not found after indexing".to_string(),
-                    });
-                }
-                Err(e) => {
-                    tracing::error!("Failed to fetch document metadata: {}", e);
-                    failed.push(BatchImportError {
-                        path: completed.doc_id,
-                        error: format!("Failed to fetch metadata: {}", e),
-                    });
+                        successful.push(doc_info);
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            "Document {} completed but not found in storage",
+                            completed.doc_id
+                        );
+                        failed.push(BatchImportError {
+                            path: completed.doc_id,
+                            error: "Document not found after indexing".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to fetch document metadata: {}", e);
+                        failed.push(BatchImportError {
+                            path: completed.doc_id,
+                            error: format!("Failed to fetch metadata: {}", e),
+                        });
+                    }
                 }
             }
         }
 
-        // Drain all available failures
-        while let Some(doc_failed) = coordinator.try_recv_failed() {
+        // Process failures
+        for doc_failed in failed_batch {
             failed.push(BatchImportError {
                 path: doc_failed.path,
                 error: doc_failed.error,
