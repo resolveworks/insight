@@ -1,13 +1,8 @@
-use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::core::storage::DocumentMetadata;
-use crate::core::{pdf, search, AppState};
+use crate::core::{search, AppState};
 use iroh_docs::NamespaceId;
-
-/// Max concurrent PDF extractions to avoid stack overflow from too many parallel tasks
-const MAX_CONCURRENT_EXTRACTIONS: usize = 8;
 
 /// Document metadata returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,16 +111,10 @@ pub struct DocumentAddedEvent {
     pub document: DocumentInfo,
 }
 
-/// Extraction result passed from blocking task
-struct ExtractionResult {
-    file_name: String,
-    extracted: pdf::ExtractedDocument,
-}
-
-/// Import multiple PDF files into a collection with parallel processing
+/// Import multiple PDF files into a collection using the job pipeline.
 ///
-/// Each file is fully processed (extract → store → index) before being marked successful.
-/// This ensures no orphaned documents in storage without search index entries.
+/// Files flow through: extraction → storage → embedding → indexing
+/// Progress and completion events are emitted to the frontend.
 #[tauri::command]
 pub async fn import_pdfs_batch<R: tauri::Runtime>(
     paths: Vec<String>,
@@ -139,227 +128,95 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         collection_id
     );
 
+    // Validate collection ID
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    // Create extraction stream with bounded concurrency
-    let mut extraction_stream = stream::iter(paths)
-        .map(|path| async move {
-            tokio::task::spawn_blocking({
-                let path = path.clone();
-                move || {
-                    let path_ref = std::path::Path::new(&path);
-                    let file_name = path_ref
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown.pdf")
-                        .to_string();
+    // Get the job coordinator
+    let mut coordinator_guard = state.job_coordinator.write().await;
+    let coordinator = coordinator_guard
+        .as_mut()
+        .ok_or("Job coordinator not initialized")?;
 
-                    match pdf::extract_text(path_ref) {
-                        Ok(extracted) => Ok(ExtractionResult {
-                            file_name,
-                            extracted,
-                        }),
-                        Err(e) => Err((path, e.to_string())),
-                    }
-                }
-            })
-            .await
-        })
-        .buffer_unordered(MAX_CONCURRENT_EXTRACTIONS);
+    // Convert paths to PathBuf
+    let path_bufs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+    let total = path_bufs.len();
 
-    const INDEX_BATCH_SIZE: usize = 50;
+    // Submit all paths for import
+    coordinator.import(path_bufs, collection_id.clone()).await;
 
     let mut successful = Vec::new();
     let mut failed = Vec::new();
-    // Pending chunks to index, along with the document info they belong to
-    let mut pending_chunks: Vec<search::ChunkToIndex> = Vec::new();
-    let mut pending_doc_infos: Vec<DocumentInfo> = Vec::new();
 
-    // Macro to flush pending chunks to index
-    macro_rules! flush_pending {
-        () => {
-            if !pending_chunks.is_empty() {
-                let chunks_to_index = std::mem::take(&mut pending_chunks);
-                let doc_infos = std::mem::take(&mut pending_doc_infos);
+    // Release coordinator lock - we'll poll non-blocking in the loop
+    drop(coordinator_guard);
 
-                let index = state.search.read().await;
-                let indexer_config = state.indexer_config.lock().await;
+    // Collect results until all documents are processed
+    while successful.len() + failed.len() < total {
+        // Small delay to avoid busy-waiting
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-                match search::index_chunks_batch(&index, &indexer_config, chunks_to_index) {
-                    Ok(()) => {
-                        for doc_info in doc_infos {
-                            let _ = app.emit(
-                                "document-added",
-                                DocumentAddedEvent {
-                                    collection_id: collection_id.clone(),
-                                    document: doc_info.clone(),
-                                },
-                            );
-                            successful.push(doc_info);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to batch index chunks: {}", e);
-                        for doc_info in doc_infos {
-                            failed.push(BatchImportError {
-                                path: doc_info.name,
-                                error: format!("Stored but failed to index: {}", e),
-                            });
-                        }
-                    }
+        // Re-acquire coordinator for polling
+        let mut coordinator_guard = state.job_coordinator.write().await;
+        let coordinator = match coordinator_guard.as_mut() {
+            Some(c) => c,
+            None => break,
+        };
+
+        // Drain all available completions
+        while let Some(completed) = coordinator.try_recv_completed() {
+            // Fetch full metadata from storage
+            let mut storage = state.storage.write().await;
+            match storage.get_document(namespace_id, &completed.doc_id).await {
+                Ok(Some(metadata)) => {
+                    let doc_info = DocumentInfo {
+                        id: metadata.id,
+                        name: metadata.name.clone(),
+                        pdf_hash: metadata.pdf_hash,
+                        text_hash: metadata.text_hash,
+                        page_count: metadata.page_count,
+                        tags: metadata.tags,
+                        created_at: metadata.created_at,
+                    };
+
+                    // Emit event to frontend
+                    let _ = app.emit(
+                        "document-added",
+                        DocumentAddedEvent {
+                            collection_id: collection_id.clone(),
+                            document: doc_info.clone(),
+                        },
+                    );
+
+                    successful.push(doc_info);
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "Document {} completed but not found in storage",
+                        completed.doc_id
+                    );
+                    failed.push(BatchImportError {
+                        path: completed.doc_id,
+                        error: "Document not found after indexing".to_string(),
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fetch document metadata: {}", e);
+                    failed.push(BatchImportError {
+                        path: completed.doc_id,
+                        error: format!("Failed to fetch metadata: {}", e),
+                    });
                 }
             }
-        };
-    }
+        }
 
-    // Process each extraction as it completes: store blobs and metadata
-    // Indexing is batched every INDEX_BATCH_SIZE documents
-    while let Some(result) = extraction_stream.next().await {
-        let extraction = match result {
-            Ok(Ok(e)) => e,
-            Ok(Err((path, error))) => {
-                failed.push(BatchImportError { path, error });
-                continue;
-            }
-            Err(e) => {
-                failed.push(BatchImportError {
-                    path: "unknown".to_string(),
-                    error: format!("Task join error: {}", e),
-                });
-                continue;
-            }
-        };
-
-        let file_name = extraction.file_name.clone();
-        let text_content = extraction.extracted.text.clone();
-
-        // Store blobs and metadata
-        let mut storage = state.storage.write().await;
-
-        let doc_id = uuid::Uuid::new_v4().to_string();
-        let created_at = chrono::Utc::now().to_rfc3339();
-
-        let pdf_hash = match storage.store_blob(&extraction.extracted.pdf_bytes).await {
-            Ok(h) => h.to_string(),
-            Err(e) => {
-                failed.push(BatchImportError {
-                    path: file_name,
-                    error: format!("Failed to store PDF: {}", e),
-                });
-                continue;
-            }
-        };
-
-        let text_hash = match storage
-            .store_blob(extraction.extracted.text.as_bytes())
-            .await
-        {
-            Ok(h) => h.to_string(),
-            Err(e) => {
-                failed.push(BatchImportError {
-                    path: file_name,
-                    error: format!("Failed to store text: {}", e),
-                });
-                continue;
-            }
-        };
-
-        let metadata = DocumentMetadata {
-            id: doc_id.clone(),
-            name: file_name.clone(),
-            pdf_hash: pdf_hash.clone(),
-            text_hash: text_hash.clone(),
-            page_count: extraction.extracted.page_count,
-            tags: vec![],
-            created_at: created_at.clone(),
-        };
-
-        if let Err(e) = storage.add_document(namespace_id, metadata).await {
+        // Drain all available failures
+        while let Some(doc_failed) = coordinator.try_recv_failed() {
             failed.push(BatchImportError {
-                path: file_name,
-                error: format!("Failed to add metadata: {}", e),
+                path: doc_failed.path,
+                error: doc_failed.error,
             });
-            continue;
-        }
-
-        // Release storage lock
-        drop(storage);
-
-        let doc_info = DocumentInfo {
-            id: doc_id.clone(),
-            name: file_name.clone(),
-            pdf_hash,
-            text_hash,
-            page_count: extraction.extracted.page_count,
-            tags: vec![],
-            created_at,
-        };
-
-        // Generate chunks and embeddings
-        let embedder_guard = state.embedder.read().await;
-        let chunks_with_vectors: Vec<(usize, String, Option<Vec<f32>>)> =
-            if let Some(ref embedder) = *embedder_guard {
-                // Get text chunks
-                let text_chunks = embedder.chunk_text(&text_content);
-                if text_chunks.is_empty() {
-                    // Empty document - create single chunk with no content
-                    vec![(0, String::new(), None)]
-                } else {
-                    // Embed each chunk
-                    match embedder.embed_document(&text_content).await {
-                        Ok(vectors) => {
-                            // Pair chunks with their vectors
-                            text_chunks
-                                .into_iter()
-                                .enumerate()
-                                .zip(vectors.into_iter())
-                                .map(|((idx, text), vec)| (idx, text, Some(vec)))
-                                .collect()
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to generate embeddings for {}: {}",
-                                file_name,
-                                e
-                            );
-                            // Fall back to chunks without vectors
-                            text_chunks
-                                .into_iter()
-                                .enumerate()
-                                .map(|(idx, text)| (idx, text, None))
-                                .collect()
-                        }
-                    }
-                }
-            } else {
-                // No embedder - create single chunk with full text (for keyword search)
-                vec![(0, text_content.clone(), None)]
-            };
-        drop(embedder_guard);
-
-        // Create ChunkToIndex entries
-        for (chunk_index, chunk_content, vector) in chunks_with_vectors {
-            pending_chunks.push(search::ChunkToIndex {
-                id: format!("{}_chunk_{}", doc_id, chunk_index),
-                parent_id: doc_id.clone(),
-                parent_name: file_name.clone(),
-                chunk_index,
-                content: chunk_content,
-                collection_id: collection_id.clone(),
-                vector,
-            });
-        }
-
-        pending_doc_infos.push(doc_info);
-
-        // Flush batch when it reaches INDEX_BATCH_SIZE chunks
-        if pending_chunks.len() >= INDEX_BATCH_SIZE {
-            flush_pending!();
         }
     }
-
-    // Flush any remaining documents
-    flush_pending!();
 
     tracing::info!(
         "Batch import complete: {} successful, {} failed",
@@ -843,6 +700,7 @@ pub async fn send_message(
     let language_model_id = state.language_model_id.clone();
     let conversations_arc = state.conversations.clone();
     let active_generations = state.active_generations.clone();
+    let job_coordinator = state.job_coordinator.clone();
     let conversations_dir = state.config.conversations_dir.clone();
 
     let conv_id = conversation_id.clone();
@@ -861,6 +719,7 @@ pub async fn send_message(
             language_model_id,
             conversations: conversations_arc.clone(),
             active_generations,
+            job_coordinator,
         };
 
         if let Err(e) = agent::run_agent_loop(

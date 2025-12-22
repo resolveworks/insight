@@ -2,6 +2,7 @@ pub mod agent;
 pub mod config;
 pub mod conversations;
 pub mod embeddings;
+pub mod jobs;
 pub mod models;
 pub mod pdf;
 pub mod search;
@@ -43,6 +44,7 @@ pub enum BootPhase {
 
 pub use agent::{AgentEvent, AgentModel, Conversation};
 pub use config::{Config, Settings};
+pub use jobs::JobCoordinator;
 pub use storage::Storage;
 
 /// Application state shared across Tauri commands
@@ -66,6 +68,8 @@ pub struct AppState {
     pub conversations: Arc<RwLock<HashMap<String, Conversation>>>,
     /// Cancellation tokens for active generations
     pub active_generations: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Job coordinator for document import pipeline
+    pub job_coordinator: Arc<RwLock<Option<JobCoordinator>>>,
 }
 
 impl AppState {
@@ -97,17 +101,31 @@ impl AppState {
             }
         }
 
+        let storage = Arc::new(RwLock::new(storage));
+        let search = Arc::new(RwLock::new(index));
+        let indexer_config = Arc::new(Mutex::new(indexer_config));
+        let embedder = Arc::new(RwLock::new(None));
+
+        // Create job coordinator with shared resources
+        let job_coordinator = JobCoordinator::new(
+            storage.clone(),
+            embedder.clone(),
+            search.clone(),
+            indexer_config.clone(),
+        );
+
         Ok(Self {
             config,
-            storage: Arc::new(RwLock::new(storage)),
-            search: Arc::new(RwLock::new(index)),
-            indexer_config: Arc::new(Mutex::new(indexer_config)),
-            embedder: Arc::new(RwLock::new(None)),
+            storage,
+            search,
+            indexer_config,
+            embedder,
             embedding_model_id: Arc::new(RwLock::new(None)),
             agent_model: Arc::new(RwLock::new(None)),
             language_model_id: Arc::new(RwLock::new(None)),
             conversations: Arc::new(RwLock::new(HashMap::new())),
             active_generations: Arc::new(RwLock::new(HashMap::new())),
+            job_coordinator: Arc::new(RwLock::new(Some(job_coordinator))),
         })
     }
 

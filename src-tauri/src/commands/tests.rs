@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::{search, AppState, Config, Storage};
+use crate::core::{search, AppState, Config, JobCoordinator, Storage};
 use milli::update::IndexerConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,21 +18,30 @@ async fn create_test_state(temp_dir: &std::path::Path) -> AppState {
     };
     config.ensure_dirs().unwrap();
 
-    let storage = Storage::open(&config.iroh_dir).await.unwrap();
-    let index = search::open_index(&config.search_dir).unwrap();
-    let indexer_config = IndexerConfig::default();
+    let storage = Arc::new(RwLock::new(Storage::open(&config.iroh_dir).await.unwrap()));
+    let index = Arc::new(RwLock::new(search::open_index(&config.search_dir).unwrap()));
+    let indexer_config = Arc::new(Mutex::new(IndexerConfig::default()));
+    let embedder = Arc::new(RwLock::new(None));
+
+    let job_coordinator = JobCoordinator::new(
+        storage.clone(),
+        embedder.clone(),
+        index.clone(),
+        indexer_config.clone(),
+    );
 
     AppState {
         config,
-        storage: Arc::new(RwLock::new(storage)),
-        search: Arc::new(RwLock::new(index)),
-        indexer_config: Arc::new(Mutex::new(indexer_config)),
-        embedder: Arc::new(RwLock::new(None)),
+        storage,
+        search: index,
+        indexer_config,
+        embedder,
         embedding_model_id: Arc::new(RwLock::new(None)),
         agent_model: Arc::new(RwLock::new(None)),
         language_model_id: Arc::new(RwLock::new(None)),
         conversations: Arc::new(RwLock::new(HashMap::new())),
         active_generations: Arc::new(RwLock::new(HashMap::new())),
+        job_coordinator: Arc::new(RwLock::new(Some(job_coordinator))),
     }
 }
 

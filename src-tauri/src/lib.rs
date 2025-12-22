@@ -44,6 +44,7 @@ pub fn run() {
                 language_model_id: state.language_model_id.clone(),
                 conversations: state.conversations.clone(),
                 active_generations: state.active_generations.clone(),
+                job_coordinator: state.job_coordinator.clone(),
             };
             let app_handle = app.handle().clone();
 
