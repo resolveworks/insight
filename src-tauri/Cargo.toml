@@ -62,12 +62,10 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6"
-clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []
-headless = []
 # GPU/accelerated builds (optional; CPU-only by default)
 cuda = ["mistralrs/cuda", "mistralrs/flash-attn", "mistralrs/cudnn"]
 flash-attn = ["mistralrs/flash-attn"]
