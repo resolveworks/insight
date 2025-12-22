@@ -12,6 +12,7 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 | --------------- | ----------- | --------------------------------------------------------- |
 | App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                  |
 | UI              | Svelte 5    | Frontend                                                  |
+| Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles)        |
 | LLM inference   | mistralrs   | Local model loading and inference (GGUF format)           |
 | Model download  | hf-hub      | Fetch models from HuggingFace                             |
 | P2P / Sync      | iroh        | Connections, NAT traversal, sync                          |

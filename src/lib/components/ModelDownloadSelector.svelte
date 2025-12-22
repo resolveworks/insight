@@ -1,8 +1,13 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
-	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy, onMount } from 'svelte';
+	import { listen } from '@tauri-apps/api/event';
+	import { onMount } from 'svelte';
 	import type { ModelSelectorConfig } from '$lib/models/config';
+	import {
+		getDownloadState,
+		startDownload,
+		clearDownload
+	} from '$lib/stores/model-downloads.svelte';
 
 	export interface ModelInfo {
 		id: string;
@@ -12,16 +17,7 @@
 		dimensions?: number;
 	}
 
-	export interface DownloadProgress {
-		file: string;
-		downloaded: number;
-		total: number;
-		overall_progress: number;
-		file_index: number;
-		total_files: number;
-	}
-
-	type Status = 'loading' | 'idle' | 'downloading' | 'configuring';
+	type Status = 'loading' | 'idle' | 'configuring';
 
 	type Props = {
 		config: ModelSelectorConfig;
@@ -35,17 +31,26 @@
 	let activeId = $state<string | null>(null);
 	let isDownloaded = $state(false);
 	let status = $state<Status>('loading');
-	let progress = $state<DownloadProgress | null>(null);
 	let error = $state<string | null>(null);
 
-	let unlistenProgress: UnlistenFn | undefined;
-	let unlistenComplete: UnlistenFn | undefined;
+	// Get download state from global store (persists across navigation)
+	let downloadState = $derived(getDownloadState(config));
+	let isDownloading = $derived(downloadState.status === 'downloading');
 
 	// Derived state
 	let selectedModel = $derived(models.find((m) => m.id === selectedId));
-	let canDownload = $derived(selectedId && !isDownloaded && status === 'idle');
-	let canConfigure = $derived(isDownloaded && selectedId !== activeId && status === 'idle');
+	let canDownload = $derived(selectedId && !isDownloaded && status === 'idle' && !isDownloading);
+	let canConfigure = $derived(isDownloaded && selectedId !== activeId && status === 'idle' && !isDownloading);
 	let isActive = $derived(selectedId === activeId);
+
+	// Color classes based on accent
+	let accentClasses = $derived({
+		border: config.accentColor === 'rose' ? 'border-rose-500' : config.accentColor === 'emerald' ? 'border-emerald-500' : 'border-slate-500',
+		bg: config.accentColor === 'rose' ? 'bg-rose-900/30' : config.accentColor === 'emerald' ? 'bg-emerald-900/30' : 'bg-slate-800',
+		text: config.accentColor === 'rose' ? 'text-rose-500' : config.accentColor === 'emerald' ? 'text-emerald-500' : 'text-slate-500',
+		btn: config.accentColor === 'rose' ? 'bg-rose-500 hover:bg-rose-600' : config.accentColor === 'emerald' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-slate-500 hover:bg-slate-600',
+		progress: config.accentColor === 'rose' ? 'bg-rose-500' : config.accentColor === 'emerald' ? 'bg-emerald-500' : 'bg-slate-500'
+	});
 
 	async function load() {
 		status = 'loading';
@@ -85,27 +90,20 @@
 	async function download() {
 		if (!selectedId) return;
 
-		status = 'downloading';
-		progress = null;
 		error = null;
+		startDownload(config, selectedId);
 
 		try {
-			unlistenProgress = await listen<DownloadProgress>(config.progressEvent, (e) => {
-				progress = e.payload;
-			});
-
-			unlistenComplete = await listen(config.completeEvent, () => {
+			// Listen for completion to update local downloaded state
+			const unlisten = await listen(config.completeEvent, () => {
 				isDownloaded = true;
-				progress = null;
-				status = 'idle';
-				cleanup();
+				unlisten();
 			});
 
 			await invoke(config.downloadCommand, { modelId: selectedId });
 		} catch (e) {
 			error = `Download failed: ${e}`;
-			status = 'idle';
-			cleanup();
+			clearDownload(config);
 		}
 	}
 
@@ -141,11 +139,6 @@
 		}
 	}
 
-	function cleanup() {
-		unlistenProgress?.();
-		unlistenComplete?.();
-	}
-
 	function formatBytes(bytes: number): string {
 		if (bytes === 0) return '0 B';
 		const k = 1024;
@@ -155,81 +148,87 @@
 	}
 
 	onMount(load);
-	onDestroy(cleanup);
 </script>
 
-<div class="model-selector" class:rose={config.accentColor === 'rose'} class:emerald={config.accentColor === 'emerald'}>
+<div>
 	{#if status === 'loading'}
-		<p class="status-text">Loading models...</p>
-	{:else if status === 'downloading'}
-		<div class="download-progress">
-			<h3>Downloading {config.title}</h3>
-			{#if progress}
-				<p class="file-info">
-					File {progress.file_index} of {progress.total_files}: {progress.file.split('/').pop()}
+		<p class="text-slate-400 text-center py-4">Loading models...</p>
+	{:else if isDownloading}
+		<div class="text-center">
+			<h3 class="text-lg text-slate-300 mb-4">Downloading {config.title}</h3>
+			{#if downloadState.progress}
+				<p class="text-sm text-slate-400 mb-2">
+					File {downloadState.progress.file_index} of {downloadState.progress.total_files}: {downloadState.progress.file.split('/').pop()}
 				</p>
-				<div class="progress-bar">
-					<div class="progress-fill" style="width: {progress.overall_progress * 100}%"></div>
+				<div class="h-2 bg-slate-700 rounded-full overflow-hidden mb-2">
+					<div class="h-full transition-[width] duration-300 {accentClasses.progress}" style="width: {downloadState.progress.overall_progress * 100}%"></div>
 				</div>
-				<p class="progress-text">
-					{formatBytes(progress.downloaded)} / {formatBytes(progress.total)}
-					({Math.round(progress.overall_progress * 100)}%)
+				<p class="text-xs text-slate-500">
+					{formatBytes(downloadState.progress.downloaded)} / {formatBytes(downloadState.progress.total)}
+					({Math.round(downloadState.progress.overall_progress * 100)}%)
 				</p>
 			{:else}
-				<p class="file-info">Starting download...</p>
+				<p class="text-sm text-slate-400 mb-2">Starting download...</p>
 			{/if}
 		</div>
 	{:else}
-		<div class="status-banner" class:active={activeId}>
+		<div class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm {activeId ? `${accentClasses.border} ${accentClasses.bg} text-slate-200` : 'border-slate-600 bg-slate-800 text-slate-400'}">
 			{#if activeId}
-				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+				<svg class="w-5 h-5 shrink-0 {accentClasses.text}" viewBox="0 0 24 24" fill="none" stroke="currentColor">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
 				</svg>
 				<span>{models.find((m) => m.id === activeId)?.name} active</span>
-				<button class="disable-btn" onclick={disable} disabled={status === 'configuring'}>
+				<button class="ml-auto text-xs text-slate-400 hover:text-slate-200 cursor-pointer" onclick={disable} disabled={status === 'configuring'}>
 					Disable
 				</button>
 			{:else}
-				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+				<svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
 				</svg>
 				<span>No model configured</span>
 			{/if}
 		</div>
 
-		<div class="model-list">
+		<div class="flex flex-col gap-2">
 			{#each models as model (model.id)}
-				<button class="model-card" class:selected={selectedId === model.id} onclick={() => select(model.id)}>
-					<div class="model-info">
-						<span class="model-name">{model.name}</span>
-						<span class="model-desc">{model.description}</span>
+				<button
+					class="flex justify-between items-center w-full p-3 rounded-lg border text-left cursor-pointer transition-colors duration-150 {selectedId === model.id ? `${accentClasses.border} ${accentClasses.bg}` : 'border-slate-600 hover:border-slate-500 bg-transparent'}"
+					onclick={() => select(model.id)}
+				>
+					<div class="flex flex-col gap-0.5">
+						<span class="font-medium text-slate-200">{model.name}</span>
+						<span class="text-sm text-slate-400">{model.description}</span>
 						{#if model.dimensions}
-							<span class="model-dims">{model.dimensions} dimensions</span>
+							<span class="text-xs text-slate-500 mt-1">{model.dimensions} dimensions</span>
 						{/if}
 					</div>
-					<div class="model-meta">
-						<span class="model-size">{model.size_gb} GB</span>
+					<div class="flex flex-col items-end gap-1 ml-4">
+						<span class="text-sm text-slate-500">{model.size_gb} GB</span>
 						{#if model.id === activeId}
-							<span class="badge active">Active</span>
+							<span class="text-xs {accentClasses.text}">Active</span>
 						{:else if model.id === selectedId && isDownloaded}
-							<span class="badge downloaded">Downloaded</span>
+							<span class="text-xs text-slate-400">Downloaded</span>
 						{/if}
 					</div>
 				</button>
 			{/each}
 		</div>
 
-		<div class="actions">
+		<div class="mt-6 flex flex-col items-center gap-3">
 			{#if canDownload}
-				<button class="btn primary" onclick={download}>
+				<button class="w-full px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors duration-150 {accentClasses.btn}" onclick={download}>
 					Download Model
 				</button>
 			{:else if canConfigure}
-				<button class="btn primary" onclick={configure} disabled={status === 'configuring'}>
+				<button
+					class="w-full px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed {accentClasses.btn}"
+					onclick={configure}
+					disabled={status === 'configuring'}
+				>
 					{#if status === 'configuring'}
-						<svg class="spinner" viewBox="0 0 24 24" fill="none">
-							<circle class="spinner-track" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-							<path class="spinner-fill" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+						<svg class="w-4 h-4 inline-block mr-2 animate-spin" viewBox="0 0 24 24" fill="none">
+							<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+							<path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
 						</svg>
 						Loading...
 					{:else}
@@ -237,268 +236,17 @@
 					{/if}
 				</button>
 				{#if status === 'configuring'}
-					<p class="hint">This may take 20-30 seconds on first load</p>
+					<p class="text-xs text-slate-500 text-center">This may take 20-30 seconds on first load</p>
 				{/if}
 			{:else if isActive}
-				<p class="ready-text">Model active</p>
+				<p class="text-sm {accentClasses.text}">Model active</p>
 			{:else if isDownloaded}
-				<p class="ready-text">Model ready</p>
+				<p class="text-sm {accentClasses.text}">Model ready</p>
 			{/if}
 		</div>
 
 		{#if error}
-			<p class="error">{error}</p>
+			<p class="mt-4 text-sm text-red-400">{error}</p>
 		{/if}
 	{/if}
 </div>
-
-<style>
-	.model-selector {
-		--accent: theme('colors.slate.500');
-		--accent-bg: theme('colors.slate.800');
-		--accent-hover: theme('colors.slate.600');
-	}
-
-	.model-selector.rose {
-		--accent: theme('colors.rose.500');
-		--accent-bg: theme('colors.rose.900' / 30%);
-		--accent-hover: theme('colors.rose.600');
-	}
-
-	.model-selector.emerald {
-		--accent: theme('colors.emerald.500');
-		--accent-bg: theme('colors.emerald.900' / 30%);
-		--accent-hover: theme('colors.emerald.600');
-	}
-
-	h3 {
-		font-size: theme('fontSize.lg');
-		color: theme('colors.slate.300');
-		margin-bottom: theme('spacing.4');
-	}
-
-	.status-text {
-		color: theme('colors.slate.400');
-		text-align: center;
-		padding: theme('spacing.4') 0;
-	}
-
-	/* Status banner */
-	.status-banner {
-		display: flex;
-		align-items: center;
-		gap: theme('spacing.2');
-		padding: theme('spacing.3') theme('spacing.4');
-		border-radius: theme('borderRadius.lg');
-		border: 1px solid theme('colors.slate.600');
-		background: theme('colors.slate.800');
-		margin-bottom: theme('spacing.4');
-		font-size: theme('fontSize.sm');
-		color: theme('colors.slate.400');
-	}
-
-	.status-banner.active {
-		border-color: var(--accent);
-		background: var(--accent-bg);
-		color: theme('colors.slate.200');
-	}
-
-	.status-banner .icon {
-		width: theme('spacing.5');
-		height: theme('spacing.5');
-		flex-shrink: 0;
-	}
-
-	.status-banner.active .icon {
-		color: var(--accent);
-	}
-
-	.disable-btn {
-		margin-left: auto;
-		font-size: theme('fontSize.xs');
-		color: theme('colors.slate.400');
-		cursor: pointer;
-	}
-
-	.disable-btn:hover {
-		color: theme('colors.slate.200');
-	}
-
-	/* Model list */
-	.model-list {
-		display: flex;
-		flex-direction: column;
-		gap: theme('spacing.2');
-	}
-
-	.model-card {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		width: 100%;
-		padding: theme('spacing.3');
-		border-radius: theme('borderRadius.lg');
-		border: 1px solid theme('colors.slate.600');
-		background: transparent;
-		text-align: left;
-		cursor: pointer;
-		transition: border-color 0.15s;
-	}
-
-	.model-card:hover {
-		border-color: theme('colors.slate.500');
-	}
-
-	.model-card.selected {
-		border-color: var(--accent);
-		background: var(--accent-bg);
-	}
-
-	.model-info {
-		display: flex;
-		flex-direction: column;
-		gap: theme('spacing.0.5');
-	}
-
-	.model-name {
-		font-weight: 500;
-		color: theme('colors.slate.200');
-	}
-
-	.model-desc {
-		font-size: theme('fontSize.sm');
-		color: theme('colors.slate.400');
-	}
-
-	.model-dims {
-		font-size: theme('fontSize.xs');
-		color: theme('colors.slate.500');
-		margin-top: theme('spacing.1');
-	}
-
-	.model-meta {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: theme('spacing.1');
-		margin-left: theme('spacing.4');
-	}
-
-	.model-size {
-		font-size: theme('fontSize.sm');
-		color: theme('colors.slate.500');
-	}
-
-	.badge {
-		font-size: theme('fontSize.xs');
-	}
-
-	.badge.active {
-		color: var(--accent);
-	}
-
-	.badge.downloaded {
-		color: theme('colors.slate.400');
-	}
-
-	/* Actions */
-	.actions {
-		margin-top: theme('spacing.6');
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: theme('spacing.3');
-	}
-
-	.btn {
-		padding: theme('spacing.2') theme('spacing.4');
-		border-radius: theme('borderRadius.md');
-		font-weight: 500;
-		cursor: pointer;
-		transition: background-color 0.15s;
-	}
-
-	.btn.primary {
-		background: var(--accent);
-		color: white;
-		width: 100%;
-	}
-
-	.btn.primary:hover:not(:disabled) {
-		background: var(--accent-hover);
-	}
-
-	.btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.spinner {
-		width: theme('spacing.4');
-		height: theme('spacing.4');
-		display: inline-block;
-		margin-right: theme('spacing.2');
-		animation: spin 1s linear infinite;
-	}
-
-	.spinner-track {
-		opacity: 0.25;
-	}
-
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
-
-	.hint {
-		font-size: theme('fontSize.xs');
-		color: theme('colors.slate.500');
-		text-align: center;
-	}
-
-	.ready-text {
-		font-size: theme('fontSize.sm');
-		color: var(--accent);
-	}
-
-	.error {
-		margin-top: theme('spacing.4');
-		font-size: theme('fontSize.sm');
-		color: theme('colors.red.400');
-	}
-
-	/* Download progress */
-	.download-progress {
-		text-align: center;
-	}
-
-	.download-progress h3 {
-		margin-bottom: theme('spacing.4');
-	}
-
-	.file-info {
-		font-size: theme('fontSize.sm');
-		color: theme('colors.slate.400');
-		margin-bottom: theme('spacing.2');
-	}
-
-	.progress-bar {
-		height: theme('spacing.2');
-		background: theme('colors.slate.700');
-		border-radius: theme('borderRadius.full');
-		overflow: hidden;
-		margin-bottom: theme('spacing.2');
-	}
-
-	.progress-fill {
-		height: 100%;
-		background: var(--accent);
-		transition: width 0.3s;
-	}
-
-	.progress-text {
-		font-size: theme('fontSize.xs');
-		color: theme('colors.slate.500');
-	}
-</style>
