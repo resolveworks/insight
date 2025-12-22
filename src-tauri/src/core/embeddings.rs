@@ -71,6 +71,17 @@ impl Embedder {
         })
     }
 
+    /// Split text into chunks (for display purposes)
+    ///
+    /// Returns the text chunks that would be used for embedding.
+    pub fn chunk_text(&self, content: &str) -> Vec<String> {
+        let content = content.trim();
+        if content.is_empty() {
+            return vec![];
+        }
+        self.splitter.chunks(content).map(|s| s.to_string()).collect()
+    }
+
     /// Embed a single text (for queries)
     ///
     /// Returns a single vector. Does not chunk - assumes query is short.

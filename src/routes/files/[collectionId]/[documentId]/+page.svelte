@@ -23,9 +23,13 @@
 
 	let document = $state<Document | null>(null);
 	let content = $state<string | null>(null);
+	let chunks = $state<string[] | null>(null);
 	let collectionName = $state<string>('');
 	let loading = $state(true);
 	let loadingContent = $state(false);
+	let loadingChunks = $state(false);
+	let chunksExpanded = $state(false);
+	let chunksError = $state<string | null>(null);
 	let error = $state<string | null>(null);
 
 	const collectionId = $derived($page.params.collectionId);
@@ -58,6 +62,31 @@
 	function truncateHash(hash: string): string {
 		if (hash.length <= 16) return hash;
 		return `${hash.slice(0, 8)}...${hash.slice(-8)}`;
+	}
+
+	async function loadChunks() {
+		if (chunks !== null || loadingChunks) return;
+
+		loadingChunks = true;
+		chunksError = null;
+
+		try {
+			chunks = await invoke<string[]>('get_document_chunks', {
+				collectionId,
+				documentId,
+			});
+		} catch (e) {
+			chunksError = e instanceof Error ? e.message : String(e);
+		} finally {
+			loadingChunks = false;
+		}
+	}
+
+	function toggleChunks() {
+		chunksExpanded = !chunksExpanded;
+		if (chunksExpanded && chunks === null) {
+			loadChunks();
+		}
 	}
 
 	onMount(async () => {
@@ -199,6 +228,60 @@
 					</div>
 				{:else}
 					<p class="italic text-slate-500">No content available</p>
+				{/if}
+			</div>
+
+			<!-- Embedding Chunks -->
+			<div class="mt-6">
+				<button
+					onclick={toggleChunks}
+					class="flex items-center gap-2 text-sm font-medium uppercase tracking-wide text-slate-400 hover:text-slate-200 transition-colors"
+				>
+					<span
+						class="inline-block transition-transform"
+						class:rotate-90={chunksExpanded}
+					>
+						▶
+					</span>
+					Embedding Chunks
+					{#if chunks}
+						<span class="text-xs font-normal normal-case text-slate-500"
+							>({chunks.length} chunks)</span
+						>
+					{/if}
+				</button>
+
+				{#if chunksExpanded}
+					<div class="mt-3">
+						{#if loadingChunks}
+							<p class="text-slate-500">Loading chunks...</p>
+						{:else if chunksError}
+							<div
+								class="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3"
+							>
+								<p class="text-sm text-amber-400">{chunksError}</p>
+							</div>
+						{:else if chunks && chunks.length > 0}
+							<div class="space-y-3">
+								{#each chunks as chunk, i (i)}
+									<div
+										class="rounded-lg border border-slate-700 bg-slate-800 p-4"
+									>
+										<div
+											class="mb-2 flex items-center justify-between text-xs text-slate-500"
+										>
+											<span>Chunk {i + 1}</span>
+											<span>{chunk.length} chars</span>
+										</div>
+										<pre
+											class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-300">{chunk}</pre>
+									</div>
+								{/each}
+							</div>
+						{:else}
+							<p class="italic text-slate-500">No chunks generated</p>
+						{/if}
+					</div>
 				{/if}
 			</div>
 

@@ -475,6 +475,53 @@ pub async fn get_document_text(
     String::from_utf8(text_bytes).map_err(|e| format!("Invalid UTF-8 in text content: {}", e))
 }
 
+/// Get the text chunks for a document (computed on-the-fly, not stored)
+#[tauri::command]
+pub async fn get_document_chunks(
+    collection_id: String,
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+
+    // Get document text
+    let mut storage_guard = state.storage.write().await;
+    let storage = storage_guard
+        .as_mut()
+        .ok_or_else(|| "Storage not initialized".to_string())?;
+
+    let document = storage
+        .get_document(namespace_id, &document_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Document not found".to_string())?;
+
+    let text_hash: iroh_blobs::Hash = document
+        .text_hash
+        .parse()
+        .map_err(|_| "Invalid text hash".to_string())?;
+
+    let text_bytes = storage
+        .get_blob(&text_hash)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Text content not found".to_string())?;
+
+    let text =
+        String::from_utf8(text_bytes).map_err(|e| format!("Invalid UTF-8 in text content: {}", e))?;
+
+    // Drop storage lock before accessing embedder
+    drop(storage_guard);
+
+    // Get chunks from embedder
+    let embedder_guard = state.embedder.read().await;
+    let embedder = embedder_guard
+        .as_ref()
+        .ok_or_else(|| "Embedding model not loaded".to_string())?;
+
+    Ok(embedder.chunk_text(&text))
+}
+
 /// Delete a document from a collection
 #[tauri::command]
 pub async fn delete_document(

@@ -63,6 +63,7 @@ pub fn run() {
             commands::get_documents,
             commands::get_document,
             commands::get_document_text,
+            commands::get_document_chunks,
             commands::import_pdfs_batch,
             commands::delete_document,
             commands::search,
