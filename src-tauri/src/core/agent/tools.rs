@@ -40,11 +40,6 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
                         "query": {
                             "type": "string",
                             "description": "The search query"
-                        },
-                        "collection_ids": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Optional: filter to specific collection IDs"
                         }
                     },
                     "required": ["query"]
@@ -83,11 +78,6 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
                         "query": {
                             "type": "string",
                             "description": "A description of what you're looking for (concepts, themes, topics)"
-                        },
-                        "collection_ids": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Optional: filter to specific collection IDs"
                         }
                     },
                     "required": ["query"]
@@ -121,17 +111,8 @@ pub async fn execute_tool(tool_call: &ToolCall, state: &AppState) -> ToolResult 
 
 async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
     let query = tool_call.arguments["query"].as_str().unwrap_or("");
-    let collection_ids: Option<Vec<String>> =
-        tool_call.arguments["collection_ids"].as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        });
 
     info!(query = %query, "Executing search");
-    if let Some(ref ids) = collection_ids {
-        debug!(collection_ids = ?ids, "Filtering by collections");
-    }
 
     let index = state.search.read().await;
 
@@ -141,7 +122,6 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
         search::SearchParams {
             query,
             limit: 10,
-            collection_ids: collection_ids.as_deref(),
             ..Default::default()
         },
     ) {
@@ -173,17 +153,8 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
 
 async fn execute_semantic_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
     let query = tool_call.arguments["query"].as_str().unwrap_or("");
-    let collection_ids: Option<Vec<String>> =
-        tool_call.arguments["collection_ids"].as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        });
 
     info!(query = %query, "Executing semantic search");
-    if let Some(ref ids) = collection_ids {
-        debug!(collection_ids = ?ids, "Filtering by collections");
-    }
 
     // Get embedder to encode the query
     let embedder_guard = state.embedder.read().await;
@@ -211,7 +182,6 @@ async fn execute_semantic_search(tool_call: &ToolCall, state: &AppState) -> Tool
     let search_params = search::SearchParams {
         query,
         limit: 10,
-        collection_ids: collection_ids.as_deref(),
         query_vector,
         semantic_ratio: 1.0,
         min_score: Some(0.3), // Filter out low-relevance results
