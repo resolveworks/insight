@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
+	import { languageModelConfig, embeddingModelConfig } from '$lib/models/config';
 </script>
 
 <div class="flex h-full flex-col">
@@ -8,24 +9,24 @@
 			<h1 class="mb-8 text-2xl font-semibold text-slate-100">Settings</h1>
 
 			<section class="mb-8">
-				<h2 class="mb-4 text-lg font-medium text-slate-200">AI Model</h2>
+				<h2 class="mb-4 text-lg font-medium text-slate-200">Language Model</h2>
 				<p class="mb-6 text-sm text-slate-400">
 					Select and download models for local AI inference. Models are stored
 					locally and run entirely on your machine.
 				</p>
 				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-					<ModelDownloadSelector modelType="llm" showTitle={false} />
+					<ModelDownloadSelector config={languageModelConfig} />
 				</div>
 			</section>
 
 			<section class="mb-8">
-				<h2 class="mb-4 text-lg font-medium text-slate-200">Semantic Search</h2>
+				<h2 class="mb-4 text-lg font-medium text-slate-200">Embedding Model</h2>
 				<p class="mb-6 text-sm text-slate-400">
 					Enable semantic search to find documents by meaning, not just
 					keywords. Requires downloading an embedding model.
 				</p>
 				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-					<ModelDownloadSelector modelType="embedding" showTitle={false} />
+					<ModelDownloadSelector config={embeddingModelConfig} />
 				</div>
 			</section>
 		</div>

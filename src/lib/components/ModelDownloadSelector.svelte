@@ -2,6 +2,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { onDestroy, onMount } from 'svelte';
+	import type { ModelSelectorConfig } from '$lib/models/config';
 
 	export interface ModelInfo {
 		id: string;
@@ -20,39 +21,14 @@
 		total_files: number;
 	}
 
-	type ModelType = 'llm' | 'embedding';
 	type Status = 'loading' | 'idle' | 'downloading' | 'configuring';
 
 	type Props = {
-		modelType: ModelType;
-		onReady?: (modelId: string | null) => void;
-		showTitle?: boolean;
+		config: ModelSelectorConfig;
+		onConfigured?: (modelId: string | null) => void;
 	};
 
-	let { modelType, onReady, showTitle = true }: Props = $props();
-
-	// Command/event names based on model type
-	const commands = $derived(
-		modelType === 'llm'
-			? {
-					list: 'get_available_models',
-					status: 'get_model_status',
-					download: 'download_model',
-					current: null,
-					configure: null,
-					progressEvent: 'model-download-progress',
-					completeEvent: 'model-download-complete',
-				}
-			: {
-					list: 'get_available_embedding_models',
-					status: 'get_embedding_model_status',
-					download: 'download_embedding_model',
-					current: 'get_current_embedding_model',
-					configure: 'configure_embedding_model',
-					progressEvent: 'embedding-model-download-progress',
-					completeEvent: 'embedding-model-download-complete',
-				},
-	);
+	let { config, onConfigured }: Props = $props();
 
 	let models = $state<ModelInfo[]>([]);
 	let selectedId = $state<string | null>(null);
@@ -67,31 +43,18 @@
 
 	// Derived state
 	let selectedModel = $derived(models.find((m) => m.id === selectedId));
-	let isEmbedding = $derived(modelType === 'embedding');
 	let canDownload = $derived(selectedId && !isDownloaded && status === 'idle');
-	let canConfigure = $derived(isEmbedding && isDownloaded && selectedId !== activeId && status === 'idle');
-	let isActive = $derived(isEmbedding && selectedId === activeId);
-
-	// Public API
-	export function getSelectedModelId(): string | null {
-		return selectedId;
-	}
-
-	export function isReady(): boolean {
-		return isDownloaded;
-	}
+	let canConfigure = $derived(isDownloaded && selectedId !== activeId && status === 'idle');
+	let isActive = $derived(selectedId === activeId);
 
 	async function load() {
 		status = 'loading';
 		error = null;
 
 		try {
-			models = await invoke<ModelInfo[]>(commands.list);
+			models = await invoke<ModelInfo[]>(config.listCommand);
 			if (models.length > 0) {
-				// Check for active model first (embedding only)
-				if (commands.current) {
-					activeId = await invoke<string | null>(commands.current);
-				}
+				activeId = await invoke<string | null>(config.currentCommand);
 				selectedId = activeId ?? models[0].id;
 				await checkStatus();
 			}
@@ -106,13 +69,8 @@
 		if (!selectedId) return;
 
 		try {
-			const result = await invoke<{ status: string }>(commands.status, { modelId: selectedId });
+			const result = await invoke<{ status: string }>(config.statusCommand, { modelId: selectedId });
 			isDownloaded = result.status === 'Ready';
-
-			// For LLM, notify ready immediately when downloaded
-			if (!isEmbedding && isDownloaded) {
-				onReady?.(selectedId);
-			}
 		} catch (e) {
 			error = `Failed to check status: ${e}`;
 		}
@@ -132,22 +90,18 @@
 		error = null;
 
 		try {
-			unlistenProgress = await listen<DownloadProgress>(commands.progressEvent, (e) => {
+			unlistenProgress = await listen<DownloadProgress>(config.progressEvent, (e) => {
 				progress = e.payload;
 			});
 
-			unlistenComplete = await listen(commands.completeEvent, () => {
+			unlistenComplete = await listen(config.completeEvent, () => {
 				isDownloaded = true;
 				progress = null;
 				status = 'idle';
 				cleanup();
-
-				if (!isEmbedding && selectedId) {
-					onReady?.(selectedId);
-				}
 			});
 
-			await invoke(commands.download, { modelId: selectedId });
+			await invoke(config.downloadCommand, { modelId: selectedId });
 		} catch (e) {
 			error = `Download failed: ${e}`;
 			status = 'idle';
@@ -156,15 +110,15 @@
 	}
 
 	async function configure() {
-		if (!commands.configure || !selectedId) return;
+		if (!selectedId) return;
 
 		status = 'configuring';
 		error = null;
 
 		try {
-			await invoke(commands.configure, { modelId: selectedId });
+			await invoke(config.configureCommand, { modelId: selectedId });
 			activeId = selectedId;
-			onReady?.(selectedId);
+			onConfigured?.(selectedId);
 		} catch (e) {
 			error = `Failed to configure: ${e}`;
 		} finally {
@@ -173,15 +127,13 @@
 	}
 
 	async function disable() {
-		if (!commands.configure) return;
-
 		status = 'configuring';
 		error = null;
 
 		try {
-			await invoke(commands.configure, { modelId: null });
+			await invoke(config.configureCommand, { modelId: null });
 			activeId = null;
-			onReady?.(null);
+			onConfigured?.(null);
 		} catch (e) {
 			error = `Failed to disable: ${e}`;
 		} finally {
@@ -206,12 +158,12 @@
 	onDestroy(cleanup);
 </script>
 
-<div class="model-selector" class:embedding={isEmbedding}>
+<div class="model-selector" class:rose={config.accentColor === 'rose'} class:emerald={config.accentColor === 'emerald'}>
 	{#if status === 'loading'}
 		<p class="status-text">Loading models...</p>
 	{:else if status === 'downloading'}
 		<div class="download-progress">
-			<h3>Downloading {isEmbedding ? 'Embedding Model' : 'Model'}</h3>
+			<h3>Downloading {config.title}</h3>
 			{#if progress}
 				<p class="file-info">
 					File {progress.file_index} of {progress.total_files}: {progress.file.split('/').pop()}
@@ -228,35 +180,22 @@
 			{/if}
 		</div>
 	{:else}
-		{#if showTitle}
-			<h3>{isEmbedding ? 'Embedding Model' : 'Select AI Model'}</h3>
-			<p class="description">
-				{#if isEmbedding}
-					Enable semantic search to find documents by meaning, not just keywords.
-				{:else}
-					Choose a model to download. Smaller models are faster but less capable.
-				{/if}
-			</p>
-		{/if}
-
-		{#if isEmbedding}
-			<div class="status-banner" class:active={activeId}>
-				{#if activeId}
-					<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-					</svg>
-					<span>Semantic search enabled with {models.find((m) => m.id === activeId)?.name}</span>
-					<button class="disable-btn" onclick={disable} disabled={status === 'configuring'}>
-						Disable
-					</button>
-				{:else}
-					<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-					</svg>
-					<span>Semantic search disabled. Using full-text search only.</span>
-				{/if}
-			</div>
-		{/if}
+		<div class="status-banner" class:active={activeId}>
+			{#if activeId}
+				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+				</svg>
+				<span>{models.find((m) => m.id === activeId)?.name} active</span>
+				<button class="disable-btn" onclick={disable} disabled={status === 'configuring'}>
+					Disable
+				</button>
+			{:else}
+				<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+				</svg>
+				<span>No model configured</span>
+			{/if}
+		</div>
 
 		<div class="model-list">
 			{#each models as model (model.id)}
@@ -264,7 +203,7 @@
 					<div class="model-info">
 						<span class="model-name">{model.name}</span>
 						<span class="model-desc">{model.description}</span>
-						{#if isEmbedding && model.dimensions}
+						{#if model.dimensions}
 							<span class="model-dims">{model.dimensions} dimensions</span>
 						{/if}
 					</div>
@@ -283,7 +222,7 @@
 		<div class="actions">
 			{#if canDownload}
 				<button class="btn primary" onclick={download}>
-					Download {isEmbedding ? 'Model' : 'Selected Model'}
+					Download Model
 				</button>
 			{:else if canConfigure}
 				<button class="btn primary" onclick={configure} disabled={status === 'configuring'}>
@@ -292,9 +231,9 @@
 							<circle class="spinner-track" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
 							<path class="spinner-fill" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
 						</svg>
-						Loading model...
+						Loading...
 					{:else}
-						Enable Semantic Search
+						Activate Model
 					{/if}
 				</button>
 				{#if status === 'configuring'}
@@ -303,7 +242,7 @@
 			{:else if isActive}
 				<p class="ready-text">Model active</p>
 			{:else if isDownloaded}
-				<p class="ready-text">Model ready to use</p>
+				<p class="ready-text">Model ready</p>
 			{/if}
 		</div>
 
@@ -315,15 +254,21 @@
 
 <style>
 	.model-selector {
-		--accent: theme('colors.rose.500');
-		--accent-bg: theme('colors.rose.900' / 30%);
-		--accent-hover: theme('colors.rose.700');
+		--accent: theme('colors.slate.500');
+		--accent-bg: theme('colors.slate.800');
+		--accent-hover: theme('colors.slate.600');
 	}
 
-	.model-selector.embedding {
+	.model-selector.rose {
+		--accent: theme('colors.rose.500');
+		--accent-bg: theme('colors.rose.900' / 30%);
+		--accent-hover: theme('colors.rose.600');
+	}
+
+	.model-selector.emerald {
 		--accent: theme('colors.emerald.500');
 		--accent-bg: theme('colors.emerald.900' / 30%);
-		--accent-hover: theme('colors.emerald.700');
+		--accent-hover: theme('colors.emerald.600');
 	}
 
 	h3 {
@@ -332,19 +277,13 @@
 		margin-bottom: theme('spacing.4');
 	}
 
-	.description {
-		font-size: theme('fontSize.sm');
-		color: theme('colors.slate.400');
-		margin-bottom: theme('spacing.6');
-	}
-
 	.status-text {
 		color: theme('colors.slate.400');
 		text-align: center;
 		padding: theme('spacing.4') 0;
 	}
 
-	/* Status banner (embedding only) */
+	/* Status banner */
 	.status-banner {
 		display: flex;
 		align-items: center;
@@ -361,7 +300,7 @@
 	.status-banner.active {
 		border-color: var(--accent);
 		background: var(--accent-bg);
-		color: theme('colors.emerald.300');
+		color: theme('colors.slate.200');
 	}
 
 	.status-banner .icon {
@@ -371,7 +310,7 @@
 	}
 
 	.status-banner.active .icon {
-		color: theme('colors.emerald.400');
+		color: var(--accent);
 	}
 
 	.disable-btn {
@@ -455,14 +394,10 @@
 	}
 
 	.badge.active {
-		color: theme('colors.emerald.400');
+		color: var(--accent);
 	}
 
 	.badge.downloaded {
-		color: theme('colors.green.400');
-	}
-
-	.embedding .badge.downloaded {
 		color: theme('colors.slate.400');
 	}
 
@@ -524,11 +459,7 @@
 
 	.ready-text {
 		font-size: theme('fontSize.sm');
-		color: theme('colors.green.400');
-	}
-
-	.embedding .ready-text {
-		color: theme('colors.emerald.400');
+		color: var(--accent);
 	}
 
 	.error {

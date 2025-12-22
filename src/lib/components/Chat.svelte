@@ -3,6 +3,7 @@
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { onDestroy } from 'svelte';
 	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
+	import { languageModelConfig } from '$lib/models/config';
 
 	// Content block types matching backend
 	type ContentBlock =
@@ -68,7 +69,7 @@
 	let unlistenAgent: UnlistenFn | undefined;
 	let messagesContainer: HTMLElement | undefined;
 
-	async function handleModelReady(modelId: string | null) {
+	async function handleModelConfigured(modelId: string | null) {
 		if (!modelId) return;
 		modelReady = true;
 		currentModelId = modelId;
@@ -262,7 +263,7 @@
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
 		{#if !modelReady}
-			<ModelDownloadSelector modelType="llm" onReady={handleModelReady} />
+			<ModelDownloadSelector config={languageModelConfig} onConfigured={handleModelConfigured} />
 		{:else if isLoadingModel}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-slate-400">

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
+	import { embeddingModelConfig } from '$lib/models/config';
 
 	type Props = {
 		onComplete: () => void;
@@ -7,7 +8,7 @@
 
 	let { onComplete }: Props = $props();
 
-	function handleReady(modelId: string | null) {
+	function handleConfigured(modelId: string | null) {
 		if (modelId) {
 			onComplete();
 		}
@@ -25,7 +26,7 @@
 		</div>
 
 		<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-			<ModelDownloadSelector modelType="embedding" onReady={handleReady} showTitle={false} />
+			<ModelDownloadSelector config={embeddingModelConfig} onConfigured={handleConfigured} />
 		</div>
 
 		<p class="mt-6 text-center text-sm text-slate-500">
