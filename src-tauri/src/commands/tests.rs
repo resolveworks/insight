@@ -24,8 +24,8 @@ async fn create_test_state(temp_dir: &std::path::Path) -> AppState {
 
     AppState {
         config,
-        storage: Arc::new(RwLock::new(Some(storage))),
-        search: Arc::new(RwLock::new(Some(index))),
+        storage: Arc::new(RwLock::new(storage)),
+        search: Arc::new(RwLock::new(index)),
         indexer_config: Arc::new(Mutex::new(indexer_config)),
         embedder: Arc::new(RwLock::new(None)),
         embedding_model_id: Arc::new(RwLock::new(None)),

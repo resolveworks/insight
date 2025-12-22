@@ -20,6 +20,7 @@ pub fn run() {
     init_logging(&["insight=debug", "milli=debug"]);
     tracing::info!("Starting Insight in GUI mode");
 
+    // Initialize AppState before Tauri starts (blocks briefly on storage init)
     let app_state = AppState::new();
 
     tauri::Builder::default()
@@ -27,27 +28,21 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .setup(|app| {
+            // Load embedder in background (this is the slow part, 20-30s)
             let state = app.state::<AppState>();
-            let state_clone = AppState {
-                config: state.config.clone(),
-                storage: state.storage.clone(),
-                search: state.search.clone(),
-                indexer_config: state.indexer_config.clone(),
-                embedder: state.embedder.clone(),
-                embedding_model_id: state.embedding_model_id.clone(),
-                agent_model: state.agent_model.clone(),
-                conversations: state.conversations.clone(),
-                active_generations: state.active_generations.clone(),
-            };
-
+            let config = state.config.clone();
+            let embedder = state.embedder.clone();
+            let embedding_model_id = state.embedding_model_id.clone();
             let app_handle = app.handle().clone();
 
-            // Initialize storage and search in background
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = state_clone.initialize(&app_handle).await {
-                    tracing::error!("Failed to initialize: {}", e);
-                }
-                // Note: boot-phase and backend-ready events are now emitted from initialize()
+                core::load_embedder_if_configured(
+                    &config,
+                    &embedder,
+                    &embedding_model_id,
+                    &app_handle,
+                )
+                .await;
             });
 
             Ok(())

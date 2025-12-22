@@ -23,21 +23,12 @@ pub use embeddings::Embedder;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase")]
 pub enum BootPhase {
-    /// Storage and search initialized, ready for basic operations
-    StorageReady {
-        /// Whether an embedding model is configured in settings
-        embedding_configured: bool,
-        /// The configured model ID (if any)
-        embedding_model_id: Option<String>,
-    },
     /// Embedding model is being loaded (only if configured)
     EmbedderLoading { model_id: String, model_name: String },
     /// Embedding model loaded successfully
     EmbedderReady { model_id: String },
     /// Embedding model failed to load
     EmbedderFailed { model_id: String, error: String },
-    /// Application fully ready
-    AppReady,
 }
 
 pub use agent::{AgentEvent, AgentModel, Conversation};
@@ -47,11 +38,13 @@ pub use storage::Storage;
 /// Application state shared across Tauri commands
 pub struct AppState {
     pub config: Config,
-    pub storage: Arc<RwLock<Option<Storage>>>,
-    pub search: Arc<RwLock<Option<Index>>>,
+    /// Storage is always initialized before commands can be called
+    pub storage: Arc<RwLock<Storage>>,
+    /// Search index is always initialized before commands can be called
+    pub search: Arc<RwLock<Index>>,
     /// Shared indexer config with thread pool - use Mutex to serialize indexing operations
     pub indexer_config: Arc<Mutex<IndexerConfig>>,
-    /// Custom embedder for semantic search (None = full-text only)
+    /// Custom embedder for semantic search (None = full-text only, loaded async)
     pub embedder: Arc<RwLock<Option<Embedder>>>,
     /// Currently configured embedding model ID (None = no embeddings)
     pub embedding_model_id: Arc<RwLock<Option<String>>>,
@@ -64,46 +57,30 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Create and initialize AppState. Blocks on async storage initialization.
     pub fn new() -> Self {
         let config = Config::load_or_default();
         config
             .ensure_dirs()
             .expect("Failed to create data directories");
 
-        // Create a shared IndexerConfig with thread pool for all indexing operations
+        // Create a temporary runtime to initialize storage
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+
+        let storage = rt.block_on(async {
+            Storage::open(&config.iroh_dir)
+                .await
+                .expect("Failed to open storage")
+        });
+
+        let index = search::open_index(&config.search_dir).expect("Failed to open search index");
+
+        // Configure embedder in index if previously set
+        let settings = Settings::load(&config.settings_file);
         let indexer_config = IndexerConfig::default();
 
-        Self {
-            config,
-            storage: Arc::new(RwLock::new(None)),
-            search: Arc::new(RwLock::new(None)),
-            indexer_config: Arc::new(Mutex::new(indexer_config)),
-            embedder: Arc::new(RwLock::new(None)), // Configured later via settings
-            embedding_model_id: Arc::new(RwLock::new(None)),
-            agent_model: Arc::new(RwLock::new(None)),
-            conversations: Arc::new(RwLock::new(HashMap::new())),
-            active_generations: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    /// Initialize storage and search (call once at startup)
-    pub async fn initialize(&self, app_handle: &AppHandle) -> anyhow::Result<()> {
-        // Phase 1: Initialize storage
-        let storage = Storage::open(&self.config.iroh_dir).await?;
-        *self.storage.write().await = Some(storage);
-
-        // Initialize search index
-        let index = search::open_index(&self.config.search_dir)?;
-
-        // Read settings to determine if embedding is configured
-        let settings = Settings::load(&self.config.settings_file);
-        let embedding_configured = settings.embedding_model_id.is_some();
-        let embedding_model_id = settings.embedding_model_id.clone();
-
-        // Configure milli index metadata if model was previously set
-        if let Some(ref model_id) = embedding_model_id {
+        if let Some(ref model_id) = settings.embedding_model_id {
             if let Some(model) = models::get_embedding_model(model_id) {
-                let indexer_config = self.indexer_config.lock().await;
                 if let Err(e) =
                     search::configure_embedder(&index, &indexer_config, "default", model.dimensions)
                 {
@@ -118,84 +95,70 @@ impl AppState {
             }
         }
 
-        // Log current embedder configs for debugging
-        if let Err(e) = search::log_embedder_configs(&index) {
-            tracing::warn!("Failed to log embedder configs: {}", e);
+        Self {
+            config,
+            storage: Arc::new(RwLock::new(storage)),
+            search: Arc::new(RwLock::new(index)),
+            indexer_config: Arc::new(Mutex::new(indexer_config)),
+            embedder: Arc::new(RwLock::new(None)),
+            embedding_model_id: Arc::new(RwLock::new(None)),
+            agent_model: Arc::new(RwLock::new(None)),
+            conversations: Arc::new(RwLock::new(HashMap::new())),
+            active_generations: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
 
-        *self.search.write().await = Some(index);
+}
 
-        // Emit Phase 1: Storage ready
-        if let Err(e) = app_handle.emit(
-            "boot-phase",
-            BootPhase::StorageReady {
-                embedding_configured,
-                embedding_model_id: embedding_model_id.clone(),
-            },
-        ) {
-            tracing::warn!("Failed to emit StorageReady event: {}", e);
-        }
+/// Load embedding model if configured in settings (call in background after startup)
+pub async fn load_embedder_if_configured(
+    config: &Config,
+    embedder: &RwLock<Option<Embedder>>,
+    embedding_model_id: &RwLock<Option<String>>,
+    app_handle: &AppHandle,
+) {
+    let settings = Settings::load(&config.settings_file);
 
-        // Phase 2: Load embedder if configured
-        if let Some(ref model_id) = embedding_model_id {
-            if let Some(model) = models::get_embedding_model(model_id) {
-                // Emit loading start
-                if let Err(e) = app_handle.emit(
-                    "boot-phase",
-                    BootPhase::EmbedderLoading {
-                        model_id: model_id.clone(),
-                        model_name: model.name.to_string(),
-                    },
-                ) {
-                    tracing::warn!("Failed to emit EmbedderLoading event: {}", e);
+    if let Some(ref model_id) = settings.embedding_model_id {
+        if let Some(model) = models::get_embedding_model(model_id) {
+            let _ = app_handle.emit(
+                "boot-phase",
+                BootPhase::EmbedderLoading {
+                    model_id: model_id.clone(),
+                    model_name: model.name.to_string(),
+                },
+            );
+
+            tracing::info!("Loading embedding model '{}' on boot...", model_id);
+            match Embedder::new(&model.hf_repo_id, model.dimensions).await {
+                Ok(emb) => {
+                    *embedder.write().await = Some(emb);
+                    *embedding_model_id.write().await = Some(model_id.clone());
+
+                    tracing::info!("Embedding model '{}' loaded successfully", model_id);
+                    let _ = app_handle.emit(
+                        "boot-phase",
+                        BootPhase::EmbedderReady {
+                            model_id: model_id.clone(),
+                        },
+                    );
                 }
-
-                // Load the embedder (this is the slow part, 20-30 seconds)
-                tracing::info!("Loading embedding model '{}' on boot...", model_id);
-                match Embedder::new(&model.hf_repo_id, model.dimensions).await {
-                    Ok(embedder) => {
-                        *self.embedder.write().await = Some(embedder);
-                        *self.embedding_model_id.write().await = Some(model_id.clone());
-
-                        tracing::info!("Embedding model '{}' loaded successfully", model_id);
-                        if let Err(e) = app_handle.emit(
-                            "boot-phase",
-                            BootPhase::EmbedderReady {
-                                model_id: model_id.clone(),
-                            },
-                        ) {
-                            tracing::warn!("Failed to emit EmbedderReady event: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to load embedder on boot: {}", e);
-                        if let Err(emit_err) = app_handle.emit(
-                            "boot-phase",
-                            BootPhase::EmbedderFailed {
-                                model_id: model_id.clone(),
-                                error: e.to_string(),
-                            },
-                        ) {
-                            tracing::warn!("Failed to emit EmbedderFailed event: {}", emit_err);
-                        }
-                    }
+                Err(e) => {
+                    tracing::error!("Failed to load embedder on boot: {}", e);
+                    let _ = app_handle.emit(
+                        "boot-phase",
+                        BootPhase::EmbedderFailed {
+                            model_id: model_id.clone(),
+                            error: e.to_string(),
+                        },
+                    );
                 }
             }
         }
-
-        // Phase 3: App fully ready
-        if let Err(e) = app_handle.emit("boot-phase", BootPhase::AppReady) {
-            tracing::warn!("Failed to emit AppReady event: {}", e);
-        }
-
-        // Keep legacy event for backward compatibility
-        if let Err(e) = app_handle.emit("backend-ready", ()) {
-            tracing::warn!("Failed to emit backend-ready event: {}", e);
-        }
-
-        tracing::info!("AppState initialized");
-        Ok(())
     }
+
+    let _ = app_handle.emit("backend-ready", ());
+    tracing::info!("Backend ready");
 }
 
 impl Default for AppState {

@@ -155,21 +155,10 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
         debug!(collection_ids = ?ids, "Filtering by collections");
     }
 
-    let search_guard = state.search.read().await;
-    let index = match search_guard.as_ref() {
-        Some(i) => i,
-        None => {
-            warn!("Search index not initialized");
-            return ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: "Search index not initialized".to_string(),
-                is_error: true,
-            };
-        }
-    };
+    let index = state.search.read().await;
 
     // Agent uses keyword-only search for now (no semantic embeddings)
-    match search::search_index(index, query, 10, 0, collection_ids.as_deref(), None, 0.0) {
+    match search::search_index(&index, query, 10, 0, collection_ids.as_deref(), None, 0.0) {
         Ok(results) => {
             // Format results for LLM consumption
             let doc_ids: Vec<u32> = results.hits.iter().map(|h| h.doc_id).collect();
@@ -178,7 +167,7 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
                 hits = doc_ids.len(),
                 "Search completed"
             );
-            let formatted = format_search_results(index, &doc_ids);
+            let formatted = format_search_results(&index, &doc_ids);
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: formatted,
@@ -247,21 +236,10 @@ async fn execute_read_document(tool_call: &ToolCall, state: &AppState) -> ToolRe
 
     info!(document_id = %doc_id, "Reading document");
 
-    let search_guard = state.search.read().await;
-    let index = match search_guard.as_ref() {
-        Some(i) => i,
-        None => {
-            warn!("Search index not initialized");
-            return ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: "Search index not initialized".to_string(),
-                is_error: true,
-            };
-        }
-    };
+    let index = state.search.read().await;
 
     // Get content field from search index by external ID
-    match search::get_document_by_external_id(index, doc_id) {
+    match search::get_document_by_external_id(&index, doc_id) {
         Ok(Some(content)) => {
             info!(
                 document_id = %doc_id,

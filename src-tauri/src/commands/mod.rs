@@ -51,11 +51,7 @@ pub struct SearchResponse {
 /// Get all collections
 #[tauri::command]
 pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<CollectionInfo>, String> {
-    let mut storage_guard = state.storage.write().await;
-    let storage = match storage_guard.as_mut() {
-        Some(s) => s,
-        None => return Ok(vec![]),
-    };
+    let mut storage = state.storage.write().await;
 
     let collections = storage
         .list_collections()
@@ -85,11 +81,7 @@ pub async fn create_collection(
 ) -> Result<CollectionInfo, String> {
     tracing::info!("Creating collection: {}", name);
 
-    let mut storage_guard = state.storage.write().await;
-    let storage = match storage_guard.as_mut() {
-        Some(s) => s,
-        None => return Err("Storage not initialized".to_string()),
-    };
+    let mut storage = state.storage.write().await;
 
     let (namespace_id, metadata) = storage
         .create_collection(&name)
@@ -188,51 +180,34 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
                 let (doc_infos, docs_to_index): (Vec<_>, Vec<_>) =
                     std::mem::take(&mut pending_index).into_iter().unzip();
 
-                let search_guard = state.search.read().await;
-                if let Some(index) = search_guard.as_ref() {
-                    let indexer_config = state.indexer_config.lock().await;
+                let index = state.search.read().await;
+                let indexer_config = state.indexer_config.lock().await;
 
-                    match search::index_documents_batch(index, &indexer_config, docs_to_index) {
-                        Ok(()) => {
-                            for doc_info in doc_infos {
-                                let _ = app.emit(
-                                    "document-added",
-                                    DocumentAddedEvent {
-                                        collection_id: collection_id.clone(),
-                                        document: doc_info.clone(),
-                                    },
-                                );
-                                successful.push(doc_info);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to batch index {} documents: {}",
-                                doc_infos.len(),
-                                e
+                match search::index_documents_batch(&index, &indexer_config, docs_to_index) {
+                    Ok(()) => {
+                        for doc_info in doc_infos {
+                            let _ = app.emit(
+                                "document-added",
+                                DocumentAddedEvent {
+                                    collection_id: collection_id.clone(),
+                                    document: doc_info.clone(),
+                                },
                             );
-                            for doc_info in doc_infos {
-                                failed.push(BatchImportError {
-                                    path: doc_info.name,
-                                    error: format!("Stored but failed to index: {}", e),
-                                });
-                            }
+                            successful.push(doc_info);
                         }
                     }
-                } else {
-                    tracing::warn!(
-                        "Search not initialized, {} documents not indexed",
-                        doc_infos.len()
-                    );
-                    for doc_info in doc_infos {
-                        let _ = app.emit(
-                            "document-added",
-                            DocumentAddedEvent {
-                                collection_id: collection_id.clone(),
-                                document: doc_info.clone(),
-                            },
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to batch index {} documents: {}",
+                            doc_infos.len(),
+                            e
                         );
-                        successful.push(doc_info);
+                        for doc_info in doc_infos {
+                            failed.push(BatchImportError {
+                                path: doc_info.name,
+                                error: format!("Stored but failed to index: {}", e),
+                            });
+                        }
                     }
                 }
             }
@@ -261,17 +236,7 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         let text_content = extraction.extracted.text.clone();
 
         // Store blobs and metadata
-        let mut storage_guard = state.storage.write().await;
-        let storage = match storage_guard.as_mut() {
-            Some(s) => s,
-            None => {
-                failed.push(BatchImportError {
-                    path: file_name,
-                    error: "Storage not initialized".to_string(),
-                });
-                continue;
-            }
-        };
+        let mut storage = state.storage.write().await;
 
         let doc_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
@@ -320,7 +285,7 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         }
 
         // Release storage lock
-        drop(storage_guard);
+        drop(storage);
 
         let doc_info = DocumentInfo {
             id: doc_id.clone(),
@@ -384,10 +349,7 @@ pub async fn get_documents(
 ) -> Result<Vec<DocumentInfo>, String> {
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    let mut storage_guard = state.storage.write().await;
-    let storage = storage_guard
-        .as_mut()
-        .ok_or_else(|| "Storage not initialized".to_string())?;
+    let mut storage = state.storage.write().await;
 
     let documents = storage
         .list_documents(namespace_id)
@@ -417,10 +379,7 @@ pub async fn get_document(
 ) -> Result<DocumentInfo, String> {
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    let mut storage_guard = state.storage.write().await;
-    let storage = storage_guard
-        .as_mut()
-        .ok_or_else(|| "Storage not initialized".to_string())?;
+    let mut storage = state.storage.write().await;
 
     let document = storage
         .get_document(namespace_id, &document_id)
@@ -448,10 +407,7 @@ pub async fn get_document_text(
 ) -> Result<String, String> {
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    let mut storage_guard = state.storage.write().await;
-    let storage = storage_guard
-        .as_mut()
-        .ok_or_else(|| "Storage not initialized".to_string())?;
+    let mut storage = state.storage.write().await;
 
     // Get document metadata to find text hash
     let document = storage
@@ -485,10 +441,7 @@ pub async fn get_document_chunks(
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
     // Get document text
-    let mut storage_guard = state.storage.write().await;
-    let storage = storage_guard
-        .as_mut()
-        .ok_or_else(|| "Storage not initialized".to_string())?;
+    let mut storage = state.storage.write().await;
 
     let document = storage
         .get_document(namespace_id, &document_id)
@@ -511,7 +464,7 @@ pub async fn get_document_chunks(
         String::from_utf8(text_bytes).map_err(|e| format!("Invalid UTF-8 in text content: {}", e))?;
 
     // Drop storage lock before accessing embedder
-    drop(storage_guard);
+    drop(storage);
 
     // Get chunks from embedder
     let embedder_guard = state.embedder.read().await;
@@ -539,11 +492,7 @@ pub async fn delete_document(
 
     // Delete from storage first
     {
-        let mut storage_guard = state.storage.write().await;
-        let storage = storage_guard
-            .as_mut()
-            .ok_or_else(|| "Storage not initialized".to_string())?;
-
+        let mut storage = state.storage.write().await;
         storage
             .delete_document(namespace_id, &document_id)
             .map_err(|e| e.to_string())?;
@@ -553,18 +502,16 @@ pub async fn delete_document(
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
     tokio::spawn(async move {
-        let search_guard = search.read().await;
-        if let Some(index) = search_guard.as_ref() {
-            let indexer_config = indexer_config.lock().await;
-            if let Err(e) = search::delete_document(index, &indexer_config, &document_id) {
-                tracing::error!(
-                    "Failed to remove document {} from search index: {}",
-                    document_id,
-                    e
-                );
-            } else {
-                tracing::info!("Removed document {} from search index", document_id);
-            }
+        let index = search.read().await;
+        let indexer_config = indexer_config.lock().await;
+        if let Err(e) = search::delete_document(&index, &indexer_config, &document_id) {
+            tracing::error!(
+                "Failed to remove document {} from search index: {}",
+                document_id,
+                e
+            );
+        } else {
+            tracing::info!("Removed document {} from search index", document_id);
         }
     });
 
@@ -583,11 +530,7 @@ pub async fn delete_collection(
 
     // Delete from storage first
     {
-        let mut storage_guard = state.storage.write().await;
-        let storage = storage_guard
-            .as_mut()
-            .ok_or_else(|| "Storage not initialized".to_string())?;
-
+        let mut storage = state.storage.write().await;
         storage
             .delete_collection(namespace_id)
             .map_err(|e| e.to_string())?;
@@ -597,24 +540,22 @@ pub async fn delete_collection(
     let search = state.search.clone();
     let indexer_config = state.indexer_config.clone();
     tokio::spawn(async move {
-        let search_guard = search.read().await;
-        if let Some(index) = search_guard.as_ref() {
-            let indexer_config = indexer_config.lock().await;
-            match search::delete_documents_by_collection(index, &indexer_config, &collection_id) {
-                Ok(deleted_count) => {
-                    tracing::info!(
-                        "Removed {} documents from search index for collection {}",
-                        deleted_count,
-                        collection_id
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to remove documents from search index for collection {}: {}",
-                        collection_id,
-                        e
-                    );
-                }
+        let index = search.read().await;
+        let indexer_config = indexer_config.lock().await;
+        match search::delete_documents_by_collection(&index, &indexer_config, &collection_id) {
+            Ok(deleted_count) => {
+                tracing::info!(
+                    "Removed {} documents from search index for collection {}",
+                    deleted_count,
+                    collection_id
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to remove documents from search index for collection {}: {}",
+                    collection_id,
+                    e
+                );
             }
         }
     });
@@ -644,16 +585,13 @@ pub async fn search(
         semantic_ratio
     );
 
-    let search_guard = state.search.read().await;
-    let index = search_guard
-        .as_ref()
-        .ok_or_else(|| "Search not initialized".to_string())?;
+    let index = state.search.read().await;
 
     let page = page.unwrap_or(0);
     let page_size = page_size.unwrap_or(20);
     let offset = page * page_size;
 
-    let doc_count = search::get_document_count(index).unwrap_or(0);
+    let doc_count = search::get_document_count(&index).unwrap_or(0);
     tracing::info!(
         "Search params: page={}, page_size={}, offset={}, index_docs={}",
         page,
@@ -682,7 +620,7 @@ pub async fn search(
     };
 
     let results = search::search_index(
-        index,
+        &index,
         &query,
         page_size,
         offset,
@@ -700,17 +638,17 @@ pub async fn search(
 
     let mut hits = Vec::new();
     for hit in results.hits {
-        let id = search::get_document_field_by_internal_id(index, hit.doc_id, "id")
+        let id = search::get_document_field_by_internal_id(&index, hit.doc_id, "id")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        let name = search::get_document_field_by_internal_id(index, hit.doc_id, "name")
+        let name = search::get_document_field_by_internal_id(&index, hit.doc_id, "name")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        let content = search::get_document_field_by_internal_id(index, hit.doc_id, "content")
+        let content = search::get_document_field_by_internal_id(&index, hit.doc_id, "content")
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
         let collection_id =
-            search::get_document_field_by_internal_id(index, hit.doc_id, "collection_id")
+            search::get_document_field_by_internal_id(&index, hit.doc_id, "collection_id")
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
 
@@ -1187,12 +1125,10 @@ pub async fn configure_embedding_model(
 
         // Configure milli index for vector search
         {
-            let search_guard = state.search.read().await;
-            if let Some(ref index) = *search_guard {
-                let indexer_config = state.indexer_config.lock().await;
-                search::configure_embedder(index, &indexer_config, "default", model.dimensions)
-                    .map_err(|e| format!("Failed to configure embedder in index: {}", e))?;
-            }
+            let index = state.search.read().await;
+            let indexer_config = state.indexer_config.lock().await;
+            search::configure_embedder(&index, &indexer_config, "default", model.dimensions)
+                .map_err(|e| format!("Failed to configure embedder in index: {}", e))?;
         }
 
         // Update state
@@ -1206,12 +1142,10 @@ pub async fn configure_embedding_model(
 
         // Remove embedder configuration from milli index
         {
-            let search_guard = state.search.read().await;
-            if let Some(ref index) = *search_guard {
-                let indexer_config = state.indexer_config.lock().await;
-                if let Err(e) = search::remove_embedder(index, &indexer_config) {
-                    tracing::warn!("Failed to remove embedder from index: {}", e);
-                }
+            let index = state.search.read().await;
+            let indexer_config = state.indexer_config.lock().await;
+            if let Err(e) = search::remove_embedder(&index, &indexer_config) {
+                tracing::warn!("Failed to remove embedder from index: {}", e);
             }
         }
 
