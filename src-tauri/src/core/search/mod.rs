@@ -451,6 +451,44 @@ impl Default for SearchParams<'_> {
     }
 }
 
+/// Execute hybrid search with semantic + keyword scoring
+fn execute_hybrid_search<'a>(
+    index: &Index,
+    rtxn: &'a milli::heed::RoTxn<'a>,
+    search: &mut milli::Search<'a>,
+    query_vector: Vec<f32>,
+    semantic_ratio: f32,
+) -> Result<milli::SearchResult> {
+    const EMBEDDER_NAME: &str = "default";
+
+    let Some((embedder, quantized)) = get_embedder_from_index(index, rtxn, EMBEDDER_NAME)? else {
+        tracing::warn!("Embedder not configured, falling back to keyword search");
+        return Ok(search.execute()?);
+    };
+
+    tracing::debug!(
+        semantic_ratio = semantic_ratio,
+        vector_dims = query_vector.len(),
+        "Executing hybrid search"
+    );
+
+    search.semantic(
+        EMBEDDER_NAME.to_string(),
+        embedder,
+        quantized,
+        Some(query_vector),
+        None,
+    );
+
+    match search.execute_hybrid(semantic_ratio) {
+        Ok((result, _)) => Ok(result),
+        Err(e) => {
+            tracing::error!(error = %e, "Hybrid search failed, falling back to keyword");
+            Ok(search.execute()?)
+        }
+    }
+}
+
 /// Search the milli index
 ///
 /// When `semantic_ratio > 0` and `query_vector` is provided, performs hybrid search
@@ -460,7 +498,6 @@ impl Default for SearchParams<'_> {
 /// - 0.5 = equal weight to both
 ///
 /// The `min_score` parameter filters out results below the threshold (0.0 to 1.0).
-/// This is especially useful for semantic search to avoid returning irrelevant documents.
 pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchResults> {
     let SearchParams {
         query,
@@ -471,6 +508,7 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
         semantic_ratio,
         min_score,
     } = params;
+
     let rtxn = index.read_txn()?;
     let mut search = milli::Search::new(&rtxn, index);
     search.query(query);
@@ -480,73 +518,26 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
     search.exhaustive_number_hits(true);
     search.terms_matching_strategy(TermsMatchingStrategy::Last);
 
-    // Build filter string (must outlive the search)
+    // Apply collection filter
     let filter_str = collection_ids.filter(|ids| !ids.is_empty()).map(|ids| {
         let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
         format!("collection_id IN [{}]", quoted.join(", "))
     });
-
     if let Some(ref fs) = filter_str {
-        let filter =
-            milli::Filter::from_str(fs).map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?;
-        if let Some(f) = filter {
+        if let Some(f) =
+            milli::Filter::from_str(fs).map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?
+        {
             search.filter(f);
         }
     }
 
-    // Use hybrid search when semantic_ratio > 0 and query vector is available
-    let result = if let Some(query_vec) = query_vector.filter(|_| semantic_ratio > 0.0) {
-        let embedder_name = "default";
-
-        // Get embedder from index config (the proper way, matching meilisearch)
-        match get_embedder_from_index(index, &rtxn, embedder_name)? {
-            Some((embedder, quantized)) => {
-                tracing::debug!(
-                    query = query,
-                    semantic_ratio = semantic_ratio,
-                    vector_dims = query_vec.len(),
-                    quantized = quantized,
-                    "Executing hybrid search with index embedder"
-                );
-
-                // Configure semantic search with pre-computed query vector
-                search.semantic(
-                    embedder_name.to_string(),
-                    embedder,
-                    quantized,
-                    Some(query_vec),
-                    None, // no media
-                );
-
-                match search.execute_hybrid(semantic_ratio) {
-                    Ok((result, semantic_hit_count)) => {
-                        tracing::debug!(
-                            total_candidates = result.candidates.len(),
-                            doc_count = result.documents_ids.len(),
-                            semantic_hits = ?semantic_hit_count,
-                            "Hybrid search completed"
-                        );
-                        result
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Hybrid search failed, falling back to keyword");
-                        search.execute()?
-                    }
-                }
-            }
-            None => {
-                tracing::warn!(
-                    embedder_name = embedder_name,
-                    "Embedder not configured in index, falling back to keyword search"
-                );
-                search.execute()?
-            }
-        }
-    } else {
-        search.execute()?
+    // Execute search (hybrid if semantic enabled, otherwise keyword-only)
+    let result = match query_vector.filter(|_| semantic_ratio > 0.0) {
+        Some(vec) => execute_hybrid_search(index, &rtxn, &mut search, vec, semantic_ratio)?,
+        None => search.execute()?,
     };
 
-    // Collect all hits with their scores
+    // Collect hits
     let all_hits: Vec<SearchHit> = result
         .documents_ids
         .into_iter()
@@ -554,30 +545,24 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
         .map(|(doc_id, scores)| SearchHit { doc_id, scores })
         .collect();
 
-    // Filter by minimum score if specified
-    let (hits, total_hits) = if let Some(threshold) = min_score {
-        let threshold_f64 = threshold as f64;
-        let filtered: Vec<SearchHit> = all_hits
-            .into_iter()
-            .filter(|hit| compute_hit_score(&hit.scores) >= threshold_f64)
-            .collect();
-        let count = filtered.len();
-        tracing::debug!(
-            threshold = threshold,
-            filtered_count = count,
-            "Applied minimum score filter"
-        );
-        (filtered, count)
-    } else {
-        // No filtering - use candidates count as before for keyword search
-        let count = if semantic_ratio > 0.0 {
-            // For semantic search without min_score, count actual hits
-            all_hits.len()
-        } else {
-            // For keyword search, use the full candidate count
-            result.candidates.len() as usize
-        };
-        (all_hits, count)
+    // Apply minimum score filter
+    let (hits, total_hits) = match min_score {
+        Some(threshold) => {
+            let filtered: Vec<_> = all_hits
+                .into_iter()
+                .filter(|hit| compute_hit_score(&hit.scores) >= threshold as f64)
+                .collect();
+            let count = filtered.len();
+            (filtered, count)
+        }
+        None => {
+            let count = if semantic_ratio > 0.0 {
+                all_hits.len()
+            } else {
+                result.candidates.len() as usize
+            };
+            (all_hits, count)
+        }
     };
 
     Ok(SearchResults { hits, total_hits })
@@ -617,40 +602,13 @@ pub fn get_document_field(
 /// Get the content of a document by its external ID
 pub fn get_document_by_external_id(index: &Index, external_id: &str) -> Result<Option<String>> {
     let rtxn = index.read_txn()?;
-    let fields_ids_map = index.fields_ids_map(&rtxn)?;
 
-    let id_fid = match fields_ids_map.id("id") {
-        Some(fid) => fid,
-        None => return Ok(None),
-    };
-    let content_fid = match fields_ids_map.id("content") {
-        Some(fid) => fid,
-        None => return Ok(None),
-    };
-
-    // Iterate through all documents to find the one with matching external ID
-    let all_doc_ids: Vec<u32> = index.documents_ids(&rtxn)?.iter().collect();
-
-    for internal_id in all_doc_ids {
-        let docs = index.documents(&rtxn, [internal_id])?;
-        if let Some((_, obkv)) = docs.first() {
-            if let Some(id_bytes) = obkv.get(id_fid) {
-                if let Ok(doc_ext_id) = serde_json::from_slice::<String>(id_bytes) {
-                    if doc_ext_id == external_id {
-                        // Found the document, get its content
-                        if let Some(content_bytes) = obkv.get(content_fid) {
-                            if let Ok(content) = serde_json::from_slice::<String>(content_bytes) {
-                                return Ok(Some(content));
-                            }
-                        }
-                        return Ok(None);
-                    }
-                }
-            }
-        }
+    // O(1) lookup: external ID -> internal ID via B-tree
+    let external_ids = index.external_documents_ids();
+    match external_ids.get(&rtxn, external_id)? {
+        Some(internal_id) => get_document_field(index, &rtxn, internal_id, "content"),
+        None => Ok(None),
     }
-
-    Ok(None)
 }
 
 /// Delete a single document from the index by its external ID
@@ -729,44 +687,33 @@ pub fn delete_documents_by_collection(
     indexer_config: &IndexerConfig,
     collection_id: &str,
 ) -> Result<usize> {
-    // First, find all document IDs in this collection
-    let rtxn = index.read_txn()?;
-    let fields_ids_map = index.fields_ids_map(&rtxn)?;
+    // Use milli's filter to find documents in this collection
+    let collection_ids = [collection_id.to_string()];
+    let results = search_index(
+        index,
+        SearchParams {
+            query: "",
+            limit: usize::MAX,
+            collection_ids: Some(&collection_ids),
+            ..Default::default()
+        },
+    )?;
 
-    let id_field = fields_ids_map.id("id");
-    let collection_field = fields_ids_map.id("collection_id");
-
-    if id_field.is_none() || collection_field.is_none() {
-        // Index not set up yet, nothing to delete
+    if results.hits.is_empty() {
         return Ok(0);
     }
 
-    let id_fid = id_field.unwrap();
-    let collection_fid = collection_field.unwrap();
-
-    // Get all document IDs
-    let all_doc_ids: Vec<u32> = index.documents_ids(&rtxn)?.iter().collect();
-
-    // Filter to find documents in this collection
-    let mut doc_ids_to_delete = Vec::new();
-    for internal_id in all_doc_ids {
-        let docs = index.documents(&rtxn, [internal_id])?;
-        if let Some((_, obkv)) = docs.first() {
-            // Check if this document belongs to the collection
-            if let Some(coll_bytes) = obkv.get(collection_fid) {
-                if let Ok(coll) = serde_json::from_slice::<String>(coll_bytes) {
-                    if coll == collection_id {
-                        // Get the external ID
-                        if let Some(id_bytes) = obkv.get(id_fid) {
-                            if let Ok(external_id) = serde_json::from_slice::<String>(id_bytes) {
-                                doc_ids_to_delete.push(external_id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Extract external IDs from search results
+    let rtxn = index.read_txn()?;
+    let doc_ids_to_delete: Vec<String> = results
+        .hits
+        .iter()
+        .filter_map(|hit| {
+            get_document_field(index, &rtxn, hit.doc_id, "id")
+                .ok()
+                .flatten()
+        })
+        .collect();
     drop(rtxn);
 
     let count = doc_ids_to_delete.len();
