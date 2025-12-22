@@ -3,7 +3,7 @@ pub mod commands;
 pub mod core;
 pub mod headless;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::core::AppState;
 
@@ -44,14 +44,10 @@ pub fn run() {
 
             // Initialize storage and search in background
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = state_clone.initialize().await {
+                if let Err(e) = state_clone.initialize(&app_handle).await {
                     tracing::error!("Failed to initialize: {}", e);
-                } else {
-                    // Notify frontend that backend is ready
-                    if let Err(e) = app_handle.emit("backend-ready", ()) {
-                        tracing::error!("Failed to emit backend-ready event: {}", e);
-                    }
                 }
+                // Note: boot-phase and backend-ready events are now emitted from initialize()
             });
 
             Ok(())

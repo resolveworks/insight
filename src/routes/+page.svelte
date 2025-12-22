@@ -9,6 +9,48 @@
 	import Chat from '$lib/components/Chat.svelte';
 	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
 	import Settings from '$lib/components/Settings.svelte';
+	import SetupWizard from '$lib/components/SetupWizard.svelte';
+	import BootLoader from '$lib/components/BootLoader.svelte';
+
+	// Boot phase types matching backend BootPhase enum
+	interface StorageReadyPhase {
+		phase: 'StorageReady';
+		embedding_configured: boolean;
+		embedding_model_id: string | null;
+	}
+	interface EmbedderLoadingPhase {
+		phase: 'EmbedderLoading';
+		model_id: string;
+		model_name: string;
+	}
+	interface EmbedderReadyPhase {
+		phase: 'EmbedderReady';
+		model_id: string;
+	}
+	interface EmbedderFailedPhase {
+		phase: 'EmbedderFailed';
+		model_id: string;
+		error: string;
+	}
+	interface AppReadyPhase {
+		phase: 'AppReady';
+	}
+	type BootPhaseEvent =
+		| StorageReadyPhase
+		| EmbedderLoadingPhase
+		| EmbedderReadyPhase
+		| EmbedderFailedPhase
+		| AppReadyPhase;
+
+	// App state machine
+	type AppPhase =
+		| { state: 'booting' }
+		| { state: 'setup-required' }
+		| { state: 'loading-embedder'; modelName: string }
+		| { state: 'embedder-failed'; modelId: string; error: string }
+		| { state: 'ready' };
+
+	let appPhase = $state<AppPhase>({ state: 'booting' });
 
 	interface Collection {
 		id: string;
@@ -252,13 +294,63 @@
 	}
 
 	// Subscribe to backend events
+	let unlistenBootPhase: UnlistenFn;
 	let unlistenReady: UnlistenFn;
 	let unlistenDocAdded: UnlistenFn;
 
-	onMount(async () => {
+	function handleSetupComplete() {
+		// After setup wizard completes, the embedder is loaded via configure_embedding_model
+		appPhase = { state: 'ready' };
 		loadCollections();
+	}
 
-		unlistenReady = await listen('backend-ready', loadCollections);
+	onMount(async () => {
+		// Listen to boot phase events
+		unlistenBootPhase = await listen<BootPhaseEvent>('boot-phase', (event) => {
+			const phase = event.payload;
+
+			switch (phase.phase) {
+				case 'StorageReady':
+					if (!phase.embedding_configured) {
+						// First launch - show setup wizard
+						appPhase = { state: 'setup-required' };
+					}
+					// else wait for EmbedderLoading
+					break;
+
+				case 'EmbedderLoading':
+					appPhase = {
+						state: 'loading-embedder',
+						modelName: phase.model_name,
+					};
+					break;
+
+				case 'EmbedderReady':
+				case 'AppReady':
+					if (appPhase.state !== 'setup-required') {
+						appPhase = { state: 'ready' };
+						loadCollections();
+					}
+					break;
+
+				case 'EmbedderFailed':
+					appPhase = {
+						state: 'embedder-failed',
+						modelId: phase.model_id,
+						error: phase.error,
+					};
+					break;
+			}
+		});
+
+		// Legacy event for backward compatibility
+		unlistenReady = await listen('backend-ready', () => {
+			// Only transition if still booting (handles race condition)
+			if (appPhase.state === 'booting') {
+				appPhase = { state: 'ready' };
+				loadCollections();
+			}
+		});
 
 		unlistenDocAdded = await listen<{
 			collection_id: string;
@@ -280,6 +372,7 @@
 	});
 
 	onDestroy(() => {
+		unlistenBootPhase?.();
 		unlistenReady?.();
 		unlistenDocAdded?.();
 	});
@@ -292,9 +385,31 @@
 	];
 </script>
 
-<main class="flex h-screen flex-col bg-slate-900 text-slate-100">
-	<!-- Tab Navigation -->
-	<nav class="flex border-b border-slate-700 bg-slate-800">
+{#if appPhase.state === 'booting'}
+	<BootLoader phase="storage" />
+{:else if appPhase.state === 'setup-required'}
+	<SetupWizard onComplete={handleSetupComplete} />
+{:else if appPhase.state === 'loading-embedder'}
+	<BootLoader phase="embedder" modelName={appPhase.modelName} />
+{:else if appPhase.state === 'embedder-failed'}
+	<div class="flex h-screen items-center justify-center bg-slate-900">
+		<div class="max-w-md text-center">
+			<h1 class="mb-4 text-xl text-red-400">Failed to load embedding model</h1>
+			<p class="mb-4 text-slate-400">{appPhase.error}</p>
+			<button
+				onclick={() => {
+					appPhase = { state: 'setup-required' };
+				}}
+				class="rounded bg-rose-600 px-4 py-2 text-white hover:bg-rose-700"
+			>
+				Reconfigure Embedding Model
+			</button>
+		</div>
+	</div>
+{:else}
+	<main class="flex h-screen flex-col bg-slate-900 text-slate-100">
+		<!-- Tab Navigation -->
+		<nav class="flex border-b border-slate-700 bg-slate-800">
 		{#each tabs as tab (tab.id)}
 			<button
 				onclick={() => (activeTab = tab.id)}
@@ -572,3 +687,4 @@
 		{/if}
 	</div>
 </main>
+{/if}

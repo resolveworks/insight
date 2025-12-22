@@ -14,8 +14,31 @@ use tokio_util::sync::CancellationToken;
 
 use milli::update::IndexerConfig;
 use milli::Index;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 pub use embeddings::Embedder;
+
+/// Boot phase events for frontend synchronization
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "phase")]
+pub enum BootPhase {
+    /// Storage and search initialized, ready for basic operations
+    StorageReady {
+        /// Whether an embedding model is configured in settings
+        embedding_configured: bool,
+        /// The configured model ID (if any)
+        embedding_model_id: Option<String>,
+    },
+    /// Embedding model is being loaded (only if configured)
+    EmbedderLoading { model_id: String, model_name: String },
+    /// Embedding model loaded successfully
+    EmbedderReady { model_id: String },
+    /// Embedding model failed to load
+    EmbedderFailed { model_id: String, error: String },
+    /// Application fully ready
+    AppReady,
+}
 
 pub use agent::{AgentEvent, AgentModel, Conversation};
 pub use config::{Config, Settings};
@@ -64,18 +87,21 @@ impl AppState {
     }
 
     /// Initialize storage and search (call once at startup)
-    pub async fn initialize(&self) -> anyhow::Result<()> {
-        // Initialize storage
+    pub async fn initialize(&self, app_handle: &AppHandle) -> anyhow::Result<()> {
+        // Phase 1: Initialize storage
         let storage = Storage::open(&self.config.iroh_dir).await?;
         *self.storage.write().await = Some(storage);
 
         // Initialize search index
         let index = search::open_index(&self.config.search_dir)?;
 
-        // Configure embedder in milli if previously set (for vector search to work)
-        // Note: The actual embedding model is loaded lazily via configure_embedding_model command
+        // Read settings to determine if embedding is configured
         let settings = Settings::load(&self.config.settings_file);
-        if let Some(ref model_id) = settings.embedding_model_id {
+        let embedding_configured = settings.embedding_model_id.is_some();
+        let embedding_model_id = settings.embedding_model_id.clone();
+
+        // Configure milli index metadata if model was previously set
+        if let Some(ref model_id) = embedding_model_id {
             if let Some(model) = models::get_embedding_model(model_id) {
                 let indexer_config = self.indexer_config.lock().await;
                 if let Err(e) =
@@ -98,6 +124,74 @@ impl AppState {
         }
 
         *self.search.write().await = Some(index);
+
+        // Emit Phase 1: Storage ready
+        if let Err(e) = app_handle.emit(
+            "boot-phase",
+            BootPhase::StorageReady {
+                embedding_configured,
+                embedding_model_id: embedding_model_id.clone(),
+            },
+        ) {
+            tracing::warn!("Failed to emit StorageReady event: {}", e);
+        }
+
+        // Phase 2: Load embedder if configured
+        if let Some(ref model_id) = embedding_model_id {
+            if let Some(model) = models::get_embedding_model(model_id) {
+                // Emit loading start
+                if let Err(e) = app_handle.emit(
+                    "boot-phase",
+                    BootPhase::EmbedderLoading {
+                        model_id: model_id.clone(),
+                        model_name: model.name.to_string(),
+                    },
+                ) {
+                    tracing::warn!("Failed to emit EmbedderLoading event: {}", e);
+                }
+
+                // Load the embedder (this is the slow part, 20-30 seconds)
+                tracing::info!("Loading embedding model '{}' on boot...", model_id);
+                match Embedder::new(&model.hf_repo_id, model.dimensions).await {
+                    Ok(embedder) => {
+                        *self.embedder.write().await = Some(embedder);
+                        *self.embedding_model_id.write().await = Some(model_id.clone());
+
+                        tracing::info!("Embedding model '{}' loaded successfully", model_id);
+                        if let Err(e) = app_handle.emit(
+                            "boot-phase",
+                            BootPhase::EmbedderReady {
+                                model_id: model_id.clone(),
+                            },
+                        ) {
+                            tracing::warn!("Failed to emit EmbedderReady event: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load embedder on boot: {}", e);
+                        if let Err(emit_err) = app_handle.emit(
+                            "boot-phase",
+                            BootPhase::EmbedderFailed {
+                                model_id: model_id.clone(),
+                                error: e.to_string(),
+                            },
+                        ) {
+                            tracing::warn!("Failed to emit EmbedderFailed event: {}", emit_err);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3: App fully ready
+        if let Err(e) = app_handle.emit("boot-phase", BootPhase::AppReady) {
+            tracing::warn!("Failed to emit AppReady event: {}", e);
+        }
+
+        // Keep legacy event for backward compatibility
+        if let Err(e) = app_handle.emit("backend-ready", ()) {
+            tracing::warn!("Failed to emit backend-ready event: {}", e);
+        }
 
         tracing::info!("AppState initialized");
         Ok(())
