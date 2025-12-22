@@ -23,15 +23,11 @@ pub use embeddings::Embedder;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase")]
 pub enum BootPhase {
-    /// Language model is being loaded (only if configured)
-    LanguageModelLoading {
-        model_id: String,
-        model_name: String,
+    /// Storage and search index initialized, ready to check model configuration
+    StorageReady {
+        embedding_configured: bool,
+        embedding_model_id: Option<String>,
     },
-    /// Language model loaded successfully
-    LanguageModelReady { model_id: String },
-    /// Language model failed to load
-    LanguageModelFailed { model_id: String, error: String },
     /// Embedding model is being loaded (only if configured)
     EmbedderLoading {
         model_id: String,
@@ -41,6 +37,8 @@ pub enum BootPhase {
     EmbedderReady { model_id: String },
     /// Embedding model failed to load
     EmbedderFailed { model_id: String, error: String },
+    /// All models loaded, app is ready
+    AppReady,
 }
 
 pub use agent::{AgentEvent, AgentModel, Conversation};
@@ -118,20 +116,20 @@ impl AppState {
     pub async fn load_models_if_configured(&self, app_handle: &AppHandle) {
         let settings = Settings::load(&self.config.settings_file);
 
-        // Load language model if configured
+        // Emit StorageReady so frontend knows initialization is complete
+        let _ = app_handle.emit(
+            "boot-phase",
+            BootPhase::StorageReady {
+                embedding_configured: settings.embedding_model_id.is_some(),
+                embedding_model_id: settings.embedding_model_id.clone(),
+            },
+        );
+
+        // Load language model if configured (silently, no events)
         if let Some(ref model_id) = settings.language_model_id {
             if let Some(model) = models::get_language_model(model_id) {
-                let _ = app_handle.emit(
-                    "boot-phase",
-                    BootPhase::LanguageModelLoading {
-                        model_id: model_id.clone(),
-                        model_name: model.name.clone(),
-                    },
-                );
-
                 tracing::info!("Loading language model '{}'...", model_id);
 
-                // Get path from model manager
                 match models::ModelManager::new().await {
                     Ok(manager) => {
                         if let Some(model_path) = manager.get_path(&model) {
@@ -139,24 +137,10 @@ impl AppState {
                                 Ok(agent_model) => {
                                     *self.agent_model.write().await = Some(agent_model);
                                     *self.language_model_id.write().await = Some(model_id.clone());
-
                                     tracing::info!("Language model '{}' loaded", model_id);
-                                    let _ = app_handle.emit(
-                                        "boot-phase",
-                                        BootPhase::LanguageModelReady {
-                                            model_id: model_id.clone(),
-                                        },
-                                    );
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to load language model: {}", e);
-                                    let _ = app_handle.emit(
-                                        "boot-phase",
-                                        BootPhase::LanguageModelFailed {
-                                            model_id: model_id.clone(),
-                                            error: e.to_string(),
-                                        },
-                                    );
                                 }
                             }
                         } else {
@@ -164,24 +148,10 @@ impl AppState {
                                 "Language model '{}' configured but not downloaded",
                                 model_id
                             );
-                            let _ = app_handle.emit(
-                                "boot-phase",
-                                BootPhase::LanguageModelFailed {
-                                    model_id: model_id.clone(),
-                                    error: "Model not downloaded".to_string(),
-                                },
-                            );
                         }
                     }
                     Err(e) => {
                         tracing::error!("Failed to create model manager: {}", e);
-                        let _ = app_handle.emit(
-                            "boot-phase",
-                            BootPhase::LanguageModelFailed {
-                                model_id: model_id.clone(),
-                                error: e.to_string(),
-                            },
-                        );
                     }
                 }
             }
@@ -226,7 +196,7 @@ impl AppState {
             }
         }
 
-        let _ = app_handle.emit("backend-ready", ());
+        let _ = app_handle.emit("boot-phase", BootPhase::AppReady);
         tracing::info!("Backend ready");
     }
 }

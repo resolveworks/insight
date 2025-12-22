@@ -58,8 +58,15 @@ impl Settings {
     /// Load settings from file, or return defaults if not found
     pub fn load(path: &PathBuf) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|e| {
+                tracing::warn!("Failed to parse settings file, using defaults: {}", e);
+                Self::default()
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => {
+                tracing::warn!("Failed to read settings file, using defaults: {}", e);
+                Self::default()
+            }
         }
     }
 

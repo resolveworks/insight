@@ -12,35 +12,17 @@
 	import SetupWizard from '$lib/components/SetupWizard.svelte';
 	import BootLoader from '$lib/components/BootLoader.svelte';
 
-	// Boot phase types matching backend BootPhase enum
-	interface StorageReadyPhase {
-		phase: 'StorageReady';
-		embedding_configured: boolean;
-		embedding_model_id: string | null;
-	}
-	interface EmbedderLoadingPhase {
-		phase: 'EmbedderLoading';
-		model_id: string;
-		model_name: string;
-	}
-	interface EmbedderReadyPhase {
-		phase: 'EmbedderReady';
-		model_id: string;
-	}
-	interface EmbedderFailedPhase {
-		phase: 'EmbedderFailed';
-		model_id: string;
-		error: string;
-	}
-	interface AppReadyPhase {
-		phase: 'AppReady';
-	}
+	// Boot phase types matching backend BootPhase enum (src-tauri/src/core/mod.rs)
 	type BootPhaseEvent =
-		| StorageReadyPhase
-		| EmbedderLoadingPhase
-		| EmbedderReadyPhase
-		| EmbedderFailedPhase
-		| AppReadyPhase;
+		| {
+				phase: 'StorageReady';
+				embedding_configured: boolean;
+				embedding_model_id: string | null;
+		  }
+		| { phase: 'EmbedderLoading'; model_id: string; model_name: string }
+		| { phase: 'EmbedderReady'; model_id: string }
+		| { phase: 'EmbedderFailed'; model_id: string; error: string }
+		| { phase: 'AppReady' };
 
 	// App state machine
 	type AppPhase =
@@ -295,7 +277,6 @@
 
 	// Subscribe to backend events
 	let unlistenBootPhase: UnlistenFn;
-	let unlistenReady: UnlistenFn;
 	let unlistenDocAdded: UnlistenFn;
 
 	function handleSetupComplete() {
@@ -312,10 +293,8 @@
 			switch (phase.phase) {
 				case 'StorageReady':
 					if (!phase.embedding_configured) {
-						// First launch - show setup wizard
 						appPhase = { state: 'setup-required' };
 					}
-					// else wait for EmbedderLoading
 					break;
 
 				case 'EmbedderLoading':
@@ -326,6 +305,9 @@
 					break;
 
 				case 'EmbedderReady':
+					// Embedder loaded, but wait for AppReady to transition
+					break;
+
 				case 'AppReady':
 					if (appPhase.state !== 'setup-required') {
 						appPhase = { state: 'ready' };
@@ -340,15 +322,6 @@
 						error: phase.error,
 					};
 					break;
-			}
-		});
-
-		// Legacy event for backward compatibility
-		unlistenReady = await listen('backend-ready', () => {
-			// Only transition if still booting (handles race condition)
-			if (appPhase.state === 'booting') {
-				appPhase = { state: 'ready' };
-				loadCollections();
 			}
 		});
 
@@ -373,7 +346,6 @@
 
 	onDestroy(() => {
 		unlistenBootPhase?.();
-		unlistenReady?.();
 		unlistenDocAdded?.();
 	});
 

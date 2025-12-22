@@ -345,7 +345,15 @@ pub async fn run_agent_loop(
             // Process each tool call
             for called in &tool_calls {
                 let arguments: serde_json::Value = serde_json::from_str(&called.function.arguments)
-                    .unwrap_or(serde_json::json!({}));
+                    .unwrap_or_else(|e| {
+                        warn!(
+                            tool_name = %called.function.name,
+                            raw_args = %called.function.arguments,
+                            error = %e,
+                            "Failed to parse tool arguments, using empty object"
+                        );
+                        serde_json::json!({})
+                    });
 
                 info!(
                     tool_name = %called.function.name,
