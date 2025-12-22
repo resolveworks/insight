@@ -6,12 +6,47 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use hf_hub::api::tokio::{Api, ApiBuilder};
 use hf_hub::Cache;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-/// Information about a GGUF model available for use (LLM)
+// ============================================================================
+// ModelSpec Trait
+// ============================================================================
+
+/// Trait for model specifications (both language and embedding models)
+///
+/// This provides a unified interface for model metadata and download requirements
+/// while allowing different model types to have their own specific fields.
+pub trait ModelSpec: Clone + Serialize + DeserializeOwned + Send + Sync {
+    /// Unique identifier for this model
+    fn id(&self) -> &str;
+
+    /// Display name for the UI
+    fn name(&self) -> &str;
+
+    /// User-facing description
+    fn description(&self) -> &str;
+
+    /// Approximate download size in GB (for display)
+    fn size_gb(&self) -> f32;
+
+    /// Files required for this model: (repo_id, filename)
+    fn required_files(&self) -> Vec<(String, String)>;
+
+    /// Primary repository ID (used for path resolution)
+    fn primary_repo(&self) -> &str;
+
+    /// Primary file within the repo (parent dir becomes model path)
+    fn primary_file(&self) -> &str;
+}
+
+// ============================================================================
+// Language Models (LLM)
+// ============================================================================
+
+/// Information about a GGUF language model
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelInfo {
+pub struct LanguageModelInfo {
     /// Unique identifier for this model
     pub id: String,
     /// Display name
@@ -28,21 +63,58 @@ pub struct ModelInfo {
     pub tokenizer_repo_id: String,
 }
 
-/// Get the default model
-pub fn default_model() -> ModelInfo {
-    available_models().into_iter().next().unwrap()
+impl ModelSpec for LanguageModelInfo {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn size_gb(&self) -> f32 {
+        self.size_gb
+    }
+
+    fn required_files(&self) -> Vec<(String, String)> {
+        vec![
+            (self.gguf_repo_id.clone(), self.gguf_file.clone()),
+            (self.tokenizer_repo_id.clone(), "tokenizer.json".to_string()),
+            (
+                self.tokenizer_repo_id.clone(),
+                "tokenizer_config.json".to_string(),
+            ),
+        ]
+    }
+
+    fn primary_repo(&self) -> &str {
+        &self.gguf_repo_id
+    }
+
+    fn primary_file(&self) -> &str {
+        &self.gguf_file
+    }
 }
 
-/// Get a model by ID
-pub fn get_model(id: &str) -> Option<ModelInfo> {
-    available_models().into_iter().find(|m| m.id == id)
+/// Get the default language model
+pub fn default_language_model() -> LanguageModelInfo {
+    available_language_models().into_iter().next().unwrap()
 }
 
-/// Available models registry
-pub fn available_models() -> Vec<ModelInfo> {
+/// Get a language model by ID
+pub fn get_language_model(id: &str) -> Option<LanguageModelInfo> {
+    available_language_models().into_iter().find(|m| m.id == id)
+}
+
+/// Available language models registry
+pub fn available_language_models() -> Vec<LanguageModelInfo> {
     vec![
         // Default: Qwen3-8B Q4_K_M - Best balance of size and quality
-        ModelInfo {
+        LanguageModelInfo {
             id: "qwen3-8b-q4km".to_string(),
             name: "Qwen3 8B (Q4_K_M)".to_string(),
             description: "Recommended. Fast 8B model with tool calling. ~5GB download.".to_string(),
@@ -52,7 +124,7 @@ pub fn available_models() -> Vec<ModelInfo> {
             tokenizer_repo_id: "Qwen/Qwen3-8B".to_string(),
         },
         // Smaller option for constrained systems
-        ModelInfo {
+        LanguageModelInfo {
             id: "qwen3-4b-q4km".to_string(),
             name: "Qwen3 4B (Q4_K_M)".to_string(),
             description: "Lighter model for systems with less memory. ~2.5GB download.".to_string(),
@@ -62,7 +134,7 @@ pub fn available_models() -> Vec<ModelInfo> {
             tokenizer_repo_id: "Qwen/Qwen3-4B".to_string(),
         },
         // Higher quality option
-        ModelInfo {
+        LanguageModelInfo {
             id: "qwen3-8b-q8".to_string(),
             name: "Qwen3 8B (Q8_0)".to_string(),
             description: "Higher quality 8-bit quantization. Better accuracy. ~8.5GB download."
@@ -90,10 +162,45 @@ pub struct EmbeddingModelInfo {
     pub description: String,
     /// Approximate size in GB (for display)
     pub size_gb: f32,
-    /// HuggingFace repo ID (e.g., "BAAI/bge-base-en-v1.5")
+    /// HuggingFace repo ID (e.g., "Qwen/Qwen3-Embedding-0.6B")
     pub hf_repo_id: String,
     /// Vector dimensions produced by this model
     pub dimensions: usize,
+}
+
+impl ModelSpec for EmbeddingModelInfo {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn size_gb(&self) -> f32 {
+        self.size_gb
+    }
+
+    fn required_files(&self) -> Vec<(String, String)> {
+        vec![
+            (self.hf_repo_id.clone(), "config.json".to_string()),
+            (self.hf_repo_id.clone(), "model.safetensors".to_string()),
+            (self.hf_repo_id.clone(), "tokenizer.json".to_string()),
+            (self.hf_repo_id.clone(), "tokenizer_config.json".to_string()),
+        ]
+    }
+
+    fn primary_repo(&self) -> &str {
+        &self.hf_repo_id
+    }
+
+    fn primary_file(&self) -> &str {
+        "config.json"
+    }
 }
 
 /// Get the default embedding model
@@ -121,6 +228,10 @@ pub fn available_embedding_models() -> Vec<EmbeddingModelInfo> {
         },
     ]
 }
+
+// ============================================================================
+// Download Progress
+// ============================================================================
 
 /// Download progress event
 #[derive(Debug, Clone, Serialize)]
@@ -234,6 +345,10 @@ impl ProgressTracker {
     }
 }
 
+// ============================================================================
+// Model Manager
+// ============================================================================
+
 /// Model manager handles downloading and caching models
 pub struct ModelManager {
     cache: Cache,
@@ -252,51 +367,39 @@ impl ModelManager {
     }
 
     /// Check if a model is fully downloaded
-    pub fn is_downloaded(&self, model: &ModelInfo) -> bool {
-        // Check GGUF file is present
-        let gguf_cache = self.cache.model(model.gguf_repo_id.clone());
-        if gguf_cache.get(&model.gguf_file).is_none() {
-            return false;
+    pub fn is_downloaded<M: ModelSpec>(&self, model: &M) -> bool {
+        for (repo_id, filename) in model.required_files() {
+            let repo_cache = self.cache.model(repo_id);
+            if repo_cache.get(&filename).is_none() {
+                return false;
+            }
         }
-
-        // Check tokenizer files
-        let tok_cache = self.cache.model(model.tokenizer_repo_id.clone());
-        tok_cache.get("tokenizer.json").is_some()
-            && tok_cache.get("tokenizer_config.json").is_some()
+        true
     }
 
     /// Get the cache path for a model (if downloaded)
-    pub fn get_model_path(&self, model: &ModelInfo) -> Option<PathBuf> {
+    ///
+    /// Returns the parent directory of the primary file.
+    pub fn get_path<M: ModelSpec>(&self, model: &M) -> Option<PathBuf> {
         if !self.is_downloaded(model) {
             return None;
         }
 
-        // Return the directory containing the GGUF file
         self.cache
-            .model(model.gguf_repo_id.clone())
-            .get(&model.gguf_file)
+            .model(model.primary_repo().to_string())
+            .get(model.primary_file())
             .map(|p| p.parent().unwrap().to_path_buf())
     }
 
     /// Download a model with progress tracking
-    pub async fn download_model(
+    ///
+    /// Downloads all required files and returns the model directory path.
+    pub async fn download<M: ModelSpec>(
         &self,
-        model: &ModelInfo,
+        model: &M,
         progress_tx: mpsc::Sender<DownloadProgress>,
     ) -> Result<PathBuf> {
-        // Files to download: (repo_id, filename)
-        let all_files = [
-            (model.gguf_repo_id.clone(), model.gguf_file.clone()),
-            (
-                model.tokenizer_repo_id.clone(),
-                "tokenizer.json".to_string(),
-            ),
-            (
-                model.tokenizer_repo_id.clone(),
-                "tokenizer_config.json".to_string(),
-            ),
-        ];
-
+        let all_files = model.required_files();
         let total_files = all_files.len();
         let mut first_path: Option<PathBuf> = None;
 
@@ -327,90 +430,12 @@ impl ModelManager {
             }
         }
 
-        // Return the directory containing the GGUF file
-        let model_dir = first_path
-            .context("No files downloaded")?
-            .parent()
-            .context("Invalid path")?
-            .to_path_buf();
-
-        Ok(model_dir)
-    }
-
-    // ========================================================================
-    // Embedding Model Methods
-    // ========================================================================
-
-    /// Check if an embedding model is fully downloaded
-    pub fn is_embedding_model_downloaded(&self, model: &EmbeddingModelInfo) -> bool {
-        let cache = self.cache.model(model.hf_repo_id.clone());
-        // HuggingFace transformer models need these core files
-        cache.get("config.json").is_some()
-            && (cache.get("model.safetensors").is_some()
-                || cache.get("pytorch_model.bin").is_some())
-            && cache.get("tokenizer.json").is_some()
-    }
-
-    /// Get the cache path for an embedding model (if downloaded)
-    pub fn get_embedding_model_path(&self, model: &EmbeddingModelInfo) -> Option<PathBuf> {
-        if !self.is_embedding_model_downloaded(model) {
-            return None;
-        }
-
-        // Return the directory containing the model files
-        self.cache
-            .model(model.hf_repo_id.clone())
-            .get("config.json")
-            .map(|p| p.parent().unwrap().to_path_buf())
-    }
-
-    /// Download an embedding model with progress tracking
-    pub async fn download_embedding_model(
-        &self,
-        model: &EmbeddingModelInfo,
-        progress_tx: mpsc::Sender<DownloadProgress>,
-    ) -> Result<PathBuf> {
-        // Files needed for HuggingFace transformer embedding models
-        let all_files = [
-            (model.hf_repo_id.clone(), "config.json".to_string()),
-            (model.hf_repo_id.clone(), "model.safetensors".to_string()),
-            (model.hf_repo_id.clone(), "tokenizer.json".to_string()),
-            (model.hf_repo_id.clone(), "tokenizer_config.json".to_string()),
-        ];
-
-        let total_files = all_files.len();
-        let mut first_path: Option<PathBuf> = None;
-
-        for (idx, (repo_id, filename)) in all_files.iter().enumerate() {
-            let repo = self.api.model(repo_id.clone());
-
-            let shared = Arc::new(SharedProgress {
-                file: Mutex::new(filename.clone()),
-                downloaded: AtomicU64::new(0),
-                total: AtomicU64::new(0),
-                last_emit: Mutex::new(Instant::now()),
-            });
-
-            let progress = ProgressTracker {
-                file_index: idx + 1,
-                total_files,
-                shared,
-                tx: progress_tx.clone(),
-            };
-
-            let path = repo
-                .download_with_progress(filename, progress)
-                .await
-                .with_context(|| format!("Failed to download {}", filename))?;
-
-            if first_path.is_none() {
-                first_path = Some(path);
-            }
-        }
-
-        // Return the directory containing the model files
-        let model_dir = first_path
-            .context("No files downloaded")?
+        // Return the directory containing the primary file
+        let model_dir = self
+            .cache
+            .model(model.primary_repo().to_string())
+            .get(model.primary_file())
+            .context("Primary file not found after download")?
             .parent()
             .context("Invalid path")?
             .to_path_buf();
@@ -429,27 +454,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_available_models() {
-        let models = available_models();
+    fn test_available_language_models() {
+        let models = available_language_models();
         assert!(!models.is_empty());
         assert_eq!(models[0].id, "qwen3-8b-q4km");
     }
 
     #[test]
-    fn test_get_model() {
-        let model = get_model("qwen3-4b-q4km");
+    fn test_get_language_model() {
+        let model = get_language_model("qwen3-4b-q4km");
         assert!(model.is_some());
         assert_eq!(model.unwrap().name, "Qwen3 4B (Q4_K_M)");
 
-        let missing = get_model("nonexistent");
+        let missing = get_language_model("nonexistent");
         assert!(missing.is_none());
     }
 
     #[test]
-    fn test_default_model() {
-        let model = default_model();
+    fn test_default_language_model() {
+        let model = default_language_model();
         assert_eq!(model.id, "qwen3-8b-q4km");
         assert!(!model.gguf_file.is_empty());
+    }
+
+    #[test]
+    fn test_language_model_spec() {
+        let model = default_language_model();
+        assert_eq!(model.id(), "qwen3-8b-q4km");
+        assert_eq!(model.name(), "Qwen3 8B (Q4_K_M)");
+        assert_eq!(model.required_files().len(), 3);
+        assert_eq!(model.primary_repo(), "Qwen/Qwen3-8B-GGUF");
+        assert_eq!(model.primary_file(), "Qwen3-8B-Q4_K_M.gguf");
     }
 
     #[test]
@@ -475,5 +510,15 @@ mod tests {
         let model = default_embedding_model();
         assert_eq!(model.id, "qwen3-embedding");
         assert_eq!(model.hf_repo_id, "Qwen/Qwen3-Embedding-0.6B");
+    }
+
+    #[test]
+    fn test_embedding_model_spec() {
+        let model = default_embedding_model();
+        assert_eq!(model.id(), "qwen3-embedding");
+        assert_eq!(model.name(), "Qwen3 Embedding 0.6B");
+        assert_eq!(model.required_files().len(), 4);
+        assert_eq!(model.primary_repo(), "Qwen/Qwen3-Embedding-0.6B");
+        assert_eq!(model.primary_file(), "config.json");
     }
 }

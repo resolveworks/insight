@@ -31,7 +31,7 @@ pub fn run() {
             let state = tauri::async_runtime::block_on(AppState::new(config))?;
             app.manage(state);
 
-            // Load embedder in background (slow, 20-30s)
+            // Load models in background (slow, 20-30s)
             let state = app.state::<AppState>();
             let state_clone = AppState {
                 config: state.config.clone(),
@@ -41,13 +41,14 @@ pub fn run() {
                 embedder: state.embedder.clone(),
                 embedding_model_id: state.embedding_model_id.clone(),
                 agent_model: state.agent_model.clone(),
+                language_model_id: state.language_model_id.clone(),
                 conversations: state.conversations.clone(),
                 active_generations: state.active_generations.clone(),
             };
             let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                state_clone.load_embedder_if_configured(&app_handle).await;
+                state_clone.load_models_if_configured(&app_handle).await;
             });
 
             Ok(())
@@ -70,10 +71,12 @@ pub fn run() {
             commands::send_message,
             commands::cancel_generation,
             commands::unload_model,
-            // Model management commands
-            commands::get_available_models,
-            commands::get_model_status,
-            commands::download_model,
+            // Language model commands
+            commands::get_available_language_models,
+            commands::get_language_model_status,
+            commands::download_language_model,
+            commands::get_current_language_model,
+            commands::configure_language_model,
             // Embedding model commands
             commands::get_available_embedding_models,
             commands::get_current_embedding_model,

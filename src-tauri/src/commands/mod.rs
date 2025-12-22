@@ -714,40 +714,14 @@ pub async fn load_conversation(
 }
 
 /// Start a new chat conversation
+///
+/// Requires a language model to be configured first via `configure_language_model`.
 #[tauri::command]
-pub async fn start_chat(
-    model_id: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<agent::Conversation, String> {
-    // Get model info
-    let model_info = if let Some(id) = model_id {
-        models::get_model(&id).ok_or_else(|| format!("Model not found: {}", id))?
-    } else {
-        models::default_model()
-    };
-
-    // Ensure model is loaded
-    let mut model_guard = state.agent_model.write().await;
+pub async fn start_chat(state: State<'_, AppState>) -> Result<agent::Conversation, String> {
+    // Verify model is loaded
+    let model_guard = state.agent_model.read().await;
     if model_guard.is_none() {
-        // Get the path to the downloaded model
-        let manager = ModelManager::new()
-            .await
-            .map_err(|e| format!("Failed to create model manager: {}", e))?;
-
-        let model_path = manager
-            .get_model_path(&model_info)
-            .ok_or_else(|| format!("Model not downloaded: {}", model_info.id))?;
-
-        tracing::info!(
-            "Loading LLM model: {} from {:?}",
-            model_info.name,
-            model_path
-        );
-        let model = agent::AgentModel::load(&model_path, &model_info)
-            .await
-            .map_err(|e| format!("Failed to load model: {}", e))?;
-        *model_guard = Some(model);
-        tracing::info!("LLM model loaded: {}", model_info.name);
+        return Err("No language model configured. Call configure_language_model first.".to_string());
     }
     drop(model_guard);
 
@@ -831,6 +805,7 @@ pub async fn send_message(
     let embedder = state.embedder.clone();
     let embedding_model_id = state.embedding_model_id.clone();
     let agent_model = state.agent_model.clone();
+    let language_model_id = state.language_model_id.clone();
     let conversations_arc = state.conversations.clone();
     let active_generations = state.active_generations.clone();
     let conversations_dir = state.config.conversations_dir.clone();
@@ -848,6 +823,7 @@ pub async fn send_message(
             embedder,
             embedding_model_id,
             agent_model,
+            language_model_id,
             conversations: conversations_arc.clone(),
             active_generations,
         };
@@ -922,34 +898,36 @@ pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
 // Model Management Commands
 // ============================================================================
 
-use crate::core::models::{self, DownloadProgress, EmbeddingModelInfo, ModelInfo, ModelManager, ModelStatus};
+use crate::core::models::{
+    self, DownloadProgress, EmbeddingModelInfo, LanguageModelInfo, ModelManager, ModelStatus,
+};
 
 #[cfg(test)]
 mod tests;
 
-/// Get list of available models
+/// Get list of available language models
 #[tauri::command]
-pub async fn get_available_models() -> Result<Vec<ModelInfo>, String> {
-    Ok(models::available_models())
+pub async fn get_available_language_models() -> Result<Vec<LanguageModelInfo>, String> {
+    Ok(models::available_language_models())
 }
 
-/// Get download status for a specific model
+/// Get download status for a language model
 #[tauri::command]
-pub async fn get_model_status(model_id: Option<String>) -> Result<ModelStatus, String> {
+pub async fn get_language_model_status(model_id: Option<String>) -> Result<ModelStatus, String> {
     let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
 
     // Use specified model or default
     let model = if let Some(id) = model_id {
-        models::get_model(&id).ok_or_else(|| format!("Model not found: {}", id))?
+        models::get_language_model(&id).ok_or_else(|| format!("Model not found: {}", id))?
     } else {
-        models::default_model()
+        models::default_language_model()
     };
 
     if manager.is_downloaded(&model) {
         let path = manager
-            .get_model_path(&model)
+            .get_path(&model)
             .ok_or("Model path not found")?;
         Ok(ModelStatus::Ready { path })
     } else {
@@ -957,15 +935,15 @@ pub async fn get_model_status(model_id: Option<String>) -> Result<ModelStatus, S
     }
 }
 
-/// Download a specific model with progress events
+/// Download a language model with progress events
 #[tauri::command]
-pub async fn download_model(model_id: String, app: AppHandle) -> Result<(), String> {
+pub async fn download_language_model(model_id: String, app: AppHandle) -> Result<(), String> {
     let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
 
-    let model =
-        models::get_model(&model_id).ok_or_else(|| format!("Model not found: {}", model_id))?;
+    let model = models::get_language_model(&model_id)
+        .ok_or_else(|| format!("Model not found: {}", model_id))?;
 
     // Check if already downloaded
     if manager.is_downloaded(&model) {
@@ -986,7 +964,7 @@ pub async fn download_model(model_id: String, app: AppHandle) -> Result<(), Stri
     let app_handle = app.clone();
     tokio::spawn(async move {
         while let Some(progress) = rx.recv().await {
-            if let Err(e) = app_handle.emit("model-download-progress", &progress) {
+            if let Err(e) = app_handle.emit("language-model-download-progress", &progress) {
                 tracing::error!("Failed to emit download progress: {}", e);
             }
         }
@@ -994,14 +972,75 @@ pub async fn download_model(model_id: String, app: AppHandle) -> Result<(), Stri
 
     // Download with progress
     manager
-        .download_model(&model, tx)
+        .download(&model, tx)
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
 
     tracing::info!("Model download complete: {}", model.id);
 
     // Emit completion event
-    let _ = app.emit("model-download-complete", &model);
+    let _ = app.emit("language-model-download-complete", &model);
+
+    Ok(())
+}
+
+/// Get the currently configured language model ID
+#[tauri::command]
+pub async fn get_current_language_model(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let model_id = state.language_model_id.read().await;
+    Ok(model_id.clone())
+}
+
+/// Configure and load a language model
+#[tauri::command]
+pub async fn configure_language_model(
+    model_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use crate::core::Settings;
+
+    if let Some(ref id) = model_id {
+        // Verify the model exists
+        let model = models::get_language_model(id)
+            .ok_or_else(|| format!("Language model not found: {}", id))?;
+
+        tracing::info!("Configuring language model: {} ({})", model.name, model.id);
+
+        // Get the model manager and path
+        let manager = ModelManager::new()
+            .await
+            .map_err(|e| format!("Failed to create model manager: {}", e))?;
+
+        let model_path = manager
+            .get_path(&model)
+            .ok_or_else(|| format!("Model not downloaded: {}", id))?;
+
+        // Load the model
+        let agent_model = agent::AgentModel::load(&model_path, &model)
+            .await
+            .map_err(|e| format!("Failed to load model: {}", e))?;
+
+        // Update state
+        *state.agent_model.write().await = Some(agent_model);
+        *state.language_model_id.write().await = Some(id.clone());
+
+        tracing::info!("Language model configured: {}", id);
+    } else {
+        // Unload the model
+        tracing::info!("Unloading language model");
+
+        *state.agent_model.write().await = None;
+        *state.language_model_id.write().await = None;
+    }
+
+    // Persist setting
+    let mut settings = Settings::load(&state.config.settings_file);
+    settings.language_model_id = model_id;
+    settings
+        .save(&state.config.settings_file)
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -1043,7 +1082,7 @@ pub async fn get_embedding_model_status(model_id: String) -> Result<EmbeddingMod
     let model = models::get_embedding_model(&model_id)
         .ok_or_else(|| format!("Embedding model not found: {}", model_id))?;
 
-    if manager.is_embedding_model_downloaded(&model) {
+    if manager.is_downloaded(&model) {
         Ok(EmbeddingModelStatus::Ready)
     } else {
         Ok(EmbeddingModelStatus::NotDownloaded)
@@ -1061,7 +1100,7 @@ pub async fn download_embedding_model(model_id: String, app: AppHandle) -> Resul
         .ok_or_else(|| format!("Embedding model not found: {}", model_id))?;
 
     // Check if already downloaded
-    if manager.is_embedding_model_downloaded(&model) {
+    if manager.is_downloaded(&model) {
         tracing::info!("Embedding model {} is already downloaded", model.id);
         return Ok(());
     }
@@ -1087,7 +1126,7 @@ pub async fn download_embedding_model(model_id: String, app: AppHandle) -> Resul
 
     // Download with progress
     manager
-        .download_embedding_model(&model, tx)
+        .download(&model, tx)
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
 

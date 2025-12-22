@@ -30,6 +30,7 @@ async fn create_test_state(temp_dir: &std::path::Path) -> AppState {
         embedder: Arc::new(RwLock::new(None)),
         embedding_model_id: Arc::new(RwLock::new(None)),
         agent_model: Arc::new(RwLock::new(None)),
+        language_model_id: Arc::new(RwLock::new(None)),
         conversations: Arc::new(RwLock::new(HashMap::new())),
         active_generations: Arc::new(RwLock::new(HashMap::new())),
     }
@@ -490,8 +491,8 @@ async fn test_search_pagination() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_get_available_models() {
-    let models = get_available_models().await.unwrap();
+async fn test_get_available_language_models() {
+    let models = get_available_language_models().await.unwrap();
 
     assert!(!models.is_empty());
     // Check that each model has required fields
@@ -502,14 +503,14 @@ async fn test_get_available_models() {
 }
 
 #[tokio::test]
-async fn test_get_model_status_not_downloaded() {
+async fn test_get_language_model_status_not_downloaded() {
     let temp_dir = tempfile::tempdir().unwrap();
     let state = create_test_state(temp_dir.path()).await;
     let app = create_test_app(state);
 
-    let state = app.state::<AppState>();
+    let _state = app.state::<AppState>();
 
-    let status = get_model_status(None).await.unwrap();
+    let status = get_language_model_status(None).await.unwrap();
 
     match status {
         ModelStatus::NotDownloaded => {}

@@ -23,6 +23,12 @@ pub use embeddings::Embedder;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase")]
 pub enum BootPhase {
+    /// Language model is being loaded (only if configured)
+    LanguageModelLoading { model_id: String, model_name: String },
+    /// Language model loaded successfully
+    LanguageModelReady { model_id: String },
+    /// Language model failed to load
+    LanguageModelFailed { model_id: String, error: String },
     /// Embedding model is being loaded (only if configured)
     EmbedderLoading { model_id: String, model_name: String },
     /// Embedding model loaded successfully
@@ -48,8 +54,10 @@ pub struct AppState {
     pub embedder: Arc<RwLock<Option<Embedder>>>,
     /// Currently configured embedding model ID
     pub embedding_model_id: Arc<RwLock<Option<String>>>,
-    /// Loaded LLM model for agent
+    /// Loaded language model for agent
     pub agent_model: Arc<RwLock<Option<AgentModel>>>,
+    /// Currently configured language model ID
+    pub language_model_id: Arc<RwLock<Option<String>>>,
     /// Active conversations
     pub conversations: Arc<RwLock<HashMap<String, Conversation>>>,
     /// Cancellation tokens for active generations
@@ -93,23 +101,94 @@ impl AppState {
             embedder: Arc::new(RwLock::new(None)),
             embedding_model_id: Arc::new(RwLock::new(None)),
             agent_model: Arc::new(RwLock::new(None)),
+            language_model_id: Arc::new(RwLock::new(None)),
             conversations: Arc::new(RwLock::new(HashMap::new())),
             active_generations: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
-    /// Load embedding model if configured in settings.
+    /// Load configured models on startup.
     /// Called in background after setup() completes.
-    pub async fn load_embedder_if_configured(&self, app_handle: &AppHandle) {
+    pub async fn load_models_if_configured(&self, app_handle: &AppHandle) {
         let settings = Settings::load(&self.config.settings_file);
 
+        // Load language model if configured
+        if let Some(ref model_id) = settings.language_model_id {
+            if let Some(model) = models::get_language_model(model_id) {
+                let _ = app_handle.emit(
+                    "boot-phase",
+                    BootPhase::LanguageModelLoading {
+                        model_id: model_id.clone(),
+                        model_name: model.name.clone(),
+                    },
+                );
+
+                tracing::info!("Loading language model '{}'...", model_id);
+
+                // Get path from model manager
+                match models::ModelManager::new().await {
+                    Ok(manager) => {
+                        if let Some(model_path) = manager.get_path(&model) {
+                            match AgentModel::load(&model_path, &model).await {
+                                Ok(agent_model) => {
+                                    *self.agent_model.write().await = Some(agent_model);
+                                    *self.language_model_id.write().await = Some(model_id.clone());
+
+                                    tracing::info!("Language model '{}' loaded", model_id);
+                                    let _ = app_handle.emit(
+                                        "boot-phase",
+                                        BootPhase::LanguageModelReady {
+                                            model_id: model_id.clone(),
+                                        },
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to load language model: {}", e);
+                                    let _ = app_handle.emit(
+                                        "boot-phase",
+                                        BootPhase::LanguageModelFailed {
+                                            model_id: model_id.clone(),
+                                            error: e.to_string(),
+                                        },
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Language model '{}' configured but not downloaded",
+                                model_id
+                            );
+                            let _ = app_handle.emit(
+                                "boot-phase",
+                                BootPhase::LanguageModelFailed {
+                                    model_id: model_id.clone(),
+                                    error: "Model not downloaded".to_string(),
+                                },
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create model manager: {}", e);
+                        let _ = app_handle.emit(
+                            "boot-phase",
+                            BootPhase::LanguageModelFailed {
+                                model_id: model_id.clone(),
+                                error: e.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        // Load embedding model if configured
         if let Some(ref model_id) = settings.embedding_model_id {
             if let Some(model) = models::get_embedding_model(model_id) {
                 let _ = app_handle.emit(
                     "boot-phase",
                     BootPhase::EmbedderLoading {
                         model_id: model_id.clone(),
-                        model_name: model.name.to_string(),
+                        model_name: model.name.clone(),
                     },
                 );
 

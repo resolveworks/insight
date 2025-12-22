@@ -46,6 +46,9 @@ impl Config {
 /// User settings (persisted to disk)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
+    /// Configured language model ID (None = not configured)
+    #[serde(default)]
+    pub language_model_id: Option<String>,
     /// Configured embedding model ID (None = disabled)
     #[serde(default)]
     pub embedding_model_id: Option<String>,

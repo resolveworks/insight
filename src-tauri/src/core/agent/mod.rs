@@ -18,7 +18,7 @@ pub use tools::{
     execute_tool, get_mistralrs_tools, get_tool_definitions, ToolCall, ToolDefinition, ToolResult,
 };
 
-use super::models::ModelInfo;
+use super::models::LanguageModelInfo;
 
 /// System prompt for the agent
 const SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists analyze documents.
@@ -34,9 +34,9 @@ pub struct AgentModel {
 impl AgentModel {
     /// Load a GGUF model from local cache
     ///
-    /// The model must be downloaded first using ModelManager::download_model.
+    /// The model must be downloaded first using ModelManager::download().
     /// The model_path should point to the directory containing the GGUF file.
-    pub async fn load(model_path: &Path, model_info: &ModelInfo) -> Result<Self> {
+    pub async fn load(model_path: &Path, model_info: &LanguageModelInfo) -> Result<Self> {
         // GgufModelBuilder takes a local directory path and filename(s)
         let model = GgufModelBuilder::new(
             model_path.to_string_lossy().to_string(),
