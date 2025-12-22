@@ -46,7 +46,7 @@ pub struct SearchResponse {
 /// Get all collections
 #[tauri::command]
 pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<CollectionInfo>, String> {
-    let mut storage = state.storage.write().await;
+    let storage = state.storage.read().await;
 
     let collections = storage
         .list_collections()
@@ -56,7 +56,7 @@ pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<Collectio
     // Build CollectionInfo for each collection
     let mut result = Vec::with_capacity(collections.len());
     for (namespace_id, metadata) in collections {
-        let document_count = storage.count_documents(namespace_id).unwrap_or(0);
+        let document_count = storage.count_documents(namespace_id).await.unwrap_or(0);
         result.push(CollectionInfo {
             id: namespace_id.to_string(),
             name: metadata.name,
@@ -76,7 +76,7 @@ pub async fn create_collection(
 ) -> Result<CollectionInfo, String> {
     tracing::info!("Creating collection: {}", name);
 
-    let mut storage = state.storage.write().await;
+    let storage = state.storage.read().await;
 
     let (namespace_id, metadata) = storage
         .create_collection(&name)
@@ -165,7 +165,7 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         // Drain all available completions
         while let Some(completed) = coordinator.try_recv_completed() {
             // Fetch full metadata from storage
-            let mut storage = state.storage.write().await;
+            let storage = state.storage.read().await;
             match storage.get_document(namespace_id, &completed.doc_id).await {
                 Ok(Some(metadata)) => {
                     let doc_info = DocumentInfo {
@@ -235,7 +235,7 @@ pub async fn get_documents(
 ) -> Result<Vec<DocumentInfo>, String> {
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    let mut storage = state.storage.write().await;
+    let storage = state.storage.read().await;
 
     let documents = storage
         .list_documents(namespace_id)
@@ -265,7 +265,7 @@ pub async fn get_document(
 ) -> Result<DocumentInfo, String> {
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    let mut storage = state.storage.write().await;
+    let storage = state.storage.read().await;
 
     let document = storage
         .get_document(namespace_id, &document_id)
@@ -293,7 +293,7 @@ pub async fn get_document_text(
 ) -> Result<String, String> {
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    let mut storage = state.storage.write().await;
+    let storage = state.storage.read().await;
 
     // Get document metadata to find text hash
     let document = storage
@@ -327,7 +327,7 @@ pub async fn get_document_chunks(
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
     // Get document text
-    let mut storage = state.storage.write().await;
+    let storage = state.storage.read().await;
 
     let document = storage
         .get_document(namespace_id, &document_id)
@@ -378,9 +378,10 @@ pub async fn delete_document(
 
     // Delete from storage first
     {
-        let mut storage = state.storage.write().await;
+        let storage = state.storage.read().await;
         storage
             .delete_document(namespace_id, &document_id)
+            .await
             .map_err(|e| e.to_string())?;
     }
 
@@ -423,9 +424,10 @@ pub async fn delete_collection(
 
     // Delete from storage first
     {
-        let mut storage = state.storage.write().await;
+        let storage = state.storage.read().await;
         storage
             .delete_collection(namespace_id)
+            .await
             .map_err(|e| e.to_string())?;
     }
 

@@ -212,7 +212,7 @@ fn spawn_store_worker(
                     let doc_id = uuid::Uuid::new_v4().to_string();
 
                     // Store blobs
-                    let mut storage_guard = storage.write().await;
+                    let storage_guard = storage.read().await;
 
                     let pdf_hash = match storage_guard.store_blob(&extracted.pdf_bytes).await {
                         Ok(hash) => hash.to_string(),

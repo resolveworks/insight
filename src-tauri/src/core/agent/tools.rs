@@ -289,7 +289,7 @@ async fn execute_read_document(tool_call: &ToolCall, state: &AppState) -> ToolRe
     };
 
     // Fetch document metadata from storage
-    let mut storage = state.storage.write().await;
+    let storage = state.storage.read().await;
     let document = match storage.get_document(namespace_id, doc_id).await {
         Ok(Some(doc)) => doc,
         Ok(None) => {
