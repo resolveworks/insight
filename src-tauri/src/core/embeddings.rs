@@ -88,14 +88,36 @@ impl Embedder {
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let text = text.trim();
         if text.is_empty() {
-            // Return zero vector for empty input
+            tracing::debug!("Empty text, returning zero vector");
             return Ok(vec![0.0; self.dimensions]);
         }
 
-        self.model
+        tracing::debug!(
+            text_len = text.len(),
+            "Embedding single text"
+        );
+
+        let start = std::time::Instant::now();
+        let result = self
+            .model
             .generate_embedding(text)
             .await
-            .context("Failed to generate embedding")
+            .context("Failed to generate embedding");
+
+        tracing::debug!(
+            elapsed_ms = start.elapsed().as_millis(),
+            "Embedding complete"
+        );
+
+        result
+    }
+
+    /// Embed a search query
+    ///
+    /// Alias for `embed()` - used for semantic search queries.
+    pub async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        tracing::info!(query_len = query.len(), "Embedding search query");
+        self.embed(query).await
     }
 
     /// Embed a document, chunking if needed
@@ -105,24 +127,40 @@ impl Embedder {
     pub async fn embed_document(&self, content: &str) -> Result<Vec<Vec<f32>>> {
         let content = content.trim();
         if content.is_empty() {
-            // Return single zero vector for empty document
+            tracing::debug!("Empty document, returning single zero vector");
             return Ok(vec![vec![0.0; self.dimensions]]);
         }
 
         let chunks: Vec<&str> = self.splitter.chunks(content).collect();
 
+        tracing::info!(
+            content_len = content.len(),
+            chunk_count = chunks.len(),
+            "Embedding document"
+        );
+
         if chunks.is_empty() {
             return Ok(vec![vec![0.0; self.dimensions]]);
         }
 
-        if chunks.len() == 1 {
+        let start = std::time::Instant::now();
+
+        let result = if chunks.len() == 1 {
             // Single chunk - use simpler API
             let vector = self.embed(chunks[0]).await?;
-            return Ok(vec![vector]);
-        }
+            Ok(vec![vector])
+        } else {
+            // Multiple chunks - batch embed
+            self.embed_batch(&chunks).await
+        };
 
-        // Multiple chunks - batch embed
-        self.embed_batch(&chunks).await
+        tracing::info!(
+            chunk_count = chunks.len(),
+            elapsed_ms = start.elapsed().as_millis(),
+            "Document embedding complete"
+        );
+
+        result
     }
 
     /// Batch embed multiple texts
@@ -130,16 +168,33 @@ impl Embedder {
     /// More efficient than calling embed() multiple times.
     pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
+            tracing::debug!("Empty batch, returning empty vec");
             return Ok(vec![]);
         }
+
+        tracing::debug!(
+            batch_size = texts.len(),
+            "Embedding batch"
+        );
+
+        let start = std::time::Instant::now();
 
         let request = EmbeddingRequest::builder()
             .add_prompts(texts.iter().map(|s| s.to_string()));
 
-        self.model
+        let result = self
+            .model
             .generate_embeddings(request)
             .await
-            .context("Failed to generate batch embeddings")
+            .context("Failed to generate batch embeddings");
+
+        tracing::debug!(
+            batch_size = texts.len(),
+            elapsed_ms = start.elapsed().as_millis(),
+            "Batch embedding complete"
+        );
+
+        result
     }
 }
 

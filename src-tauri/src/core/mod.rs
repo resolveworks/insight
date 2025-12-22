@@ -71,14 +71,33 @@ impl AppState {
 
         // Initialize search index
         let index = search::open_index(&self.config.search_dir)?;
-        *self.search.write().await = Some(index);
 
-        // Note: Embedding model is configured lazily on first use via configure_embedding_model command
-        // This avoids blocking startup with slow model loading
+        // Configure embedder in milli if previously set (for vector search to work)
+        // Note: The actual embedding model is loaded lazily via configure_embedding_model command
         let settings = Settings::load(&self.config.settings_file);
-        if settings.embedding_model_id.is_some() {
-            tracing::info!("Embedding model configured in settings, will load on first use");
+        if let Some(ref model_id) = settings.embedding_model_id {
+            if let Some(model) = models::get_embedding_model(model_id) {
+                let indexer_config = self.indexer_config.lock().await;
+                if let Err(e) =
+                    search::configure_embedder(&index, &indexer_config, "default", model.dimensions)
+                {
+                    tracing::warn!("Failed to configure embedder in index on startup: {}", e);
+                } else {
+                    tracing::info!(
+                        "Configured embedder '{}' ({}D) in search index",
+                        model_id,
+                        model.dimensions
+                    );
+                }
+            }
         }
+
+        // Log current embedder configs for debugging
+        if let Err(e) = search::log_embedder_configs(&index) {
+            tracing::warn!("Failed to log embedder configs: {}", e);
+        }
+
+        *self.search.write().await = Some(index);
 
         tracing::info!("AppState initialized");
         Ok(())

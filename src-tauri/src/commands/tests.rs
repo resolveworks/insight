@@ -329,7 +329,7 @@ async fn test_search_empty_index() {
 
     let state = app.state::<AppState>();
 
-    let result = search("test query".to_string(), None, None, None, state)
+    let result = search("test query".to_string(), None, None, None, None, state)
         .await
         .unwrap();
 
@@ -364,7 +364,7 @@ async fn test_search_finds_document() {
     .unwrap();
 
     // Search for content
-    let result = search("climate".to_string(), None, None, None, state)
+    let result = search("climate".to_string(), None, None, None, None, state)
         .await
         .unwrap();
 
@@ -411,7 +411,7 @@ async fn test_search_with_collection_filter() {
     .unwrap();
 
     // Search all - should find both
-    let all = search("research".to_string(), None, None, None, state.clone())
+    let all = search("research".to_string(), None, None, None, None, state.clone())
         .await
         .unwrap();
     assert_eq!(all.hits.len(), 2);
@@ -422,6 +422,7 @@ async fn test_search_with_collection_filter() {
         None,
         None,
         Some(vec![col1.id.clone()]),
+        None,
         state,
     )
     .await
@@ -464,6 +465,7 @@ async fn test_search_pagination() {
         Some(0),
         Some(2),
         None,
+        None,
         state.clone(),
     )
     .await
@@ -475,7 +477,7 @@ async fn test_search_pagination() {
     assert_eq!(page0.total_hits, 5);
 
     // Get second page
-    let page1 = search("document".to_string(), Some(1), Some(2), None, state)
+    let page1 = search("document".to_string(), Some(1), Some(2), None, None, state)
         .await
         .unwrap();
 

@@ -623,18 +623,25 @@ pub async fn delete_collection(
 }
 
 /// Search documents
+///
+/// When `semantic_ratio > 0` and an embedding model is configured, performs hybrid search
+/// combining keyword (BM25) and vector similarity.
 #[tauri::command]
 pub async fn search(
     query: String,
     page: Option<usize>,
     page_size: Option<usize>,
     collection_ids: Option<Vec<String>>,
+    semantic_ratio: Option<f32>,
     state: State<'_, AppState>,
 ) -> Result<SearchResponse, String> {
+    let semantic_ratio = semantic_ratio.unwrap_or(0.0).clamp(0.0, 1.0);
+
     tracing::info!(
-        "Searching for: {} (collections: {:?})",
+        "Searching for: {} (collections: {:?}, semantic_ratio: {})",
         query,
-        collection_ids
+        collection_ids,
+        semantic_ratio
     );
 
     let search_guard = state.search.read().await;
@@ -655,8 +662,35 @@ pub async fn search(
         doc_count
     );
 
-    let results = search::search_index(index, &query, page_size, offset, collection_ids.as_deref())
-        .map_err(|e| e.to_string())?;
+    // Generate query embedding if semantic search is requested
+    let query_vector = if semantic_ratio > 0.0 {
+        let embedder_guard = state.embedder.read().await;
+        if let Some(ref embedder) = *embedder_guard {
+            match embedder.embed_query(&query).await {
+                Ok(vec) => Some(vec),
+                Err(e) => {
+                    tracing::warn!("Failed to embed query, falling back to keyword search: {}", e);
+                    None
+                }
+            }
+        } else {
+            tracing::debug!("No embedder configured, using keyword-only search");
+            None
+        }
+    } else {
+        None
+    };
+
+    let results = search::search_index(
+        index,
+        &query,
+        page_size,
+        offset,
+        collection_ids.as_deref(),
+        query_vector,
+        semantic_ratio,
+    )
+    .map_err(|e| e.to_string())?;
 
     tracing::info!(
         "Search returned: {} hits, total_hits={}",
@@ -1177,6 +1211,16 @@ pub async fn configure_embedding_model(
             .await
             .map_err(|e| format!("Failed to load embedder: {}", e))?;
 
+        // Configure milli index for vector search
+        {
+            let search_guard = state.search.read().await;
+            if let Some(ref index) = *search_guard {
+                let indexer_config = state.indexer_config.lock().await;
+                search::configure_embedder(index, &indexer_config, "default", model.dimensions)
+                    .map_err(|e| format!("Failed to configure embedder in index: {}", e))?;
+            }
+        }
+
         // Update state
         *state.embedder.write().await = Some(embedder);
         *state.embedding_model_id.write().await = Some(id.clone());
@@ -1185,6 +1229,18 @@ pub async fn configure_embedding_model(
     } else {
         // Disable embeddings
         tracing::info!("Disabling embedding model");
+
+        // Remove embedder configuration from milli index
+        {
+            let search_guard = state.search.read().await;
+            if let Some(ref index) = *search_guard {
+                let indexer_config = state.indexer_config.lock().await;
+                if let Err(e) = search::remove_embedder(index, &indexer_config) {
+                    tracing::warn!("Failed to remove embedder from index: {}", e);
+                }
+            }
+        }
+
         *state.embedder.write().await = None;
         *state.embedding_model_id.write().await = None;
     }

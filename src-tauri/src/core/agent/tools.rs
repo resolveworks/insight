@@ -168,7 +168,8 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
         }
     };
 
-    match search::search_index(index, query, 10, 0, collection_ids.as_deref()) {
+    // Agent uses keyword-only search for now (no semantic embeddings)
+    match search::search_index(index, query, 10, 0, collection_ids.as_deref(), None, 0.0) {
         Ok(results) => {
             // Format results for LLM consumption
             let doc_ids: Vec<u32> = results.hits.iter().map(|h| h.doc_id).collect();

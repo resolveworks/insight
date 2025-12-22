@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bumpalo::Bump;
@@ -8,8 +10,9 @@ use milli::heed::EnvOpenOptions;
 use milli::progress::Progress;
 use milli::score_details::ScoringStrategy;
 use milli::update::new::indexer::{self, DocumentOperation};
-use milli::update::IndexerConfig;
-use milli::vector::RuntimeEmbedders;
+use milli::update::{IndexerConfig, Setting};
+use milli::vector::settings::{EmbedderSource, EmbeddingSettings};
+use milli::vector::{embedder::manual, Embedder, RuntimeEmbedders};
 use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
 use serde_json::{json, Map, Value};
 
@@ -52,6 +55,92 @@ pub fn open_index(path: &Path) -> Result<Index> {
     tracing::info!("Search index opened at {:?}", path);
 
     Ok(index)
+}
+
+/// Configure the embedder settings for vector search
+///
+/// This must be called when an embedding model is configured so milli knows
+/// how to index and search vectors stored in documents.
+pub fn configure_embedder(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    embedder_name: &str,
+    dimensions: usize,
+) -> Result<()> {
+    tracing::info!(
+        embedder_name = embedder_name,
+        dimensions = dimensions,
+        "Configuring embedder for vector search"
+    );
+
+    let mut wtxn = index.write_txn()?;
+    let mut settings = milli::update::Settings::new(&mut wtxn, index, indexer_config);
+
+    // Create userProvided embedder settings (matching milli's from_user_provided pattern)
+    let embedder_settings = EmbeddingSettings {
+        source: Setting::Set(EmbedderSource::UserProvided),
+        model: Setting::NotSet,
+        revision: Setting::NotSet,
+        pooling: Setting::NotSet,
+        api_key: Setting::NotSet,
+        dimensions: Setting::Set(dimensions),
+        binary_quantized: Setting::NotSet,
+        document_template: Setting::NotSet,
+        document_template_max_bytes: Setting::NotSet,
+        url: Setting::NotSet,
+        indexing_fragments: Setting::NotSet,
+        search_fragments: Setting::NotSet,
+        request: Setting::NotSet,
+        response: Setting::NotSet,
+        headers: Setting::NotSet,
+        search_embedder: Setting::NotSet,
+        indexing_embedder: Setting::NotSet,
+        distribution: Setting::NotSet,
+    };
+
+    // Set the embedder configuration
+    let mut embedders = BTreeMap::new();
+    embedders.insert(embedder_name.to_string(), Setting::Set(embedder_settings));
+    settings.set_embedder_settings(embedders);
+
+    settings.execute(&|| false, &Progress::default(), Default::default())?;
+    wtxn.commit()?;
+
+    tracing::info!("Embedder configured successfully");
+    Ok(())
+}
+
+/// Remove embedder configuration from the index
+pub fn remove_embedder(index: &Index, indexer_config: &IndexerConfig) -> Result<()> {
+    tracing::info!("Removing embedder configuration");
+
+    let mut wtxn = index.write_txn()?;
+    let mut settings = milli::update::Settings::new(&mut wtxn, index, indexer_config);
+    settings.reset_embedder_settings();
+    settings.execute(&|| false, &Progress::default(), Default::default())?;
+    wtxn.commit()?;
+
+    tracing::info!("Embedder configuration removed");
+    Ok(())
+}
+
+/// Log current embedder configurations in the index (for debugging)
+pub fn log_embedder_configs(index: &Index) -> Result<()> {
+    let rtxn = index.read_txn()?;
+    let embedders = index.embedding_configs();
+    let configs = embedders.embedding_configs(&rtxn)?;
+
+    if configs.is_empty() {
+        tracing::info!("No embedders configured in index");
+    } else {
+        for config in configs {
+            tracing::info!(
+                name = config.name,
+                "Embedder configured in index"
+            );
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -222,12 +311,20 @@ pub fn get_document_count(index: &Index) -> Result<u64> {
 }
 
 /// Search the milli index
+///
+/// When `semantic_ratio > 0` and `query_vector` is provided, performs hybrid search
+/// combining keyword (BM25) and vector similarity. The ratio controls the balance:
+/// - 0.0 = pure keyword search
+/// - 1.0 = pure semantic search
+/// - 0.5 = equal weight to both
 pub fn search_index(
     index: &Index,
     query: &str,
     limit: usize,
     offset: usize,
     collection_ids: Option<&[String]>,
+    query_vector: Option<Vec<f32>>,
+    semantic_ratio: f32,
 ) -> Result<SearchResults> {
     let rtxn = index.read_txn()?;
     let mut search = milli::Search::new(&rtxn, index);
@@ -252,7 +349,52 @@ pub fn search_index(
         }
     }
 
-    let result = search.execute()?;
+    // Use hybrid search when semantic_ratio > 0 and query vector is available
+    let result = if semantic_ratio > 0.0 && query_vector.is_some() {
+        let query_vec = query_vector.unwrap();
+        let dimensions = query_vec.len();
+
+        tracing::debug!(
+            query = query,
+            semantic_ratio = semantic_ratio,
+            vector_dims = dimensions,
+            "Executing hybrid search"
+        );
+
+        // Create a manual embedder (placeholder - won't be called since we provide vector)
+        let manual_embedder = manual::Embedder::new(manual::EmbedderOptions {
+            dimensions,
+            distribution: None,
+        });
+        let embedder = Arc::new(Embedder::UserProvided(manual_embedder));
+
+        // Configure semantic search with pre-computed query vector
+        search.semantic(
+            "default".to_string(), // matches the embedder name used during indexing
+            embedder,
+            false, // not quantized
+            Some(query_vec),
+            None, // no media
+        );
+
+        match search.execute_hybrid(semantic_ratio) {
+            Ok((result, semantic_hit_count)) => {
+                tracing::debug!(
+                    total_candidates = result.candidates.len(),
+                    doc_count = result.documents_ids.len(),
+                    semantic_hits = ?semantic_hit_count,
+                    "Hybrid search completed"
+                );
+                result
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Hybrid search failed");
+                return Err(e.into());
+            }
+        }
+    } else {
+        search.execute()?
+    };
 
     let hits = result
         .documents_ids
@@ -522,8 +664,8 @@ mod tests {
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
-        // Search should find the document
-        let results = search_index(&index, "climate", 10, 0, None).unwrap();
+        // Search should find the document (keyword-only, no semantic)
+        let results = search_index(&index, "climate", 10, 0, None, None, 0.0).unwrap();
         assert_eq!(results.hits.len(), 1);
 
         // Verify we can retrieve the document fields
@@ -549,7 +691,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_index(&index, "nonexistent", 10, 0, None).unwrap();
+        let results = search_index(&index, "nonexistent", 10, 0, None, None, 0.0).unwrap();
         assert!(results.hits.is_empty());
     }
 
@@ -591,12 +733,12 @@ mod tests {
         .unwrap();
 
         // Search all collections
-        let all = search_index(&index, "climate", 10, 0, None).unwrap();
+        let all = search_index(&index, "climate", 10, 0, None, None, 0.0).unwrap();
         assert_eq!(all.hits.len(), 3);
 
         // Filter to single collection
         let climate_only =
-            search_index(&index, "climate", 10, 0, Some(&["climate".to_string()])).unwrap();
+            search_index(&index, "climate", 10, 0, Some(&["climate".to_string()]), None, 0.0).unwrap();
         assert_eq!(climate_only.hits.len(), 1);
         let name =
             get_document_field_by_internal_id(&index, climate_only.hits[0].doc_id, "name").unwrap();
@@ -609,6 +751,8 @@ mod tests {
             10,
             0,
             Some(&["climate".to_string(), "news".to_string()]),
+            None,
+            0.0,
         )
         .unwrap();
         assert_eq!(two.hits.len(), 2);
@@ -624,7 +768,7 @@ mod tests {
         index_document(&index, &config, "doc2", "b.pdf", "Test content", "col2", None).unwrap();
 
         // Empty filter should return all
-        let results = search_index(&index, "test", 10, 0, Some(&[])).unwrap();
+        let results = search_index(&index, "test", 10, 0, Some(&[]), None, 0.0).unwrap();
         assert_eq!(results.hits.len(), 2);
     }
 
@@ -663,7 +807,7 @@ mod tests {
         let rtxn = index.read_txn().unwrap();
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
 
-        let results = search_index(&index, "science", 10, 0, None).unwrap();
+        let results = search_index(&index, "science", 10, 0, None, None, 0.0).unwrap();
         assert_eq!(results.hits.len(), 3);
     }
 
@@ -706,7 +850,7 @@ mod tests {
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
         // Search should only find the remaining document
-        let results = search_index(&index, "document", 10, 0, None).unwrap();
+        let results = search_index(&index, "document", 10, 0, None, None, 0.0).unwrap();
         assert_eq!(results.hits.len(), 1);
         let name =
             get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();
@@ -763,7 +907,7 @@ mod tests {
         assert_eq!(index.number_of_documents(&rtxn).unwrap(), 1);
 
         // Only col2 document should remain
-        let results = search_index(&index, "document", 10, 0, None).unwrap();
+        let results = search_index(&index, "document", 10, 0, None, None, 0.0).unwrap();
         assert_eq!(results.hits.len(), 1);
         let name =
             get_document_field_by_internal_id(&index, results.hits[0].doc_id, "name").unwrap();

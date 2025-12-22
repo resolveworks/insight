@@ -60,6 +60,7 @@
 	let selectedCollection = $state<string | null>(null);
 	let selectedSearchCollections = new SvelteSet<string>();
 	let searching = $state(false);
+	let semanticRatio = $state(0); // 0 = keyword only, 1 = semantic only
 
 	// Conversation state
 	let chatComponent: Chat;
@@ -72,6 +73,7 @@
 	$effect(() => {
 		const query = searchQuery;
 		const filterIds = selectedSearchCollections;
+		const ratio = semanticRatio;
 
 		// Reset to first page when query or filters change
 		currentPage = 0;
@@ -83,7 +85,7 @@
 
 		// Debounce search by 200ms
 		searchTimeout = setTimeout(() => {
-			performSearch(query, filterIds, 0);
+			performSearch(query, filterIds, 0, ratio);
 		}, 200);
 
 		return () => {
@@ -95,6 +97,7 @@
 		query: string,
 		filterIds: SvelteSet<string>,
 		page: number,
+		ratio: number,
 	) {
 		if (!query.trim()) {
 			results = [];
@@ -109,6 +112,7 @@
 				collectionIds,
 				page,
 				pageSize,
+				semanticRatio: ratio,
 			});
 			results = response.hits;
 			totalHits = response.total_hits;
@@ -122,7 +126,7 @@
 
 	function goToPage(page: number) {
 		currentPage = page;
-		performSearch(searchQuery, selectedSearchCollections, page);
+		performSearch(searchQuery, selectedSearchCollections, page, semanticRatio);
 	}
 
 	const totalPages = $derived(Math.ceil(totalHits / pageSize));
@@ -376,16 +380,34 @@
 
 				<!-- Search Content -->
 				<div class="flex flex-1 flex-col">
-					<div class="flex items-center gap-2 border-b border-slate-700 p-4">
-						<input
-							type="text"
-							placeholder="Search documents..."
-							bind:value={searchQuery}
-							class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2 text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
-						/>
-						{#if searching}
-							<span class="text-sm text-slate-500">Searching...</span>
-						{/if}
+					<div class="border-b border-slate-700 p-4">
+						<div class="flex items-center gap-2">
+							<input
+								type="text"
+								placeholder="Search documents..."
+								bind:value={searchQuery}
+								class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2 text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
+							/>
+							{#if searching}
+								<span class="text-sm text-slate-500">Searching...</span>
+							{/if}
+						</div>
+						<!-- Semantic ratio slider -->
+						<div class="mt-3 flex items-center gap-3">
+							<span class="text-xs text-slate-500 w-16">Keyword</span>
+							<input
+								type="range"
+								min="0"
+								max="1"
+								step="0.1"
+								bind:value={semanticRatio}
+								class="flex-1 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-rose-500"
+							/>
+							<span class="text-xs text-slate-500 w-16 text-right">Semantic</span>
+							<span class="text-xs text-slate-400 w-8 text-center font-mono"
+								>{Math.round(semanticRatio * 100)}%</span
+							>
+						</div>
 					</div>
 
 					<section class="flex flex-1 flex-col overflow-hidden p-6">
