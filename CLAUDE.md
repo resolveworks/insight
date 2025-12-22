@@ -23,13 +23,6 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 
 ## Architecture
 
-One binary, two modes—Core (iroh + milli + agent) is shared:
-
-```
-insight              → GUI mode (Tauri + Svelte)
-insight --headless   → Server mode (no UI)
-```
-
 ### Agent Architecture
 
 ```
@@ -133,15 +126,14 @@ Full sync - because they might be offline when you need the files.
 
 On-demand - fetch files when needed, server is always available.
 
-The "server" is just the same app running in headless mode with better uptime.
+The "server" is just the same app running on a machine with better uptime.
 
 ## Development
 
 ```bash
 pnpm install
-pnpm tauri dev          # GUI mode
-cargo run -- --headless # Headless mode (from src-tauri/)
-pnpm tauri build        # Release build
+pnpm tauri dev    # Development mode
+pnpm tauri build  # Release build
 ```
 
 ### GPU Builds

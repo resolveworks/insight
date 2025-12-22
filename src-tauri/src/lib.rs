@@ -3,7 +3,7 @@ pub mod core;
 
 use tauri::Manager;
 
-use crate::core::AppState;
+use crate::core::{AppState, Config};
 
 /// Initialize tracing/logging with the given directives
 pub fn init_logging(directives: &[&str]) {
@@ -17,31 +17,37 @@ pub fn init_logging(directives: &[&str]) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_logging(&["insight=debug", "milli=debug"]);
-    tracing::info!("Starting Insight in GUI mode");
-
-    // Initialize AppState before Tauri starts (blocks briefly on storage init)
-    let app_state = AppState::new();
+    tracing::info!("Starting Insight");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(app_state)
         .setup(|app| {
-            // Load embedder in background (this is the slow part, 20-30s)
+            // Load config
+            let config = Config::load_or_default();
+            config.ensure_dirs()?;
+
+            // Initialize state using Tauri's async runtime (fast, ~100ms)
+            let state = tauri::async_runtime::block_on(AppState::new(config))?;
+            app.manage(state);
+
+            // Load embedder in background (slow, 20-30s)
             let state = app.state::<AppState>();
-            let config = state.config.clone();
-            let embedder = state.embedder.clone();
-            let embedding_model_id = state.embedding_model_id.clone();
+            let state_clone = AppState {
+                config: state.config.clone(),
+                storage: state.storage.clone(),
+                search: state.search.clone(),
+                indexer_config: state.indexer_config.clone(),
+                embedder: state.embedder.clone(),
+                embedding_model_id: state.embedding_model_id.clone(),
+                agent_model: state.agent_model.clone(),
+                conversations: state.conversations.clone(),
+                active_generations: state.active_generations.clone(),
+            };
             let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                core::load_embedder_if_configured(
-                    &config,
-                    &embedder,
-                    &embedding_model_id,
-                    &app_handle,
-                )
-                .await;
+                state_clone.load_embedder_if_configured(&app_handle).await;
             });
 
             Ok(())

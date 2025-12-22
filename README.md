@@ -15,7 +15,6 @@ Newsrooms accumulate documents—leaks, court filings, FOIA responses, research 
 - **Search across documents** — full-text and semantic search (finds related concepts, not just keywords)
 - **Share with colleagues** — sync directly, laptop-to-laptop, no server required
 - **Work offline** — your documents, search index, and AI run on your machine
-- **Run a newsroom server** — same app in headless mode for always-on availability
 
 ## How It Works
 
@@ -71,12 +70,6 @@ pnpm tauri build -- --features cuda
 
 # Apple Silicon
 pnpm tauri build -- --features metal
-```
-
-Headless server mode:
-
-```bash
-cd src-tauri && cargo run -- --headless
 ```
 
 ## Who This Is For

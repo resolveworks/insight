@@ -1,6 +1,5 @@
 <script lang="ts">
-	import ModelSelector from './ModelSelector.svelte';
-	import EmbeddingModelSelector from './EmbeddingModelSelector.svelte';
+	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
 </script>
 
 <div class="flex h-full flex-col">
@@ -15,7 +14,7 @@
 					locally and run entirely on your machine.
 				</p>
 				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-					<ModelSelector showTitle={false} />
+					<ModelDownloadSelector modelType="llm" showTitle={false} />
 				</div>
 			</section>
 
@@ -26,7 +25,7 @@
 					keywords. Requires downloading an embedding model.
 				</p>
 				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-					<EmbeddingModelSelector showTitle={false} />
+					<ModelDownloadSelector modelType="embedding" showTitle={false} />
 				</div>
 			</section>
 		</div>

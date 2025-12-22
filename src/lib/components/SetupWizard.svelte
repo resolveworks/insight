@@ -1,5 +1,5 @@
 <script lang="ts">
-	import EmbeddingModelSelector from './EmbeddingModelSelector.svelte';
+	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
 
 	type Props = {
 		onComplete: () => void;
@@ -7,7 +7,7 @@
 
 	let { onComplete }: Props = $props();
 
-	function handleModelConfigured(modelId: string | null) {
+	function handleReady(modelId: string | null) {
 		if (modelId) {
 			onComplete();
 		}
@@ -25,10 +25,7 @@
 		</div>
 
 		<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-			<EmbeddingModelSelector
-				onModelConfigured={handleModelConfigured}
-				showTitle={false}
-			/>
+			<ModelDownloadSelector modelType="embedding" onReady={handleReady} showTitle={false} />
 		</div>
 
 		<p class="mt-6 text-center text-sm text-slate-500">
