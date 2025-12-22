@@ -712,15 +712,13 @@ pub async fn load_conversation(
 
 /// Start a new chat conversation
 ///
-/// Requires a language model to be configured first via `configure_language_model`.
+/// Requires a language model to be loaded first via `configure_language_model`.
 #[tauri::command]
 pub async fn start_chat(state: State<'_, AppState>) -> Result<agent::Conversation, String> {
     // Verify model is loaded
     let model_guard = state.agent_model.read().await;
     if model_guard.is_none() {
-        return Err(
-            "No language model configured. Call configure_language_model first.".to_string(),
-        );
+        return Err("No language model loaded".to_string());
     }
     drop(model_guard);
 

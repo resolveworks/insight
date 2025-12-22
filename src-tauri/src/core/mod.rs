@@ -125,37 +125,7 @@ impl AppState {
             },
         );
 
-        // Load language model if configured (silently, no events)
-        if let Some(ref model_id) = settings.language_model_id {
-            if let Some(model) = models::get_language_model(model_id) {
-                tracing::info!("Loading language model '{}'...", model_id);
-
-                match models::ModelManager::new().await {
-                    Ok(manager) => {
-                        if let Some(model_path) = manager.get_path(&model) {
-                            match AgentModel::load(&model_path, &model).await {
-                                Ok(agent_model) => {
-                                    *self.agent_model.write().await = Some(agent_model);
-                                    *self.language_model_id.write().await = Some(model_id.clone());
-                                    tracing::info!("Language model '{}' loaded", model_id);
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to load language model: {}", e);
-                                }
-                            }
-                        } else {
-                            tracing::warn!(
-                                "Language model '{}' configured but not downloaded",
-                                model_id
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create model manager: {}", e);
-                    }
-                }
-            }
-        }
+        // Language model is loaded lazily when chat is opened (see ensure_language_model_loaded)
 
         // Load embedding model if configured
         if let Some(ref model_id) = settings.embedding_model_id {
