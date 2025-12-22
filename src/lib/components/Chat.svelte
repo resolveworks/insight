@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
 	import { languageModelConfig } from '$lib/models/config';
+	import { getModelState } from '$lib/stores/model-state.svelte';
 
 	// Content block types matching backend
 	type ContentBlock =
@@ -62,17 +63,17 @@
 	// Streaming state: blocks being built for current response
 	let streamingBlocks = $state<ContentBlock[]>([]);
 
-	// Model state
-	let modelReady = $state(false);
-	let currentModelId = $state<string | null>(null);
+	// Model state from global store (persists across navigation)
+	let modelState = $derived(getModelState(languageModelConfig));
+	let modelReady = $derived(modelState.loadedModelId !== null);
+	let currentModelId = $derived(modelState.loadedModelId);
 
 	let unlistenAgent: UnlistenFn | undefined;
 	let messagesContainer: HTMLElement | undefined;
 
 	async function handleModelConfigured(modelId: string | null) {
 		if (!modelId) return;
-		modelReady = true;
-		currentModelId = modelId;
+		// Store is updated by ModelDownloadSelector via setLoadedModel
 		await startChat();
 	}
 
@@ -251,6 +252,13 @@
 		}
 	}
 
+	onMount(() => {
+		// If model is already loaded (from previous navigation), start a chat
+		if (modelReady && !conversationId) {
+			startChat();
+		}
+	});
+
 	onDestroy(() => {
 		unlistenAgent?.();
 	});
@@ -263,7 +271,10 @@
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
 		{#if !modelReady}
-			<ModelDownloadSelector config={languageModelConfig} onConfigured={handleModelConfigured} />
+			<ModelDownloadSelector
+				config={languageModelConfig}
+				onConfigured={handleModelConfigured}
+			/>
 		{:else if isLoadingModel}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-slate-400">
