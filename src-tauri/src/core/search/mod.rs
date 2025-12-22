@@ -11,14 +11,41 @@ use milli::progress::Progress;
 use milli::score_details::ScoringStrategy;
 use milli::update::new::indexer::{self, DocumentOperation};
 use milli::update::{IndexerConfig, Setting};
+use milli::prompt::Prompt;
 use milli::vector::settings::{EmbedderSource, EmbeddingSettings};
-use milli::vector::{embedder::manual, Embedder, RuntimeEmbedders};
+use milli::vector::{embedder::manual, Embedder, RuntimeEmbedder, RuntimeEmbedders};
 use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
 use serde_json::{json, Map, Value};
+
+use std::collections::HashMap;
 
 /// Default map size for the LMDB environment (10 GB)
 /// This is the maximum size the database can grow to
 const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
+
+/// Create RuntimeEmbedders for user-provided vectors
+///
+/// This creates a minimal embedder configuration that tells milli to accept
+/// pre-computed vectors from the `_vectors` field without generating new ones.
+fn create_user_provided_embedders(embedder_name: &str, dimensions: usize) -> RuntimeEmbedders {
+    let manual_embedder = manual::Embedder::new(manual::EmbedderOptions {
+        dimensions,
+        distribution: None,
+    });
+    let embedder = Arc::new(Embedder::UserProvided(manual_embedder));
+    let prompt = Prompt::default();
+
+    let runtime_embedder = Arc::new(RuntimeEmbedder::new(
+        embedder,
+        prompt,
+        vec![], // no fragments for user-provided
+        false,  // not quantized
+    ));
+
+    let mut map = HashMap::new();
+    map.insert(embedder_name.to_string(), runtime_embedder);
+    RuntimeEmbedders::new(map)
+}
 
 /// Open or create a milli search index
 pub fn open_index(path: &Path) -> Result<Index> {
@@ -265,8 +292,18 @@ fn index_chunk(
 
     let mut wtxn = index.write_txn()?;
 
-    // Use the shared thread pool from IndexerConfig for both outer and inner operations
-    // We pass empty embedders since we provide pre-computed vectors via _vectors field
+    // Create RuntimeEmbedders if any documents have vectors
+    // We need to tell milli about the embedder so it indexes the pre-computed vectors
+    let embedders = docs
+        .iter()
+        .find_map(|doc| {
+            doc.vectors.as_ref().and_then(|vecs| {
+                vecs.first().map(|v| v.len())
+            })
+        })
+        .map(|dimensions| create_user_provided_embedders("default", dimensions))
+        .unwrap_or_default();
+
     indexer_config
         .thread_pool
         .install(|| {
@@ -279,7 +316,7 @@ fn index_chunk(
                 new_fields_ids_map,
                 primary_key,
                 &document_changes,
-                RuntimeEmbedders::default(),
+                embedders,
                 &|| false,
                 &Progress::default(),
                 &Default::default(),

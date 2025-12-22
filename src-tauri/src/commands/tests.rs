@@ -509,7 +509,7 @@ async fn test_get_model_status_not_downloaded() {
 
     let state = app.state::<AppState>();
 
-    let status = get_model_status(None, state).await.unwrap();
+    let status = get_model_status(None).await.unwrap();
 
     match status {
         ModelStatus::NotDownloaded => {}

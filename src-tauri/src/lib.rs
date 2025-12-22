@@ -1,23 +1,23 @@
 pub mod cli;
 pub mod commands;
 pub mod core;
-pub mod headless;
 
 use tauri::Manager;
 
 use crate::core::AppState;
 
+/// Initialize tracing/logging with the given directives
+pub fn init_logging(directives: &[&str]) {
+    let mut filter = tracing_subscriber::EnvFilter::from_default_env();
+    for directive in directives {
+        filter = filter.add_directive(directive.parse().unwrap());
+    }
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("insight=debug".parse().unwrap())
-                .add_directive("milli=debug".parse().unwrap()),
-        )
-        .init();
-
+    init_logging(&["insight=debug", "milli=debug"]);
     tracing::info!("Starting Insight in GUI mode");
 
     let app_state = AppState::new();
@@ -63,7 +63,6 @@ pub fn run() {
             commands::import_pdfs_batch,
             commands::delete_document,
             commands::search,
-            commands::get_node_id,
             // Conversation commands
             commands::list_conversations,
             commands::load_conversation,
@@ -84,8 +83,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-pub fn run_headless() {
-    headless::run();
 }

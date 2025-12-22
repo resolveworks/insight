@@ -8,14 +8,7 @@ use crate::core::{
 
 /// Rebuild the search index from all stored documents
 pub fn index_rebuild() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("insight=info".parse().unwrap()),
-        )
-        .init();
-
+    crate::init_logging(&["insight=info"]);
     tracing::info!("Rebuilding search index...");
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -118,14 +111,7 @@ async fn do_index_rebuild() -> anyhow::Result<()> {
 
 /// Show status of storage vs search index
 pub fn index_status() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("insight=info".parse().unwrap()),
-        )
-        .init();
-
+    crate::init_logging(&["insight=info"]);
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
 
     if let Err(e) = rt.block_on(do_index_status()) {

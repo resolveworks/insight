@@ -112,14 +112,6 @@ impl Embedder {
         result
     }
 
-    /// Embed a search query
-    ///
-    /// Alias for `embed()` - used for semantic search queries.
-    pub async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
-        tracing::info!(query_len = query.len(), "Embedding search query");
-        self.embed(query).await
-    }
-
     /// Embed a document, chunking if needed
     ///
     /// Returns multiple vectors, one per chunk. For short documents

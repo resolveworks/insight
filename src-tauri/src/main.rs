@@ -43,7 +43,8 @@ fn main() {
             insight_lib::run();
         }
         Some(Command::Serve) => {
-            insight_lib::run_headless();
+            eprintln!("Headless server mode is not yet implemented.");
+            std::process::exit(1);
         }
         Some(Command::Index { action }) => match action {
             IndexCommand::Rebuild => {

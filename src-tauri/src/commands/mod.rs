@@ -666,7 +666,7 @@ pub async fn search(
     let query_vector = if semantic_ratio > 0.0 {
         let embedder_guard = state.embedder.read().await;
         if let Some(ref embedder) = *embedder_guard {
-            match embedder.embed_query(&query).await {
+            match embedder.embed(&query).await {
                 Ok(vec) => Some(vec),
                 Err(e) => {
                     tracing::warn!("Failed to embed query, falling back to keyword search: {}", e);
@@ -739,18 +739,6 @@ pub async fn search(
         page,
         page_size,
     })
-}
-
-/// Get the local node ID for P2P connections
-#[tauri::command]
-pub async fn get_node_id(state: State<'_, AppState>) -> Result<String, String> {
-    let storage = state.storage.read().await;
-    if storage.is_none() {
-        return Ok("not-initialized".to_string());
-    }
-
-    // TODO: Get node ID from iroh endpoint
-    Ok("initializing...".to_string())
 }
 
 // ============================================================================
@@ -1009,10 +997,7 @@ pub async fn get_available_models() -> Result<Vec<ModelInfo>, String> {
 
 /// Get download status for a specific model
 #[tauri::command]
-pub async fn get_model_status(
-    model_id: Option<String>,
-    _state: State<'_, AppState>,
-) -> Result<ModelStatus, String> {
+pub async fn get_model_status(model_id: Option<String>) -> Result<ModelStatus, String> {
     let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
@@ -1036,11 +1021,7 @@ pub async fn get_model_status(
 
 /// Download a specific model with progress events
 #[tauri::command]
-pub async fn download_model(
-    model_id: String,
-    app: AppHandle,
-    _state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn download_model(model_id: String, app: AppHandle) -> Result<(), String> {
     let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
@@ -1116,10 +1097,7 @@ pub enum EmbeddingModelStatus {
 
 /// Get download status for an embedding model
 #[tauri::command]
-pub async fn get_embedding_model_status(
-    model_id: String,
-    _state: State<'_, AppState>,
-) -> Result<EmbeddingModelStatus, String> {
+pub async fn get_embedding_model_status(model_id: String) -> Result<EmbeddingModelStatus, String> {
     let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
@@ -1136,11 +1114,7 @@ pub async fn get_embedding_model_status(
 
 /// Download an embedding model with progress events
 #[tauri::command]
-pub async fn download_embedding_model(
-    model_id: String,
-    app: AppHandle,
-    _state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn download_embedding_model(model_id: String, app: AppHandle) -> Result<(), String> {
     let manager = ModelManager::new()
         .await
         .map_err(|e| e.to_string())?;
