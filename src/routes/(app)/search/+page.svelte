@@ -21,6 +21,7 @@
 	}
 
 	interface SearchHit {
+		chunk_id: string;
 		document: Document;
 		collection_id: string;
 		snippet: string;
@@ -213,7 +214,7 @@
 					{totalHits} result{totalHits === 1 ? '' : 's'} found
 				</div>
 				<ul class="flex-1 space-y-4 overflow-y-auto">
-					{#each results as result (result.document.id)}
+					{#each results as result (result.chunk_id)}
 						<li class="rounded-lg border border-slate-700 bg-slate-800 p-4">
 							<div class="mb-2 flex items-center justify-between">
 								<h3 class="font-medium text-rose-500">

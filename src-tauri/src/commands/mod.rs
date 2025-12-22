@@ -25,12 +25,16 @@ pub struct CollectionInfo {
     pub created_at: String,
 }
 
-/// Single search hit
+/// Single search hit (chunk-level result)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchHit {
+    /// Unique chunk ID (e.g., "doc123_chunk_5")
+    pub chunk_id: String,
+    /// Parent document info
     pub document: DocumentInfo,
     pub collection_id: String,
     pub score: f32,
+    /// Chunk text content
     pub snippet: String,
 }
 
@@ -560,7 +564,7 @@ pub async fn search(
     );
 
     let mut hits = Vec::new();
-    for hit in results.hits {
+    for (i, hit) in results.hits.into_iter().enumerate() {
         // Get chunk fields (chunks have parent_id and parent_name)
         let id = search::get_document_field_by_internal_id(&index, hit.doc_id, "parent_id")
             .map_err(|e| e.to_string())?
@@ -580,7 +584,11 @@ pub async fn search(
         let snippet = content.chars().take(500).collect::<String>();
         let score = milli::score_details::ScoreDetails::global_score(hit.scores.iter()) as f32;
 
+        // Unique chunk ID from parent + global position
+        let chunk_id = format!("{}_{}", id, offset + i);
+
         hits.push(SearchHit {
+            chunk_id,
             document: DocumentInfo {
                 id,
                 name,
