@@ -284,6 +284,19 @@ impl Storage {
         doc.set_hash(self.author_id, key.into_bytes(), hash, len)
             .await?;
 
+        // Create hash index entry for O(1) duplicate detection
+        // Store document ID as the value (small blob)
+        let index_key = format!("_hash_index/{}", metadata.pdf_hash);
+        let doc_id_bytes = metadata.id.as_bytes();
+        let doc_id_hash = self.store_blob(doc_id_bytes).await?;
+        doc.set_hash(
+            self.author_id,
+            index_key.into_bytes(),
+            doc_id_hash,
+            doc_id_bytes.len() as u64,
+        )
+        .await?;
+
         doc.close().await?;
 
         tracing::info!(
@@ -364,6 +377,23 @@ impl Storage {
         Ok(metadata)
     }
 
+    /// Check if a document with the given PDF hash exists (O(1) lookup via hash index)
+    ///
+    /// Uses the `_hash_index/{pdf_hash}` key for constant-time duplicate detection.
+    pub async fn has_pdf_hash(&self, namespace_id: NamespaceId, pdf_hash: &str) -> Result<bool> {
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(doc) => doc,
+            None => return Ok(false),
+        };
+
+        let key = format!("_hash_index/{}", pdf_hash);
+        let query = Query::key_exact(key.as_bytes());
+        let entry = doc.get_one(query).await?;
+
+        doc.close().await?;
+        Ok(entry.is_some())
+    }
+
     /// Delete a document from a collection
     pub async fn delete_document(
         &self,
@@ -377,8 +407,22 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        let key = format!("files/{}", document_id);
-        doc.del(self.author_id, key.into_bytes()).await?;
+        // First, get the document metadata to find the pdf_hash for index cleanup
+        let file_key = format!("files/{}", document_id);
+        let query = Query::key_exact(file_key.as_bytes());
+        if let Some(entry) = doc.get_one(query).await? {
+            let hash = entry.content_hash();
+            if let Some(data) = self.get_blob(&hash).await? {
+                if let Ok(metadata) = serde_json::from_slice::<DocumentMetadata>(&data) {
+                    // Delete the hash index entry
+                    let index_key = format!("_hash_index/{}", metadata.pdf_hash);
+                    doc.del(self.author_id, index_key.into_bytes()).await?;
+                }
+            }
+        }
+
+        // Delete the document entry
+        doc.del(self.author_id, file_key.into_bytes()).await?;
 
         doc.close().await?;
 

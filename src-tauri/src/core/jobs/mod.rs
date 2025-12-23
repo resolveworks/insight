@@ -260,10 +260,7 @@ fn spawn_store_worker(
                 }
 
                 Some(extracted) = rx.recv() => {
-                    // Generate document ID
-                    let doc_id = uuid::Uuid::new_v4().to_string();
-
-                    // Store blobs
+                    // Store blobs first to get content hashes
                     let storage_guard = storage.read().await;
 
                     let pdf_hash = match storage_guard.store_blob(&extracted.pdf_bytes).await {
@@ -274,6 +271,35 @@ fn spawn_store_worker(
                         }
                     };
 
+                    // Parse collection ID as namespace (needed for duplicate check)
+                    let namespace_id = match extracted.collection_id.parse() {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::error!("Invalid collection ID '{}': {}", extracted.collection_id, e);
+                            continue;
+                        }
+                    };
+
+                    // Check for duplicate by pdf_hash (O(1) lookup via hash index)
+                    match storage_guard.has_pdf_hash(namespace_id, &pdf_hash).await {
+                        Ok(true) => {
+                            tracing::info!(
+                                name = %extracted.name,
+                                pdf_hash = %pdf_hash,
+                                collection_id = %extracted.collection_id,
+                                "Duplicate document detected, skipping import"
+                            );
+                            continue;
+                        }
+                        Ok(false) => {
+                            // No duplicate, proceed with import
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to check for duplicates: {}", e);
+                            // Continue with import on error - better to have duplicates than miss documents
+                        }
+                    }
+
                     let text_hash = match storage_guard.store_blob(extracted.text.as_bytes()).await {
                         Ok(hash) => hash.to_string(),
                         Err(e) => {
@@ -282,14 +308,8 @@ fn spawn_store_worker(
                         }
                     };
 
-                    // Parse collection ID as namespace
-                    let namespace_id = match extracted.collection_id.parse() {
-                        Ok(id) => id,
-                        Err(e) => {
-                            tracing::error!("Invalid collection ID '{}': {}", extracted.collection_id, e);
-                            continue;
-                        }
-                    };
+                    // Generate document ID
+                    let doc_id = uuid::Uuid::new_v4().to_string();
 
                     // Store metadata - this triggers iroh InsertLocal event
                     let metadata = DocumentMetadata {
