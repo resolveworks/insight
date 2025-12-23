@@ -5,11 +5,12 @@ use futures::Stream;
 use iroh::{Endpoint, RelayMode};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::Hash;
+use iroh_docs::api::protocol::{AddrInfoOptions, ShareMode};
 use iroh_docs::api::DocsApi;
 pub use iroh_docs::engine::LiveEvent;
 use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
-use iroh_docs::{AuthorId, NamespaceId};
+use iroh_docs::{AuthorId, DocTicket, NamespaceId};
 use iroh_gossip::net::Gossip;
 use serde::{Deserialize, Serialize};
 
@@ -68,8 +69,9 @@ impl Storage {
             .await
             .context("Failed to open blob store")?;
 
-        // Create local-only endpoint (no relay servers)
-        let endpoint = Endpoint::empty_builder(RelayMode::Disabled)
+        // Create endpoint with relay servers for P2P connectivity
+        let endpoint = Endpoint::builder()
+            .relay_mode(RelayMode::Default)
             .bind()
             .await
             .context("Failed to create endpoint")?;
@@ -419,6 +421,61 @@ impl Storage {
         let stream = doc.subscribe().await?;
 
         Ok(stream)
+    }
+
+    /// Generate a share ticket for a collection
+    ///
+    /// The ticket string can be shared with others who can then import the collection.
+    /// If `writable` is true, the recipient can also add/edit documents.
+    pub async fn share_collection(
+        &self,
+        namespace_id: NamespaceId,
+        writable: bool,
+    ) -> Result<String> {
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        let mode = if writable {
+            ShareMode::Write
+        } else {
+            ShareMode::Read
+        };
+
+        // Include relay + direct addresses so peers can connect
+        let ticket = doc.share(mode, AddrInfoOptions::RelayAndAddresses).await?;
+
+        doc.close().await?;
+
+        tracing::info!(
+            "Shared collection {} (writable: {})",
+            namespace_id,
+            writable
+        );
+
+        Ok(ticket.to_string())
+    }
+
+    /// Import a collection from a share ticket
+    ///
+    /// This registers the namespace locally and starts syncing with the peer
+    /// who shared it. The DocWatcher will pick up InsertRemote events and
+    /// trigger embedding + indexing automatically.
+    pub async fn import_collection(&self, ticket_str: &str) -> Result<NamespaceId> {
+        let ticket: DocTicket = ticket_str.parse().context("Invalid share ticket")?;
+
+        // Import namespace and start syncing with peers listed in ticket
+        let doc = self.docs.api().import(ticket).await?;
+        let namespace_id = doc.id();
+
+        doc.close().await?;
+
+        tracing::info!("Imported collection {}", namespace_id);
+
+        Ok(namespace_id)
     }
 
     /// Shutdown the storage gracefully

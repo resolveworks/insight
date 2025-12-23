@@ -58,6 +58,8 @@ pub fn run() {
             commands::get_collections,
             commands::create_collection,
             commands::delete_collection,
+            commands::share_collection,
+            commands::import_collection,
             commands::get_documents,
             commands::get_document,
             commands::get_document_text,

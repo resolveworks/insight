@@ -493,6 +493,78 @@ pub async fn delete_collection(
     Ok(())
 }
 
+/// Share a collection with others
+///
+/// Generates a ticket string that can be shared. The recipient can import
+/// the collection using `import_collection`.
+#[tauri::command]
+pub async fn share_collection(
+    collection_id: String,
+    writable: bool,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    tracing::info!(
+        "Sharing collection {} (writable: {})",
+        collection_id,
+        writable
+    );
+
+    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+
+    let storage = state.storage.read().await;
+
+    storage
+        .share_collection(namespace_id, writable)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Import a collection from a share ticket
+///
+/// The ticket string is obtained from someone who called `share_collection`.
+/// After import, the collection will sync with the original peer.
+#[tauri::command]
+pub async fn import_collection(
+    ticket: String,
+    state: State<'_, AppState>,
+) -> Result<CollectionInfo, String> {
+    tracing::info!("Importing collection from ticket");
+
+    let namespace_id = {
+        let storage = state.storage.read().await;
+        storage
+            .import_collection(&ticket)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    // Start watching the imported collection for document events
+    {
+        let mut coordinator_guard = state.job_coordinator.write().await;
+        if let Some(coordinator) = coordinator_guard.as_mut() {
+            coordinator.watch_namespace(namespace_id);
+        }
+    }
+
+    // Fetch collection info
+    let storage = state.storage.read().await;
+
+    let metadata = storage
+        .get_collection_metadata(namespace_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Collection metadata not found after import")?;
+
+    let document_count = storage.count_documents(namespace_id).await.unwrap_or(0);
+
+    Ok(CollectionInfo {
+        id: namespace_id.to_string(),
+        name: metadata.name,
+        document_count,
+        created_at: metadata.created_at,
+    })
+}
+
 /// Search documents
 ///
 /// When `semantic_ratio > 0` and an embedding model is configured, performs hybrid search
