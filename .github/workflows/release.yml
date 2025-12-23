@@ -44,6 +44,7 @@ jobs:
             rust_target: universal-apple-darwin
             features: metal
             artifact_name: macos
+            macos_deployment_target: '11.0'
 
     runs-on: ${{ matrix.platform }}
 
@@ -102,6 +103,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CUDA_COMPUTE_CAP: ${{ matrix.cuda && '80' || '' }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target || '' }}
         with:
           args: >-
             --target ${{ matrix.rust_target }}
