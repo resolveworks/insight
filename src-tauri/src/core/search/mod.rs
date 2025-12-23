@@ -573,32 +573,18 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
     Ok(SearchResults { hits, total_hits })
 }
 
-/// Extract a string field from an indexed document (opens its own transaction)
-pub fn get_document_field_by_internal_id(
-    index: &Index,
-    doc_id: u32,
-    field: &str,
-) -> Result<Option<String>> {
-    let rtxn = index.read_txn()?;
-    get_document_field(index, &rtxn, doc_id, field)
-}
-
-/// Extract a string field from an indexed document using an existing transaction
-pub fn get_document_field(
+/// Get a document as a JSON object using an existing transaction
+pub fn get_document(
     index: &Index,
     rtxn: &milli::heed::RoTxn,
     doc_id: u32,
-    field: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
     let fields_ids_map = index.fields_ids_map(rtxn)?;
 
     let docs = index.documents(rtxn, [doc_id])?;
     if let Some((_id, obkv)) = docs.first() {
-        let value = fields_ids_map
-            .id(field)
-            .and_then(|fid| obkv.get(fid))
-            .and_then(|v| serde_json::from_slice::<String>(v).ok());
-        Ok(value)
+        let obj = milli::all_obkv_to_json(obkv, &fields_ids_map)?;
+        Ok(Some(obj))
     } else {
         Ok(None)
     }
@@ -611,7 +597,10 @@ pub fn get_document_by_external_id(index: &Index, external_id: &str) -> Result<O
     // O(1) lookup: external ID -> internal ID via B-tree
     let external_ids = index.external_documents_ids();
     match external_ids.get(&rtxn, external_id)? {
-        Some(internal_id) => get_document_field(index, &rtxn, internal_id, "content"),
+        Some(internal_id) => {
+            let doc = get_document(index, &rtxn, internal_id)?;
+            Ok(doc.and_then(|d| d.get("content").and_then(|v| v.as_str()).map(String::from)))
+        }
         None => Ok(None),
     }
 }
@@ -646,9 +635,10 @@ pub fn delete_document_chunks(
         .documents_ids
         .iter()
         .filter_map(|&doc_id| {
-            get_document_field(index, &rtxn, doc_id, "id")
+            get_document(index, &rtxn, doc_id)
                 .ok()
                 .flatten()
+                .and_then(|d| d.get("id").and_then(|v| v.as_str()).map(String::from))
         })
         .collect();
     drop(rtxn);
@@ -754,9 +744,10 @@ pub fn delete_chunks_by_collection(
         .hits
         .iter()
         .filter_map(|hit| {
-            get_document_field(index, &rtxn, hit.doc_id, "id")
+            get_document(index, &rtxn, hit.doc_id)
                 .ok()
                 .flatten()
+                .and_then(|d| d.get("id").and_then(|v| v.as_str()).map(String::from))
         })
         .collect();
     drop(rtxn);
@@ -799,6 +790,13 @@ mod tests {
             collection_id: collection_id.to_string(),
             vector,
         }
+    }
+
+    /// Helper to get a string field from a document (for testing)
+    fn get_field(index: &Index, doc_id: u32, field: &str) -> Option<String> {
+        let rtxn = index.read_txn().ok()?;
+        let doc = get_document(index, &rtxn, doc_id).ok()??;
+        doc.get(field).and_then(|v| v.as_str()).map(String::from)
     }
 
     #[test]
@@ -856,8 +854,7 @@ mod tests {
         assert_eq!(results.hits.len(), 1);
 
         // Verify we can retrieve the chunk fields
-        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
-            .unwrap();
+        let name = get_field(&index, results.hits[0].doc_id, "parent_name");
         assert_eq!(name, Some("test.pdf".to_string()));
     }
 
@@ -919,9 +916,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(climate_only.hits.len(), 1);
-        let name =
-            get_document_field_by_internal_id(&index, climate_only.hits[0].doc_id, "parent_name")
-                .unwrap();
+        let name = get_field(&index, climate_only.hits[0].doc_id, "parent_name");
         assert_eq!(name, Some("a.pdf".to_string()));
 
         // Filter to multiple collections
@@ -1046,8 +1041,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(results.hits.len(), 1);
-        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
-            .unwrap();
+        let name = get_field(&index, results.hits[0].doc_id, "parent_name");
         assert_eq!(name, Some("b.pdf".to_string()));
     }
 
@@ -1087,8 +1081,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(results.hits.len(), 1);
-        let name = get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
-            .unwrap();
+        let name = get_field(&index, results.hits[0].doc_id, "parent_name");
         assert_eq!(name, Some("c.pdf".to_string()));
     }
 
@@ -1172,9 +1165,7 @@ mod tests {
         assert!(results.hits.len() >= 2, "Should find at least 2 chunks");
 
         // The cat chunks should be ranked higher (first)
-        let first_name =
-            get_document_field_by_internal_id(&index, results.hits[0].doc_id, "parent_name")
-                .unwrap();
+        let first_name = get_field(&index, results.hits[0].doc_id, "parent_name");
         assert!(
             first_name == Some("cats.pdf".to_string())
                 || first_name == Some("more_cats.pdf".to_string()),

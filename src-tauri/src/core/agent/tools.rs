@@ -49,9 +49,9 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
         Tool {
             tp: ToolType::Function,
             function: Function {
-                name: "read_document".to_string(),
+                name: "read_chunk".to_string(),
                 description: Some(
-                    "Read the full text content of a document. Use the document_id and collection_id from search results.".to_string()
+                    "Read a specific chunk from a document. Use this to get more context around a search result or read adjacent chunks. Chunk indices start at 0.".to_string()
                 ),
                 parameters: Some(json_to_hashmap(json!({
                     "type": "object",
@@ -60,12 +60,12 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
                             "type": "string",
                             "description": "The document ID from search results"
                         },
-                        "collection_id": {
-                            "type": "string",
-                            "description": "The collection ID from search results"
+                        "chunk_index": {
+                            "type": "integer",
+                            "description": "The chunk index (0-based). Use adjacent indices to read surrounding context."
                         }
                     },
-                    "required": ["document_id", "collection_id"]
+                    "required": ["document_id", "chunk_index"]
                 }))),
             },
         },
@@ -104,7 +104,7 @@ pub async fn execute_tool(tool_call: &ToolCall, state: &AppState) -> ToolResult 
     match tool_call.name.as_str() {
         "search" => execute_search(tool_call, state).await,
         "semantic_search" => execute_semantic_search(tool_call, state).await,
-        "read_document" => execute_read_document(tool_call, state).await,
+        "read_chunk" => execute_read_chunk(tool_call, state).await,
         _ => ToolResult {
             tool_call_id: tool_call.id.clone(),
             content: format!("Unknown tool: {}", tool_call.name),
@@ -230,25 +230,26 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
     };
 
     for &doc_id in doc_ids {
-        // Get chunk fields
-        let parent_id = search::get_document_field(index, &rtxn, doc_id, "parent_id")
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let parent_name = search::get_document_field(index, &rtxn, doc_id, "parent_name")
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let collection_id = search::get_document_field(index, &rtxn, doc_id, "collection_id")
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let content = search::get_document_field(index, &rtxn, doc_id, "content")
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        let doc = match search::get_document(index, &rtxn, doc_id) {
+            Ok(Some(d)) => d,
+            _ => continue,
+        };
 
-        // Content is already the chunk text - show it directly (truncate if very long)
+        let get_str = |key: &str| -> String {
+            doc.get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let get_num =
+            |key: &str| -> i64 { doc.get(key).and_then(|v| v.as_i64()).unwrap_or_default() };
+
+        let parent_id = get_str("parent_id");
+        let parent_name = get_str("parent_name");
+        let chunk_index = get_num("chunk_index");
+        let content = get_str("content");
+
+        // Truncate long passages
         let passage: String = content.chars().take(500).collect();
         let passage = if content.len() > 500 {
             format!("{}...", passage)
@@ -257,8 +258,8 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
         };
 
         results.push(format!(
-            "- Document: {}\n  ID: {}\n  Collection: {}\n  Passage: {}",
-            parent_name, parent_id, collection_id, passage
+            "- Document: {}\n  ID: {}\n  Chunk: {}\n  Passage: {}",
+            parent_name, parent_id, chunk_index, passage
         ));
     }
 
@@ -269,96 +270,48 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
     )
 }
 
-async fn execute_read_document(tool_call: &ToolCall, state: &AppState) -> ToolResult {
+async fn execute_read_chunk(tool_call: &ToolCall, state: &AppState) -> ToolResult {
     let doc_id = tool_call.arguments["document_id"].as_str().unwrap_or("");
-    let collection_id = tool_call.arguments["collection_id"].as_str().unwrap_or("");
+    let chunk_index = tool_call.arguments["chunk_index"].as_u64().unwrap_or(0) as usize;
 
-    info!(document_id = %doc_id, collection_id = %collection_id, "Reading document");
+    info!(document_id = %doc_id, chunk_index = chunk_index, "Reading chunk");
 
-    // Parse collection_id as namespace
-    let namespace_id: iroh_docs::NamespaceId = match collection_id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            warn!(collection_id = %collection_id, "Invalid collection ID");
-            return ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: format!("Invalid collection ID: {}", collection_id),
-                is_error: true,
-            };
-        }
-    };
+    // Build the chunk ID: "{parent_id}_chunk_{chunk_index}"
+    let chunk_id = format!("{}_chunk_{}", doc_id, chunk_index);
 
-    // Fetch document metadata from storage
-    let storage = state.storage.read().await;
-    let document = match storage.get_document(namespace_id, doc_id).await {
-        Ok(Some(doc)) => doc,
-        Ok(None) => {
-            warn!(document_id = %doc_id, "Document not found");
-            return ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: format!("Document not found: {}", doc_id),
-                is_error: true,
-            };
-        }
-        Err(e) => {
-            warn!(document_id = %doc_id, error = %e, "Error finding document");
-            return ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: format!("Error finding document: {}", e),
-                is_error: true,
-            };
-        }
-    };
+    let index = state.search.read().await;
 
-    // Get text content from blob storage
-    let text_hash: iroh_blobs::Hash = match document.text_hash.parse() {
-        Ok(h) => h,
-        Err(_) => {
-            warn!(document_id = %doc_id, "Invalid text hash");
-            return ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: format!("Invalid text hash for document: {}", doc_id),
-                is_error: true,
-            };
-        }
-    };
+    match search::get_document_by_external_id(&index, &chunk_id) {
+        Ok(Some(content)) => {
+            info!(
+                document_id = %doc_id,
+                chunk_index = chunk_index,
+                content_len = content.len(),
+                "Chunk read successfully"
+            );
 
-    match storage.get_blob(&text_hash).await {
-        Ok(Some(bytes)) => match String::from_utf8(bytes) {
-            Ok(content) => {
-                info!(
-                    document_id = %doc_id,
-                    content_len = content.len(),
-                    "Document read successfully"
-                );
-                ToolResult {
-                    tool_call_id: tool_call.id.clone(),
-                    content,
-                    is_error: false,
-                }
-            }
-            Err(e) => {
-                warn!(document_id = %doc_id, error = %e, "Invalid UTF-8 in document");
-                ToolResult {
-                    tool_call_id: tool_call.id.clone(),
-                    content: format!("Invalid text encoding in document: {}", doc_id),
-                    is_error: true,
-                }
-            }
-        },
-        Ok(None) => {
-            warn!(document_id = %doc_id, "Text content not found in storage");
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
-                content: format!("Text content not found for document: {}", doc_id),
+                content,
+                is_error: false,
+            }
+        }
+        Ok(None) => {
+            warn!(document_id = %doc_id, chunk_index = chunk_index, "Chunk not found");
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!(
+                    "Chunk {} not found for document {}. Try a different chunk index.",
+                    chunk_index, doc_id
+                ),
                 is_error: true,
             }
         }
         Err(e) => {
-            warn!(document_id = %doc_id, error = %e, "Error reading text content");
+            warn!(document_id = %doc_id, chunk_index = chunk_index, error = %e, "Error reading chunk");
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
-                content: format!("Error reading document: {}", e),
+                content: format!("Error reading chunk: {}", e),
                 is_error: true,
             }
         }

@@ -563,22 +563,25 @@ pub async fn search(
         results.total_hits
     );
 
+    let rtxn = index.read_txn().map_err(|e| e.to_string())?;
+
     let mut hits = Vec::new();
     for (i, hit) in results.hits.into_iter().enumerate() {
-        // Get chunk fields (chunks have parent_id and parent_name)
-        let id = search::get_document_field_by_internal_id(&index, hit.doc_id, "parent_id")
+        let doc = search::get_document(&index, &rtxn, hit.doc_id)
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        let name = search::get_document_field_by_internal_id(&index, hit.doc_id, "parent_name")
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default();
-        let content = search::get_document_field_by_internal_id(&index, hit.doc_id, "content")
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default();
-        let collection_id =
-            search::get_document_field_by_internal_id(&index, hit.doc_id, "collection_id")
-                .map_err(|e| e.to_string())?
-                .unwrap_or_default();
+
+        let get_str = |key: &str| -> String {
+            doc.get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let id = get_str("parent_id");
+        let name = get_str("parent_name");
+        let content = get_str("content");
+        let collection_id = get_str("collection_id");
 
         // Content is now chunk text - use it as the snippet
         let snippet = content.chars().take(500).collect::<String>();
