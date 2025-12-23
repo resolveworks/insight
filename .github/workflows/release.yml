@@ -102,7 +102,7 @@ jobs:
           args: >-
             --target ${{ matrix.rust_target }}
             ${{ matrix.features && format('--features {0}', matrix.features) }}
-            ${{ matrix.suffix && format('--config "productName=Insight{0}"', matrix.suffix) }}
+            ${{ matrix.suffix && format('--config ''{"productName":"Insight{0}"}''', matrix.suffix) }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
