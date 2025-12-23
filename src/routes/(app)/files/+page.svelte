@@ -33,6 +33,17 @@
 	let newCollectionName = $state('');
 	let selectedCollection = $state<string | null>(null);
 
+	// Sharing state
+	let sharingCollectionId = $state<string | null>(null);
+	let shareTicket = $state<string | null>(null);
+	let shareError = $state<string | null>(null);
+	let ticketCopied = $state(false);
+
+	// Import from ticket state
+	let importTicket = $state('');
+	let importingCollection = $state(false);
+	let importError = $state<string | null>(null);
+
 	let unlistenDocAdded: UnlistenFn;
 
 	async function importPdf() {
@@ -133,6 +144,65 @@
 		});
 	}
 
+	async function shareCollection(collectionId: string, event: MouseEvent) {
+		event.stopPropagation();
+		shareError = null;
+		ticketCopied = false;
+
+		if (sharingCollectionId === collectionId) {
+			// Toggle off
+			sharingCollectionId = null;
+			shareTicket = null;
+			return;
+		}
+
+		sharingCollectionId = collectionId;
+		shareTicket = null;
+
+		try {
+			shareTicket = await invoke<string>('share_collection', {
+				collectionId,
+				writable: false,
+			});
+		} catch (e) {
+			shareError = String(e);
+			console.error('Failed to share collection:', e);
+		}
+	}
+
+	async function copyTicket() {
+		if (!shareTicket) return;
+		try {
+			await navigator.clipboard.writeText(shareTicket);
+			ticketCopied = true;
+			setTimeout(() => (ticketCopied = false), 2000);
+		} catch (e) {
+			console.error('Failed to copy ticket:', e);
+		}
+	}
+
+	async function importFromTicket() {
+		if (!importTicket.trim()) return;
+
+		importingCollection = true;
+		importError = null;
+
+		try {
+			const collection = await invoke<Collection>('import_collection', {
+				ticket: importTicket.trim(),
+			});
+			collections = [...collections, collection];
+			importTicket = '';
+			// Auto-select the imported collection
+			await selectCollection(collection.id);
+		} catch (e) {
+			importError = String(e);
+			console.error('Failed to import collection:', e);
+		} finally {
+			importingCollection = false;
+		}
+	}
+
 	onMount(async () => {
 		await loadCollections();
 
@@ -162,7 +232,8 @@
 
 <div class="flex h-full">
 	<Sidebar title="Collections">
-		<div class="mb-4 flex gap-2">
+		<!-- Create new collection -->
+		<div class="mb-3 flex gap-2">
 			<input
 				type="text"
 				placeholder="New collection..."
@@ -177,32 +248,102 @@
 				+
 			</button>
 		</div>
+
+		<!-- Import from ticket -->
+		<details class="mb-4">
+			<summary
+				class="cursor-pointer text-xs text-slate-400 hover:text-slate-300"
+			>
+				Import shared collection
+			</summary>
+			<div class="mt-2 space-y-2">
+				<textarea
+					placeholder="Paste ticket here..."
+					bind:value={importTicket}
+					rows="2"
+					class="w-full resize-none rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
+				></textarea>
+				<button
+					onclick={importFromTicket}
+					disabled={importingCollection || !importTicket.trim()}
+					class="w-full rounded-md bg-slate-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-500 disabled:opacity-50"
+				>
+					{importingCollection ? 'Importing...' : 'Import'}
+				</button>
+				{#if importError}
+					<p class="text-xs text-red-400">{importError}</p>
+				{/if}
+			</div>
+		</details>
+
 		{#if collections.length === 0}
 			<p class="text-sm italic text-slate-500">No collections yet</p>
 		{:else}
 			<ul class="space-y-1">
 				{#each collections as collection (collection.id)}
-					<li
-						class="group flex cursor-pointer items-center justify-between rounded px-3 py-2 text-sm {selectedCollection ===
-						collection.id
-							? 'bg-rose-600/20 text-rose-400'
-							: 'hover:bg-slate-700'}"
-					>
-						<button
-							type="button"
-							onclick={() => selectCollection(collection.id)}
-							class="flex-1 truncate text-left"
+					<li>
+						<div
+							class="group flex cursor-pointer items-center justify-between rounded px-3 py-2 text-sm {selectedCollection ===
+							collection.id
+								? 'bg-rose-600/20 text-rose-400'
+								: 'hover:bg-slate-700'}"
 						>
-							{collection.name}
-						</button>
-						<button
-							type="button"
-							onclick={(e) => deleteCollection(collection.id, e)}
-							class="ml-2 hidden text-slate-500 hover:text-red-400 group-hover:block"
-							title="Delete collection"
-						>
-							x
-						</button>
+							<button
+								type="button"
+								onclick={() => selectCollection(collection.id)}
+								class="flex-1 truncate text-left"
+							>
+								{collection.name}
+							</button>
+							<div class="ml-2 flex gap-1">
+								<button
+									type="button"
+									onclick={(e) => shareCollection(collection.id, e)}
+									class="hidden text-slate-500 hover:text-blue-400 group-hover:block {sharingCollectionId ===
+									collection.id
+										? '!block text-blue-400'
+										: ''}"
+									title="Share collection"
+								>
+									&#8599;
+								</button>
+								<button
+									type="button"
+									onclick={(e) => deleteCollection(collection.id, e)}
+									class="hidden text-slate-500 hover:text-red-400 group-hover:block"
+									title="Delete collection"
+								>
+									x
+								</button>
+							</div>
+						</div>
+						<!-- Share ticket display -->
+						{#if sharingCollectionId === collection.id}
+							<div
+								class="mx-3 mb-2 rounded border border-slate-600 bg-slate-900 p-2"
+							>
+								{#if shareTicket}
+									<div class="flex items-start gap-2">
+										<code class="flex-1 break-all text-xs text-slate-300">
+											{shareTicket.slice(0, 40)}...
+										</code>
+										<button
+											onclick={copyTicket}
+											class="shrink-0 text-xs text-blue-400 hover:text-blue-300"
+										>
+											{ticketCopied ? 'Copied!' : 'Copy'}
+										</button>
+									</div>
+									<p class="mt-1 text-xs text-slate-500">
+										Share this ticket with others to sync this collection
+									</p>
+								{:else if shareError}
+									<p class="text-xs text-red-400">{shareError}</p>
+								{:else}
+									<p class="text-xs text-slate-400">Generating ticket...</p>
+								{/if}
+							</div>
+						{/if}
 					</li>
 				{/each}
 			</ul>
