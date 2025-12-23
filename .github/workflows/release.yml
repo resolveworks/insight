@@ -67,6 +67,10 @@ jobs:
         with:
           method: network
 
+      - name: Setup MSVC for CUDA (Windows)
+        if: matrix.cuda && contains(matrix.platform, 'windows')
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
