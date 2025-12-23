@@ -735,4 +735,54 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn test_duplicate_detection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+
+        let (collection_id, _) = storage.create_collection("Duplicates Test").await.unwrap();
+
+        // Initially, no document with this hash exists
+        assert!(!storage
+            .has_pdf_hash(collection_id, "pdf-hash-123")
+            .await
+            .unwrap());
+
+        // Add a document
+        let doc = DocumentMetadata {
+            id: "doc-1".to_string(),
+            name: "report.pdf".to_string(),
+            pdf_hash: "pdf-hash-123".to_string(),
+            text_hash: "text-hash-456".to_string(),
+            page_count: 10,
+            tags: vec![],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        storage.add_document(collection_id, doc).await.unwrap();
+
+        // Now the hash should be detected
+        assert!(storage
+            .has_pdf_hash(collection_id, "pdf-hash-123")
+            .await
+            .unwrap());
+
+        // Different hash should not be detected
+        assert!(!storage
+            .has_pdf_hash(collection_id, "different-hash")
+            .await
+            .unwrap());
+
+        // Delete the document
+        storage
+            .delete_document(collection_id, "doc-1")
+            .await
+            .unwrap();
+
+        // Hash index should be cleaned up
+        assert!(!storage
+            .has_pdf_hash(collection_id, "pdf-hash-123")
+            .await
+            .unwrap());
+    }
 }
