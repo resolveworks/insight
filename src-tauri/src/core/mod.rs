@@ -24,12 +24,27 @@ pub use embeddings::Embedder;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase")]
 pub enum BootPhase {
+    /// Initial boot phase - starting up
+    Initializing,
+    /// Opening iroh storage
+    OpeningStorage,
+    /// Opening milli search index
+    OpeningSearchIndex,
+    /// Starting collection watchers
+    WatchingCollections,
     /// Storage and search index initialized, ready to check model configuration
     StorageReady {
         embedding_configured: bool,
         embedding_model_id: Option<String>,
+        /// Whether the configured embedding model is already downloaded
+        embedding_downloaded: bool,
     },
-    /// Embedding model is being loaded (only if configured)
+    /// Embedding model needs to be downloaded before loading
+    EmbedderDownloadRequired {
+        model_id: String,
+        model_name: String,
+    },
+    /// Embedding model is being loaded (only if configured AND downloaded)
     EmbedderLoading {
         model_id: String,
         model_name: String,
@@ -134,23 +149,65 @@ impl AppState {
     pub async fn load_models_if_configured(&self, app_handle: &AppHandle) {
         let settings = Settings::load(&self.config.settings_file);
 
+        // Emit WatchingCollections phase
+        let _ = app_handle.emit("boot-phase", BootPhase::WatchingCollections);
+
         // Start watching existing collections for indexing events
         self.watch_existing_collections().await;
+
+        // Check if embedding model is configured and downloaded
+        let (embedding_configured, embedding_downloaded) =
+            if let Some(ref model_id) = settings.embedding_model_id {
+                if let Some(model) = models::get_embedding_model(model_id) {
+                    // Check if model files are already downloaded
+                    let downloaded = match models::ModelManager::new().await {
+                        Ok(manager) => manager.is_downloaded(&model),
+                        Err(e) => {
+                            tracing::warn!("Failed to create model manager: {}", e);
+                            false
+                        }
+                    };
+                    (true, downloaded)
+                } else {
+                    (false, false)
+                }
+            } else {
+                (false, false)
+            };
 
         // Emit StorageReady so frontend knows initialization is complete
         let _ = app_handle.emit(
             "boot-phase",
             BootPhase::StorageReady {
-                embedding_configured: settings.embedding_model_id.is_some(),
+                embedding_configured,
                 embedding_model_id: settings.embedding_model_id.clone(),
+                embedding_downloaded,
             },
         );
 
         // Language model is loaded lazily when chat is opened (see ensure_language_model_loaded)
 
-        // Load embedding model if configured
+        // Load embedding model if configured AND downloaded
         if let Some(ref model_id) = settings.embedding_model_id {
             if let Some(model) = models::get_embedding_model(model_id) {
+                if !embedding_downloaded {
+                    // Model needs to be downloaded - emit event and let frontend handle it
+                    tracing::info!(
+                        "Embedding model '{}' not downloaded, waiting for user action",
+                        model_id
+                    );
+                    let _ = app_handle.emit(
+                        "boot-phase",
+                        BootPhase::EmbedderDownloadRequired {
+                            model_id: model_id.clone(),
+                            model_name: model.name.clone(),
+                        },
+                    );
+                    // Don't emit AppReady - frontend will trigger download and reload
+                    return;
+                }
+
+                // Model is downloaded, proceed to load it
                 let _ = app_handle.emit(
                     "boot-phase",
                     BootPhase::EmbedderLoading {

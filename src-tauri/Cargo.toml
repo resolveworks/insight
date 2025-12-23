@@ -11,6 +11,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+embed-manifest = "1"
 
 [dependencies]
 # Tauri
@@ -77,3 +78,7 @@ mkl = ["mistralrs/mkl"]
 [dev-dependencies]
 tempfile = "3"
 tauri = { version = "2", features = ["test"] }
+
+[[test]]
+name = "lib_tests"
+path = "src/lib.rs"

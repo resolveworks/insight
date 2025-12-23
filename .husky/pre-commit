@@ -1,4 +1,13 @@
 pnpm lint-staged
 pnpm check
 pnpm test:run
-cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
+
+cd src-tauri
+cargo fmt --check
+cargo clippy -- -D warnings
+
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+    cargo test --test lib_tests
+else
+    cargo test
+fi

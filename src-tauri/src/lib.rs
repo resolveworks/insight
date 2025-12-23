@@ -86,6 +86,8 @@ pub fn run() {
             commands::get_embedding_model_status,
             commands::download_embedding_model,
             commands::configure_embedding_model,
+            // Boot
+            commands::get_boot_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

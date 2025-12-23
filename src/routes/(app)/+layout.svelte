@@ -1,30 +1,25 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { resolve } from '$app/paths';
-	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy, onMount } from 'svelte';
+	import { invoke } from '@tauri-apps/api/core';
+	import { onMount } from 'svelte';
 	import SetupWizard from '$lib/components/SetupWizard.svelte';
 	import BootLoader from '$lib/components/BootLoader.svelte';
+	import BootDownloader from '$lib/components/BootDownloader.svelte';
 
 	let { children } = $props();
 
-	// Boot phase types matching backend BootPhase enum (src-tauri/src/core/mod.rs)
-	type BootPhaseEvent =
-		| {
-				phase: 'StorageReady';
-				embedding_configured: boolean;
-				embedding_model_id: string | null;
-		  }
-		| { phase: 'EmbedderLoading'; model_id: string; model_name: string }
-		| { phase: 'EmbedderReady'; model_id: string }
-		| { phase: 'EmbedderFailed'; model_id: string; error: string }
-		| { phase: 'AppReady' };
+	type BootStatus = {
+		embedding_configured: boolean;
+		embedding_model_id: string | null;
+		embedding_downloaded: boolean;
+	};
 
 	// App state machine
 	type AppPhase =
 		| { state: 'booting' }
 		| { state: 'setup-required' }
-		| { state: 'loading-embedder'; modelName: string }
+		| { state: 'download-required'; modelId: string; modelName: string }
 		| { state: 'embedder-failed'; modelId: string; error: string }
 		| { state: 'ready' };
 
@@ -40,61 +35,55 @@
 
 	const currentTab = $derived($page.url.pathname.split('/')[1] || 'search');
 
-	let unlistenBootPhase: UnlistenFn;
-
 	function handleSetupComplete() {
 		appPhase = { state: 'ready' };
 	}
 
 	onMount(async () => {
-		unlistenBootPhase = await listen<BootPhaseEvent>('boot-phase', (event) => {
-			const phase = event.payload;
+		console.log('Layout mounted, fetching boot status...');
 
-			switch (phase.phase) {
-				case 'StorageReady':
-					if (!phase.embedding_configured) {
-						appPhase = { state: 'setup-required' };
-					}
-					break;
+		try {
+			// Get boot status from backend
+			const status = await invoke<BootStatus>('get_boot_status');
+			console.log('Boot status:', status);
 
-				case 'EmbedderLoading':
-					appPhase = {
-						state: 'loading-embedder',
-						modelName: phase.model_name,
-					};
-					break;
-
-				case 'EmbedderReady':
-					break;
-
-				case 'AppReady':
-					if (appPhase.state !== 'setup-required') {
-						appPhase = { state: 'ready' };
-					}
-					break;
-
-				case 'EmbedderFailed':
-					appPhase = {
-						state: 'embedder-failed',
-						modelId: phase.model_id,
-						error: phase.error,
-					};
-					break;
+			if (!status.embedding_configured) {
+				// No embedding model configured - show setup wizard
+				appPhase = { state: 'setup-required' };
+			} else if (!status.embedding_downloaded) {
+				// Embedding configured but not downloaded - show download UI
+				// We need the model name, fetch it
+				const models = await invoke<{ id: string; name: string }[]>(
+					'get_available_embedding_models',
+				);
+				const model = models.find((m) => m.id === status.embedding_model_id);
+				appPhase = {
+					state: 'download-required',
+					modelId: status.embedding_model_id!,
+					modelName: model?.name ?? 'Embedding Model',
+				};
+			} else {
+				// Everything ready
+				appPhase = { state: 'ready' };
 			}
-		});
-	});
-
-	onDestroy(() => {
-		unlistenBootPhase?.();
+		} catch (e) {
+			console.error('Failed to get boot status:', e);
+			// Fallback to ready state
+			appPhase = { state: 'ready' };
+		}
 	});
 </script>
 
 {#if appPhase.state === 'booting'}
-	<BootLoader phase="storage" />
+	<BootLoader />
 {:else if appPhase.state === 'setup-required'}
 	<SetupWizard onComplete={handleSetupComplete} />
-{:else if appPhase.state === 'loading-embedder'}
-	<BootLoader phase="embedder" modelName={appPhase.modelName} />
+{:else if appPhase.state === 'download-required'}
+	<BootDownloader
+		modelId={appPhase.modelId}
+		modelName={appPhase.modelName}
+		onComplete={handleSetupComplete}
+	/>
 {:else if appPhase.state === 'embedder-failed'}
 	<div class="flex h-screen items-center justify-center bg-slate-900">
 		<div class="max-w-md text-center">
