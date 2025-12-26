@@ -724,8 +724,12 @@ pub async fn load_conversation(
 /// Start a new chat conversation
 ///
 /// Requires a language model to be loaded first via `configure_language_model`.
+/// Optionally accepts collections to scope the conversation context.
 #[tauri::command]
-pub async fn start_chat(state: State<'_, AppState>) -> Result<agent::Conversation, String> {
+pub async fn start_chat(
+    collections: Option<Vec<agent::CollectionInfo>>,
+    state: State<'_, AppState>,
+) -> Result<agent::Conversation, String> {
     // Verify model is loaded
     let model_guard = state.agent_model.read().await;
     if model_guard.is_none() {
@@ -733,9 +737,15 @@ pub async fn start_chat(state: State<'_, AppState>) -> Result<agent::Conversatio
     }
     drop(model_guard);
 
-    // Create new conversation
+    // Create new conversation with optional collection context
     let conversation_id = uuid::Uuid::new_v4().to_string();
-    let conversation = agent::Conversation::new(conversation_id.clone());
+    let collection_names: Option<Vec<String>> = collections
+        .as_ref()
+        .map(|cols| cols.iter().map(|c| c.name.clone()).collect());
+    let conversation = agent::Conversation::with_collection_context(
+        conversation_id.clone(),
+        collection_names.as_deref(),
+    );
 
     // Save to disk
     conversations::save_conversation(&state.config.conversations_dir, &conversation)
@@ -752,10 +762,13 @@ pub async fn start_chat(state: State<'_, AppState>) -> Result<agent::Conversatio
 }
 
 /// Send a message to a conversation and stream the response
+///
+/// Optionally accepts collections to filter agent searches.
 #[tauri::command]
 pub async fn send_message(
     conversation_id: String,
     message: String,
+    collections: Option<Vec<agent::CollectionInfo>>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -822,6 +835,9 @@ pub async fn send_message(
     let conv_id = conversation_id.clone();
     let mut conversation = conversation;
 
+    // Clone collection context for the spawned task
+    let collections_clone = collections;
+
     // Run agent loop in background
     tokio::spawn(async move {
         let state_clone = crate::core::AppState {
@@ -838,15 +854,14 @@ pub async fn send_message(
             job_coordinator,
         };
 
-        if let Err(e) = agent::run_agent_loop(
-            &model,
-            &mut conversation,
-            message,
-            &state_clone,
-            tx,
-            cancel_token,
-        )
-        .await
+        // Create agent context with collection filtering
+        let ctx = agent::AgentContext {
+            state: state_clone,
+            collections: collections_clone,
+        };
+
+        if let Err(e) =
+            agent::run_agent_loop(&model, &mut conversation, message, &ctx, tx, cancel_token).await
         {
             tracing::error!(
                 conversation_id = %conv_id,

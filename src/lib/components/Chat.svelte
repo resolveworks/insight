@@ -47,11 +47,19 @@
 		updated_at: string;
 	}
 
+	/** Collection info for filtering agent searches */
+	interface CollectionInfo {
+		id: string;
+		name: string;
+	}
+
 	type Props = {
 		onConversationStart?: (id: string) => void;
+		/** Collections to filter agent searches to */
+		collections?: CollectionInfo[];
 	};
 
-	let { onConversationStart }: Props = $props();
+	let { onConversationStart, collections }: Props = $props();
 
 	let conversationId = $state<string | null>(null);
 	let messages = $state<ChatMessage[]>([]);
@@ -84,6 +92,7 @@
 			error = null;
 			const conv = await invoke<Conversation>('start_chat', {
 				modelId: currentModelId,
+				collections: collections && collections.length > 0 ? collections : null,
 			});
 			conversationId = conv.id;
 			messages = [];
@@ -172,6 +181,7 @@
 			await invoke('send_message', {
 				conversationId,
 				message: userMessage,
+				collections: collections && collections.length > 0 ? collections : null,
 			});
 		} catch (e) {
 			error = `Failed to send message: ${e}`;

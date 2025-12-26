@@ -27,13 +27,12 @@
 
 	type Tab = { id: string; label: string; href: string };
 	const tabs: Tab[] = [
-		{ id: 'trajectory', label: 'Trajectory', href: '/trajectory' },
-		{ id: 'search', label: 'Search', href: '/search' },
+		{ id: 'research', label: 'Research', href: '/research' },
 		{ id: 'files', label: 'Files', href: '/files' },
 		{ id: 'settings', label: 'Settings', href: '/settings' },
 	];
 
-	const currentTab = $derived($page.url.pathname.split('/')[1] || 'search');
+	const currentTab = $derived($page.url.pathname.split('/')[1] || 'research');
 
 	function handleSetupComplete() {
 		appPhase = { state: 'ready' };

@@ -73,7 +73,7 @@ impl BootPhaseEmitter for NoOpEmitter {
     fn emit_boot_phase(&self, _phase: BootPhase) {}
 }
 
-pub use agent::{AgentEvent, AgentModel, Conversation};
+pub use agent::{AgentContext, AgentEvent, AgentModel, CollectionInfo, Conversation};
 pub use config::{Config, Settings};
 pub use jobs::JobCoordinator;
 pub use storage::Storage;
@@ -98,6 +98,7 @@ pub async fn check_embedding_status(settings: &Settings) -> (bool, bool) {
 }
 
 /// Application state shared across Tauri commands
+#[derive(Clone)]
 pub struct AppState {
     pub config: Config,
     /// Storage - initialized in setup(), always available to commands

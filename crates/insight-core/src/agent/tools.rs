@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
+use super::AgentContext;
 use crate::search;
-use crate::AppState;
 
 /// A tool call from the LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,11 +100,11 @@ fn json_to_hashmap(value: Value) -> HashMap<String, Value> {
 }
 
 /// Execute a tool call and return the result
-pub async fn execute_tool(tool_call: &ToolCall, state: &AppState) -> ToolResult {
+pub async fn execute_tool(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
     match tool_call.name.as_str() {
-        "search" => execute_search(tool_call, state).await,
-        "semantic_search" => execute_semantic_search(tool_call, state).await,
-        "read_chunk" => execute_read_chunk(tool_call, state).await,
+        "search" => execute_search(tool_call, ctx).await,
+        "semantic_search" => execute_semantic_search(tool_call, ctx).await,
+        "read_chunk" => execute_read_chunk(tool_call, ctx).await,
         _ => ToolResult {
             tool_call_id: tool_call.id.clone(),
             content: format!("Unknown tool: {}", tool_call.name),
@@ -113,19 +113,21 @@ pub async fn execute_tool(tool_call: &ToolCall, state: &AppState) -> ToolResult 
     }
 }
 
-async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
+async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
     let query = tool_call.arguments["query"].as_str().unwrap_or("");
 
     info!(query = %query, "Executing search");
 
-    let index = state.search.read().await;
+    let index = ctx.state.search.read().await;
 
-    // Agent uses keyword-only search (no semantic embeddings or score filtering)
+    // Agent uses keyword-only search with optional collection filtering
+    let collection_ids = ctx.collection_ids();
     match search::search_index(
         &index,
         search::SearchParams {
             query,
             limit: 10,
+            collection_ids: collection_ids.as_deref(),
             ..Default::default()
         },
     ) {
@@ -155,13 +157,13 @@ async fn execute_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
     }
 }
 
-async fn execute_semantic_search(tool_call: &ToolCall, state: &AppState) -> ToolResult {
+async fn execute_semantic_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
     let query = tool_call.arguments["query"].as_str().unwrap_or("");
 
     info!(query = %query, "Executing semantic search");
 
     // Get embedder to encode the query
-    let embedder_guard = state.embedder.read().await;
+    let embedder_guard = ctx.state.embedder.read().await;
     let query_vector = match embedder_guard.as_ref() {
         Some(embedder) => match embedder.embed(query).await {
             Ok(vec) => {
@@ -180,15 +182,17 @@ async fn execute_semantic_search(tool_call: &ToolCall, state: &AppState) -> Tool
     };
     drop(embedder_guard);
 
-    let index = state.search.read().await;
+    let index = ctx.state.search.read().await;
 
     // Use semantic search with ratio 1.0 (pure semantic) if we have embeddings
+    let collection_ids = ctx.collection_ids();
     let search_params = search::SearchParams {
         query,
         limit: 10,
         query_vector,
         semantic_ratio: 1.0,
         min_score: Some(0.3), // Filter out low-relevance results
+        collection_ids: collection_ids.as_deref(),
         ..Default::default()
     };
 
@@ -270,7 +274,7 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
     )
 }
 
-async fn execute_read_chunk(tool_call: &ToolCall, state: &AppState) -> ToolResult {
+async fn execute_read_chunk(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
     let doc_id = tool_call.arguments["document_id"].as_str().unwrap_or("");
     let chunk_index = tool_call.arguments["chunk_index"].as_u64().unwrap_or(0) as usize;
 
@@ -279,7 +283,7 @@ async fn execute_read_chunk(tool_call: &ToolCall, state: &AppState) -> ToolResul
     // Build the chunk ID: "{parent_id}_chunk_{chunk_index}"
     let chunk_id = format!("{}_chunk_{}", doc_id, chunk_index);
 
-    let index = state.search.read().await;
+    let index = ctx.state.search.read().await;
 
     match search::get_document_by_external_id(&index, &chunk_id) {
         Ok(Some(content)) => {

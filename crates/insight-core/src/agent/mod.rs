@@ -18,8 +18,39 @@ pub use tools::{execute_tool, get_mistralrs_tools, ToolCall, ToolResult};
 
 use crate::models::LanguageModelInfo;
 
-/// System prompt for the agent
-const SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists investigate document collections.
+/// Info about a collection for agent context
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CollectionInfo {
+    pub id: String,
+    pub name: String,
+}
+
+/// Context for agent execution - holds state and per-request configuration
+#[derive(Clone)]
+pub struct AgentContext {
+    pub state: crate::AppState,
+    /// Collections to filter searches to (None = search all)
+    pub collections: Option<Vec<CollectionInfo>>,
+}
+
+impl AgentContext {
+    /// Get collection IDs for search filtering
+    pub fn collection_ids(&self) -> Option<Vec<String>> {
+        self.collections
+            .as_ref()
+            .map(|cols| cols.iter().map(|c| c.id.clone()).collect())
+    }
+
+    /// Get collection names for system prompt
+    pub fn collection_names(&self) -> Option<Vec<String>> {
+        self.collections
+            .as_ref()
+            .map(|cols| cols.iter().map(|c| c.name.clone()).collect())
+    }
+}
+
+/// Base system prompt for the agent
+const BASE_SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists investigate document collections.
 
 Be concise. Answer in 2-4 sentences unless the user asks for more detail. Cite document names so findings are verifiable.
 
@@ -28,6 +59,22 @@ When answering questions:
 2. Read documents to extract specific details
 3. Cite sources (document name)
 4. Note any gaps or contradictions worth pursuing"#;
+
+/// Build system prompt with optional collection context
+fn build_system_prompt(collection_names: Option<&[String]>) -> String {
+    let mut prompt = BASE_SYSTEM_PROMPT.to_string();
+
+    if let Some(names) = collection_names {
+        if !names.is_empty() {
+            prompt.push_str("\n\nYou are searching documents in:\n");
+            for name in names {
+                prompt.push_str(&format!("- {}\n", name));
+            }
+        }
+    }
+
+    prompt
+}
 
 /// Wrapper around mistral.rs Model
 pub struct AgentModel {
@@ -109,6 +156,11 @@ pub struct Conversation {
 
 impl Conversation {
     pub fn new(id: String) -> Self {
+        Self::with_system_prompt(id, BASE_SYSTEM_PROMPT.to_string())
+    }
+
+    /// Create a new conversation with a custom system prompt
+    pub fn with_system_prompt(id: String, system_prompt: String) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
             id,
@@ -116,12 +168,18 @@ impl Conversation {
             messages: vec![Message {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
-                    text: SYSTEM_PROMPT.to_string(),
+                    text: system_prompt,
                 }],
             }],
             created_at: now.clone(),
             updated_at: now,
         }
+    }
+
+    /// Create a new conversation with collection context
+    pub fn with_collection_context(id: String, collection_names: Option<&[String]>) -> Self {
+        let system_prompt = build_system_prompt(collection_names);
+        Self::with_system_prompt(id, system_prompt)
     }
 
     /// Generate title from first user message (truncated to 50 chars)
@@ -199,7 +257,7 @@ pub async fn run_agent_loop(
     model: &Arc<Model>,
     conversation: &mut Conversation,
     user_message: String,
-    state: &crate::AppState,
+    ctx: &AgentContext,
     event_tx: mpsc::Sender<AgentEvent>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
@@ -382,7 +440,7 @@ pub async fn run_agent_loop(
                     name: called.function.name.clone(),
                     arguments,
                 };
-                let result = execute_tool(&tool_call, state).await;
+                let result = execute_tool(&tool_call, ctx).await;
 
                 if result.is_error {
                     warn!(

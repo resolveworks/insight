@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 
 	onMount(() => {
-		goto(resolve('/search'), { replaceState: true });
+		goto(resolve('/research'), { replaceState: true });
 	});
 </script>
 
