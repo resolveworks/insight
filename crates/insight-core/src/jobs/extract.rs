@@ -68,6 +68,7 @@ pub fn spawn(
                                     pdf_bytes: doc.pdf_bytes,
                                     text: doc.text,
                                     page_count: doc.page_count,
+                                    page_boundaries: doc.page_boundaries,
                                 };
 
                                 if output_tx.blocking_send(extracted).is_err() {

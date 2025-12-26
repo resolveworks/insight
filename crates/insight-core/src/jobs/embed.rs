@@ -89,10 +89,36 @@ struct DocChunkInfo {
     name: String,
     collection_id: String,
     page_count: usize,
+    page_boundaries: Vec<usize>,
     /// Starting index in the flattened chunk array
     start_idx: usize,
     /// Number of chunks for this document
     chunk_count: usize,
+    /// Character offset where each chunk starts in the original text
+    chunk_offsets: Vec<usize>,
+}
+
+/// Find the starting character offset of each chunk in the original text.
+/// Chunks are produced sequentially with potential overlap.
+fn find_chunk_offsets(text: &str, chunks: &[String]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(chunks.len());
+    let mut search_start = 0;
+
+    for chunk in chunks {
+        // Find this chunk in the remaining text
+        if let Some(pos) = text[search_start..].find(chunk.as_str()) {
+            let absolute_pos = search_start + pos;
+            offsets.push(absolute_pos);
+            // Move search start forward, but account for overlap
+            // Don't move past the end of this chunk
+            search_start = absolute_pos + chunk.len().saturating_sub(100);
+        } else {
+            // Fallback: use the last known position
+            offsets.push(search_start);
+        }
+    }
+
+    offsets
 }
 
 /// Process a batch of documents with a single GPU call for all chunks.
@@ -119,13 +145,18 @@ async fn process_batch_with_embedder(emb: &Embedder, docs: Vec<Stored>) -> Vec<E
         let start_idx = all_chunks.len();
         let chunk_count = chunks.len();
 
+        // Find character offsets for each chunk in the original text
+        let chunk_offsets = find_chunk_offsets(&doc.text, &chunks);
+
         doc_infos.push(DocChunkInfo {
             doc_id: doc.doc_id.clone(),
             name: doc.name.clone(),
             collection_id: doc.collection_id.clone(),
             page_count: doc.page_count,
+            page_boundaries: doc.page_boundaries.clone(),
             start_idx,
             chunk_count,
+            chunk_offsets,
         });
 
         all_chunks.extend(chunks);
@@ -163,13 +194,26 @@ async fn process_batch_with_embedder(emb: &Embedder, docs: Vec<Stored>) -> Vec<E
             let chunks: Vec<ChunkWithVector> = (0..info.chunk_count)
                 .map(|i| {
                     let global_idx = info.start_idx + i;
+                    let chunk_content = &all_chunks[global_idx];
+
+                    // Calculate page range for this chunk
+                    let chunk_start_offset = info.chunk_offsets.get(i).copied().unwrap_or(0);
+                    let chunk_end_offset = chunk_start_offset + chunk_content.len();
+
+                    let start_page =
+                        crate::pdf::char_offset_to_page(chunk_start_offset, &info.page_boundaries);
+                    let end_page =
+                        crate::pdf::char_offset_to_page(chunk_end_offset, &info.page_boundaries);
+
                     ChunkWithVector {
                         index: i,
-                        content: all_chunks[global_idx].clone(),
+                        content: chunk_content.clone(),
                         vector: all_vectors
                             .as_ref()
                             .ok()
                             .and_then(|vecs| vecs.get(global_idx).cloned()),
+                        start_page,
+                        end_page,
                     }
                 })
                 .collect();
@@ -221,13 +265,28 @@ async fn embed_with_chunking(
 fn process_batch_without_embedder(docs: Vec<Stored>) -> Vec<Embedded> {
     docs.into_iter()
         .map(|doc| {
-            let chunks = chunk_text_simple(&doc.text)
+            let chunk_texts = chunk_text_simple(&doc.text);
+            let chunk_offsets = find_chunk_offsets(&doc.text, &chunk_texts);
+
+            let chunks = chunk_texts
                 .into_iter()
                 .enumerate()
-                .map(|(i, content)| ChunkWithVector {
-                    index: i,
-                    content,
-                    vector: None,
+                .map(|(i, content)| {
+                    let chunk_start_offset = chunk_offsets.get(i).copied().unwrap_or(0);
+                    let chunk_end_offset = chunk_start_offset + content.len();
+
+                    let start_page =
+                        crate::pdf::char_offset_to_page(chunk_start_offset, &doc.page_boundaries);
+                    let end_page =
+                        crate::pdf::char_offset_to_page(chunk_end_offset, &doc.page_boundaries);
+
+                    ChunkWithVector {
+                        index: i,
+                        content,
+                        vector: None,
+                        start_page,
+                        end_page,
+                    }
                 })
                 .collect();
 

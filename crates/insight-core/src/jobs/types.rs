@@ -14,6 +14,8 @@ pub struct Extracted {
     pub text: String,
     /// Number of pages
     pub page_count: usize,
+    /// Character offset where each page ends (for chunk-to-page mapping)
+    pub page_boundaries: Vec<usize>,
 }
 
 /// Document stored in iroh, ready for embedding
@@ -28,6 +30,8 @@ pub struct Stored {
     pub collection_id: String,
     /// Number of pages in the PDF
     pub page_count: usize,
+    /// Character offset where each page ends (for chunk-to-page mapping)
+    pub page_boundaries: Vec<usize>,
 }
 
 /// Chunks with embeddings, ready for indexing
@@ -52,6 +56,10 @@ pub struct ChunkWithVector {
     pub content: String,
     /// Pre-computed embedding vector (None if embedder unavailable)
     pub vector: Option<Vec<f32>>,
+    /// First page this chunk appears on (1-indexed)
+    pub start_page: usize,
+    /// Last page this chunk appears on (1-indexed)
+    pub end_page: usize,
 }
 
 /// Progress update emitted to frontend during import

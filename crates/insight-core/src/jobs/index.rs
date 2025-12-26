@@ -78,6 +78,8 @@ pub fn spawn(
                                 content: chunk.content,
                                 collection_id: doc.collection_id.clone(),
                                 page_count: doc.page_count,
+                                start_page: chunk.start_page,
+                                end_page: chunk.end_page,
                                 vector: chunk.vector,
                             });
                         }

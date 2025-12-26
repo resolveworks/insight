@@ -273,6 +273,10 @@ pub struct ChunkToIndex {
     pub collection_id: String,
     /// Number of pages in the parent document
     pub page_count: usize,
+    /// First page this chunk appears on (1-indexed)
+    pub start_page: usize,
+    /// Last page this chunk appears on (1-indexed)
+    pub end_page: usize,
     /// Pre-computed embedding vector for this chunk
     pub vector: Option<Vec<f32>>,
 }
@@ -342,6 +346,11 @@ fn index_chunk_batch(
                 "page_count".to_string(),
                 Value::Number(chunk.page_count.into()),
             );
+            m.insert(
+                "start_page".to_string(),
+                Value::Number(chunk.start_page.into()),
+            );
+            m.insert("end_page".to_string(), Value::Number(chunk.end_page.into()));
             // Add pre-computed vector if present (single vector, not array)
             if let Some(ref vector) = chunk.vector {
                 m.insert("_vectors".to_string(), json!({ "default": [vector] }));
@@ -795,6 +804,8 @@ mod tests {
             content: content.to_string(),
             collection_id: collection_id.to_string(),
             page_count: 1,
+            start_page: 1,
+            end_page: 1,
             vector,
         }
     }

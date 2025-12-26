@@ -1,3 +1,3 @@
 mod extractor;
 
-pub use extractor::{extract_text, ExtractedDocument};
+pub use extractor::{char_offset_to_page, extract_text, ExtractedDocument};

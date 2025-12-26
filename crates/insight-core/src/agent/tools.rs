@@ -278,6 +278,8 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32], ctx: &AgentConte
         let parent_name = get_str("parent_name");
         let chunk_index = get_num("chunk_index");
         let page_count = get_num("page_count");
+        let start_page = get_num("start_page");
+        let end_page = get_num("end_page");
         let collection_id = get_str("collection_id");
         let content = get_str("content");
 
@@ -295,8 +297,14 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32], ctx: &AgentConte
             passage
         };
 
-        // Format with page count context
-        let page_info = if page_count == 1 {
+        // Format page reference - show specific page(s) if available, otherwise total page count
+        let page_ref = if start_page > 0 && end_page > 0 {
+            if start_page == end_page {
+                format!("p. {}", start_page)
+            } else {
+                format!("pp. {}-{}", start_page, end_page)
+            }
+        } else if page_count == 1 {
             "1 page".to_string()
         } else {
             format!("{} pages", page_count)
@@ -304,7 +312,7 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32], ctx: &AgentConte
 
         results.push(format!(
             "- Document: {} ({})\n  Collection: {}\n  ID: {} | Chunk: {}\n  Passage: {}",
-            parent_name, page_info, collection_name, parent_id, chunk_index, passage
+            parent_name, page_ref, collection_name, parent_id, chunk_index, passage
         ));
     }
 
@@ -438,11 +446,19 @@ async fn execute_list_documents(tool_call: &ToolCall, ctx: &AgentContext) -> Too
     // Sort by collection name, then document name
     all_documents.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
 
+    let total_docs = all_documents.len();
+    let total_pages: usize = all_documents.iter().map(|(_, d)| d.page_count).sum();
+
+    // Limit output to avoid overwhelming the model
+    const MAX_DOCS_TO_SHOW: usize = 25;
+    let showing_all = total_docs <= MAX_DOCS_TO_SHOW;
+    let docs_to_show: Vec<_> = all_documents.iter().take(MAX_DOCS_TO_SHOW).collect();
+
     // Format results
     let mut results = Vec::new();
     let mut current_collection = String::new();
 
-    for (collection_name, doc) in &all_documents {
+    for (collection_name, doc) in docs_to_show {
         // Add collection header when it changes
         if *collection_name != current_collection {
             if !current_collection.is_empty() {
@@ -454,24 +470,33 @@ async fn execute_list_documents(tool_call: &ToolCall, ctx: &AgentContext) -> Too
 
         // Format page info
         let page_info = if doc.page_count == 1 {
-            "1 page".to_string()
+            "1p".to_string()
         } else {
-            format!("{} pages", doc.page_count)
+            format!("{}p", doc.page_count)
         };
 
-        results.push(format!("- {} ({}) [ID: {}]", doc.name, page_info, doc.id));
+        // Full ID needed for read_chunk tool
+        results.push(format!("- {} ({}) [{}]", doc.name, page_info, doc.id));
     }
 
-    let total_docs = all_documents.len();
-    let total_pages: usize = all_documents.iter().map(|(_, d)| d.page_count).sum();
-
-    let summary = format!(
-        "Found {} document{} ({} total pages):\n\n{}",
-        total_docs,
-        if total_docs == 1 { "" } else { "s" },
-        total_pages,
-        results.join("\n")
-    );
+    let summary = if showing_all {
+        format!(
+            "Found {} document{} ({} total pages):\n\n{}",
+            total_docs,
+            if total_docs == 1 { "" } else { "s" },
+            total_pages,
+            results.join("\n")
+        )
+    } else {
+        format!(
+            "Found {} documents ({} total pages). Showing first {}:\n\n{}\n\n... and {} more documents. Use search to find specific documents.",
+            total_docs,
+            total_pages,
+            MAX_DOCS_TO_SHOW,
+            results.join("\n"),
+            total_docs - MAX_DOCS_TO_SHOW
+        )
+    };
 
     info!(
         document_count = total_docs,

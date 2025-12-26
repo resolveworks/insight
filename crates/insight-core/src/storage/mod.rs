@@ -31,6 +31,9 @@ pub struct DocumentMetadata {
     pub page_count: usize,
     pub tags: Vec<String>,
     pub created_at: String,
+    /// Character offset where each page ends (for chunk-to-page mapping)
+    #[serde(default)]
+    pub page_boundaries: Vec<usize>,
 }
 
 /// Storage layer using iroh for P2P content-addressed storage
@@ -618,6 +621,7 @@ mod tests {
             page_count: 5,
             tags: vec!["test".to_string()],
             created_at: "2024-01-01T00:00:00Z".to_string(),
+            page_boundaries: vec![],
         };
         storage.add_document(collection_id, doc).await.unwrap();
 
@@ -649,6 +653,7 @@ mod tests {
             page_count: 1,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
+            page_boundaries: vec![],
         };
         let doc2 = DocumentMetadata {
             id: "doc-2".to_string(),
@@ -658,6 +663,7 @@ mod tests {
             page_count: 2,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
+            page_boundaries: vec![],
         };
         storage.add_document(collection_id, doc1).await.unwrap();
         storage.add_document(collection_id, doc2).await.unwrap();
@@ -717,6 +723,7 @@ mod tests {
             page_count: 1,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
+            page_boundaries: vec![],
         };
         storage.add_document(collection_id, doc).await.unwrap();
 
@@ -758,6 +765,7 @@ mod tests {
             page_count: 10,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
+            page_boundaries: vec![],
         };
         storage.add_document(collection_id, doc).await.unwrap();
 

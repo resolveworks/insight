@@ -11,6 +11,9 @@ pub struct ExtractedDocument {
     pub text: String,
     /// Number of pages in the PDF
     pub page_count: usize,
+    /// Character offset where each page ends (cumulative)
+    /// page_boundaries[0] = end of page 1, page_boundaries[1] = end of page 2, etc.
+    pub page_boundaries: Vec<usize>,
 }
 
 /// Extract text from a PDF file
@@ -19,20 +22,48 @@ pub fn extract_text(path: &Path) -> Result<ExtractedDocument> {
 
     let doc = lopdf::Document::load_mem(&pdf_bytes).context("Failed to parse PDF")?;
 
-    let pages: Vec<u32> = doc.get_pages().keys().cloned().collect();
+    let mut pages: Vec<u32> = doc.get_pages().keys().cloned().collect();
+    pages.sort(); // Ensure pages are in order
     let page_count = pages.len();
 
-    let text = doc
-        .extract_text(&pages)
-        .context("Failed to extract text from PDF")?;
+    // Extract text per page to track boundaries
+    let mut full_text = String::new();
+    let mut page_boundaries = Vec::with_capacity(page_count);
 
-    tracing::debug!("Extracted {} chars from {} pages", text.len(), page_count);
+    for page_num in &pages {
+        let page_text = doc.extract_text(&[*page_num]).unwrap_or_default();
+        full_text.push_str(&page_text);
+        // Add a newline between pages if the page doesn't end with one
+        if !page_text.ends_with('\n') && !page_text.is_empty() {
+            full_text.push('\n');
+        }
+        page_boundaries.push(full_text.len());
+    }
+
+    tracing::debug!(
+        "Extracted {} chars from {} pages, boundaries: {:?}",
+        full_text.len(),
+        page_count,
+        page_boundaries
+    );
 
     Ok(ExtractedDocument {
         pdf_bytes,
-        text,
+        text: full_text,
         page_count,
+        page_boundaries,
     })
+}
+
+/// Given character offset in the full text, find which page it's on (1-indexed)
+pub fn char_offset_to_page(offset: usize, page_boundaries: &[usize]) -> usize {
+    for (i, &boundary) in page_boundaries.iter().enumerate() {
+        if offset < boundary {
+            return i + 1; // Pages are 1-indexed
+        }
+    }
+    // If past all boundaries, return last page
+    page_boundaries.len().max(1)
 }
 
 #[cfg(test)]

@@ -192,6 +192,7 @@ async fn handle_event(
         text,
         collection_id: collection_id.to_string(),
         page_count: metadata.page_count,
+        page_boundaries: metadata.page_boundaries,
     };
 
     embed_tx

@@ -320,6 +320,7 @@ fn spawn_store_worker(
                         page_count: extracted.page_count,
                         tags: vec![],
                         created_at: chrono::Utc::now().to_rfc3339(),
+                        page_boundaries: extracted.page_boundaries,
                     };
 
                     if let Err(e) = storage_guard.add_document(namespace_id, metadata).await {
