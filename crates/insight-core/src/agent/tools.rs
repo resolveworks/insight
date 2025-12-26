@@ -32,14 +32,14 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
             function: Function {
                 name: "search".to_string(),
                 description: Some(
-                    "Search documents in the collection. Returns document names, IDs, and relevant snippets. Use this to find documents related to a topic.".to_string()
+                    "Search documents using hybrid keyword and semantic matching. Finds documents by exact terms, concepts, and meaning. Returns document names, IDs, and relevant passages.".to_string()
                 ),
                 parameters: Some(json_to_hashmap(json!({
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "The search query"
+                            "description": "The search query - can be keywords, phrases, or natural language describing what you're looking for"
                         }
                     },
                     "required": ["query"]
@@ -72,25 +72,6 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
         Tool {
             tp: ToolType::Function,
             function: Function {
-                name: "semantic_search".to_string(),
-                description: Some(
-                    "Search documents by meaning and concepts, not just keywords. Use this when looking for documents about a topic, theme, or idea - even if they don't contain the exact words. For exact phrases or specific terms, use the regular search tool instead.".to_string()
-                ),
-                parameters: Some(json_to_hashmap(json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "A description of what you're looking for (concepts, themes, topics)"
-                        }
-                    },
-                    "required": ["query"]
-                }))),
-            },
-        },
-        Tool {
-            tp: ToolType::Function,
-            function: Function {
                 name: "list_documents".to_string(),
                 description: Some(
                     "List all documents in the current collection(s) with their metadata. Use this to get an overview of available documents before searching, or to find documents by characteristics like page count rather than content. Returns document names, IDs, and page counts.".to_string()
@@ -117,7 +98,6 @@ fn json_to_hashmap(value: Value) -> HashMap<String, Value> {
 pub async fn execute_tool(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
     match tool_call.name.as_str() {
         "search" => execute_search(tool_call, ctx).await,
-        "semantic_search" => execute_semantic_search(tool_call, ctx).await,
         "read_chunk" => execute_read_chunk(tool_call, ctx).await,
         "list_documents" => execute_list_documents(tool_call, ctx).await,
         _ => ToolResult {
@@ -128,30 +108,57 @@ pub async fn execute_tool(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResul
     }
 }
 
+/// Hybrid search combining keyword (BM25) and semantic matching.
+/// Falls back to keyword-only if no embedder is configured.
 async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
     let query = tool_call.arguments["query"].as_str().unwrap_or("");
 
-    info!(query = %query, "Executing search");
+    info!(query = %query, "Executing hybrid search");
+
+    // Try to get query embedding for semantic component
+    let embedder_guard = ctx.state.embedder.read().await;
+    let (query_vector, semantic_ratio) = match embedder_guard.as_ref() {
+        Some(embedder) => match embedder.embed(query).await {
+            Ok(vec) => {
+                debug!(dimensions = vec.len(), "Query embedded for hybrid search");
+                (Some(vec), 0.6) // 60% semantic, 40% keyword
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to embed query, using keyword-only search");
+                (None, 0.0)
+            }
+        },
+        None => {
+            debug!("No embedder configured, using keyword-only search");
+            (None, 0.0)
+        }
+    };
+    drop(embedder_guard);
 
     let index = ctx.state.search.read().await;
-
-    // Agent uses keyword-only search with optional collection filtering
     let collection_ids = ctx.collection_ids();
-    match search::search_index(
-        &index,
-        search::SearchParams {
-            query,
-            limit: 10,
-            collection_ids: collection_ids.as_deref(),
-            ..Default::default()
+
+    let search_params = search::SearchParams {
+        query,
+        limit: 15,
+        query_vector,
+        semantic_ratio,
+        min_score: if semantic_ratio > 0.0 {
+            Some(0.15)
+        } else {
+            None
         },
-    ) {
+        collection_ids: collection_ids.as_deref(),
+        ..Default::default()
+    };
+
+    match search::search_index(&index, search_params) {
         Ok(results) => {
-            // Format results for LLM consumption
             let doc_ids: Vec<u32> = results.hits.iter().map(|h| h.doc_id).collect();
             info!(
                 query = %query,
                 hits = doc_ids.len(),
+                hybrid = semantic_ratio > 0.0,
                 "Search completed"
             );
             let formatted = format_search_results(&index, &doc_ids, ctx);
@@ -166,71 +173,6 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: format!("Search error: {}", e),
-                is_error: true,
-            }
-        }
-    }
-}
-
-async fn execute_semantic_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
-    let query = tool_call.arguments["query"].as_str().unwrap_or("");
-
-    info!(query = %query, "Executing semantic search");
-
-    // Get embedder to encode the query
-    let embedder_guard = ctx.state.embedder.read().await;
-    let query_vector = match embedder_guard.as_ref() {
-        Some(embedder) => match embedder.embed(query).await {
-            Ok(vec) => {
-                debug!(dimensions = vec.len(), "Query embedded");
-                Some(vec)
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to embed query, falling back to keyword search");
-                None
-            }
-        },
-        None => {
-            warn!("No embedder configured, falling back to keyword search");
-            None
-        }
-    };
-    drop(embedder_guard);
-
-    let index = ctx.state.search.read().await;
-
-    // Use semantic search with ratio 1.0 (pure semantic) if we have embeddings
-    let collection_ids = ctx.collection_ids();
-    let search_params = search::SearchParams {
-        query,
-        limit: 10,
-        query_vector,
-        semantic_ratio: 1.0,
-        min_score: Some(0.3), // Filter out low-relevance results
-        collection_ids: collection_ids.as_deref(),
-        ..Default::default()
-    };
-
-    match search::search_index(&index, search_params) {
-        Ok(results) => {
-            let doc_ids: Vec<u32> = results.hits.iter().map(|h| h.doc_id).collect();
-            info!(
-                query = %query,
-                hits = doc_ids.len(),
-                "Semantic search completed"
-            );
-            let formatted = format_search_results(&index, &doc_ids, ctx);
-            ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: formatted,
-                is_error: false,
-            }
-        }
-        Err(e) => {
-            warn!(query = %query, error = %e, "Semantic search failed");
-            ToolResult {
-                tool_call_id: tool_call.id.clone(),
-                content: format!("Semantic search error: {}", e),
                 is_error: true,
             }
         }

@@ -70,12 +70,16 @@ pub fn spawn(
                         });
 
                         for chunk in doc.chunks {
+                            // Enrich content with document name for better keyword search.
+                            // This makes chunks self-contained and allows searching by document name.
+                            let enriched_content = format!("[{}]\n\n{}", doc.name, chunk.content);
+
                             chunks_to_index.push(ChunkToIndex {
                                 id: format!("{}_chunk_{}", doc.doc_id, chunk.index),
                                 parent_id: doc.doc_id.clone(),
                                 parent_name: doc.name.clone(),
                                 chunk_index: chunk.index,
-                                content: chunk.content,
+                                content: enriched_content,
                                 collection_id: doc.collection_id.clone(),
                                 page_count: doc.page_count,
                                 start_page: chunk.start_page,

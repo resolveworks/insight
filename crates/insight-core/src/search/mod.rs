@@ -1025,6 +1025,74 @@ mod tests {
     }
 
     #[test]
+    fn test_search_by_document_name_in_enriched_content() {
+        // Test that enriched content (with document name prefix) allows
+        // searching by document name, not just content keywords.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Simulate enriched content as produced by jobs/index.rs
+        // Format: "[document_name]\n\n{content}"
+        let chunks = vec![
+            ChunkToIndex {
+                id: "doc1_chunk_0".to_string(),
+                parent_id: "doc1".to_string(),
+                parent_name: "Climate_Report_2024.pdf".to_string(),
+                chunk_index: 0,
+                content: "[Climate_Report_2024.pdf]\n\nGlobal temperatures continue to rise."
+                    .to_string(),
+                collection_id: "research".to_string(),
+                page_count: 10,
+                start_page: 1,
+                end_page: 1,
+                vector: None,
+            },
+            ChunkToIndex {
+                id: "doc2_chunk_0".to_string(),
+                parent_id: "doc2".to_string(),
+                parent_name: "Financial_Summary.pdf".to_string(),
+                chunk_index: 0,
+                content: "[Financial_Summary.pdf]\n\nQ4 revenue exceeded expectations.".to_string(),
+                collection_id: "finance".to_string(),
+                page_count: 5,
+                start_page: 1,
+                end_page: 1,
+                vector: None,
+            },
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
+
+        // Search by document name - should find the climate report
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "Climate_Report",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.hits.len(), 1);
+        let name = get_field(&index, results.hits[0].doc_id, "parent_name");
+        assert_eq!(name, Some("Climate_Report_2024.pdf".to_string()));
+
+        // Search by content should still work
+        let results = search_index(
+            &index,
+            SearchParams {
+                query: "revenue",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.hits.len(), 1);
+        let name = get_field(&index, results.hits[0].doc_id, "parent_name");
+        assert_eq!(name, Some("Financial_Summary.pdf".to_string()));
+    }
+
+    #[test]
     fn test_delete_document_chunks() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
