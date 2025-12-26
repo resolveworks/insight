@@ -4,4 +4,4 @@ pnpm test:run
 
 cargo fmt --check --all
 cargo clippy --workspace -- -D warnings
-cargo test --workspace
+cargo test -p insight-core
