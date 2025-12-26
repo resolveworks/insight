@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
-use crate::core::search;
-use crate::core::AppState;
+use crate::search;
+use crate::AppState;
 
 /// A tool call from the LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]

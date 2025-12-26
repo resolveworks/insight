@@ -1,10 +1,5 @@
 <script lang="ts">
-	type Props = {
-		modelName?: string;
-		phase: 'storage' | 'embedder' | 'ready';
-	};
-
-	let { modelName = 'embedding model', phase }: Props = $props();
+	// Simple loading screen shown briefly while checking boot status
 </script>
 
 <div class="flex h-screen flex-col items-center justify-center bg-slate-900">
@@ -31,22 +26,7 @@
 			</svg>
 		</div>
 
-		<h1 class="mb-2 text-xl font-semibold text-slate-100">
-			{#if phase === 'storage'}
-				Initializing...
-			{:else if phase === 'embedder'}
-				Loading {modelName}
-			{:else}
-				Starting Insight
-			{/if}
-		</h1>
-
-		<p class="text-sm text-slate-400">
-			{#if phase === 'embedder'}
-				This may take 20-30 seconds
-			{:else}
-				Please wait...
-			{/if}
-		</p>
+		<h1 class="mb-2 text-xl font-semibold text-slate-100">Starting Insight</h1>
+		<p class="text-sm text-slate-400">Please wait...</p>
 	</div>
 </div>

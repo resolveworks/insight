@@ -47,8 +47,8 @@ use milli::Index;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use super::embeddings::Embedder;
-use super::storage::{DocumentMetadata, Storage};
+use crate::embeddings::Embedder;
+use crate::storage::{DocumentMetadata, Storage};
 
 use extract::ExtractRequest;
 use types::Extracted;

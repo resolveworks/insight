@@ -1,4 +1,7 @@
 pnpm lint-staged
 pnpm check
 pnpm test:run
-cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test
+
+cargo fmt --check --all
+cargo clippy --workspace -- -D warnings
+cargo test -p insight-core

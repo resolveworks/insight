@@ -12,7 +12,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::storage::{DocumentMetadata, LiveEvent, Storage};
+use crate::storage::{DocumentMetadata, LiveEvent, Storage};
 
 use super::types::Stored;
 

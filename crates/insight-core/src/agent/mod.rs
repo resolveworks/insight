@@ -16,7 +16,7 @@ use mistralrs::{
 
 pub use tools::{execute_tool, get_mistralrs_tools, ToolCall, ToolResult};
 
-use super::models::LanguageModelInfo;
+use crate::models::LanguageModelInfo;
 
 /// System prompt for the agent
 const SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists investigate document collections.
@@ -199,7 +199,7 @@ pub async fn run_agent_loop(
     model: &Arc<Model>,
     conversation: &mut Conversation,
     user_message: String,
-    state: &crate::core::AppState,
+    state: &crate::AppState,
     event_tx: mpsc::Sender<AgentEvent>,
     cancel_token: CancellationToken,
 ) -> Result<()> {

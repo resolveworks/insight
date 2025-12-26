@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::embeddings::Embedder;
+use crate::embeddings::Embedder;
 
 use super::types::{ChunkWithVector, Embedded, Stored};
 use super::worker::{BatchConfig, Batcher};

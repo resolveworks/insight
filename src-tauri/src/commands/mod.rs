@@ -1201,3 +1201,29 @@ pub async fn configure_embedding_model(
 
     Ok(())
 }
+
+// ============================================================================
+// Boot Status Command
+// ============================================================================
+
+/// Boot status response for frontend
+#[derive(Debug, Clone, Serialize)]
+pub struct BootStatus {
+    pub embedding_configured: bool,
+    pub embedding_model_id: Option<String>,
+    pub embedding_downloaded: bool,
+}
+
+/// Get boot status - called by frontend when ready to receive state
+#[tauri::command]
+pub async fn get_boot_status(state: State<'_, AppState>) -> Result<BootStatus, String> {
+    let settings = crate::core::Settings::load(&state.config.settings_file);
+    let (embedding_configured, embedding_downloaded) =
+        crate::core::check_embedding_status(&settings).await;
+
+    Ok(BootStatus {
+        embedding_configured,
+        embedding_model_id: settings.embedding_model_id,
+        embedding_downloaded,
+    })
+}

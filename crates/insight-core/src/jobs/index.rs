@@ -10,7 +10,7 @@ use milli::Index;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::search::{self, ChunkToIndex};
+use crate::search::{self, ChunkToIndex};
 
 use super::types::{DocumentCompleted, Embedded};
 use super::worker::{BatchConfig, Batcher};
