@@ -61,9 +61,23 @@
 	async function loadCollections() {
 		try {
 			collections = await invoke<Collection[]>('get_collections');
+			// Select all collections by default
+			for (const c of collections) {
+				selectedCollections.add(c.id);
+			}
 		} catch (e) {
 			console.error('Failed to load collections:', e);
 		}
+	}
+
+	function selectAll() {
+		for (const c of collections) {
+			selectedCollections.add(c.id);
+		}
+	}
+
+	function selectNone() {
+		selectedCollections.clear();
 	}
 
 	onMount(() => {
@@ -110,14 +124,23 @@
 						</li>
 					{/each}
 				</ul>
-				{#if selectedCollections.size > 0}
+				<div class="mt-3 flex gap-2 text-xs">
 					<button
-						onclick={() => selectedCollections.clear()}
-						class="mt-3 text-xs text-slate-500 hover:text-slate-300"
+						onclick={selectAll}
+						disabled={selectedCollections.size === collections.length}
+						class="text-slate-500 hover:text-slate-300 disabled:cursor-default disabled:text-slate-600"
 					>
-						Clear filters
+						Select all
 					</button>
-				{/if}
+					<span class="text-slate-600">|</span>
+					<button
+						onclick={selectNone}
+						disabled={selectedCollections.size === 0}
+						class="text-slate-500 hover:text-slate-300 disabled:cursor-default disabled:text-slate-600"
+					>
+						Select none
+					</button>
+				</div>
 			{/if}
 		</div>
 
