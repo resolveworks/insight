@@ -439,7 +439,7 @@ pub fn get_document_count(index: &Index) -> Result<u64> {
 
 /// Extract the global score from a list of score details.
 /// For hybrid search, this combines keyword and semantic scores.
-fn compute_hit_score(scores: &[milli::score_details::ScoreDetails]) -> f64 {
+pub fn compute_hit_score(scores: &[milli::score_details::ScoreDetails]) -> f64 {
     milli::score_details::ScoreDetails::global_score(scores.iter())
 }
 

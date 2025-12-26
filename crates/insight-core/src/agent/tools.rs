@@ -154,14 +154,13 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
 
     match search::search_index(&index, search_params) {
         Ok(results) => {
-            let doc_ids: Vec<u32> = results.hits.iter().map(|h| h.doc_id).collect();
             info!(
                 query = %query,
-                hits = doc_ids.len(),
+                hits = results.hits.len(),
                 hybrid = semantic_ratio > 0.0,
                 "Search completed"
             );
-            let formatted = format_search_results(&index, &doc_ids, ctx);
+            let formatted = format_search_results(&index, &results.hits, ctx);
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: formatted,
@@ -179,8 +178,12 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
     }
 }
 
-fn format_search_results(index: &milli::Index, doc_ids: &[u32], ctx: &AgentContext) -> String {
-    if doc_ids.is_empty() {
+fn format_search_results(
+    index: &milli::Index,
+    hits: &[search::SearchHit],
+    ctx: &AgentContext,
+) -> String {
+    if hits.is_empty() {
         return "No matching passages found.".to_string();
     }
 
@@ -201,11 +204,13 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32], ctx: &AgentConte
         Err(e) => return format!("Error reading index: {}", e),
     };
 
-    for &doc_id in doc_ids {
-        let doc = match search::get_document(index, &rtxn, doc_id) {
+    for hit in hits {
+        let doc = match search::get_document(index, &rtxn, hit.doc_id) {
             Ok(Some(d)) => d,
             _ => continue,
         };
+
+        let score = search::compute_hit_score(&hit.scores);
 
         let get_str = |key: &str| -> String {
             doc.get(key)
@@ -253,14 +258,14 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32], ctx: &AgentConte
         };
 
         results.push(format!(
-            "- Document: {} ({})\n  Collection: {}\n  ID: {} | Chunk: {}\n  Passage: {}",
-            parent_name, page_ref, collection_name, parent_id, chunk_index, passage
+            "- Document: {} ({}) [score: {:.2}]\n  Collection: {}\n  ID: {} | Chunk: {}\n  Passage: {}",
+            parent_name, page_ref, score, collection_name, parent_id, chunk_index, passage
         ));
     }
 
     format!(
         "Found {} relevant passages:\n\n{}",
-        doc_ids.len(),
+        hits.len(),
         results.join("\n\n")
     )
 }
