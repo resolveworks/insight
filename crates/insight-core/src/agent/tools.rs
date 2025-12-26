@@ -88,6 +88,20 @@ pub fn get_mistralrs_tools() -> Vec<Tool> {
                 }))),
             },
         },
+        Tool {
+            tp: ToolType::Function,
+            function: Function {
+                name: "list_documents".to_string(),
+                description: Some(
+                    "List all documents in the current collection(s) with their metadata. Use this to get an overview of available documents before searching, or to find documents by characteristics like page count rather than content. Returns document names, IDs, and page counts.".to_string()
+                ),
+                parameters: Some(json_to_hashmap(json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }))),
+            },
+        },
     ]
 }
 
@@ -105,6 +119,7 @@ pub async fn execute_tool(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResul
         "search" => execute_search(tool_call, ctx).await,
         "semantic_search" => execute_semantic_search(tool_call, ctx).await,
         "read_chunk" => execute_read_chunk(tool_call, ctx).await,
+        "list_documents" => execute_list_documents(tool_call, ctx).await,
         _ => ToolResult {
             tool_call_id: tool_call.id.clone(),
             content: format!("Unknown tool: {}", tool_call.name),
@@ -345,5 +360,128 @@ async fn execute_read_chunk(tool_call: &ToolCall, ctx: &AgentContext) -> ToolRes
                 is_error: true,
             }
         }
+    }
+}
+
+async fn execute_list_documents(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
+    info!("Listing documents");
+
+    // Get collection IDs to list from
+    let collection_ids = ctx.collection_ids();
+
+    if collection_ids.is_none()
+        || collection_ids
+            .as_ref()
+            .map(|c| c.is_empty())
+            .unwrap_or(true)
+    {
+        return ToolResult {
+            tool_call_id: tool_call.id.clone(),
+            content: "No collections selected. Please select collections to list documents from."
+                .to_string(),
+            is_error: true,
+        };
+    }
+
+    let collection_ids = collection_ids.unwrap();
+
+    // Build a lookup map from collection_id -> collection_name
+    let collection_names: std::collections::HashMap<String, String> = ctx
+        .collections
+        .as_ref()
+        .map(|cols| {
+            cols.iter()
+                .map(|c| (c.id.clone(), c.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let storage = ctx.state.storage.read().await;
+    let mut all_documents = Vec::new();
+
+    for collection_id in &collection_ids {
+        let namespace_id: iroh_docs::NamespaceId = match collection_id.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                warn!(collection_id = %collection_id, "Invalid collection ID, skipping");
+                continue;
+            }
+        };
+
+        let collection_name = collection_names
+            .get(collection_id)
+            .cloned()
+            .unwrap_or_else(|| collection_id.chars().take(8).collect::<String>() + "...");
+
+        match storage.list_documents(namespace_id).await {
+            Ok(documents) => {
+                for doc in documents {
+                    all_documents.push((collection_name.clone(), doc));
+                }
+            }
+            Err(e) => {
+                warn!(collection_id = %collection_id, error = %e, "Failed to list documents");
+            }
+        }
+    }
+
+    drop(storage);
+
+    if all_documents.is_empty() {
+        return ToolResult {
+            tool_call_id: tool_call.id.clone(),
+            content: "No documents found in the selected collections.".to_string(),
+            is_error: false,
+        };
+    }
+
+    // Sort by collection name, then document name
+    all_documents.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+
+    // Format results
+    let mut results = Vec::new();
+    let mut current_collection = String::new();
+
+    for (collection_name, doc) in &all_documents {
+        // Add collection header when it changes
+        if *collection_name != current_collection {
+            if !current_collection.is_empty() {
+                results.push(String::new()); // Blank line between collections
+            }
+            results.push(format!("## {}", collection_name));
+            current_collection = collection_name.clone();
+        }
+
+        // Format page info
+        let page_info = if doc.page_count == 1 {
+            "1 page".to_string()
+        } else {
+            format!("{} pages", doc.page_count)
+        };
+
+        results.push(format!("- {} ({}) [ID: {}]", doc.name, page_info, doc.id));
+    }
+
+    let total_docs = all_documents.len();
+    let total_pages: usize = all_documents.iter().map(|(_, d)| d.page_count).sum();
+
+    let summary = format!(
+        "Found {} document{} ({} total pages):\n\n{}",
+        total_docs,
+        if total_docs == 1 { "" } else { "s" },
+        total_pages,
+        results.join("\n")
+    );
+
+    info!(
+        document_count = total_docs,
+        total_pages = total_pages,
+        "Listed documents"
+    );
+
+    ToolResult {
+        tool_call_id: tool_call.id.clone(),
+        content: summary,
+        is_error: false,
     }
 }
