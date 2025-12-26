@@ -24,19 +24,12 @@ pub use embeddings::Embedder;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase")]
 pub enum BootPhase {
-    /// Initial boot phase - starting up
-    Initializing,
-    /// Opening iroh storage
-    OpeningStorage,
-    /// Opening milli search index
-    OpeningSearchIndex,
     /// Starting collection watchers
     WatchingCollections,
     /// Storage and search index initialized, ready to check model configuration
     StorageReady {
         embedding_configured: bool,
         embedding_model_id: Option<String>,
-        /// Whether the configured embedding model is already downloaded
         embedding_downloaded: bool,
     },
     /// Embedding model needs to be downloaded before loading
@@ -44,7 +37,7 @@ pub enum BootPhase {
         model_id: String,
         model_name: String,
     },
-    /// Embedding model is being loaded (only if configured AND downloaded)
+    /// Embedding model is being loaded
     EmbedderLoading {
         model_id: String,
         model_name: String,
@@ -61,6 +54,25 @@ pub use agent::{AgentEvent, AgentModel, Conversation};
 pub use config::{Config, Settings};
 pub use jobs::JobCoordinator;
 pub use storage::Storage;
+
+/// Check if embedding model is configured and downloaded.
+/// Returns (configured, downloaded).
+pub async fn check_embedding_status(settings: &Settings) -> (bool, bool) {
+    let Some(ref model_id) = settings.embedding_model_id else {
+        return (false, false);
+    };
+    let Some(model) = models::get_embedding_model(model_id) else {
+        return (false, false);
+    };
+    let downloaded = match models::ModelManager::new().await {
+        Ok(manager) => manager.is_downloaded(&model),
+        Err(e) => {
+            tracing::warn!("Failed to create model manager: {}", e);
+            false
+        }
+    };
+    (true, downloaded)
+}
 
 /// Application state shared across Tauri commands
 pub struct AppState {
@@ -155,25 +167,7 @@ impl AppState {
         // Start watching existing collections for indexing events
         self.watch_existing_collections().await;
 
-        // Check if embedding model is configured and downloaded
-        let (embedding_configured, embedding_downloaded) =
-            if let Some(ref model_id) = settings.embedding_model_id {
-                if let Some(model) = models::get_embedding_model(model_id) {
-                    // Check if model files are already downloaded
-                    let downloaded = match models::ModelManager::new().await {
-                        Ok(manager) => manager.is_downloaded(&model),
-                        Err(e) => {
-                            tracing::warn!("Failed to create model manager: {}", e);
-                            false
-                        }
-                    };
-                    (true, downloaded)
-                } else {
-                    (false, false)
-                }
-            } else {
-                (false, false)
-            };
+        let (embedding_configured, embedding_downloaded) = check_embedding_status(&settings).await;
 
         // Emit StorageReady so frontend knows initialization is complete
         let _ = app_handle.emit(

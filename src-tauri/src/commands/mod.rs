@@ -1218,21 +1218,8 @@ pub struct BootStatus {
 #[tauri::command]
 pub async fn get_boot_status(state: State<'_, AppState>) -> Result<BootStatus, String> {
     let settings = crate::core::Settings::load(&state.config.settings_file);
-
     let (embedding_configured, embedding_downloaded) =
-        if let Some(ref model_id) = settings.embedding_model_id {
-            if let Some(model) = models::get_embedding_model(model_id) {
-                let downloaded = match models::ModelManager::new().await {
-                    Ok(manager) => manager.is_downloaded(&model),
-                    Err(_) => false,
-                };
-                (true, downloaded)
-            } else {
-                (false, false)
-            }
-        } else {
-            (false, false)
-        };
+        crate::core::check_embedding_status(&settings).await;
 
     Ok(BootStatus {
         embedding_configured,
