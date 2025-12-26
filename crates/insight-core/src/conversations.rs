@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::agent::Conversation;
+use crate::agent::Conversation;
 
 /// Summary of a conversation for listing
 #[derive(Debug, Clone, Serialize, Deserialize)]

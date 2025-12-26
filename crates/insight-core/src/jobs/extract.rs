@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::pdf;
+use crate::pdf;
 
 use super::types::{DocumentFailed, Extracted};
 

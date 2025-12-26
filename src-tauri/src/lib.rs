@@ -3,7 +3,7 @@ pub mod core;
 
 use tauri::Manager;
 
-use crate::core::{AppState, Config};
+use crate::core::{AppState, Config, TauriBootEmitter};
 
 /// Initialize tracing/logging with the given directives
 pub fn init_logging(directives: &[&str]) {
@@ -49,7 +49,8 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                state_clone.load_models_if_configured(&app_handle).await;
+                let emitter = TauriBootEmitter(&app_handle);
+                state_clone.load_models_if_configured(&emitter).await;
             });
 
             Ok(())

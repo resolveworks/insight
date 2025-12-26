@@ -15,3 +15,5 @@ nul
 # Local dev scripts and config
 .claude/settings.local.json
 dev.bat
+# Rust build artifacts (workspace target at root)
+/target

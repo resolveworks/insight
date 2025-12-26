@@ -13,67 +13,45 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Core business logic
+insight-core = { path = "../crates/insight-core" }
+
 # Tauri
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 
-# Async runtime
+# Async runtime (needed for Tauri command layer)
 tokio = { version = "1", features = ["full"] }
-futures = "0.3"
 
-# iroh P2P
-iroh = "0.95"
+# iroh types (needed for NamespaceId parsing in commands)
 iroh-blobs = "0.97"
 iroh-docs = "0.95"
-iroh-gossip = "0.95"
-iroh-io = "0.6"
 
-# PDF processing
-lopdf = "0.38"
-
-# Search (milli from meilisearch)
-# Note: milli includes candle for embeddings internally; cuda feature enables GPU for embeddings
+# milli types (needed for score_details in search command)
 milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.30.1" }
-bumpalo = "3"  # Required by milli's indexing API
 
-# Serialization
+# Serialization (for command layer types)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-bytes = "1"
-
-# Random
-rand = "0.9"
-
-# LLM inference
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs" }
-hf-hub = { version = "0.4", features = ["tokio"] }
-tokio-stream = "0.1"
-tokio-util = "0.7"
-
-# Text chunking for embeddings
-text-splitter = { version = "0.28", features = ["tokenizers"] }
-tokenizers = "0.22"
 
 # Utilities
-anyhow = "1"
-thiserror = "2"
+tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []
 # GPU/accelerated builds (optional; CPU-only by default)
-cuda = ["mistralrs/cuda", "mistralrs/flash-attn", "mistralrs/cudnn"]
-flash-attn = ["mistralrs/flash-attn"]
-cudnn = ["mistralrs/cudnn"]
-metal = ["mistralrs/metal"]
-accelerate = ["mistralrs/accelerate"]
-mkl = ["mistralrs/mkl"]
+cuda = ["insight-core/cuda"]
+flash-attn = ["insight-core/flash-attn"]
+cudnn = ["insight-core/cudnn"]
+metal = ["insight-core/metal"]
+accelerate = ["insight-core/accelerate"]
+mkl = ["insight-core/mkl"]
 
 [dev-dependencies]
 tempfile = "3"
 tauri = { version = "2", features = ["test"] }
+lopdf = "0.38"
