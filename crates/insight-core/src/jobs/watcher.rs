@@ -191,6 +191,7 @@ async fn handle_event(
         name: metadata.name,
         text,
         collection_id: collection_id.to_string(),
+        page_count: metadata.page_count,
     };
 
     embed_tx

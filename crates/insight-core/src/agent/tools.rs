@@ -139,7 +139,7 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
                 hits = doc_ids.len(),
                 "Search completed"
             );
-            let formatted = format_search_results(&index, &doc_ids);
+            let formatted = format_search_results(&index, &doc_ids, ctx);
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: formatted,
@@ -204,7 +204,7 @@ async fn execute_semantic_search(tool_call: &ToolCall, ctx: &AgentContext) -> To
                 hits = doc_ids.len(),
                 "Semantic search completed"
             );
-            let formatted = format_search_results(&index, &doc_ids);
+            let formatted = format_search_results(&index, &doc_ids, ctx);
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: formatted,
@@ -222,10 +222,21 @@ async fn execute_semantic_search(tool_call: &ToolCall, ctx: &AgentContext) -> To
     }
 }
 
-fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
+fn format_search_results(index: &milli::Index, doc_ids: &[u32], ctx: &AgentContext) -> String {
     if doc_ids.is_empty() {
         return "No matching passages found.".to_string();
     }
+
+    // Build a lookup map from collection_id -> collection_name
+    let collection_names: std::collections::HashMap<String, String> = ctx
+        .collections
+        .as_ref()
+        .map(|cols| {
+            cols.iter()
+                .map(|c| (c.id.clone(), c.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut results = Vec::new();
     let rtxn = match index.read_txn() {
@@ -251,7 +262,15 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
         let parent_id = get_str("parent_id");
         let parent_name = get_str("parent_name");
         let chunk_index = get_num("chunk_index");
+        let page_count = get_num("page_count");
+        let collection_id = get_str("collection_id");
         let content = get_str("content");
+
+        // Look up collection name, fall back to ID if not found
+        let collection_name = collection_names
+            .get(&collection_id)
+            .cloned()
+            .unwrap_or_else(|| collection_id.chars().take(8).collect::<String>() + "...");
 
         // Truncate long passages
         let passage: String = content.chars().take(500).collect();
@@ -261,9 +280,16 @@ fn format_search_results(index: &milli::Index, doc_ids: &[u32]) -> String {
             passage
         };
 
+        // Format with page count context
+        let page_info = if page_count == 1 {
+            "1 page".to_string()
+        } else {
+            format!("{} pages", page_count)
+        };
+
         results.push(format!(
-            "- Document: {}\n  ID: {}\n  Chunk: {}\n  Passage: {}",
-            parent_name, parent_id, chunk_index, passage
+            "- Document: {} ({})\n  Collection: {}\n  ID: {} | Chunk: {}\n  Passage: {}",
+            parent_name, page_info, collection_name, parent_id, chunk_index, passage
         ));
     }
 

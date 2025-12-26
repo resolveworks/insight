@@ -26,6 +26,8 @@ pub struct Stored {
     pub text: String,
     /// Collection this document belongs to
     pub collection_id: String,
+    /// Number of pages in the PDF
+    pub page_count: usize,
 }
 
 /// Chunks with embeddings, ready for indexing
@@ -36,6 +38,8 @@ pub struct Embedded {
     pub name: String,
     /// Collection this document belongs to
     pub collection_id: String,
+    /// Number of pages in the PDF
+    pub page_count: usize,
     /// Text chunks with their embeddings
     pub chunks: Vec<ChunkWithVector>,
 }

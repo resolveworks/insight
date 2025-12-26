@@ -88,6 +88,7 @@ struct DocChunkInfo {
     doc_id: String,
     name: String,
     collection_id: String,
+    page_count: usize,
     /// Starting index in the flattened chunk array
     start_idx: usize,
     /// Number of chunks for this document
@@ -122,6 +123,7 @@ async fn process_batch_with_embedder(emb: &Embedder, docs: Vec<Stored>) -> Vec<E
             doc_id: doc.doc_id.clone(),
             name: doc.name.clone(),
             collection_id: doc.collection_id.clone(),
+            page_count: doc.page_count,
             start_idx,
             chunk_count,
         });
@@ -138,6 +140,7 @@ async fn process_batch_with_embedder(emb: &Embedder, docs: Vec<Stored>) -> Vec<E
                 doc_id: info.doc_id,
                 name: info.name,
                 collection_id: info.collection_id,
+                page_count: info.page_count,
                 chunks: vec![],
             })
             .collect();
@@ -175,6 +178,7 @@ async fn process_batch_with_embedder(emb: &Embedder, docs: Vec<Stored>) -> Vec<E
                 doc_id: info.doc_id,
                 name: info.name,
                 collection_id: info.collection_id,
+                page_count: info.page_count,
                 chunks,
             }
         })
@@ -231,6 +235,7 @@ fn process_batch_without_embedder(docs: Vec<Stored>) -> Vec<Embedded> {
                 doc_id: doc.doc_id,
                 name: doc.name,
                 collection_id: doc.collection_id,
+                page_count: doc.page_count,
                 chunks,
             }
         })

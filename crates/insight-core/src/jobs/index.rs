@@ -77,6 +77,7 @@ pub fn spawn(
                                 chunk_index: chunk.index,
                                 content: chunk.content,
                                 collection_id: doc.collection_id.clone(),
+                                page_count: doc.page_count,
                                 vector: chunk.vector,
                             });
                         }

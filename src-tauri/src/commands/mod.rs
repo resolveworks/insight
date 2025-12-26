@@ -737,14 +737,46 @@ pub async fn start_chat(
     }
     drop(model_guard);
 
+    // Enrich collection info with document counts and total pages
+    let enriched_collections = match collections {
+        Some(cols) => {
+            let storage = state.storage.read().await;
+            let mut enriched = Vec::with_capacity(cols.len());
+            for col in cols {
+                let namespace_id: NamespaceId = match col.id.parse() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        // Keep original if ID is invalid
+                        enriched.push(col);
+                        continue;
+                    }
+                };
+
+                // Get documents to calculate total pages
+                let documents = storage
+                    .list_documents(namespace_id)
+                    .await
+                    .unwrap_or_default();
+                let document_count = documents.len();
+                let total_pages: usize = documents.iter().map(|d| d.page_count).sum();
+
+                enriched.push(agent::CollectionInfo {
+                    id: col.id,
+                    name: col.name,
+                    document_count,
+                    total_pages,
+                });
+            }
+            Some(enriched)
+        }
+        None => None,
+    };
+
     // Create new conversation with optional collection context
     let conversation_id = uuid::Uuid::new_v4().to_string();
-    let collection_names: Option<Vec<String>> = collections
-        .as_ref()
-        .map(|cols| cols.iter().map(|c| c.name.clone()).collect());
     let conversation = agent::Conversation::with_collection_context(
         conversation_id.clone(),
-        collection_names.as_deref(),
+        enriched_collections.as_deref(),
     );
 
     // Save to disk

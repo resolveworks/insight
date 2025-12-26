@@ -23,6 +23,12 @@ use crate::models::LanguageModelInfo;
 pub struct CollectionInfo {
     pub id: String,
     pub name: String,
+    /// Number of documents in this collection
+    #[serde(default)]
+    pub document_count: usize,
+    /// Total pages across all documents
+    #[serde(default)]
+    pub total_pages: usize,
 }
 
 /// Context for agent execution - holds state and per-request configuration
@@ -61,14 +67,33 @@ When answering questions:
 4. Note any gaps or contradictions worth pursuing"#;
 
 /// Build system prompt with optional collection context
-fn build_system_prompt(collection_names: Option<&[String]>) -> String {
+fn build_system_prompt(collections: Option<&[CollectionInfo]>) -> String {
     let mut prompt = BASE_SYSTEM_PROMPT.to_string();
 
-    if let Some(names) = collection_names {
-        if !names.is_empty() {
+    if let Some(cols) = collections {
+        if !cols.is_empty() {
             prompt.push_str("\n\nYou are searching documents in:\n");
-            for name in names {
-                prompt.push_str(&format!("- {}\n", name));
+            for col in cols {
+                // Format: "- Collection Name (X documents, Y pages)"
+                let stats = if col.document_count > 0 || col.total_pages > 0 {
+                    let doc_word = if col.document_count == 1 {
+                        "document"
+                    } else {
+                        "documents"
+                    };
+                    let page_word = if col.total_pages == 1 {
+                        "page"
+                    } else {
+                        "pages"
+                    };
+                    format!(
+                        " ({} {}, {} {})",
+                        col.document_count, doc_word, col.total_pages, page_word
+                    )
+                } else {
+                    String::new()
+                };
+                prompt.push_str(&format!("- {}{}\n", col.name, stats));
             }
         }
     }
@@ -177,8 +202,8 @@ impl Conversation {
     }
 
     /// Create a new conversation with collection context
-    pub fn with_collection_context(id: String, collection_names: Option<&[String]>) -> Self {
-        let system_prompt = build_system_prompt(collection_names);
+    pub fn with_collection_context(id: String, collections: Option<&[CollectionInfo]>) -> Self {
+        let system_prompt = build_system_prompt(collections);
         Self::with_system_prompt(id, system_prompt)
     }
 

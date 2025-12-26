@@ -271,6 +271,8 @@ pub struct ChunkToIndex {
     pub content: String,
     /// Collection this chunk belongs to
     pub collection_id: String,
+    /// Number of pages in the parent document
+    pub page_count: usize,
     /// Pre-computed embedding vector for this chunk
     pub vector: Option<Vec<f32>>,
 }
@@ -335,6 +337,10 @@ fn index_chunk_batch(
             m.insert(
                 "collection_id".to_string(),
                 Value::String(chunk.collection_id.clone()),
+            );
+            m.insert(
+                "page_count".to_string(),
+                Value::Number(chunk.page_count.into()),
             );
             // Add pre-computed vector if present (single vector, not array)
             if let Some(ref vector) = chunk.vector {
@@ -788,6 +794,7 @@ mod tests {
             chunk_index: 0,
             content: content.to_string(),
             collection_id: collection_id.to_string(),
+            page_count: 1,
             vector,
         }
     }
