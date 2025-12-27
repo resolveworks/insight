@@ -2,6 +2,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { onDestroy, onMount } from 'svelte';
+	import Markdown from './Markdown.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
 
 	// Content block types matching backend
@@ -338,7 +339,7 @@
 								? 'bg-rose-600 text-white'
 								: 'bg-slate-700 text-slate-100'}"
 						>
-							<p class="whitespace-pre-wrap">{block.text}</p>
+							<Markdown content={block.text} />
 						</div>
 					</div>
 				{:else if block.type === 'tool_use'}
@@ -380,9 +381,9 @@
 						<div
 							class="max-w-[80%] rounded-lg bg-slate-700 px-4 py-2 text-slate-100"
 						>
-							<p class="whitespace-pre-wrap">
-								{block.text}<span class="animate-pulse">▊</span>
-							</p>
+							<Markdown content={block.text} /><span class="animate-pulse"
+								>▊</span
+							>
 						</div>
 					</div>
 				{:else if block.type === 'tool_use'}
