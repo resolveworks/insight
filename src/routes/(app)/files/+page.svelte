@@ -5,6 +5,9 @@
 	import { resolve } from '$app/paths';
 	import { onDestroy, onMount } from 'svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
+	import Button from '$lib/components/Button.svelte';
+	import Input from '$lib/components/Input.svelte';
+	import ErrorAlert from '$lib/components/ErrorAlert.svelte';
 
 	interface Collection {
 		id: string;
@@ -234,19 +237,14 @@
 	<Sidebar title="Collections">
 		<!-- Create new collection -->
 		<div class="mb-3 flex gap-2">
-			<input
+			<Input
 				type="text"
 				placeholder="New collection..."
 				bind:value={newCollectionName}
 				onkeydown={(e) => e.key === 'Enter' && createCollection()}
-				class="min-w-0 flex-1 rounded-md border border-neutral-600 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-500 focus:border-amber-500 focus:outline-none"
+				class="min-w-0 text-sm"
 			/>
-			<button
-				onclick={createCollection}
-				class="rounded-md bg-amber-600 px-3 py-1.5 font-medium text-white hover:bg-amber-700"
-			>
-				+
-			</button>
+			<Button size="sm" onclick={createCollection}>+</Button>
 		</div>
 
 		<!-- Import from ticket -->
@@ -263,15 +261,17 @@
 					rows="2"
 					class="w-full resize-none rounded-md border border-neutral-600 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-100 placeholder-neutral-500 focus:border-amber-500 focus:outline-none"
 				></textarea>
-				<button
+				<Button
+					variant="secondary"
+					size="sm"
+					fullWidth
 					onclick={importFromTicket}
 					disabled={importingCollection || !importTicket.trim()}
-					class="w-full rounded-md bg-neutral-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-500 disabled:opacity-50"
 				>
 					{importingCollection ? 'Importing...' : 'Import'}
-				</button>
+				</Button>
 				{#if importError}
-					<p class="text-xs text-red-400">{importError}</p>
+					<ErrorAlert>{importError}</ErrorAlert>
 				{/if}
 			</div>
 		</details>
@@ -356,13 +356,9 @@
 			<h2 class="text-sm font-medium text-neutral-400">
 				{selectedCollection ? 'Documents' : 'Select a collection'}
 			</h2>
-			<button
-				onclick={importPdf}
-				disabled={importing || !selectedCollection}
-				class="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-60"
-			>
+			<Button onclick={importPdf} disabled={importing || !selectedCollection}>
 				{importing ? 'Importing...' : 'Import PDF'}
-			</button>
+			</Button>
 		</div>
 		{#if documents.length === 0}
 			<p class="text-sm italic text-neutral-500">No documents yet</p>

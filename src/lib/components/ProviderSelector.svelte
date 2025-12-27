@@ -3,6 +3,9 @@
 	import { onMount } from 'svelte';
 	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
 	import { languageModelConfig } from '$lib/models/config';
+	import Button from './Button.svelte';
+	import Input from './Input.svelte';
+	import ErrorAlert from './ErrorAlert.svelte';
 
 	interface ProviderFamily {
 		id: string;
@@ -255,50 +258,24 @@
 			</p>
 
 			<!-- API Key Input -->
-			<div>
-				<label
-					for="api-key-input"
-					class="block text-sm font-medium text-neutral-300 mb-2"
-				>
-					API Key
-				</label>
-				<div class="flex gap-2">
-					<input
-						id="api-key-input"
-						type="password"
-						bind:value={apiKey}
-						placeholder={selectedFamily === 'openai' ? 'sk-...' : 'sk-ant-...'}
-						class="flex-1 px-3 py-2 bg-neutral-900 border border-neutral-600 rounded-md text-neutral-200 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
-						disabled={status !== 'idle'}
-					/>
-					<button
-						class="px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors bg-neutral-600 hover:bg-neutral-500 disabled:opacity-50 disabled:cursor-not-allowed"
+			<div class="flex gap-2">
+				<Input
+					id="api-key-input"
+					type="password"
+					label="API Key"
+					bind:value={apiKey}
+					placeholder={selectedFamily === 'openai' ? 'sk-...' : 'sk-ant-...'}
+					disabled={status !== 'idle'}
+				/>
+				<div class="flex items-end">
+					<Button
+						variant="secondary"
 						onclick={verifyApiKey}
 						disabled={status !== 'idle' || !apiKey.trim()}
+						loading={status === 'verifying'}
 					>
-						{#if status === 'verifying'}
-							<svg
-								class="w-4 h-4 inline-block animate-spin"
-								viewBox="0 0 24 24"
-								fill="none"
-							>
-								<circle
-									class="opacity-25"
-									cx="12"
-									cy="12"
-									r="10"
-									stroke="currentColor"
-									stroke-width="4"
-								></circle>
-								<path
-									fill="currentColor"
-									d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-								></path>
-							</svg>
-						{:else}
-							Verify
-						{/if}
-					</button>
+						Verify
+					</Button>
 				</div>
 			</div>
 
@@ -329,43 +306,26 @@
 				</div>
 
 				<!-- Activate Button -->
-				<button
-					class="w-full px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors bg-amber-500 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
+				<Button
+					fullWidth
 					onclick={configureRemoteProvider}
 					disabled={status === 'configuring' ||
 						!selectedModel ||
 						isCurrentActive()}
+					loading={status === 'configuring'}
 				>
 					{#if status === 'configuring'}
-						<svg
-							class="w-4 h-4 inline-block mr-2 animate-spin"
-							viewBox="0 0 24 24"
-							fill="none"
-						>
-							<circle
-								class="opacity-25"
-								cx="12"
-								cy="12"
-								r="10"
-								stroke="currentColor"
-								stroke-width="4"
-							></circle>
-							<path
-								fill="currentColor"
-								d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-							></path>
-						</svg>
 						Activating...
 					{:else if isCurrentActive()}
 						Active
 					{:else}
 						Activate
 					{/if}
-				</button>
+				</Button>
 			{/if}
 
 			{#if error}
-				<p class="text-sm text-red-400">{error}</p>
+				<ErrorAlert>{error}</ErrorAlert>
 			{/if}
 		</div>
 	{/if}

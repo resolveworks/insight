@@ -4,6 +4,9 @@
 	import { onDestroy, onMount } from 'svelte';
 	import Markdown from './Markdown.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
+	import Button from './Button.svelte';
+	import Input from './Input.svelte';
+	import ErrorAlert from './ErrorAlert.svelte';
 
 	// Content block types matching backend
 	type ContentBlock =
@@ -417,40 +420,28 @@
 
 	<!-- Error display -->
 	{#if error}
-		<div class="border-t border-red-700 bg-red-900/50 px-4 py-2 text-red-300">
-			{error}
-		</div>
+		<ErrorAlert variant="banner">{error}</ErrorAlert>
 	{/if}
 
 	<!-- Input Area -->
 	<div class="border-t border-neutral-700 p-4">
 		<div class="flex gap-2">
-			<input
+			<Input
 				type="text"
 				bind:value={inputValue}
 				onkeydown={handleKeydown}
 				placeholder="Ask about your documents..."
 				disabled={isGenerating || isLoading || !providerConfigured}
-				class="flex-1 rounded-md border border-neutral-600 bg-neutral-900 px-4 py-2
-               text-neutral-100 placeholder-neutral-500 focus:border-amber-500
-               focus:outline-none disabled:opacity-50"
 			/>
 			{#if isGenerating}
-				<button
-					onclick={cancelGeneration}
-					class="rounded-md bg-neutral-600 px-4 py-2 font-medium text-white hover:bg-neutral-500"
-				>
-					Cancel
-				</button>
+				<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
 			{:else}
-				<button
+				<Button
 					onclick={sendMessage}
 					disabled={!inputValue.trim() || isLoading || !providerConfigured}
-					class="rounded-md bg-amber-600 px-4 py-2 font-medium text-white
-                 hover:bg-amber-700 disabled:opacity-50"
 				>
 					Send
-				</button>
+				</Button>
 			{/if}
 		</div>
 	</div>
