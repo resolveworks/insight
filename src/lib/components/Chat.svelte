@@ -5,7 +5,7 @@
 	import Markdown from './Markdown.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
 	import Button from './Button.svelte';
-	import Input from './Input.svelte';
+	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 
 	// Content block types matching backend
@@ -82,6 +82,11 @@
 	// Provider state
 	let providerConfigured = $state(false);
 	let checkingProvider = $state(true);
+
+	// Prediction state (tab completion)
+	let prediction = $state<string>('');
+	let isPredicting = $state(false);
+	let predictionTimeout: ReturnType<typeof setTimeout> | undefined;
 
 	let unlistenAgent: UnlistenFn | undefined;
 	let messagesContainer: HTMLElement | undefined;
@@ -228,6 +233,63 @@
 		}
 	}
 
+	// Prediction functions (tab completion)
+	async function requestPrediction() {
+		if (!conversationId || isPredicting || isGenerating || inputValue) return;
+
+		isPredicting = true;
+		try {
+			const result = await invoke<string | null>('predict_next_message', {
+				conversationId,
+			});
+			// Only set prediction if input is still empty
+			if (result && !inputValue) {
+				prediction = result;
+			}
+		} catch (e) {
+			console.error('Prediction failed:', e);
+		} finally {
+			isPredicting = false;
+		}
+	}
+
+	async function cancelPrediction() {
+		clearTimeout(predictionTimeout);
+		if (conversationId) {
+			try {
+				await invoke('cancel_prediction', { conversationId });
+			} catch {
+				// Ignore cancellation errors
+			}
+		}
+	}
+
+	function handleAcceptPrediction() {
+		prediction = '';
+	}
+
+	// Trigger prediction when input becomes empty
+	$effect(() => {
+		// Clear prediction if user types
+		if (inputValue) {
+			prediction = '';
+			cancelPrediction();
+			return;
+		}
+
+		// Don't predict during generation, loading, or without conversation
+		if (isGenerating || isLoading || !conversationId || messages.length === 0) {
+			prediction = '';
+			return;
+		}
+
+		// Debounce prediction request (wait 500ms after input becomes empty)
+		clearTimeout(predictionTimeout);
+		predictionTimeout = setTimeout(() => {
+			requestPrediction();
+		}, 500);
+	});
+
 	async function handleAgentEvent(event: { payload: AgentEvent }) {
 		const payload = event.payload;
 
@@ -304,6 +366,7 @@
 
 	onDestroy(() => {
 		unlistenAgent?.();
+		clearTimeout(predictionTimeout);
 	});
 </script>
 
@@ -446,10 +509,12 @@
 	<!-- Input Area -->
 	<div class="border-t border-neutral-700 p-4">
 		<div class="flex gap-2">
-			<Input
+			<GhostInput
 				type="text"
 				bind:value={inputValue}
+				ghostText={prediction}
 				onkeydown={handleKeydown}
+				onAcceptGhost={handleAcceptPrediction}
 				placeholder="Ask about your documents..."
 				disabled={isGenerating || isLoading || !providerConfigured}
 			/>

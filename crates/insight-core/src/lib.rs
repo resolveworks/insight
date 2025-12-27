@@ -126,6 +126,8 @@ pub struct AppState {
     pub conversations: Arc<RwLock<HashMap<String, Conversation>>>,
     /// Cancellation tokens for active generations
     pub active_generations: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Cancellation tokens for active predictions (tab completion)
+    pub active_predictions: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Job coordinator for document import pipeline
     pub job_coordinator: Arc<RwLock<Option<JobCoordinator>>>,
 }
@@ -183,6 +185,7 @@ impl AppState {
             provider_config: Arc::new(RwLock::new(None)),
             conversations: Arc::new(RwLock::new(HashMap::new())),
             active_generations: Arc::new(RwLock::new(HashMap::new())),
+            active_predictions: Arc::new(RwLock::new(HashMap::new())),
             job_coordinator: Arc::new(RwLock::new(Some(job_coordinator))),
         })
     }

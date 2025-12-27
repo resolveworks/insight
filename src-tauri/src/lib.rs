@@ -44,6 +44,7 @@ pub fn run() {
                 provider_config: state.provider_config.clone(),
                 conversations: state.conversations.clone(),
                 active_generations: state.active_generations.clone(),
+                active_predictions: state.active_predictions.clone(),
                 job_coordinator: state.job_coordinator.clone(),
             };
             let app_handle = app.handle().clone();
@@ -97,6 +98,9 @@ pub fn run() {
             commands::configure_openai_provider,
             commands::configure_anthropic_provider,
             commands::get_stored_api_keys,
+            // Prediction commands (tab completion)
+            commands::predict_next_message,
+            commands::cancel_prediction,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -859,6 +859,7 @@ pub async fn send_message(
     let provider_config = state.provider_config.clone();
     let conversations_arc = state.conversations.clone();
     let active_generations = state.active_generations.clone();
+    let active_predictions = state.active_predictions.clone();
     let job_coordinator = state.job_coordinator.clone();
     let conversations_dir = state.config.conversations_dir.clone();
 
@@ -881,6 +882,7 @@ pub async fn send_message(
             provider_config,
             conversations: conversations_arc.clone(),
             active_generations,
+            active_predictions,
             job_coordinator,
         };
 
@@ -1421,4 +1423,144 @@ pub async fn get_stored_api_keys(state: State<'_, AppState>) -> Result<StoredApi
 pub struct StoredApiKeys {
     pub openai: Option<String>,
     pub anthropic: Option<String>,
+}
+
+// ============================================================================
+// Prediction Commands (Tab Completion)
+// ============================================================================
+
+const PREDICTION_PROMPT: &str = r#"Based on the conversation above, predict what the user is most likely to ask or say next.
+
+Rules:
+- Output ONLY the predicted message, nothing else
+- Keep it concise (1-2 sentences max)
+- Make it a natural follow-up question or statement
+- If the assistant just answered a question, predict a likely follow-up
+- If unsure, output nothing"#;
+
+/// Predict what the user might say next in a conversation
+#[tauri::command]
+pub async fn predict_next_message(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    // Get conversation
+    let conversations = state.conversations.read().await;
+    let conversation = match conversations.get(&conversation_id) {
+        Some(c) => c.clone(),
+        None => return Ok(None),
+    };
+    drop(conversations);
+
+    // Don't predict if conversation is too short (need at least user + assistant message)
+    let non_system_messages = conversation
+        .messages
+        .iter()
+        .filter(|m| m.role != agent::MessageRole::System)
+        .count();
+    if non_system_messages < 2 {
+        return Ok(None);
+    }
+
+    // Check if there's already a prediction in progress, cancel it
+    {
+        let predictions = state.active_predictions.read().await;
+        if let Some(token) = predictions.get(&conversation_id) {
+            token.cancel();
+        }
+    }
+
+    // Create new cancellation token
+    let cancel_token = CancellationToken::new();
+    state
+        .active_predictions
+        .write()
+        .await
+        .insert(conversation_id.clone(), cancel_token.clone());
+
+    // Get provider
+    let provider_guard = state.chat_provider.read().await;
+    let provider = match provider_guard.as_ref() {
+        Some(p) => p.as_ref(),
+        None => return Ok(None),
+    };
+
+    // Build prediction messages: conversation + prediction prompt
+    let mut prediction_messages = conversation.messages.clone();
+    prediction_messages.push(agent::Message {
+        role: agent::MessageRole::User,
+        content: vec![agent::ContentBlock::Text {
+            text: PREDICTION_PROMPT.to_string(),
+        }],
+    });
+
+    // Create channel for streaming (we'll collect the result)
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<agent::ProviderEvent>(50);
+
+    // Spawn task to collect result
+    let collect_task = tokio::spawn(async move {
+        let mut result = String::new();
+        while let Some(event) = rx.recv().await {
+            if let agent::ProviderEvent::TextDelta(text) = event {
+                result.push_str(&text);
+            }
+        }
+        result
+    });
+
+    // Run completion with timeout
+    let completion_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.stream_completion(&prediction_messages, &[], tx, cancel_token.clone()),
+    )
+    .await;
+
+    // Clean up
+    state
+        .active_predictions
+        .write()
+        .await
+        .remove(&conversation_id);
+
+    // Get collected text
+    let collected_text = collect_task.await.unwrap_or_default();
+
+    match completion_result {
+        Ok(Ok(_)) => {
+            let prediction = collected_text.trim().to_string();
+            // Truncate if too long
+            let prediction = if prediction.len() > 150 {
+                format!("{}...", &prediction[..147])
+            } else {
+                prediction
+            };
+            if prediction.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(prediction))
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("Prediction failed: {}", e);
+            Ok(None)
+        }
+        Err(_) => {
+            // Timeout
+            tracing::debug!("Prediction timed out");
+            Ok(None)
+        }
+    }
+}
+
+/// Cancel any pending prediction for a conversation
+#[tauri::command]
+pub async fn cancel_prediction(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let predictions = state.active_predictions.read().await;
+    if let Some(token) = predictions.get(&conversation_id) {
+        token.cancel();
+    }
+    Ok(())
 }
