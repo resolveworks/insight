@@ -237,7 +237,7 @@ pub enum AgentEvent {
 }
 
 /// Maximum number of tool call iterations
-const MAX_ITERATIONS: usize = 10;
+const MAX_ITERATIONS: usize = 100;
 
 /// Run the agent loop with structured tool calling
 ///
