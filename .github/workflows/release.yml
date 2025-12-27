@@ -21,30 +21,30 @@ jobs:
           - platform: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
             artifact_name: linux
-          - platform: ubuntu-latest
-            rust_target: x86_64-unknown-linux-gnu
-            features: cuda
-            suffix: -cuda
-            cuda: true
-            artifact_name: linux-cuda
+          # - platform: ubuntu-latest
+          #   rust_target: x86_64-unknown-linux-gnu
+          #   features: cuda
+          #   suffix: -cuda
+          #   cuda: true
+          #   artifact_name: linux-cuda
 
           # Windows
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             artifact_name: windows
-          - platform: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            features: cuda
-            suffix: -cuda
-            cuda: true
-            artifact_name: windows-cuda
+          # - platform: windows-latest
+          #   rust_target: x86_64-pc-windows-msvc
+          #   features: cuda
+          #   suffix: -cuda
+          #   cuda: true
+          #   artifact_name: windows-cuda
 
           # macOS
-          - platform: macos-latest
-            rust_target: universal-apple-darwin
-            features: metal
-            artifact_name: macos
-            macos_deployment_target: '11.0'
+          # - platform: macos-latest
+          #   rust_target: universal-apple-darwin
+          #   features: metal
+          #   artifact_name: macos
+          #   macos_deployment_target: '11.0'
 
     runs-on: ${{ matrix.platform }}
 

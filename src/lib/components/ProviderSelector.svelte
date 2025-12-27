@@ -6,6 +6,11 @@
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
+	import {
+		getProviderState,
+		setProvider,
+		initProviderState,
+	} from '$lib/stores/provider-state.svelte';
 
 	interface ProviderFamily {
 		id: string;
@@ -20,11 +25,6 @@
 		description: string | null;
 	}
 
-	type ProviderConfig =
-		| { type: 'local'; model_id: string }
-		| { type: 'openai'; api_key: string; model: string }
-		| { type: 'anthropic'; api_key: string; model: string };
-
 	type Status = 'idle' | 'verifying' | 'configuring';
 
 	type Props = {
@@ -35,7 +35,10 @@
 
 	let families = $state<ProviderFamily[]>([]);
 	let selectedFamily = $state<string>('local');
-	let currentProvider = $state<ProviderConfig | null>(null);
+
+	// Use global provider state
+	const providerState = getProviderState();
+	let currentProvider = $derived(providerState.provider);
 
 	// Remote provider state
 	let apiKey = $state('');
@@ -62,9 +65,9 @@
 	async function load() {
 		try {
 			families = await invoke<ProviderFamily[]>('get_provider_families');
-			currentProvider = await invoke<ProviderConfig | null>(
-				'get_current_provider',
-			);
+
+			// Ensure provider state is initialized
+			await initProviderState();
 
 			// Set initial tab based on current provider
 			if (currentProvider) {
@@ -148,12 +151,12 @@
 					: 'configure_anthropic_provider';
 			await invoke(command, { apiKey, model: selectedModel });
 
-			// Update current provider state
-			currentProvider = {
+			// Update global provider state
+			setProvider({
 				type: selectedFamily as 'openai' | 'anthropic',
 				api_key: apiKey,
 				model: selectedModel,
-			};
+			});
 
 			// Notify parent
 			onConfigured?.();
@@ -166,7 +169,7 @@
 
 	function handleLocalProviderConfigured(modelId: string | null) {
 		if (modelId) {
-			currentProvider = { type: 'local', model_id: modelId };
+			setProvider({ type: 'local', model_id: modelId });
 			onConfigured?.();
 		}
 	}
@@ -178,7 +181,7 @@
 		try {
 			// Call configure with null to disable
 			await invoke('configure_language_model', { modelId: null });
-			currentProvider = null;
+			setProvider(null);
 		} catch (e) {
 			error = `Failed to disable: ${e}`;
 		} finally {

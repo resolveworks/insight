@@ -135,6 +135,7 @@ pub enum ProviderConfig {
     /// Local model via mistralrs
     Local { model_id: String },
     /// OpenAI API
+    #[serde(rename = "openai")]
     OpenAI { api_key: String, model: String },
     /// Anthropic API
     Anthropic { api_key: String, model: String },
