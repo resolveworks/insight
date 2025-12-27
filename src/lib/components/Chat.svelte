@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import Markdown from './Markdown.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
 	import Button from './Button.svelte';
@@ -164,6 +164,12 @@
 			console.error('Failed to load conversation:', e);
 		} finally {
 			isLoading = false;
+
+			// Scroll to the end of the conversation after DOM updates
+			await tick();
+			if (messagesContainer) {
+				messagesContainer.scrollTop = messagesContainer.scrollHeight;
+			}
 		}
 	}
 
@@ -215,7 +221,7 @@
 		}
 	}
 
-	function handleAgentEvent(event: { payload: AgentEvent }) {
+	async function handleAgentEvent(event: { payload: AgentEvent }) {
 		const payload = event.payload;
 
 		switch (payload.type) {
@@ -263,13 +269,10 @@
 				break;
 		}
 
-		// Auto-scroll
+		// Auto-scroll after DOM updates
+		await tick();
 		if (messagesContainer) {
-			setTimeout(() => {
-				if (messagesContainer) {
-					messagesContainer.scrollTop = messagesContainer.scrollHeight;
-				}
-			}, 0);
+			messagesContainer.scrollTop = messagesContainer.scrollHeight;
 		}
 	}
 

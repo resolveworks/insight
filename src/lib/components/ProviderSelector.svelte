@@ -25,6 +25,11 @@
 		description: string | null;
 	}
 
+	interface StoredApiKeys {
+		openai: string | null;
+		anthropic: string | null;
+	}
+
 	type Status = 'idle' | 'verifying' | 'configuring';
 
 	type Props = {
@@ -39,6 +44,9 @@
 	// Use global provider state
 	const providerState = getProviderState();
 	let currentProvider = $derived(providerState.provider);
+
+	// Stored API keys (for switching between providers without re-entering)
+	let storedKeys = $state<StoredApiKeys>({ openai: null, anthropic: null });
 
 	// Remote provider state
 	let apiKey = $state('');
@@ -64,7 +72,13 @@
 
 	async function load() {
 		try {
-			families = await invoke<ProviderFamily[]>('get_provider_families');
+			// Load provider families and stored API keys in parallel
+			const [familiesResult, keysResult] = await Promise.all([
+				invoke<ProviderFamily[]>('get_provider_families'),
+				invoke<StoredApiKeys>('get_stored_api_keys'),
+			]);
+			families = familiesResult;
+			storedKeys = keysResult;
 
 			// Ensure provider state is initialized
 			await initProviderState();
@@ -96,6 +110,7 @@
 		isVerified = false;
 		models = [];
 		selectedModel = null;
+		apiKey = '';
 
 		// Restore state if switching to current provider's family
 		if (currentProvider?.type === id) {
@@ -108,6 +123,14 @@
 				// Re-verify to populate models
 				verifyApiKey();
 			}
+		} else if (id === 'openai' && storedKeys.openai) {
+			// Use stored API key for OpenAI
+			apiKey = storedKeys.openai;
+			verifyApiKey();
+		} else if (id === 'anthropic' && storedKeys.anthropic) {
+			// Use stored API key for Anthropic
+			apiKey = storedKeys.anthropic;
+			verifyApiKey();
 		}
 	}
 
@@ -150,6 +173,13 @@
 					? 'configure_openai_provider'
 					: 'configure_anthropic_provider';
 			await invoke(command, { apiKey, model: selectedModel });
+
+			// Update stored keys locally so tab switching works immediately
+			if (selectedFamily === 'openai') {
+				storedKeys.openai = apiKey;
+			} else {
+				storedKeys.anthropic = apiKey;
+			}
 
 			// Update global provider state
 			setProvider({

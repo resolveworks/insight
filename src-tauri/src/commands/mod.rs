@@ -1360,9 +1360,10 @@ pub async fn configure_openai_provider(
     *state.chat_provider.write().await = Some(Box::new(provider));
     *state.provider_config.write().await = Some(config.clone());
 
-    // Persist setting
+    // Persist setting and store API key separately for easy switching
     let mut settings = Settings::load(&state.config.settings_file);
     settings.provider = Some(config);
+    settings.openai_api_key = Some(api_key);
     settings
         .save(&state.config.settings_file)
         .map_err(|e| e.to_string())?;
@@ -1392,13 +1393,32 @@ pub async fn configure_anthropic_provider(
     *state.chat_provider.write().await = Some(Box::new(provider));
     *state.provider_config.write().await = Some(config.clone());
 
-    // Persist setting
+    // Persist setting and store API key separately for easy switching
     let mut settings = Settings::load(&state.config.settings_file);
     settings.provider = Some(config);
+    settings.anthropic_api_key = Some(api_key);
     settings
         .save(&state.config.settings_file)
         .map_err(|e| e.to_string())?;
 
     tracing::info!("Anthropic provider configured successfully");
     Ok(())
+}
+
+/// Get stored API keys (for auto-populating when switching providers)
+#[tauri::command]
+pub async fn get_stored_api_keys(state: State<'_, AppState>) -> Result<StoredApiKeys, String> {
+    use crate::core::Settings;
+
+    let settings = Settings::load(&state.config.settings_file);
+    Ok(StoredApiKeys {
+        openai: settings.openai_api_key,
+        anthropic: settings.anthropic_api_key,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredApiKeys {
+    pub openai: Option<String>,
+    pub anthropic: Option<String>,
 }

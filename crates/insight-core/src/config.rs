@@ -54,6 +54,12 @@ pub struct Settings {
     /// Active chat provider configuration (local, OpenAI, or Anthropic)
     #[serde(default)]
     pub provider: Option<ProviderConfig>,
+    /// Stored OpenAI API key (persisted separately from active provider)
+    #[serde(default)]
+    pub openai_api_key: Option<String>,
+    /// Stored Anthropic API key (persisted separately from active provider)
+    #[serde(default)]
+    pub anthropic_api_key: Option<String>,
 }
 
 impl Settings {

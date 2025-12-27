@@ -96,6 +96,7 @@ pub fn run() {
             commands::fetch_anthropic_models,
             commands::configure_openai_provider,
             commands::configure_anthropic_provider,
+            commands::get_stored_api_keys,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
