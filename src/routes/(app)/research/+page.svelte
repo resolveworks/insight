@@ -108,11 +108,11 @@
 									type="checkbox"
 									checked={selectedCollections.has(collection.id)}
 									onchange={() => toggleCollection(collection.id)}
-									class="h-4 w-4 rounded border-neutral-600 bg-neutral-900 text-amber-500 focus:ring-amber-500"
+									class="h-4 w-4 rounded border-neutral-600 bg-neutral-900 text-slate-400 focus:ring-slate-400"
 								/>
 								<span
 									class="truncate {selectedCollections.has(collection.id)
-										? 'text-amber-400'
+										? 'text-slate-300'
 										: 'text-neutral-300'}"
 								>
 									{collection.name}

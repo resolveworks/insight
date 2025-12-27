@@ -1,6 +1,6 @@
 <script lang="ts">
 	type Size = 'sm' | 'md' | 'lg';
-	type Color = 'amber' | 'emerald' | 'neutral' | 'current';
+	type Color = 'slate' | 'emerald' | 'neutral' | 'current';
 
 	interface Props {
 		size?: Size;
@@ -8,7 +8,7 @@
 		class?: string;
 	}
 
-	let { size = 'md', color = 'amber', class: className = '' }: Props = $props();
+	let { size = 'md', color = 'slate', class: className = '' }: Props = $props();
 
 	const sizeClasses: Record<Size, string> = {
 		sm: 'h-4 w-4',
@@ -17,7 +17,7 @@
 	};
 
 	const colorClasses: Record<Color, string> = {
-		amber: 'text-amber-500',
+		slate: 'text-slate-400',
 		emerald: 'text-emerald-500',
 		neutral: 'text-neutral-500',
 		current: 'text-current',

@@ -259,7 +259,7 @@
 					placeholder="Paste ticket here..."
 					bind:value={importTicket}
 					rows="2"
-					class="w-full resize-none rounded-md border border-neutral-600 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-100 placeholder-neutral-500 focus:border-amber-500 focus:outline-none"
+					class="w-full resize-none rounded-md border border-neutral-600 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-100 placeholder-neutral-500 focus:border-slate-400 focus:outline-none"
 				></textarea>
 				<Button
 					variant="secondary"
@@ -285,7 +285,7 @@
 						<div
 							class="group flex cursor-pointer items-center justify-between rounded px-3 py-2 text-sm {selectedCollection ===
 							collection.id
-								? 'bg-amber-600/20 text-amber-400'
+								? 'bg-slate-600/20 text-slate-300'
 								: 'hover:bg-neutral-700'}"
 						>
 							<button
@@ -373,7 +373,7 @@
 							class="flex-1"
 						>
 							<span
-								class="text-neutral-200 transition-colors hover:text-amber-400"
+								class="text-neutral-200 transition-colors hover:text-slate-300"
 								>{doc.name}</span
 							>
 							<span class="ml-2 text-xs text-neutral-500"

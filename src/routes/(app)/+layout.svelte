@@ -92,7 +92,7 @@
 				onclick={() => {
 					appPhase = { state: 'setup-required' };
 				}}
-				class="rounded bg-amber-600 px-4 py-2 text-white hover:bg-amber-700"
+				class="rounded bg-slate-600 px-4 py-2 text-white hover:bg-slate-700"
 			>
 				Reconfigure Embedding Model
 			</button>
@@ -107,7 +107,7 @@
 					href={resolve(tab.href as '/')}
 					class="px-6 py-3 text-sm font-medium transition-colors {currentTab ===
 					tab.id
-						? 'border-b-2 border-amber-500 text-amber-500'
+						? 'border-b-2 border-slate-400 text-slate-300'
 						: 'text-neutral-400 hover:text-neutral-200'}"
 				>
 					{tab.label}

@@ -5,7 +5,7 @@
 
 	type Variant = 'primary' | 'secondary' | 'ghost';
 	type Size = 'sm' | 'md' | 'lg';
-	type Color = 'amber' | 'emerald';
+	type Color = 'slate' | 'emerald';
 
 	interface Props extends HTMLButtonAttributes {
 		variant?: Variant;
@@ -19,7 +19,7 @@
 	let {
 		variant = 'primary',
 		size = 'md',
-		color = 'amber',
+		color = 'slate',
 		loading = false,
 		fullWidth = false,
 		disabled,
@@ -32,7 +32,7 @@
 		'rounded-md font-medium text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
 
 	const colorClasses: Record<Color, string> = {
-		amber: 'bg-amber-600 hover:bg-amber-700',
+		slate: 'bg-slate-600 hover:bg-slate-700',
 		emerald: 'bg-emerald-600 hover:bg-emerald-700',
 	};
 

@@ -262,9 +262,9 @@
 							<p class="text-neutral-500">Loading chunks...</p>
 						{:else if chunksError}
 							<div
-								class="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3"
+								class="rounded-lg border border-slate-500/50 bg-slate-500/10 p-3"
 							>
-								<p class="text-sm text-amber-400">{chunksError}</p>
+								<p class="text-sm text-slate-400">{chunksError}</p>
 							</div>
 						{:else if chunks && chunks.length > 0}
 							<div class="space-y-3">

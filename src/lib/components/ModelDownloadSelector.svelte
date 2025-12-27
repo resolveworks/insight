@@ -54,38 +54,38 @@
 
 	// Button color based on config accent
 	let buttonColor = $derived(
-		config.accentColor === 'emerald' ? 'emerald' : 'amber',
-	) as 'amber' | 'emerald';
+		config.accentColor === 'emerald' ? 'emerald' : 'slate',
+	) as 'slate' | 'emerald';
 
 	// Color classes based on accent
 	let accentClasses = $derived({
 		border:
-			config.accentColor === 'amber'
-				? 'border-amber-500'
+			config.accentColor === 'slate'
+				? 'border-slate-500'
 				: config.accentColor === 'emerald'
 					? 'border-emerald-500'
 					: 'border-neutral-500',
 		bg:
-			config.accentColor === 'amber'
-				? 'bg-amber-900/30'
+			config.accentColor === 'slate'
+				? 'bg-slate-900/30'
 				: config.accentColor === 'emerald'
 					? 'bg-emerald-900/30'
 					: 'bg-neutral-800',
 		text:
-			config.accentColor === 'amber'
-				? 'text-amber-500'
+			config.accentColor === 'slate'
+				? 'text-slate-400'
 				: config.accentColor === 'emerald'
 					? 'text-emerald-500'
 					: 'text-neutral-500',
 		btn:
-			config.accentColor === 'amber'
-				? 'bg-amber-500 hover:bg-amber-600'
+			config.accentColor === 'slate'
+				? 'bg-slate-500 hover:bg-slate-600'
 				: config.accentColor === 'emerald'
 					? 'bg-emerald-500 hover:bg-emerald-600'
 					: 'bg-neutral-500 hover:bg-neutral-600',
 		progress:
-			config.accentColor === 'amber'
-				? 'bg-amber-500'
+			config.accentColor === 'slate'
+				? 'bg-slate-500'
 				: config.accentColor === 'emerald'
 					? 'bg-emerald-500'
 					: 'bg-neutral-500',

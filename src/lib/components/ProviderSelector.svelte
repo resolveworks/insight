@@ -196,7 +196,7 @@
 			<button
 				class="px-4 py-2 text-sm font-medium transition-colors -mb-px cursor-pointer
 					{selectedFamily === family.id
-					? 'text-amber-400 border-b-2 border-amber-400'
+					? 'text-slate-300 border-b-2 border-slate-400'
 					: 'text-neutral-400 hover:text-neutral-200'}"
 				onclick={() => selectFamily(family.id)}
 			>
@@ -208,10 +208,10 @@
 	<!-- Current Provider Status (if active) -->
 	{#if currentProvider && currentProvider.type === selectedFamily}
 		<div
-			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-amber-500 bg-amber-900/30 text-neutral-200"
+			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-slate-500 bg-slate-900/30 text-neutral-200"
 		>
 			<svg
-				class="w-5 h-5 shrink-0 text-amber-500"
+				class="w-5 h-5 shrink-0 text-slate-400"
 				viewBox="0 0 24 24"
 				fill="none"
 				stroke="currentColor"
@@ -291,7 +291,7 @@
 					<select
 						id="model-select"
 						bind:value={selectedModel}
-						class="w-full px-3 py-2 bg-neutral-900 border border-neutral-600 rounded-md text-neutral-200 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent cursor-pointer"
+						class="w-full px-3 py-2 bg-neutral-900 border border-neutral-600 rounded-md text-neutral-200 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-transparent cursor-pointer"
 						disabled={status !== 'idle'}
 					>
 						{#each models as model (model.id)}

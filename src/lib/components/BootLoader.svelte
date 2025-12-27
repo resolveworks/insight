@@ -6,7 +6,7 @@
 <CenteredLayout width="sm">
 	<div class="text-center">
 		<div class="mb-6 flex justify-center">
-			<LoadingSpinner size="lg" color="amber" />
+			<LoadingSpinner size="lg" color="slate" />
 		</div>
 
 		<h1 class="mb-2 text-xl font-semibold text-neutral-100">

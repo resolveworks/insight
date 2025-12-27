@@ -339,7 +339,7 @@
 					>
 						<div
 							class="max-w-[80%] rounded-lg px-4 py-2 {message.role === 'user'
-								? 'bg-amber-600 text-white'
+								? 'bg-slate-600 text-white'
 								: 'bg-neutral-700 text-neutral-100'}"
 						>
 							<Markdown content={block.text} />

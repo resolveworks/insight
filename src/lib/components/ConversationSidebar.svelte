@@ -37,7 +37,7 @@
 	<div class="border-b border-neutral-700 p-3">
 		<button
 			onclick={onNew}
-			class="w-full rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700"
+			class="w-full rounded-md bg-slate-600 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700"
 		>
 			New Chat
 		</button>
@@ -64,7 +64,7 @@
 							onclick={() => onSelect(conv.id)}
 							class="w-full truncate rounded px-2 py-1.5 text-left text-sm transition
 								{activeConversationId === conv.id
-								? 'bg-amber-600/20 text-amber-400'
+								? 'bg-slate-600/20 text-slate-300'
 								: 'text-neutral-300 hover:bg-neutral-700'}"
 						>
 							{conv.title}
