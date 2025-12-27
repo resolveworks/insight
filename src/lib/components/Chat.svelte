@@ -198,6 +198,13 @@
 			...messages,
 			{ role: 'user', block: { type: 'text', text: userMessage } },
 		];
+
+		// Scroll to show user message
+		await tick();
+		if (messagesContainer) {
+			messagesContainer.scrollTop = messagesContainer.scrollHeight;
+		}
+
 		isGenerating = true;
 		streamingBlocks = [];
 
