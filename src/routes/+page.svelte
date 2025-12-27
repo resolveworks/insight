@@ -8,6 +8,6 @@
 	});
 </script>
 
-<div class="flex h-screen items-center justify-center bg-slate-900">
-	<p class="text-slate-500">Redirecting...</p>
+<div class="flex h-screen items-center justify-center bg-neutral-900">
+	<p class="text-neutral-500">Redirecting...</p>
 </div>

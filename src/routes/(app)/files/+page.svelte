@@ -239,11 +239,11 @@
 				placeholder="New collection..."
 				bind:value={newCollectionName}
 				onkeydown={(e) => e.key === 'Enter' && createCollection()}
-				class="min-w-0 flex-1 rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
+				class="min-w-0 flex-1 rounded-md border border-neutral-600 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-500 focus:border-amber-500 focus:outline-none"
 			/>
 			<button
 				onclick={createCollection}
-				class="rounded-md bg-rose-600 px-3 py-1.5 font-medium text-white hover:bg-rose-700"
+				class="rounded-md bg-amber-600 px-3 py-1.5 font-medium text-white hover:bg-amber-700"
 			>
 				+
 			</button>
@@ -252,7 +252,7 @@
 		<!-- Import from ticket -->
 		<details class="mb-4">
 			<summary
-				class="cursor-pointer text-xs text-slate-400 hover:text-slate-300"
+				class="cursor-pointer text-xs text-neutral-400 hover:text-neutral-300"
 			>
 				Import shared collection
 			</summary>
@@ -261,12 +261,12 @@
 					placeholder="Paste ticket here..."
 					bind:value={importTicket}
 					rows="2"
-					class="w-full resize-none rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:border-rose-500 focus:outline-none"
+					class="w-full resize-none rounded-md border border-neutral-600 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-100 placeholder-neutral-500 focus:border-amber-500 focus:outline-none"
 				></textarea>
 				<button
 					onclick={importFromTicket}
 					disabled={importingCollection || !importTicket.trim()}
-					class="w-full rounded-md bg-slate-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-500 disabled:opacity-50"
+					class="w-full rounded-md bg-neutral-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-500 disabled:opacity-50"
 				>
 					{importingCollection ? 'Importing...' : 'Import'}
 				</button>
@@ -277,7 +277,7 @@
 		</details>
 
 		{#if collections.length === 0}
-			<p class="text-sm italic text-slate-500">No collections yet</p>
+			<p class="text-sm italic text-neutral-500">No collections yet</p>
 		{:else}
 			<ul class="space-y-1">
 				{#each collections as collection (collection.id)}
@@ -285,8 +285,8 @@
 						<div
 							class="group flex cursor-pointer items-center justify-between rounded px-3 py-2 text-sm {selectedCollection ===
 							collection.id
-								? 'bg-rose-600/20 text-rose-400'
-								: 'hover:bg-slate-700'}"
+								? 'bg-amber-600/20 text-amber-400'
+								: 'hover:bg-neutral-700'}"
 						>
 							<button
 								type="button"
@@ -299,7 +299,7 @@
 								<button
 									type="button"
 									onclick={(e) => shareCollection(collection.id, e)}
-									class="hidden text-slate-500 hover:text-blue-400 group-hover:block {sharingCollectionId ===
+									class="hidden text-neutral-500 hover:text-blue-400 group-hover:block {sharingCollectionId ===
 									collection.id
 										? '!block text-blue-400'
 										: ''}"
@@ -310,7 +310,7 @@
 								<button
 									type="button"
 									onclick={(e) => deleteCollection(collection.id, e)}
-									class="hidden text-slate-500 hover:text-red-400 group-hover:block"
+									class="hidden text-neutral-500 hover:text-red-400 group-hover:block"
 									title="Delete collection"
 								>
 									x
@@ -320,11 +320,11 @@
 						<!-- Share ticket display -->
 						{#if sharingCollectionId === collection.id}
 							<div
-								class="mx-3 mb-2 rounded border border-slate-600 bg-slate-900 p-2"
+								class="mx-3 mb-2 rounded border border-neutral-600 bg-neutral-900 p-2"
 							>
 								{#if shareTicket}
 									<div class="flex items-start gap-2">
-										<code class="flex-1 break-all text-xs text-slate-300">
+										<code class="flex-1 break-all text-xs text-neutral-300">
 											{shareTicket.slice(0, 40)}...
 										</code>
 										<button
@@ -334,13 +334,13 @@
 											{ticketCopied ? 'Copied!' : 'Copy'}
 										</button>
 									</div>
-									<p class="mt-1 text-xs text-slate-500">
+									<p class="mt-1 text-xs text-neutral-500">
 										Share this ticket with others to sync this collection
 									</p>
 								{:else if shareError}
 									<p class="text-xs text-red-400">{shareError}</p>
 								{:else}
-									<p class="text-xs text-slate-400">Generating ticket...</p>
+									<p class="text-xs text-neutral-400">Generating ticket...</p>
 								{/if}
 							</div>
 						{/if}
@@ -353,39 +353,40 @@
 	<!-- Documents Area -->
 	<section class="flex-1 overflow-y-auto p-6">
 		<div class="mb-4 flex items-center justify-between">
-			<h2 class="text-sm font-medium text-slate-400">
+			<h2 class="text-sm font-medium text-neutral-400">
 				{selectedCollection ? 'Documents' : 'Select a collection'}
 			</h2>
 			<button
 				onclick={importPdf}
 				disabled={importing || !selectedCollection}
-				class="rounded-md bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-60"
+				class="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-60"
 			>
 				{importing ? 'Importing...' : 'Import PDF'}
 			</button>
 		</div>
 		{#if documents.length === 0}
-			<p class="text-sm italic text-slate-500">No documents yet</p>
+			<p class="text-sm italic text-neutral-500">No documents yet</p>
 		{:else}
 			<ul class="space-y-2">
 				{#each documents as doc (doc.id)}
 					<li
-						class="group flex items-center justify-between rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 transition-colors hover:border-slate-600"
+						class="group flex items-center justify-between rounded-lg border border-neutral-700 bg-neutral-800 px-4 py-3 transition-colors hover:border-neutral-600"
 					>
 						<a
 							href={resolve(`/files/${selectedCollection}/${doc.id}`)}
 							class="flex-1"
 						>
-							<span class="text-slate-200 transition-colors hover:text-rose-400"
+							<span
+								class="text-neutral-200 transition-colors hover:text-amber-400"
 								>{doc.name}</span
 							>
-							<span class="ml-2 text-xs text-slate-500"
+							<span class="ml-2 text-xs text-neutral-500"
 								>{doc.page_count} pages</span
 							>
 						</a>
 						<button
 							onclick={() => deleteDocument(doc.id)}
-							class="hidden text-slate-500 hover:text-red-400 group-hover:block"
+							class="hidden text-neutral-500 hover:text-red-400 group-hover:block"
 							title="Delete document"
 						>
 							x

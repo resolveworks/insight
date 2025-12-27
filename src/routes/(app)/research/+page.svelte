@@ -87,37 +87,37 @@
 
 <div class="flex h-full">
 	<!-- Left Sidebar: Filters + Conversation History -->
-	<aside class="flex w-64 flex-col border-r border-slate-700 bg-slate-800">
+	<aside class="flex w-64 flex-col border-r border-neutral-700 bg-neutral-800">
 		<!-- Collection Filters -->
-		<div class="border-b border-slate-700 p-4">
+		<div class="border-b border-neutral-700 p-4">
 			<h2
-				class="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400"
+				class="mb-3 text-xs font-medium uppercase tracking-wide text-neutral-400"
 			>
 				Filter by Collection
 			</h2>
 			{#if collections.length === 0}
-				<p class="text-sm italic text-slate-500">No collections</p>
+				<p class="text-sm italic text-neutral-500">No collections</p>
 			{:else}
 				<ul class="space-y-1">
 					{#each collections as collection (collection.id)}
 						<li>
 							<label
-								class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-slate-700"
+								class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-neutral-700"
 							>
 								<input
 									type="checkbox"
 									checked={selectedCollections.has(collection.id)}
 									onchange={() => toggleCollection(collection.id)}
-									class="h-4 w-4 rounded border-slate-600 bg-slate-900 text-rose-500 focus:ring-rose-500"
+									class="h-4 w-4 rounded border-neutral-600 bg-neutral-900 text-amber-500 focus:ring-amber-500"
 								/>
 								<span
 									class="truncate {selectedCollections.has(collection.id)
-										? 'text-rose-400'
-										: 'text-slate-300'}"
+										? 'text-amber-400'
+										: 'text-neutral-300'}"
 								>
 									{collection.name}
 								</span>
-								<span class="ml-auto text-xs text-slate-500">
+								<span class="ml-auto text-xs text-neutral-500">
 									{collection.document_count}
 								</span>
 							</label>
@@ -128,15 +128,15 @@
 					<button
 						onclick={selectAll}
 						disabled={selectedCollections.size === collections.length}
-						class="text-slate-500 hover:text-slate-300 disabled:cursor-default disabled:text-slate-600"
+						class="text-neutral-500 hover:text-neutral-300 disabled:cursor-default disabled:text-neutral-600"
 					>
 						Select all
 					</button>
-					<span class="text-slate-600">|</span>
+					<span class="text-neutral-600">|</span>
 					<button
 						onclick={selectNone}
 						disabled={selectedCollections.size === 0}
-						class="text-slate-500 hover:text-slate-300 disabled:cursor-default disabled:text-slate-600"
+						class="text-neutral-500 hover:text-neutral-300 disabled:cursor-default disabled:text-neutral-600"
 					>
 						Select none
 					</button>

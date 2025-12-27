@@ -17,7 +17,7 @@ export interface ModelSelectorConfig {
 	/** Event name for download complete */
 	completeEvent: string;
 	/** Accent color */
-	accentColor: 'rose' | 'emerald';
+	accentColor: 'amber' | 'emerald';
 }
 
 export const languageModelConfig: ModelSelectorConfig = {
@@ -29,7 +29,7 @@ export const languageModelConfig: ModelSelectorConfig = {
 	configureCommand: 'configure_language_model',
 	progressEvent: 'language-model-download-progress',
 	completeEvent: 'language-model-download-complete',
-	accentColor: 'rose',
+	accentColor: 'amber',
 };
 
 export const embeddingModelConfig: ModelSelectorConfig = {

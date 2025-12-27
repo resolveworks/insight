@@ -15,22 +15,28 @@
 	}
 </script>
 
-<div class="flex h-screen items-center justify-center bg-slate-900">
+<div class="flex h-screen items-center justify-center bg-neutral-900">
 	<div class="w-full max-w-xl p-8">
 		<div class="mb-8 text-center">
-			<h1 class="mb-2 text-3xl font-bold text-slate-100">Welcome to Insight</h1>
-			<p class="text-slate-400">
+			<h1 class="mb-2 text-3xl font-bold text-neutral-100">
+				Welcome to Insight
+			</h1>
+			<p class="text-neutral-400">
 				Before you begin, please set up an embedding model for semantic search.
 				This enables searching documents by meaning, not just keywords.
 			</p>
 		</div>
 
-		<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-			<ModelDownloadSelector config={embeddingModelConfig} onConfigured={handleConfigured} />
+		<div class="rounded-lg border border-neutral-700 bg-neutral-800 p-6">
+			<ModelDownloadSelector
+				config={embeddingModelConfig}
+				onConfigured={handleConfigured}
+			/>
 		</div>
 
-		<p class="mt-6 text-center text-sm text-slate-500">
-			The embedding model will be downloaded and loaded. This may take a few minutes on first setup.
+		<p class="mt-6 text-center text-sm text-neutral-500">
+			The embedding model will be downloaded and loaded. This may take a few
+			minutes on first setup.
 		</p>
 	</div>
 </div>

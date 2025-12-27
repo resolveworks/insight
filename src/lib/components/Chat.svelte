@@ -292,33 +292,33 @@
 	>
 		{#if checkingProvider}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-slate-400">
+				<div class="text-center text-neutral-400">
 					<div class="text-lg">Checking provider...</div>
 				</div>
 			</div>
 		{:else if !providerConfigured}
 			<div class="mx-auto max-w-xl pt-8">
-				<h2 class="mb-4 text-lg font-medium text-slate-200">
+				<h2 class="mb-4 text-lg font-medium text-neutral-200">
 					Configure a Language Model
 				</h2>
-				<p class="mb-6 text-sm text-slate-400">
+				<p class="mb-6 text-sm text-neutral-400">
 					Choose a provider to enable chat. You can run models locally or use
 					OpenAI/Anthropic APIs.
 				</p>
-				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
+				<div class="rounded-lg border border-neutral-700 bg-neutral-800 p-6">
 					<ProviderSelector onConfigured={handleProviderConfigured} />
 				</div>
 			</div>
 		{:else if isLoading}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-slate-400">
+				<div class="text-center text-neutral-400">
 					<div class="mb-2 text-lg">Starting chat...</div>
 					<div class="text-sm">This may take a moment</div>
 				</div>
 			</div>
 		{:else if messages.length === 0}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-slate-400">
+				<div class="text-center text-neutral-400">
 					<div class="mb-2 text-lg">Ask questions about your documents</div>
 					<div class="text-sm">
 						The agent can search and read documents to help you find information
@@ -336,22 +336,24 @@
 					>
 						<div
 							class="max-w-[80%] rounded-lg px-4 py-2 {message.role === 'user'
-								? 'bg-rose-600 text-white'
-								: 'bg-slate-700 text-slate-100'}"
+								? 'bg-amber-600 text-white'
+								: 'bg-neutral-700 text-neutral-100'}"
 						>
 							<Markdown content={block.text} />
 						</div>
 					</div>
 				{:else if block.type === 'tool_use'}
-					<details class="mx-4 rounded border border-slate-600 bg-slate-800">
+					<details
+						class="mx-4 rounded border border-neutral-600 bg-neutral-800"
+					>
 						<summary
-							class="cursor-pointer px-2 py-1 text-xs text-slate-400 hover:text-slate-300"
+							class="cursor-pointer px-2 py-1 text-xs text-neutral-400 hover:text-neutral-300"
 						>
 							Tool: {block.name}
 						</summary>
 						<div class="p-2">
 							<pre
-								class="max-h-24 overflow-auto text-xs text-slate-400">{JSON.stringify(
+								class="max-h-24 overflow-auto text-xs text-neutral-400">{JSON.stringify(
 									block.arguments,
 									null,
 									2,
@@ -360,12 +362,12 @@
 					</details>
 				{:else if block.type === 'tool_result'}
 					<div
-						class="mx-4 rounded border border-slate-600 bg-slate-800/50 p-2 text-xs {block.is_error
+						class="mx-4 rounded border border-neutral-600 bg-neutral-800/50 p-2 text-xs {block.is_error
 							? 'border-red-600/50'
 							: ''}"
 					>
 						<pre
-							class="max-h-48 overflow-auto text-slate-300 {block.is_error
+							class="max-h-48 overflow-auto text-neutral-300 {block.is_error
 								? 'text-red-300'
 								: ''}">{block.content}</pre>
 					</div>
@@ -379,7 +381,7 @@
 				{#if block.type === 'text'}
 					<div class="flex justify-start">
 						<div
-							class="max-w-[80%] rounded-lg bg-slate-700 px-4 py-2 text-slate-100"
+							class="max-w-[80%] rounded-lg bg-neutral-700 px-4 py-2 text-neutral-100"
 						>
 							<Markdown content={block.text} /><span class="animate-pulse"
 								>▊</span
@@ -388,21 +390,21 @@
 					</div>
 				{:else if block.type === 'tool_use'}
 					<div
-						class="mx-4 rounded border border-slate-600 bg-slate-800 p-2 text-xs"
+						class="mx-4 rounded border border-neutral-600 bg-neutral-800 p-2 text-xs"
 					>
-						<div class="flex items-center gap-2 font-medium text-slate-400">
+						<div class="flex items-center gap-2 font-medium text-neutral-400">
 							<span>Tool: {block.name}</span>
 							<span class="animate-pulse">...</span>
 						</div>
 					</div>
 				{:else if block.type === 'tool_result'}
 					<div
-						class="mx-4 rounded border border-slate-600 bg-slate-800/50 p-2 text-xs {block.is_error
+						class="mx-4 rounded border border-neutral-600 bg-neutral-800/50 p-2 text-xs {block.is_error
 							? 'border-red-600/50'
 							: ''}"
 					>
 						<pre
-							class="max-h-32 overflow-auto text-slate-300 {block.is_error
+							class="max-h-32 overflow-auto text-neutral-300 {block.is_error
 								? 'text-red-300'
 								: ''}">{block.content.slice(0, 300)}{block.content.length > 300
 								? '...'
@@ -421,7 +423,7 @@
 	{/if}
 
 	<!-- Input Area -->
-	<div class="border-t border-slate-700 p-4">
+	<div class="border-t border-neutral-700 p-4">
 		<div class="flex gap-2">
 			<input
 				type="text"
@@ -429,14 +431,14 @@
 				onkeydown={handleKeydown}
 				placeholder="Ask about your documents..."
 				disabled={isGenerating || isLoading || !providerConfigured}
-				class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2
-               text-slate-100 placeholder-slate-500 focus:border-rose-500
+				class="flex-1 rounded-md border border-neutral-600 bg-neutral-900 px-4 py-2
+               text-neutral-100 placeholder-neutral-500 focus:border-amber-500
                focus:outline-none disabled:opacity-50"
 			/>
 			{#if isGenerating}
 				<button
 					onclick={cancelGeneration}
-					class="rounded-md bg-slate-600 px-4 py-2 font-medium text-white hover:bg-slate-500"
+					class="rounded-md bg-neutral-600 px-4 py-2 font-medium text-white hover:bg-neutral-500"
 				>
 					Cancel
 				</button>
@@ -444,8 +446,8 @@
 				<button
 					onclick={sendMessage}
 					disabled={!inputValue.trim() || isLoading || !providerConfigured}
-					class="rounded-md bg-rose-600 px-4 py-2 font-medium text-white
-                 hover:bg-rose-700 disabled:opacity-50"
+					class="rounded-md bg-amber-600 px-4 py-2 font-medium text-white
+                 hover:bg-amber-700 disabled:opacity-50"
 				>
 					Send
 				</button>

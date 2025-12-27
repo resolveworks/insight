@@ -53,35 +53,35 @@
 	// Color classes based on accent
 	let accentClasses = $derived({
 		border:
-			config.accentColor === 'rose'
-				? 'border-rose-500'
+			config.accentColor === 'amber'
+				? 'border-amber-500'
 				: config.accentColor === 'emerald'
 					? 'border-emerald-500'
-					: 'border-slate-500',
+					: 'border-neutral-500',
 		bg:
-			config.accentColor === 'rose'
-				? 'bg-rose-900/30'
+			config.accentColor === 'amber'
+				? 'bg-amber-900/30'
 				: config.accentColor === 'emerald'
 					? 'bg-emerald-900/30'
-					: 'bg-slate-800',
+					: 'bg-neutral-800',
 		text:
-			config.accentColor === 'rose'
-				? 'text-rose-500'
+			config.accentColor === 'amber'
+				? 'text-amber-500'
 				: config.accentColor === 'emerald'
 					? 'text-emerald-500'
-					: 'text-slate-500',
+					: 'text-neutral-500',
 		btn:
-			config.accentColor === 'rose'
-				? 'bg-rose-500 hover:bg-rose-600'
+			config.accentColor === 'amber'
+				? 'bg-amber-500 hover:bg-amber-600'
 				: config.accentColor === 'emerald'
 					? 'bg-emerald-500 hover:bg-emerald-600'
-					: 'bg-slate-500 hover:bg-slate-600',
+					: 'bg-neutral-500 hover:bg-neutral-600',
 		progress:
-			config.accentColor === 'rose'
-				? 'bg-rose-500'
+			config.accentColor === 'amber'
+				? 'bg-amber-500'
 				: config.accentColor === 'emerald'
 					? 'bg-emerald-500'
-					: 'bg-slate-500',
+					: 'bg-neutral-500',
 	});
 
 	async function load() {
@@ -187,36 +187,36 @@
 
 <div>
 	{#if status === 'loading'}
-		<p class="text-slate-400 text-center py-4">Loading models...</p>
+		<p class="text-neutral-400 text-center py-4">Loading models...</p>
 	{:else if isDownloading}
 		<div class="text-center">
-			<h3 class="text-lg text-slate-300 mb-4">Downloading {config.title}</h3>
+			<h3 class="text-lg text-neutral-300 mb-4">Downloading {config.title}</h3>
 			{#if downloadState.progress}
-				<p class="text-sm text-slate-400 mb-2">
+				<p class="text-sm text-neutral-400 mb-2">
 					File {downloadState.progress.file_index} of {downloadState.progress
 						.total_files}: {downloadState.progress.file.split('/').pop()}
 				</p>
-				<div class="h-2 bg-slate-700 rounded-full overflow-hidden mb-2">
+				<div class="h-2 bg-neutral-700 rounded-full overflow-hidden mb-2">
 					<div
 						class="h-full transition-[width] duration-300 {accentClasses.progress}"
 						style="width: {downloadState.progress.overall_progress * 100}%"
 					></div>
 				</div>
-				<p class="text-xs text-slate-500">
+				<p class="text-xs text-neutral-500">
 					{formatBytes(downloadState.progress.downloaded)} / {formatBytes(
 						downloadState.progress.total,
 					)}
 					({Math.round(downloadState.progress.overall_progress * 100)}%)
 				</p>
 			{:else}
-				<p class="text-sm text-slate-400 mb-2">Starting download...</p>
+				<p class="text-sm text-neutral-400 mb-2">Starting download...</p>
 			{/if}
 		</div>
 	{:else}
 		<div
 			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm {activeId
-				? `${accentClasses.border} ${accentClasses.bg} text-slate-200`
-				: 'border-slate-600 bg-slate-800 text-slate-400'}"
+				? `${accentClasses.border} ${accentClasses.bg} text-neutral-200`
+				: 'border-neutral-600 bg-neutral-800 text-neutral-400'}"
 		>
 			{#if activeId}
 				<svg
@@ -234,7 +234,7 @@
 				</svg>
 				<span>{models.find((m) => m.id === activeId)?.name} active</span>
 				<button
-					class="ml-auto text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
+					class="ml-auto text-xs text-neutral-400 hover:text-neutral-200 cursor-pointer"
 					onclick={disable}
 					disabled={status === 'configuring'}
 				>
@@ -264,24 +264,24 @@
 					class="flex justify-between items-center w-full p-3 rounded-lg border text-left cursor-pointer transition-colors duration-150 {selectedId ===
 					model.id
 						? `${accentClasses.border} ${accentClasses.bg}`
-						: 'border-slate-600 hover:border-slate-500 bg-transparent'}"
+						: 'border-neutral-600 hover:border-neutral-500 bg-transparent'}"
 					onclick={() => select(model.id)}
 				>
 					<div class="flex flex-col gap-0.5">
-						<span class="font-medium text-slate-200">{model.name}</span>
-						<span class="text-sm text-slate-400">{model.description}</span>
+						<span class="font-medium text-neutral-200">{model.name}</span>
+						<span class="text-sm text-neutral-400">{model.description}</span>
 						{#if model.dimensions}
-							<span class="text-xs text-slate-500 mt-1"
+							<span class="text-xs text-neutral-500 mt-1"
 								>{model.dimensions} dimensions</span
 							>
 						{/if}
 					</div>
 					<div class="flex flex-col items-end gap-1 ml-4">
-						<span class="text-sm text-slate-500">{model.size_gb} GB</span>
+						<span class="text-sm text-neutral-500">{model.size_gb} GB</span>
 						{#if model.id === activeId}
 							<span class="text-xs {accentClasses.text}">Active</span>
 						{:else if model.id === selectedId && isDownloaded}
-							<span class="text-xs text-slate-400">Downloaded</span>
+							<span class="text-xs text-neutral-400">Downloaded</span>
 						{/if}
 					</div>
 				</button>
@@ -327,7 +327,7 @@
 					{/if}
 				</button>
 				{#if status === 'configuring'}
-					<p class="text-xs text-slate-500 text-center">
+					<p class="text-xs text-neutral-500 text-center">
 						This may take 20-30 seconds on first load
 					</p>
 				{/if}

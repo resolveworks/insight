@@ -2,11 +2,11 @@
 	// Simple loading screen shown briefly while checking boot status
 </script>
 
-<div class="flex h-screen flex-col items-center justify-center bg-slate-900">
+<div class="flex h-screen flex-col items-center justify-center bg-neutral-900">
 	<div class="text-center">
 		<div class="mb-6">
 			<svg
-				class="mx-auto h-12 w-12 animate-spin text-rose-500"
+				class="mx-auto h-12 w-12 animate-spin text-amber-500"
 				fill="none"
 				viewBox="0 0 24 24"
 			>
@@ -26,7 +26,9 @@
 			</svg>
 		</div>
 
-		<h1 class="mb-2 text-xl font-semibold text-slate-100">Starting Insight</h1>
-		<p class="text-sm text-slate-400">Please wait...</p>
+		<h1 class="mb-2 text-xl font-semibold text-neutral-100">
+			Starting Insight
+		</h1>
+		<p class="text-sm text-neutral-400">Please wait...</p>
 	</div>
 </div>

@@ -188,13 +188,13 @@
 
 <div>
 	<!-- Provider Tabs -->
-	<div class="mb-6 flex border-b border-slate-700">
+	<div class="mb-6 flex border-b border-neutral-700">
 		{#each families as family (family.id)}
 			<button
 				class="px-4 py-2 text-sm font-medium transition-colors -mb-px cursor-pointer
 					{selectedFamily === family.id
-					? 'text-rose-400 border-b-2 border-rose-400'
-					: 'text-slate-400 hover:text-slate-200'}"
+					? 'text-amber-400 border-b-2 border-amber-400'
+					: 'text-neutral-400 hover:text-neutral-200'}"
 				onclick={() => selectFamily(family.id)}
 			>
 				{family.name}
@@ -205,10 +205,10 @@
 	<!-- Current Provider Status (if active) -->
 	{#if currentProvider && currentProvider.type === selectedFamily}
 		<div
-			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-rose-500 bg-rose-900/30 text-slate-200"
+			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-amber-500 bg-amber-900/30 text-neutral-200"
 		>
 			<svg
-				class="w-5 h-5 shrink-0 text-rose-500"
+				class="w-5 h-5 shrink-0 text-amber-500"
 				viewBox="0 0 24 24"
 				fill="none"
 				stroke="currentColor"
@@ -228,7 +228,7 @@
 				{/if}
 			</span>
 			<button
-				class="ml-auto text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
+				class="ml-auto text-xs text-neutral-400 hover:text-neutral-200 cursor-pointer"
 				onclick={disableProvider}
 				disabled={status === 'configuring'}
 			>
@@ -246,7 +246,7 @@
 	{:else}
 		<!-- Remote Provider (OpenAI/Anthropic) -->
 		<div class="space-y-4">
-			<p class="text-sm text-slate-400">
+			<p class="text-sm text-neutral-400">
 				{#if selectedFamily === 'openai'}
 					Enter your OpenAI API key to access GPT models.
 				{:else}
@@ -258,7 +258,7 @@
 			<div>
 				<label
 					for="api-key-input"
-					class="block text-sm font-medium text-slate-300 mb-2"
+					class="block text-sm font-medium text-neutral-300 mb-2"
 				>
 					API Key
 				</label>
@@ -268,11 +268,11 @@
 						type="password"
 						bind:value={apiKey}
 						placeholder={selectedFamily === 'openai' ? 'sk-...' : 'sk-ant-...'}
-						class="flex-1 px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent"
+						class="flex-1 px-3 py-2 bg-neutral-900 border border-neutral-600 rounded-md text-neutral-200 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
 						disabled={status !== 'idle'}
 					/>
 					<button
-						class="px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors bg-slate-600 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed"
+						class="px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors bg-neutral-600 hover:bg-neutral-500 disabled:opacity-50 disabled:cursor-not-allowed"
 						onclick={verifyApiKey}
 						disabled={status !== 'idle' || !apiKey.trim()}
 					>
@@ -307,14 +307,14 @@
 				<div>
 					<label
 						for="model-select"
-						class="block text-sm font-medium text-slate-300 mb-2"
+						class="block text-sm font-medium text-neutral-300 mb-2"
 					>
 						Model
 					</label>
 					<select
 						id="model-select"
 						bind:value={selectedModel}
-						class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-md text-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent cursor-pointer"
+						class="w-full px-3 py-2 bg-neutral-900 border border-neutral-600 rounded-md text-neutral-200 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent cursor-pointer"
 						disabled={status !== 'idle'}
 					>
 						{#each models as model (model.id)}
@@ -330,7 +330,7 @@
 
 				<!-- Activate Button -->
 				<button
-					class="w-full px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors bg-rose-500 hover:bg-rose-600 disabled:opacity-50 disabled:cursor-not-allowed"
+					class="w-full px-4 py-2 rounded-md font-medium text-white cursor-pointer transition-colors bg-amber-500 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
 					onclick={configureRemoteProvider}
 					disabled={status === 'configuring' ||
 						!selectedModel ||

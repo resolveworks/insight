@@ -81,7 +81,7 @@
 	});
 </script>
 
-<div class="flex h-screen flex-col items-center justify-center bg-slate-900">
+<div class="flex h-screen flex-col items-center justify-center bg-neutral-900">
 	<div class="w-96 text-center">
 		{#if status === 'downloading'}
 			<!-- Download in progress -->
@@ -101,36 +101,36 @@
 				</svg>
 			</div>
 
-			<h1 class="mb-2 text-xl font-semibold text-slate-100">
+			<h1 class="mb-2 text-xl font-semibold text-neutral-100">
 				Downloading {modelName}
 			</h1>
 
-			<p class="mb-6 text-sm text-slate-400">
+			<p class="mb-6 text-sm text-neutral-400">
 				This is a one-time download. The model will be cached locally.
 			</p>
 
 			{#if progress}
 				<div class="mb-3">
-					<p class="mb-2 text-sm text-slate-400">
+					<p class="mb-2 text-sm text-neutral-400">
 						File {progress.file_index} of {progress.total_files}: {progress.file
 							.split('/')
 							.pop()}
 					</p>
-					<div class="h-2 overflow-hidden rounded-full bg-slate-700">
+					<div class="h-2 overflow-hidden rounded-full bg-neutral-700">
 						<div
 							class="h-full bg-emerald-500 transition-[width] duration-300"
 							style="width: {progress.overall_progress * 100}%"
 						></div>
 					</div>
-					<p class="mt-2 text-xs text-slate-500">
+					<p class="mt-2 text-xs text-neutral-500">
 						{formatBytes(progress.downloaded)} / {formatBytes(progress.total)}
 						({Math.round(progress.overall_progress * 100)}%)
 					</p>
 				</div>
 			{:else}
 				<div class="mb-3">
-					<p class="mb-2 text-sm text-slate-400">Starting download...</p>
-					<div class="h-2 overflow-hidden rounded-full bg-slate-700">
+					<p class="mb-2 text-sm text-neutral-400">Starting download...</p>
+					<div class="h-2 overflow-hidden rounded-full bg-neutral-700">
 						<div class="h-full w-1/4 animate-pulse bg-emerald-500/50"></div>
 					</div>
 				</div>
@@ -159,11 +159,11 @@
 				</svg>
 			</div>
 
-			<h1 class="mb-2 text-xl font-semibold text-slate-100">
+			<h1 class="mb-2 text-xl font-semibold text-neutral-100">
 				Loading {modelName}
 			</h1>
 
-			<p class="text-sm text-slate-400">
+			<p class="text-sm text-neutral-400">
 				This may take 20-30 seconds on first load...
 			</p>
 		{:else if status === 'error'}
@@ -186,7 +186,7 @@
 
 			<h1 class="mb-2 text-xl font-semibold text-red-400">Download Failed</h1>
 
-			<p class="mb-6 text-sm text-slate-400">{error}</p>
+			<p class="mb-6 text-sm text-neutral-400">{error}</p>
 
 			<button
 				onclick={startDownload}
@@ -198,7 +198,7 @@
 			<!-- Idle - should auto-start but show button just in case -->
 			<div class="mb-6">
 				<svg
-					class="mx-auto h-12 w-12 text-slate-500"
+					class="mx-auto h-12 w-12 text-neutral-500"
 					viewBox="0 0 24 24"
 					fill="none"
 					stroke="currentColor"
@@ -212,11 +212,11 @@
 				</svg>
 			</div>
 
-			<h1 class="mb-2 text-xl font-semibold text-slate-100">
+			<h1 class="mb-2 text-xl font-semibold text-neutral-100">
 				Download Required
 			</h1>
 
-			<p class="mb-6 text-sm text-slate-400">
+			<p class="mb-6 text-sm text-neutral-400">
 				The embedding model "{modelName}" needs to be downloaded before Insight
 				can start.
 			</p>
