@@ -38,6 +38,11 @@ hf-hub = { version = "0.4", features = ["tokio"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 
+# Remote LLM providers
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+async-openai = { version = "0.32", features = ["responses", "model"] }
+
 # Text chunking for embeddings
 text-splitter = { version = "0.28", features = ["tokenizers"] }
 tokenizers = "0.22"

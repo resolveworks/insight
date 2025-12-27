@@ -723,19 +723,19 @@ pub async fn load_conversation(
 
 /// Start a new chat conversation
 ///
-/// Requires a language model to be loaded first via `configure_language_model`.
+/// Requires a chat provider to be configured first.
 /// Optionally accepts collections to scope the conversation context.
 #[tauri::command]
 pub async fn start_chat(
     collections: Option<Vec<agent::CollectionInfo>>,
     state: State<'_, AppState>,
 ) -> Result<agent::Conversation, String> {
-    // Verify model is loaded
-    let model_guard = state.agent_model.read().await;
-    if model_guard.is_none() {
-        return Err("No language model loaded".to_string());
+    // Verify provider is configured
+    let provider_guard = state.chat_provider.read().await;
+    if provider_guard.is_none() {
+        return Err("No chat provider configured".to_string());
     }
-    drop(model_guard);
+    drop(provider_guard);
 
     // Enrich collection info with document counts and total pages
     let enriched_collections = match collections {
@@ -818,14 +818,12 @@ pub async fn send_message(
         .clone();
     drop(conversations);
 
-    // Get model
-    let model_guard = state.agent_model.read().await;
-    let model = model_guard
-        .as_ref()
-        .ok_or("Model not loaded")?
-        .model()
-        .clone();
-    drop(model_guard);
+    // Verify provider is configured
+    let provider_guard = state.chat_provider.read().await;
+    if provider_guard.is_none() {
+        return Err("No chat provider configured".to_string());
+    }
+    drop(provider_guard);
 
     // Create cancellation token
     let cancel_token = CancellationToken::new();
@@ -857,8 +855,8 @@ pub async fn send_message(
     let indexer_config = state.indexer_config.clone();
     let embedder = state.embedder.clone();
     let embedding_model_id = state.embedding_model_id.clone();
-    let agent_model = state.agent_model.clone();
-    let language_model_id = state.language_model_id.clone();
+    let chat_provider = state.chat_provider.clone();
+    let provider_config = state.provider_config.clone();
     let conversations_arc = state.conversations.clone();
     let active_generations = state.active_generations.clone();
     let job_coordinator = state.job_coordinator.clone();
@@ -879,8 +877,8 @@ pub async fn send_message(
             indexer_config,
             embedder,
             embedding_model_id,
-            agent_model,
-            language_model_id,
+            chat_provider: chat_provider.clone(),
+            provider_config,
             conversations: conversations_arc.clone(),
             active_generations,
             job_coordinator,
@@ -892,8 +890,19 @@ pub async fn send_message(
             collections: collections_clone,
         };
 
+        // Get provider reference for the agent loop
+        let provider_guard = chat_provider.read().await;
+        let provider = match provider_guard.as_ref() {
+            Some(p) => p.as_ref(),
+            None => {
+                tracing::error!("Provider not configured when running agent loop");
+                return;
+            }
+        };
+
         if let Err(e) =
-            agent::run_agent_loop(&model, &mut conversation, message, &ctx, tx, cancel_token).await
+            agent::run_agent_loop(provider, &mut conversation, message, &ctx, tx, cancel_token)
+                .await
         {
             tracing::error!(
                 conversation_id = %conv_id,
@@ -902,6 +911,7 @@ pub async fn send_message(
                 "Agent loop error"
             );
         }
+        drop(provider_guard);
 
         // Generate title on first user message
         let user_count = conversation
@@ -942,12 +952,12 @@ pub async fn cancel_generation(
     Ok(())
 }
 
-/// Unload the model to free memory
+/// Unload the chat provider to free memory
 #[tauri::command]
 pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
-    let mut model_guard = state.agent_model.write().await;
-    *model_guard = None;
-    tracing::info!("LLM model unloaded");
+    *state.chat_provider.write().await = None;
+    *state.provider_config.write().await = None;
+    tracing::info!("Chat provider unloaded");
     Ok(())
 }
 
@@ -1040,24 +1050,28 @@ pub async fn download_language_model(model_id: String, app: AppHandle) -> Result
 pub async fn get_current_language_model(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let model_id = state.language_model_id.read().await;
-    Ok(model_id.clone())
+    let provider_config = state.provider_config.read().await;
+    Ok(provider_config.as_ref().map(|c| c.model_id().to_string()))
 }
 
-/// Configure and load a language model
+/// Configure and load a local language model
 #[tauri::command]
 pub async fn configure_language_model(
     model_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    use crate::core::Settings;
+    use crate::core::{LocalProvider, ProviderConfig, Settings};
 
     if let Some(ref id) = model_id {
         // Verify the model exists
         let model = models::get_language_model(id)
             .ok_or_else(|| format!("Language model not found: {}", id))?;
 
-        tracing::info!("Configuring language model: {} ({})", model.name, model.id);
+        tracing::info!(
+            "Configuring local language model: {} ({})",
+            model.name,
+            model.id
+        );
 
         // Get the model manager and path
         let manager = ModelManager::new()
@@ -1068,30 +1082,40 @@ pub async fn configure_language_model(
             .get_path(&model)
             .ok_or_else(|| format!("Model not downloaded: {}", id))?;
 
-        // Load the model
-        let agent_model = agent::AgentModel::load(&model_path, &model)
+        // Load the local provider
+        let provider = LocalProvider::load(&model_path, &model)
             .await
             .map_err(|e| format!("Failed to load model: {}", e))?;
 
         // Update state
-        *state.agent_model.write().await = Some(agent_model);
-        *state.language_model_id.write().await = Some(id.clone());
+        let provider_config = ProviderConfig::Local {
+            model_id: id.clone(),
+        };
+        *state.chat_provider.write().await = Some(Box::new(provider));
+        *state.provider_config.write().await = Some(provider_config.clone());
 
-        tracing::info!("Language model configured: {}", id);
+        tracing::info!("Local language model configured: {}", id);
+
+        // Persist setting
+        let mut settings = Settings::load(&state.config.settings_file);
+        settings.provider = Some(provider_config);
+        settings
+            .save(&state.config.settings_file)
+            .map_err(|e| e.to_string())?;
     } else {
-        // Unload the model
-        tracing::info!("Unloading language model");
+        // Unload the provider
+        tracing::info!("Unloading chat provider");
 
-        *state.agent_model.write().await = None;
-        *state.language_model_id.write().await = None;
+        *state.chat_provider.write().await = None;
+        *state.provider_config.write().await = None;
+
+        // Clear setting
+        let mut settings = Settings::load(&state.config.settings_file);
+        settings.provider = None;
+        settings
+            .save(&state.config.settings_file)
+            .map_err(|e| e.to_string())?;
     }
-
-    // Persist setting
-    let mut settings = Settings::load(&state.config.settings_file);
-    settings.language_model_id = model_id;
-    settings
-        .save(&state.config.settings_file)
-        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -1273,4 +1297,108 @@ pub async fn get_boot_status(state: State<'_, AppState>) -> Result<BootStatus, S
         embedding_model_id: settings.embedding_model_id,
         embedding_downloaded,
     })
+}
+
+// ============================================================================
+// Provider Management Commands
+// ============================================================================
+
+use crate::core::{
+    get_provider_families as core_get_provider_families, AnthropicProvider, OpenAIProvider,
+    ProviderConfig, ProviderFamily, RemoteModelInfo,
+};
+
+/// Get available provider families
+#[tauri::command]
+pub async fn get_provider_families() -> Vec<ProviderFamily> {
+    core_get_provider_families()
+}
+
+/// Get current provider configuration
+#[tauri::command]
+pub async fn get_current_provider(
+    state: State<'_, AppState>,
+) -> Result<Option<ProviderConfig>, String> {
+    let config = state.provider_config.read().await;
+    Ok(config.clone())
+}
+
+/// Fetch available models from OpenAI API
+#[tauri::command]
+pub async fn fetch_openai_models(api_key: String) -> Result<Vec<RemoteModelInfo>, String> {
+    OpenAIProvider::fetch_models(&api_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch available models for Anthropic (verifies API key)
+#[tauri::command]
+pub async fn fetch_anthropic_models(api_key: String) -> Result<Vec<RemoteModelInfo>, String> {
+    AnthropicProvider::verify_api_key(&api_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Configure OpenAI as the chat provider
+#[tauri::command]
+pub async fn configure_openai_provider(
+    api_key: String,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use crate::core::Settings;
+
+    tracing::info!("Configuring OpenAI provider with model: {}", model);
+
+    let provider = OpenAIProvider::new(&api_key, &model);
+    let config = ProviderConfig::OpenAI {
+        api_key: api_key.clone(),
+        model: model.clone(),
+    };
+
+    // Update state
+    *state.chat_provider.write().await = Some(Box::new(provider));
+    *state.provider_config.write().await = Some(config.clone());
+
+    // Persist setting
+    let mut settings = Settings::load(&state.config.settings_file);
+    settings.provider = Some(config);
+    settings
+        .save(&state.config.settings_file)
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("OpenAI provider configured successfully");
+    Ok(())
+}
+
+/// Configure Anthropic as the chat provider
+#[tauri::command]
+pub async fn configure_anthropic_provider(
+    api_key: String,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use crate::core::Settings;
+
+    tracing::info!("Configuring Anthropic provider with model: {}", model);
+
+    let provider = AnthropicProvider::new(&api_key, &model);
+    let config = ProviderConfig::Anthropic {
+        api_key: api_key.clone(),
+        model: model.clone(),
+    };
+
+    // Update state
+    *state.chat_provider.write().await = Some(Box::new(provider));
+    *state.provider_config.write().await = Some(config.clone());
+
+    // Persist setting
+    let mut settings = Settings::load(&state.config.settings_file);
+    settings.provider = Some(config);
+    settings
+        .save(&state.config.settings_file)
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("Anthropic provider configured successfully");
+    Ok(())
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
-	import { languageModelConfig, embeddingModelConfig } from '$lib/models/config';
+	import ProviderSelector from './ProviderSelector.svelte';
+	import { embeddingModelConfig } from '$lib/models/config';
 </script>
 
 <div class="flex h-full flex-col">
@@ -11,11 +12,11 @@
 			<section class="mb-8">
 				<h2 class="mb-4 text-lg font-medium text-slate-200">Language Model</h2>
 				<p class="mb-6 text-sm text-slate-400">
-					Select and download models for local AI inference. Models are stored
-					locally and run entirely on your machine.
+					Choose a provider for chat. Run models locally on your machine, or
+					connect to OpenAI or Anthropic APIs.
 				</p>
 				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
-					<ModelDownloadSelector config={languageModelConfig} />
+					<ProviderSelector />
 				</div>
 			</section>
 

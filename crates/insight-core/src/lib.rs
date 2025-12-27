@@ -73,7 +73,14 @@ impl BootPhaseEmitter for NoOpEmitter {
     fn emit_boot_phase(&self, _phase: BootPhase) {}
 }
 
-pub use agent::{AgentContext, AgentEvent, AgentModel, CollectionInfo, Conversation};
+pub use agent::provider::anthropic::AnthropicProvider;
+pub use agent::provider::local::LocalProvider;
+pub use agent::provider::openai::OpenAIProvider;
+pub use agent::provider::{
+    get_provider_families, get_tool_definitions, ChatProvider, CompletedToolCall, CompletionResult,
+    ProviderConfig, ProviderEvent, ProviderFamily, RemoteModelInfo, ToolDefinition,
+};
+pub use agent::{AgentContext, AgentEvent, CollectionInfo, Conversation};
 pub use config::{Config, Settings};
 pub use jobs::JobCoordinator;
 pub use storage::Storage;
@@ -111,10 +118,10 @@ pub struct AppState {
     pub embedder: Arc<RwLock<Option<Embedder>>>,
     /// Currently configured embedding model ID
     pub embedding_model_id: Arc<RwLock<Option<String>>>,
-    /// Loaded language model for agent
-    pub agent_model: Arc<RwLock<Option<AgentModel>>>,
-    /// Currently configured language model ID
-    pub language_model_id: Arc<RwLock<Option<String>>>,
+    /// Active chat provider (local, OpenAI, or Anthropic)
+    pub chat_provider: Arc<RwLock<Option<Box<dyn ChatProvider>>>>,
+    /// Current provider configuration (for persistence and display)
+    pub provider_config: Arc<RwLock<Option<ProviderConfig>>>,
     /// Active conversations
     pub conversations: Arc<RwLock<HashMap<String, Conversation>>>,
     /// Cancellation tokens for active generations
@@ -172,8 +179,8 @@ impl AppState {
             indexer_config,
             embedder,
             embedding_model_id: Arc::new(RwLock::new(None)),
-            agent_model: Arc::new(RwLock::new(None)),
-            language_model_id: Arc::new(RwLock::new(None)),
+            chat_provider: Arc::new(RwLock::new(None)),
+            provider_config: Arc::new(RwLock::new(None)),
             conversations: Arc::new(RwLock::new(HashMap::new())),
             active_generations: Arc::new(RwLock::new(HashMap::new())),
             job_coordinator: Arc::new(RwLock::new(Some(job_coordinator))),
@@ -202,7 +209,10 @@ impl AppState {
             embedding_downloaded,
         });
 
-        // Language model is loaded lazily when chat is opened (see ensure_language_model_loaded)
+        // Load chat provider if configured
+        if let Some(ref provider_config) = settings.provider {
+            self.load_provider_from_config(provider_config).await;
+        }
 
         // Load embedding model if configured AND downloaded
         if let Some(ref model_id) = settings.embedding_model_id {
@@ -251,6 +261,63 @@ impl AppState {
 
         emitter.emit_boot_phase(BootPhase::AppReady);
         tracing::info!("Backend ready");
+    }
+
+    /// Load a chat provider from saved configuration.
+    async fn load_provider_from_config(&self, config: &ProviderConfig) {
+        use agent::provider::{
+            anthropic::AnthropicProvider, local::LocalProvider, openai::OpenAIProvider,
+        };
+
+        match config {
+            ProviderConfig::Local { model_id } => {
+                // For local models, we need to check if it's downloaded
+                if let Some(model) = models::get_language_model(model_id) {
+                    match models::ModelManager::new().await {
+                        Ok(manager) => {
+                            if manager.is_downloaded(&model) {
+                                if let Some(path) = manager.get_path(&model) {
+                                    match LocalProvider::load(&path, &model).await {
+                                        Ok(provider) => {
+                                            *self.chat_provider.write().await =
+                                                Some(Box::new(provider));
+                                            *self.provider_config.write().await =
+                                                Some(config.clone());
+                                            tracing::info!("Loaded local provider: {}", model_id);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to load local provider: {}", e);
+                                        }
+                                    }
+                                }
+                            } else {
+                                tracing::info!(
+                                    "Local model '{}' not downloaded, skipping",
+                                    model_id
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to create model manager: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::warn!("Unknown local model: {}", model_id);
+                }
+            }
+            ProviderConfig::OpenAI { api_key, model } => {
+                let provider = OpenAIProvider::new(api_key, model);
+                *self.chat_provider.write().await = Some(Box::new(provider));
+                *self.provider_config.write().await = Some(config.clone());
+                tracing::info!("Loaded OpenAI provider: {}", model);
+            }
+            ProviderConfig::Anthropic { api_key, model } => {
+                let provider = AnthropicProvider::new(api_key, model);
+                *self.chat_provider.write().await = Some(Box::new(provider));
+                *self.provider_config.write().await = Some(config.clone());
+                tracing::info!("Loaded Anthropic provider: {}", model);
+            }
+        }
     }
 
     /// Start watching all existing collections for document events.

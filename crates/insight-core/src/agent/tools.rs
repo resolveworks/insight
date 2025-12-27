@@ -1,8 +1,4 @@
-use std::collections::HashMap;
-
-use mistralrs::{Function, Tool, ToolType};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
 use super::AgentContext;
@@ -22,76 +18,6 @@ pub struct ToolResult {
     pub tool_call_id: String,
     pub content: String,
     pub is_error: bool,
-}
-
-/// Get tools in mistralrs format for structured tool calling
-pub fn get_mistralrs_tools() -> Vec<Tool> {
-    vec![
-        Tool {
-            tp: ToolType::Function,
-            function: Function {
-                name: "search".to_string(),
-                description: Some(
-                    "Search documents using hybrid keyword and semantic matching. Finds documents by exact terms, concepts, and meaning. Returns document names, IDs, and relevant passages.".to_string()
-                ),
-                parameters: Some(json_to_hashmap(json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query - can be keywords, phrases, or natural language describing what you're looking for"
-                        }
-                    },
-                    "required": ["query"]
-                }))),
-            },
-        },
-        Tool {
-            tp: ToolType::Function,
-            function: Function {
-                name: "read_chunk".to_string(),
-                description: Some(
-                    "Read a specific chunk from a document. Use this to get more context around a search result or read adjacent chunks. Chunk indices start at 0.".to_string()
-                ),
-                parameters: Some(json_to_hashmap(json!({
-                    "type": "object",
-                    "properties": {
-                        "document_id": {
-                            "type": "string",
-                            "description": "The document ID from search results"
-                        },
-                        "chunk_index": {
-                            "type": "integer",
-                            "description": "The chunk index (0-based). Use adjacent indices to read surrounding context."
-                        }
-                    },
-                    "required": ["document_id", "chunk_index"]
-                }))),
-            },
-        },
-        Tool {
-            tp: ToolType::Function,
-            function: Function {
-                name: "list_documents".to_string(),
-                description: Some(
-                    "List all documents in the current collection(s) with their metadata. Use this to get an overview of available documents before searching, or to find documents by characteristics like page count rather than content. Returns document names, IDs, and page counts.".to_string()
-                ),
-                parameters: Some(json_to_hashmap(json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }))),
-            },
-        },
-    ]
-}
-
-/// Convert a serde_json::Value to HashMap<String, Value> for mistralrs
-fn json_to_hashmap(value: Value) -> HashMap<String, Value> {
-    match value {
-        Value::Object(map) => map.into_iter().collect(),
-        _ => HashMap::new(),
-    }
 }
 
 /// Execute a tool call and return the result

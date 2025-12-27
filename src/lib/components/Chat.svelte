@@ -2,9 +2,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { onDestroy, onMount } from 'svelte';
-	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
-	import { languageModelConfig } from '$lib/models/config';
-	import { getModelState } from '$lib/stores/model-state.svelte';
+	import ProviderSelector from './ProviderSelector.svelte';
 
 	// Content block types matching backend
 	type ContentBlock =
@@ -65,33 +63,43 @@
 	let messages = $state<ChatMessage[]>([]);
 	let inputValue = $state('');
 	let isGenerating = $state(false);
-	let isLoadingModel = $state(false);
+	let isLoading = $state(false);
 	let error = $state<string | null>(null);
 
 	// Streaming state: blocks being built for current response
 	let streamingBlocks = $state<ContentBlock[]>([]);
 
-	// Model state from global store (persists across navigation)
-	let modelState = $derived(getModelState(languageModelConfig));
-	let modelReady = $derived(modelState.loadedModelId !== null);
-	let currentModelId = $derived(modelState.loadedModelId);
+	// Provider state
+	let providerConfigured = $state(false);
+	let checkingProvider = $state(true);
 
 	let unlistenAgent: UnlistenFn | undefined;
 	let messagesContainer: HTMLElement | undefined;
 
-	async function handleModelConfigured(modelId: string | null) {
-		if (!modelId) return;
-		// Store is updated by ModelDownloadSelector via setLoadedModel
+	async function checkProviderStatus() {
+		checkingProvider = true;
+		try {
+			const config = await invoke<object | null>('get_current_provider');
+			providerConfigured = config !== null;
+		} catch (e) {
+			console.error('Failed to check provider status:', e);
+			providerConfigured = false;
+		} finally {
+			checkingProvider = false;
+		}
+	}
+
+	async function handleProviderConfigured() {
+		providerConfigured = true;
 		await startChat();
 	}
 
 	async function startChat() {
-		if (!currentModelId) return;
+		if (!providerConfigured) return;
 		try {
-			isLoadingModel = true;
+			isLoading = true;
 			error = null;
 			const conv = await invoke<Conversation>('start_chat', {
-				modelId: currentModelId,
 				collections: collections && collections.length > 0 ? collections : null,
 			});
 			conversationId = conv.id;
@@ -108,14 +116,14 @@
 			error = `Failed to start chat: ${e}`;
 			console.error('Failed to start chat:', e);
 		} finally {
-			isLoadingModel = false;
+			isLoading = false;
 		}
 	}
 
 	/** Load an existing conversation by ID */
 	export async function loadConversation(id: string) {
 		try {
-			isLoadingModel = true;
+			isLoading = true;
 			error = null;
 
 			// Clean up existing listener
@@ -145,7 +153,7 @@
 			error = `Failed to load conversation: ${e}`;
 			console.error('Failed to load conversation:', e);
 		} finally {
-			isLoadingModel = false;
+			isLoading = false;
 		}
 	}
 
@@ -157,7 +165,7 @@
 		streamingBlocks = [];
 		error = null;
 
-		if (modelReady) {
+		if (providerConfigured) {
 			await startChat();
 		}
 	}
@@ -262,10 +270,11 @@
 		}
 	}
 
-	onMount(() => {
-		// If model is already loaded (from previous navigation), start a chat
-		if (modelReady && !conversationId) {
-			startChat();
+	onMount(async () => {
+		// Check if a provider is configured and start chat if so
+		await checkProviderStatus();
+		if (providerConfigured && !conversationId) {
+			await startChat();
 		}
 	});
 
@@ -280,15 +289,29 @@
 		bind:this={messagesContainer}
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
-		{#if !modelReady}
-			<ModelDownloadSelector
-				config={languageModelConfig}
-				onConfigured={handleModelConfigured}
-			/>
-		{:else if isLoadingModel}
+		{#if checkingProvider}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-slate-400">
-					<div class="mb-2 text-lg">Loading model...</div>
+					<div class="text-lg">Checking provider...</div>
+				</div>
+			</div>
+		{:else if !providerConfigured}
+			<div class="mx-auto max-w-xl pt-8">
+				<h2 class="mb-4 text-lg font-medium text-slate-200">
+					Configure a Language Model
+				</h2>
+				<p class="mb-6 text-sm text-slate-400">
+					Choose a provider to enable chat. You can run models locally or use
+					OpenAI/Anthropic APIs.
+				</p>
+				<div class="rounded-lg border border-slate-700 bg-slate-800 p-6">
+					<ProviderSelector onConfigured={handleProviderConfigured} />
+				</div>
+			</div>
+		{:else if isLoading}
+			<div class="flex h-full items-center justify-center">
+				<div class="text-center text-slate-400">
+					<div class="mb-2 text-lg">Starting chat...</div>
 					<div class="text-sm">This may take a moment</div>
 				</div>
 			</div>
@@ -404,7 +427,7 @@
 				bind:value={inputValue}
 				onkeydown={handleKeydown}
 				placeholder="Ask about your documents..."
-				disabled={isGenerating || isLoadingModel || !modelReady}
+				disabled={isGenerating || isLoading || !providerConfigured}
 				class="flex-1 rounded-md border border-slate-600 bg-slate-900 px-4 py-2
                text-slate-100 placeholder-slate-500 focus:border-rose-500
                focus:outline-none disabled:opacity-50"
@@ -419,7 +442,7 @@
 			{:else}
 				<button
 					onclick={sendMessage}
-					disabled={!inputValue.trim() || isLoadingModel || !modelReady}
+					disabled={!inputValue.trim() || isLoading || !providerConfigured}
 					class="rounded-md bg-rose-600 px-4 py-2 font-medium text-white
                  hover:bg-rose-700 disabled:opacity-50"
 				>

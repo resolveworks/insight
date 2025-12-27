@@ -40,8 +40,8 @@ pub fn run() {
                 indexer_config: state.indexer_config.clone(),
                 embedder: state.embedder.clone(),
                 embedding_model_id: state.embedding_model_id.clone(),
-                agent_model: state.agent_model.clone(),
-                language_model_id: state.language_model_id.clone(),
+                chat_provider: state.chat_provider.clone(),
+                provider_config: state.provider_config.clone(),
                 conversations: state.conversations.clone(),
                 active_generations: state.active_generations.clone(),
                 job_coordinator: state.job_coordinator.clone(),
@@ -89,6 +89,13 @@ pub fn run() {
             commands::configure_embedding_model,
             // Boot
             commands::get_boot_status,
+            // Provider management
+            commands::get_provider_families,
+            commands::get_current_provider,
+            commands::fetch_openai_models,
+            commands::fetch_anthropic_models,
+            commands::configure_openai_provider,
+            commands::configure_anthropic_provider,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
