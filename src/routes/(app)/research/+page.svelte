@@ -1,9 +1,12 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import Chat from '$lib/components/Chat.svelte';
 	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
+
+	const STORAGE_KEY = 'insight:activeConversationId';
 
 	interface Collection {
 		id: string;
@@ -18,7 +21,21 @@
 
 	let chatComponent = $state<Chat | null>(null);
 	let conversationSidebar = $state<ConversationSidebar | null>(null);
-	let activeConversationId = $state<string | null>(null);
+
+	// Restore active conversation from localStorage
+	const storedId = browser ? localStorage.getItem(STORAGE_KEY) : null;
+	let activeConversationId = $state<string | null>(storedId);
+
+	// Persist active conversation ID changes
+	$effect(() => {
+		if (browser) {
+			if (activeConversationId) {
+				localStorage.setItem(STORAGE_KEY, activeConversationId);
+			} else {
+				localStorage.removeItem(STORAGE_KEY);
+			}
+		}
+	});
 
 	// Collection filters
 	let collections = $state<Collection[]>([]);
@@ -163,6 +180,7 @@
 		<Chat
 			bind:this={chatComponent}
 			collections={selectedCollectionInfos}
+			initialConversationId={storedId}
 			onConversationStart={(id) => {
 				activeConversationId = id;
 				conversationSidebar?.refresh();

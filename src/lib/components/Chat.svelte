@@ -59,9 +59,15 @@
 		onConversationStart?: (id: string) => void;
 		/** Collections to filter agent searches to */
 		collections?: CollectionInfo[];
+		/** Initial conversation ID to load on mount */
+		initialConversationId?: string | null;
 	};
 
-	let { onConversationStart, collections }: Props = $props();
+	let {
+		onConversationStart,
+		collections,
+		initialConversationId = null,
+	}: Props = $props();
 
 	let conversationId = $state<string | null>(null);
 	let messages = $state<ChatMessage[]>([]);
@@ -275,10 +281,14 @@
 	}
 
 	onMount(async () => {
-		// Check if a provider is configured and start chat if so
 		await checkProviderStatus();
-		if (providerConfigured && !conversationId) {
-			await startChat();
+		if (providerConfigured) {
+			if (initialConversationId) {
+				// Restore previous conversation
+				await loadConversation(initialConversationId);
+			} else if (!conversationId) {
+				await startChat();
+			}
 		}
 	});
 
