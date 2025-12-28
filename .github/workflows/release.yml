@@ -31,10 +31,10 @@ jobs:
           #cuda: true
 
           # macOS
-          - platform: macos-15
+          - platform: macos-latest
             rust_target: aarch64-apple-darwin
             features: metal
-          - platform: macos-15
+          - platform: macos-latest
             rust_target: x86_64-apple-darwin
             features: metal
 
