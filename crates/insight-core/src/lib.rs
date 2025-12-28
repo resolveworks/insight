@@ -82,7 +82,9 @@ pub use agent::provider::{
 };
 pub use agent::{AgentContext, AgentEvent, CollectionInfo, Conversation};
 pub use config::{Config, Settings};
-pub use jobs::{spawn_index_worker, IndexWorkerHandle, JobCoordinator};
+pub use jobs::{
+    import_and_index_pdf, process_document, spawn_index_worker, IndexWorkerHandle, SyncWatcher,
+};
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
 /// Check if embedding model is configured and downloaded.
@@ -129,8 +131,10 @@ pub struct AppState {
     pub active_generations: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Cancellation tokens for active predictions (tab completion)
     pub active_predictions: Arc<RwLock<HashMap<String, CancellationToken>>>,
-    /// Job coordinator for document import pipeline
-    pub job_coordinator: Arc<RwLock<Option<JobCoordinator>>>,
+    /// Sync watchers for collections (handles documents from peers)
+    sync_watchers: Arc<RwLock<HashMap<iroh_docs::NamespaceId, SyncWatcher>>>,
+    /// Master cancellation token for all sync watchers
+    sync_cancel: CancellationToken,
 }
 
 impl AppState {
@@ -162,23 +166,15 @@ impl AppState {
             }
         }
 
-        // Wrap in Arc - shared between AppState (reads) and JobCoordinator (writes via worker)
+        // Wrap in Arc for sharing
         let storage = Arc::new(RwLock::new(storage));
         let search = Arc::new(index);
         let embedder = Arc::new(RwLock::new(None));
         let embedding_model_id = Arc::new(RwLock::new(None));
 
         // Spawn index worker - handles all milli write operations in a dedicated thread
-        // The worker is automatically cancelled when all handles are dropped
+        // The worker is automatically stopped when all handles are dropped
         let index_worker = spawn_index_worker(search.clone(), indexer_config);
-
-        // Create job coordinator with shared index worker
-        let job_coordinator = JobCoordinator::new(
-            storage.clone(),
-            embedder.clone(),
-            embedding_model_id.clone(),
-            index_worker.clone(),
-        );
 
         Ok(Self {
             config,
@@ -192,7 +188,8 @@ impl AppState {
             conversations: Arc::new(RwLock::new(HashMap::new())),
             active_generations: Arc::new(RwLock::new(HashMap::new())),
             active_predictions: Arc::new(RwLock::new(HashMap::new())),
-            job_coordinator: Arc::new(RwLock::new(Some(job_coordinator))),
+            sync_watchers: Arc::new(RwLock::new(HashMap::new())),
+            sync_cancel: CancellationToken::new(),
         })
     }
 
@@ -329,35 +326,63 @@ impl AppState {
         }
     }
 
-    /// Start watching all existing collections for document events.
+    /// Start watching all existing collections for sync events.
+    ///
+    /// This watches for documents arriving from peers (InsertRemote events).
+    /// Local imports are processed directly without events.
     async fn watch_existing_collections(&self) {
-        let storage = self.storage.read().await;
-        let collections = match storage.list_collections().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Failed to list collections for watching: {}", e);
-                return;
-            }
-        };
-        drop(storage);
-
-        let mut coordinator_guard = self.job_coordinator.write().await;
-        let coordinator = match coordinator_guard.as_mut() {
-            Some(c) => c,
-            None => {
-                tracing::warn!("Job coordinator not available for watching collections");
-                return;
+        let collections = {
+            let storage = self.storage.read().await;
+            match storage.list_collections().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("Failed to list collections for watching: {}", e);
+                    return;
+                }
             }
         };
 
-        for (namespace_id, metadata) in collections {
-            coordinator.watch_namespace(namespace_id);
+        for (namespace_id, metadata) in &collections {
+            self.watch_namespace(*namespace_id).await;
             tracing::debug!("Watching collection '{}' ({})", metadata.name, namespace_id);
         }
 
         tracing::info!(
-            "Started watching {} existing collections",
-            coordinator.watcher_count()
+            "Started watching {} existing collections for sync",
+            collections.len()
         );
+    }
+
+    /// Start watching a namespace for sync events (documents from peers).
+    ///
+    /// This is only needed for remote sync. Local imports are processed directly.
+    pub async fn watch_namespace(&self, namespace_id: iroh_docs::NamespaceId) {
+        let mut watchers = self.sync_watchers.write().await;
+
+        if watchers.contains_key(&namespace_id) {
+            tracing::debug!(namespace = %namespace_id, "Already watching namespace");
+            return;
+        }
+
+        let watcher = SyncWatcher::spawn(
+            namespace_id,
+            self.storage.clone(),
+            self.embedder.clone(),
+            self.embedding_model_id.clone(),
+            self.index_worker.clone(),
+            self.sync_cancel.clone(),
+        );
+
+        watchers.insert(namespace_id, watcher);
+        tracing::debug!(namespace = %namespace_id, "Started sync watcher");
+    }
+
+    /// Stop watching a namespace for sync events.
+    pub async fn unwatch_namespace(&self, namespace_id: &iroh_docs::NamespaceId) {
+        let mut watchers = self.sync_watchers.write().await;
+        if let Some(watcher) = watchers.remove(namespace_id) {
+            watcher.stop();
+            tracing::debug!(namespace = %namespace_id, "Stopped sync watcher");
+        }
     }
 }

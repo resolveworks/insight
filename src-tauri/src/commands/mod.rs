@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::core::{search, AppState};
+use crate::core::{import_and_index_pdf, search, AppState};
 use iroh_docs::NamespaceId;
 
 /// Document metadata returned to frontend
@@ -67,13 +67,8 @@ pub async fn create_collection(
 
     drop(storage);
 
-    // Start watching the new collection for document events
-    {
-        let mut coordinator_guard = state.job_coordinator.write().await;
-        if let Some(coordinator) = coordinator_guard.as_mut() {
-            coordinator.watch_namespace(namespace_id);
-        }
-    }
+    // Start watching the new collection for sync events (documents from peers)
+    state.watch_namespace(namespace_id).await;
 
     Ok(CollectionInfo {
         id: namespace_id.to_string(),
@@ -105,8 +100,8 @@ pub struct DocumentAddedEvent {
 
 /// Import multiple PDF files into a collection.
 ///
-/// Files are extracted and stored by Storage::import_pdf().
-/// The DocWatcher handles embedding and indexing via iroh events.
+/// Each file is imported and indexed directly (no event-based processing).
+/// Returns when all documents are fully indexed and searchable.
 #[tauri::command]
 pub async fn import_pdfs_batch<R: tauri::Runtime>(
     paths: Vec<String>,
@@ -122,29 +117,60 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
 
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    // Ensure the collection is being watched
-    {
-        let mut coordinator_guard = state.job_coordinator.write().await;
-        if let Some(coordinator) = coordinator_guard.as_mut() {
-            if !coordinator.is_watching(&namespace_id) {
-                coordinator.watch_namespace(namespace_id);
-            }
+    // Get embedder and model ID (required for import)
+    let embedder_guard = state.embedder.read().await;
+    let model_id_guard = state.embedding_model_id.read().await;
+
+    let (embedder, model_id) = match (&*embedder_guard, &*model_id_guard) {
+        (Some(e), Some(m)) => (e, m.clone()),
+        _ => {
+            return Err(
+                "Embedder not configured. Please configure an embedding model first.".into(),
+            )
         }
-    }
+    };
 
     let mut successful = Vec::new();
     let mut failed = Vec::new();
-    let mut pending = Vec::new();
 
-    // Import each PDF
+    // Import and index each PDF directly
     for path_str in &paths {
         let path = std::path::Path::new(path_str);
         let storage = state.storage.read().await;
 
-        match storage.import_pdf(path, namespace_id).await {
+        match import_and_index_pdf(
+            &storage,
+            embedder,
+            &model_id,
+            namespace_id,
+            &state.index_worker,
+            path,
+        )
+        .await
+        {
             Ok(metadata) => {
-                tracing::debug!(doc_id = %metadata.id, name = %metadata.name, "PDF stored");
-                pending.push((metadata.id, path_str.clone()));
+                tracing::info!(doc_id = %metadata.id, name = %metadata.name, "PDF imported and indexed");
+
+                let doc_info = DocumentInfo {
+                    id: metadata.id,
+                    name: metadata.name.clone(),
+                    pdf_hash: metadata.pdf_hash,
+                    text_hash: metadata.text_hash,
+                    page_count: metadata.page_count,
+                    tags: metadata.tags,
+                    created_at: metadata.created_at,
+                };
+
+                // Emit event for frontend
+                let _ = app.emit(
+                    "document-added",
+                    DocumentAddedEvent {
+                        collection_id: collection_id.clone(),
+                        document: doc_info.clone(),
+                    },
+                );
+
+                successful.push(doc_info);
             }
             Err(e) => {
                 tracing::error!("Import failed for {:?}: {}", path, e);
@@ -152,80 +178,6 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
                     path: path_str.clone(),
                     error: e.to_string(),
                 });
-            }
-        }
-    }
-
-    // Wait for indexing completion
-    if !pending.is_empty() {
-        let timeout = std::time::Duration::from_secs(300);
-        let start = std::time::Instant::now();
-        let mut completed_ids = std::collections::HashSet::new();
-        let mut failed_ids = std::collections::HashSet::new();
-
-        while completed_ids.len() + failed_ids.len() < pending.len() {
-            if start.elapsed() > timeout {
-                for (doc_id, path) in &pending {
-                    if !completed_ids.contains(doc_id) && !failed_ids.contains(doc_id) {
-                        failed.push(BatchImportError {
-                            path: path.clone(),
-                            error: "Timeout waiting for indexing".to_string(),
-                        });
-                    }
-                }
-                break;
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-            let mut coordinator_guard = state.job_coordinator.write().await;
-            let Some(coordinator) = coordinator_guard.as_mut() else {
-                break;
-            };
-
-            while let Some(c) = coordinator.try_recv_completed() {
-                if pending.iter().any(|(id, _)| id == &c.doc_id) {
-                    completed_ids.insert(c.doc_id);
-                }
-            }
-
-            while let Some(f) = coordinator.try_recv_failed() {
-                for (doc_id, path) in &pending {
-                    if &f.path == path || &f.path == doc_id {
-                        failed_ids.insert(doc_id.clone());
-                        failed.push(BatchImportError {
-                            path: path.clone(),
-                            error: f.error.clone(),
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Build successful list
-        let storage = state.storage.read().await;
-        for (doc_id, _path) in pending {
-            if completed_ids.contains(&doc_id) {
-                if let Ok(Some(m)) = storage.get_document(namespace_id, &doc_id).await {
-                    let doc_info = DocumentInfo {
-                        id: m.id,
-                        name: m.name.clone(),
-                        pdf_hash: m.pdf_hash,
-                        text_hash: m.text_hash,
-                        page_count: m.page_count,
-                        tags: m.tags,
-                        created_at: m.created_at,
-                    };
-                    let _ = app.emit(
-                        "document-added",
-                        DocumentAddedEvent {
-                            collection_id: collection_id.clone(),
-                            document: doc_info.clone(),
-                        },
-                    );
-                    successful.push(doc_info);
-                }
             }
         }
     }
@@ -499,13 +451,8 @@ pub async fn import_collection(
             .map_err(|e| e.to_string())?
     };
 
-    // Start watching the imported collection for document events
-    {
-        let mut coordinator_guard = state.job_coordinator.write().await;
-        if let Some(coordinator) = coordinator_guard.as_mut() {
-            coordinator.watch_namespace(namespace_id);
-        }
-    }
+    // Start watching the imported collection for sync events
+    state.watch_namespace(namespace_id).await;
 
     // Fetch collection info
     let storage = state.storage.read().await;
@@ -687,20 +634,9 @@ pub async fn send_message(
         }
     });
 
-    // Clone state fields for the agent loop
-    let config = state.config.clone();
-    let storage = state.storage.clone();
-    let search = state.search.clone();
-    let index_worker = state.index_worker.clone();
-    let embedder = state.embedder.clone();
-    let embedding_model_id = state.embedding_model_id.clone();
-    let chat_provider = state.chat_provider.clone();
-    let provider_config = state.provider_config.clone();
-    let conversations_arc = state.conversations.clone();
-    let active_generations = state.active_generations.clone();
-    let active_predictions = state.active_predictions.clone();
-    let job_coordinator = state.job_coordinator.clone();
+    // Clone state for the agent loop
     let conversations_dir = state.config.conversations_dir.clone();
+    let state_clone = state.inner().clone();
 
     let conv_id = conversation_id.clone();
     let mut conversation = conversation;
@@ -710,29 +646,14 @@ pub async fn send_message(
 
     // Run agent loop in background
     tokio::spawn(async move {
-        let state_clone = crate::core::AppState {
-            config,
-            storage,
-            search,
-            index_worker,
-            embedder,
-            embedding_model_id,
-            chat_provider: chat_provider.clone(),
-            provider_config,
-            conversations: conversations_arc.clone(),
-            active_generations,
-            active_predictions,
-            job_coordinator,
-        };
-
         // Create agent context with collection filtering
         let ctx = agent::AgentContext {
-            state: state_clone,
+            state: state_clone.clone(),
             collections: collections_clone,
         };
 
         // Get provider reference for the agent loop
-        let provider_guard = chat_provider.read().await;
+        let provider_guard = state_clone.chat_provider.read().await;
         let provider = match provider_guard.as_ref() {
             Some(p) => p.as_ref(),
             None => {
@@ -770,7 +691,8 @@ pub async fn send_message(
         }
 
         // Update conversation in state
-        conversations_arc
+        state_clone
+            .conversations
             .write()
             .await
             .insert(conv_id, conversation);

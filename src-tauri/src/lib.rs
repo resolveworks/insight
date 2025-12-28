@@ -33,20 +33,7 @@ pub fn run() {
 
             // Load models in background (slow, 20-30s)
             let state = app.state::<AppState>();
-            let state_clone = AppState {
-                config: state.config.clone(),
-                storage: state.storage.clone(),
-                search: state.search.clone(),
-                index_worker: state.index_worker.clone(),
-                embedder: state.embedder.clone(),
-                embedding_model_id: state.embedding_model_id.clone(),
-                chat_provider: state.chat_provider.clone(),
-                provider_config: state.provider_config.clone(),
-                conversations: state.conversations.clone(),
-                active_generations: state.active_generations.clone(),
-                active_predictions: state.active_predictions.clone(),
-                job_coordinator: state.job_coordinator.clone(),
-            };
+            let state_clone = state.inner().clone();
             let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {

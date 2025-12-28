@@ -645,10 +645,13 @@ impl Storage {
         Ok(namespace_id)
     }
 
-    /// Import a PDF file into a collection.
+    /// Import a PDF file into a collection (storage only).
     ///
     /// Extracts text, stores blobs, and creates metadata entry.
-    /// Returns the document metadata. The iroh event will trigger embedding/indexing.
+    /// Returns the document metadata.
+    ///
+    /// Note: This only stores the document. For local imports that need
+    /// immediate embedding and indexing, use `jobs::import_and_index_pdf()`.
     pub async fn import_pdf(
         &self,
         path: &std::path::Path,

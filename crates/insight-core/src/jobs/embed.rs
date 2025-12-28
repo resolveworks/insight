@@ -1,6 +1,7 @@
 //! Embedding generation functions.
 //!
-//! Generates embeddings for document text and stores them to iroh.
+//! Generates embeddings for document text. Can either return the data directly
+//! (for local imports) or store to iroh (for sync scenarios).
 
 use iroh_docs::NamespaceId;
 
@@ -10,17 +11,18 @@ use crate::storage::{DocumentMetadata, EmbeddingChunk, EmbeddingData, Storage};
 /// Maximum chunks to send to GPU in one call (to avoid OOM).
 const MAX_CHUNKS_PER_GPU_CALL: usize = 256;
 
-/// Generate and store embeddings for a document.
+/// Generate embeddings for a document and return the data.
 ///
-/// Fetches document text, generates embeddings, and stores them to iroh.
-/// This triggers an `embeddings/*` event that the DocWatcher will handle.
-pub async fn generate_embeddings(
+/// Fetches document text from storage, chunks it, and generates embeddings.
+/// Returns the embedding data without storing it.
+///
+/// This is the core function used by both direct imports and sync handlers.
+pub async fn generate_embeddings_data(
     storage: &Storage,
     embedder: &Embedder,
     model_id: &str,
-    namespace_id: NamespaceId,
     metadata: &DocumentMetadata,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<EmbeddingData> {
     // Fetch text content
     let text_hash: iroh_blobs::Hash = metadata
         .text_hash
@@ -39,17 +41,12 @@ pub async fn generate_embeddings(
     let chunks = embedder.chunk_text(&text);
     if chunks.is_empty() {
         tracing::warn!(doc_id = %metadata.id, "Document has no text to embed");
-        // Store empty embeddings so we still trigger the event
-        let embedding_data = EmbeddingData {
+        return Ok(EmbeddingData {
             model_id: model_id.to_string(),
             dimensions: embedder.dimensions,
             chunks: vec![],
             created_at: chrono::Utc::now().to_rfc3339(),
-        };
-        storage
-            .store_embeddings(namespace_id, &metadata.id, embedding_data)
-            .await?;
-        return Ok(());
+        });
     }
 
     // Find chunk offsets for page mapping
@@ -87,26 +84,46 @@ pub async fn generate_embeddings(
         })
         .collect();
 
-    // Store embeddings to iroh (triggers embeddings/* event)
-    let embedding_data = EmbeddingData {
-        model_id: model_id.to_string(),
-        dimensions: embedder.dimensions,
-        chunks: embedding_chunks,
-        created_at: chrono::Utc::now().to_rfc3339(),
-    };
-
-    storage
-        .store_embeddings(namespace_id, &metadata.id, embedding_data)
-        .await?;
+    let chunk_count = embedding_chunks.len();
 
     tracing::info!(
         doc_id = %metadata.id,
         name = %metadata.name,
-        chunk_count = chunks.len(),
-        "Stored embeddings"
+        chunk_count,
+        "Generated embeddings"
     );
 
-    Ok(())
+    Ok(EmbeddingData {
+        model_id: model_id.to_string(),
+        dimensions: embedder.dimensions,
+        chunks: embedding_chunks,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Generate embeddings and store them to iroh.
+///
+/// This stores the embeddings as a blob in iroh, which can be synced to peers.
+/// Use this when you need embeddings to persist in the distributed storage.
+pub async fn generate_and_store_embeddings(
+    storage: &Storage,
+    embedder: &Embedder,
+    model_id: &str,
+    namespace_id: NamespaceId,
+    metadata: &DocumentMetadata,
+) -> anyhow::Result<EmbeddingData> {
+    let embedding_data = generate_embeddings_data(storage, embedder, model_id, metadata).await?;
+
+    storage
+        .store_embeddings(namespace_id, &metadata.id, embedding_data.clone())
+        .await?;
+
+    tracing::debug!(
+        doc_id = %metadata.id,
+        "Stored embeddings to iroh"
+    );
+
+    Ok(embedding_data)
 }
 
 /// Find the starting byte offset of each chunk in the original text.
