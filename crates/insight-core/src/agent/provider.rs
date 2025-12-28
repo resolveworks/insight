@@ -69,6 +69,20 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 "required": []
             }),
         },
+        ToolDefinition {
+            name: "get_collection_terms".to_string(),
+            description: "Get the most common terms/words in the collection(s), sorted by how many documents contain them. Use this to understand what topics the documents cover before searching. Returns terms with their document frequency.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of terms to return (default: 50, max: 200)"
+                    }
+                },
+                "required": []
+            }),
+        },
     ]
 }
 

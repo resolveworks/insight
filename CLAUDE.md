@@ -88,15 +88,25 @@ Namespace: 7f3a8b2c... ("Climate Research")
 
 ### What Syncs vs What's Local
 
-| Data            | Syncs        | Stored in        |
-| --------------- | ------------ | ---------------- |
-| PDF files       | Yes          | iroh-blobs       |
-| Extracted text  | Yes          | iroh-blobs       |
-| File metadata   | Yes          | iroh-docs        |
-| Collection info | Yes          | iroh-docs        |
-| Embeddings      | No (derived) | milli            |
-| Search index    | No (derived) | milli            |
-| LLM models      | No           | ~/.cache/insight |
+| Data            | Syncs                       | Stored in        |
+| --------------- | --------------------------- | ---------------- |
+| PDF files       | Yes                         | iroh-blobs       |
+| Extracted text  | Yes                         | iroh-blobs       |
+| File metadata   | Yes                         | iroh-docs        |
+| Collection info | Yes                         | iroh-docs        |
+| Embeddings      | Yes (keyed by model)        | iroh-docs        |
+| Search index    | No (built from synced data) | milli            |
+| LLM models      | No                          | ~/.cache/insight |
+
+### Embedding Sync Strategy
+
+Embeddings are stored in iroh-docs under `embeddings/{doc_id}/{model_id}`. This design:
+
+- **Avoids redundant computation** — generating embeddings is expensive, so peers share them
+- **Preserves model flexibility** — different peers can use different embedding models
+- **Enables offline use** — embeddings sync with documents, ready for immediate search
+
+When a peer receives a document, it checks for existing embeddings matching its configured model. If found, they're used directly. If not (different model or new document), embeddings are generated locally and stored for other peers to use.
 
 ## Document Ingestion
 

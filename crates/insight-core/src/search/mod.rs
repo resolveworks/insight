@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bumpalo::Bump;
+use fst::Streamer;
 
 use milli::documents::mmap_from_objects;
 use milli::heed::{EnvOpenOptions, RoTxn};
@@ -15,6 +16,7 @@ use milli::update::{IndexerConfig, Setting};
 use milli::vector::settings::{EmbedderSource, EmbeddingSettings};
 use milli::vector::{embedder::manual, Embedder, RuntimeEmbedder, RuntimeEmbedders};
 use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
+use roaring::RoaringBitmap;
 use serde_json::{json, Map, Value};
 
 use std::collections::HashMap;
@@ -667,6 +669,95 @@ pub fn delete_document_chunks(
     Ok(count)
 }
 
+/// A term with its document frequency
+#[derive(Debug, Clone)]
+pub struct TermFrequency {
+    pub term: String,
+    pub doc_count: u64,
+}
+
+/// Get the most common terms in a collection (by document frequency)
+///
+/// If `collection_ids` is None, returns terms across all collections.
+/// Terms are sorted by frequency (descending) and limited to `limit` results.
+///
+/// This is useful for:
+/// - Giving the LLM context about what topics the collection covers
+/// - Suggesting auto-tags for documents
+/// - Showing users what they can search for
+pub fn get_collection_terms(
+    index: &Index,
+    collection_ids: Option<&[String]>,
+    limit: usize,
+) -> Result<Vec<TermFrequency>> {
+    let rtxn = index.read_txn()?;
+
+    // Get document IDs in the target collections (if filtered)
+    let target_docs: Option<RoaringBitmap> = if let Some(ids) = collection_ids {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build filter for collection_id
+        let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
+        let filter_str = format!("collection_id IN [{}]", quoted.join(", "));
+
+        let mut search = milli::Search::new(&rtxn, index);
+        search.query("");
+        search.limit(usize::MAX);
+        if let Some(f) = milli::Filter::from_str(&filter_str)
+            .map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?
+        {
+            search.filter(f);
+        }
+
+        let result = search.execute()?;
+        Some(RoaringBitmap::from_iter(result.documents_ids))
+    } else {
+        None
+    };
+
+    // Get the words FST (contains all indexed words)
+    let fst = index.words_fst(&rtxn)?;
+
+    let mut term_counts: Vec<TermFrequency> = Vec::new();
+
+    // Iterate all words in the FST
+    let mut stream = fst.stream();
+    while let Some(word_bytes) = stream.next() {
+        let term = match std::str::from_utf8(word_bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => continue, // Skip non-UTF8 words
+        };
+
+        // Skip very short terms (likely noise)
+        if term.len() < 3 {
+            continue;
+        }
+
+        // Look up document frequency in word_docids
+        if let Some(word_bitmap) = index.word_docids.get(&rtxn, &term)? {
+            let doc_count = match &target_docs {
+                Some(target) => {
+                    // Count intersection with target collection docs
+                    word_bitmap.intersection_len(target)
+                }
+                None => word_bitmap.len(),
+            };
+
+            if doc_count > 0 {
+                term_counts.push(TermFrequency { term, doc_count });
+            }
+        }
+    }
+
+    // Sort by frequency (descending) and take top N
+    term_counts.sort_by(|a, b| b.doc_count.cmp(&a.doc_count));
+    term_counts.truncate(limit);
+
+    Ok(term_counts)
+}
+
 /// Delete chunks by their IDs
 fn delete_chunks_by_id(
     index: &Index,
@@ -1258,5 +1349,126 @@ mod tests {
             "First result should be a cat document, got {:?}",
             first_name
         );
+    }
+
+    #[test]
+    fn test_get_collection_terms_empty_index() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+
+        let terms = get_collection_terms(&index, None, 50).unwrap();
+        assert!(terms.is_empty());
+    }
+
+    #[test]
+    fn test_get_collection_terms_basic() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Index documents with overlapping terms
+        let chunks = vec![
+            make_chunk(
+                "doc1",
+                "climate.pdf",
+                "Climate change affects global temperatures and weather patterns.",
+                "research",
+                None,
+            ),
+            make_chunk(
+                "doc2",
+                "weather.pdf",
+                "Weather patterns are changing due to climate shifts.",
+                "research",
+                None,
+            ),
+            make_chunk(
+                "doc3",
+                "finance.pdf",
+                "Financial markets respond to climate policy changes.",
+                "finance",
+                None,
+            ),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
+
+        // Get top terms across all collections
+        let terms = get_collection_terms(&index, None, 10).unwrap();
+
+        // Should have terms (climate appears in all 3)
+        assert!(!terms.is_empty());
+
+        // "climate" should be a top term (appears in all 3 docs)
+        let climate_term = terms.iter().find(|t| t.term == "climate");
+        assert!(
+            climate_term.is_some(),
+            "Expected 'climate' to be in top terms"
+        );
+        assert_eq!(climate_term.unwrap().doc_count, 3);
+    }
+
+    #[test]
+    fn test_get_collection_terms_filtered_by_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Index documents in different collections
+        let chunks = vec![
+            make_chunk(
+                "doc1",
+                "climate.pdf",
+                "Climate research and environmental studies.",
+                "research",
+                None,
+            ),
+            make_chunk(
+                "doc2",
+                "finance.pdf",
+                "Financial analysis and market trends.",
+                "finance",
+                None,
+            ),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
+
+        // Get terms only from "research" collection
+        let collection_ids = vec!["research".to_string()];
+        let terms = get_collection_terms(&index, Some(&collection_ids), 10).unwrap();
+
+        // Should have terms from research collection
+        assert!(!terms.is_empty());
+
+        // "climate" should be present (from research)
+        let has_climate = terms.iter().any(|t| t.term == "climate");
+        assert!(has_climate, "Expected 'climate' in research terms");
+
+        // "financial" should NOT be present (from finance collection only)
+        let has_financial = terms.iter().any(|t| t.term == "financial");
+        assert!(
+            !has_financial,
+            "Did not expect 'financial' in research terms"
+        );
+    }
+
+    #[test]
+    fn test_get_collection_terms_respects_limit() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Index a document with many unique terms
+        let chunk = make_chunk(
+            "doc1",
+            "varied.pdf",
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
+            "col1",
+            None,
+        );
+        index_chunks_batch(&index, &config, vec![chunk]).unwrap();
+
+        // Request only 3 terms
+        let terms = get_collection_terms(&index, None, 3).unwrap();
+        assert!(terms.len() <= 3, "Should return at most 3 terms");
     }
 }

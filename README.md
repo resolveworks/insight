@@ -18,7 +18,7 @@ Newsrooms accumulate documents—leaks, court filings, FOIA responses, research 
 
 ## How It Works
 
-Documents sync peer-to-peer using [iroh](https://iroh.computer/). Each machine builds its own search index using [milli](https://github.com/meilisearch/milli). A local LLM (via [mistralrs](https://github.com/EricLBuehler/mistral.rs)) can search and read documents to answer your questions.
+Documents sync peer-to-peer using [iroh](https://iroh.computer/). Embeddings sync too—keyed by model, so peers using the same embedding model share computation. Each machine builds its own search index from synced data using [milli](https://github.com/meilisearch/milli). A local LLM (via [mistralrs](https://github.com/EricLBuehler/mistral.rs)) can search and read documents to answer your questions.
 
 ```
 You: "What do these documents say about the 2019 contract?"

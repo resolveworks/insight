@@ -26,6 +26,7 @@ pub async fn execute_tool(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResul
         "search" => execute_search(tool_call, ctx).await,
         "read_chunk" => execute_read_chunk(tool_call, ctx).await,
         "list_documents" => execute_list_documents(tool_call, ctx).await,
+        "get_collection_terms" => execute_get_collection_terms(tool_call, ctx).await,
         _ => ToolResult {
             tool_call_id: tool_call.id.clone(),
             content: format!("Unknown tool: {}", tool_call.name),
@@ -381,6 +382,53 @@ async fn execute_list_documents(tool_call: &ToolCall, ctx: &AgentContext) -> Too
         tool_call_id: tool_call.id.clone(),
         content: summary,
         is_error: false,
+    }
+}
+
+/// Get common terms in the collection(s) to understand what topics are covered
+async fn execute_get_collection_terms(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
+    // Parse limit parameter (default 50, max 200)
+    let limit = tool_call.arguments["limit"].as_u64().unwrap_or(50).min(200) as usize;
+
+    info!(limit = limit, "Getting collection terms");
+
+    let collection_ids = ctx.collection_ids();
+    let index = &*ctx.state.search;
+
+    match search::get_collection_terms(index, collection_ids.as_deref(), limit) {
+        Ok(terms) => {
+            if terms.is_empty() {
+                return ToolResult {
+                    tool_call_id: tool_call.id.clone(),
+                    content: "No terms found in the collection(s). The collection may be empty."
+                        .to_string(),
+                    is_error: false,
+                };
+            }
+
+            // Format terms as a readable list
+            let mut output = format!("Top {} terms by document frequency:\n\n", terms.len());
+
+            for term in &terms {
+                output.push_str(&format!("- {} ({} docs)\n", term.term, term.doc_count));
+            }
+
+            info!(term_count = terms.len(), "Retrieved collection terms");
+
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: output,
+                is_error: false,
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to get collection terms");
+            ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: format!("Error getting collection terms: {}", e),
+                is_error: true,
+            }
+        }
     }
 }
 
@@ -1103,5 +1151,151 @@ mod tests {
 
         // Should contain page references
         assert!(formatted.contains("p. 5") || formatted.contains("pp. 3-7"));
+    }
+
+    // ==================== execute_get_collection_terms Tests ====================
+
+    #[tokio::test]
+    async fn test_get_collection_terms_empty_index() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_terms".to_string(),
+            name: "get_collection_terms".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let result = execute_get_collection_terms(&tool_call, &ctx).await;
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("No terms found"));
+    }
+
+    #[tokio::test]
+    async fn test_get_collection_terms_with_indexed_documents() {
+        let state = create_test_state().await;
+
+        // Index some test documents
+        {
+            let index = &*state.search;
+            let config = test_indexer_config();
+
+            let chunks = vec![
+                make_chunk(
+                    "doc1",
+                    "Climate_Report.pdf",
+                    "Climate change affects global temperatures and weather patterns.",
+                    "research",
+                    0,
+                    10,
+                    1,
+                    1,
+                ),
+                make_chunk(
+                    "doc2",
+                    "Weather_Analysis.pdf",
+                    "Weather patterns are shifting due to climate factors.",
+                    "research",
+                    0,
+                    5,
+                    1,
+                    1,
+                ),
+            ];
+            search::index_chunks_batch(index, &config, chunks).unwrap();
+        }
+
+        let ctx = AgentContext {
+            state,
+            collections: None, // All collections
+        };
+
+        let tool_call = ToolCall {
+            id: "call_terms".to_string(),
+            name: "get_collection_terms".to_string(),
+            arguments: serde_json::json!({"limit": 10}),
+        };
+
+        let result = execute_get_collection_terms(&tool_call, &ctx).await;
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("Top"));
+        assert!(result.content.contains("terms by document frequency"));
+        // "climate" appears in both documents
+        assert!(result.content.contains("climate"));
+    }
+
+    #[tokio::test]
+    async fn test_get_collection_terms_respects_limit() {
+        let state = create_test_state().await;
+
+        // Index a document with many terms
+        {
+            let index = &*state.search;
+            let config = test_indexer_config();
+
+            let chunk = make_chunk(
+                "doc1",
+                "varied.pdf",
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu",
+                "col1",
+                0,
+                1,
+                1,
+                1,
+            );
+            search::index_chunks_batch(index, &config, vec![chunk]).unwrap();
+        }
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_terms".to_string(),
+            name: "get_collection_terms".to_string(),
+            arguments: serde_json::json!({"limit": 3}),
+        };
+
+        let result = execute_get_collection_terms(&tool_call, &ctx).await;
+
+        assert!(!result.is_error);
+        // Count how many terms are listed (each term is on its own line starting with "- ")
+        let term_count = result
+            .content
+            .lines()
+            .filter(|l| l.starts_with("- "))
+            .count();
+        assert!(
+            term_count <= 3,
+            "Should return at most 3 terms, got {}",
+            term_count
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_collection_terms_max_limit_enforced() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        // Request more than max allowed (200)
+        let tool_call = ToolCall {
+            id: "call_terms".to_string(),
+            name: "get_collection_terms".to_string(),
+            arguments: serde_json::json!({"limit": 500}),
+        };
+
+        let result = execute_get_collection_terms(&tool_call, &ctx).await;
+
+        // Should not error - limit is capped to 200 internally
+        assert!(!result.is_error);
     }
 }
