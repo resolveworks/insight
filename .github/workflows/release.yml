@@ -118,6 +118,7 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: |
             src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.rpm
             src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.AppImage
             src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.msi
             src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.exe
@@ -146,7 +147,6 @@ jobs:
           gh release create ${{ github.ref_name }} \
             --title "Insight ${{ github.ref_name }}" \
             --notes "See the assets below to download for your platform." \
-            --draft \
-            artifacts/**/* || true
-          # Upload any artifacts (handles partial builds)
+            --draft || true
+          # Upload all artifacts
           find artifacts -type f -exec gh release upload ${{ github.ref_name }} {} --clobber \;

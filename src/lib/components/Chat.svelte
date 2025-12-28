@@ -370,7 +370,7 @@
 	});
 </script>
 
-<div class="flex h-full flex-col">
+<div class="flex h-full flex-col bg-surface">
 	<!-- Messages Area -->
 	<div
 		bind:this={messagesContainer}
@@ -378,33 +378,33 @@
 	>
 		{#if checkingProvider}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-neutral-400">
+				<div class="text-center text-neutral-500">
 					<div class="text-lg">Checking provider...</div>
 				</div>
 			</div>
 		{:else if !providerConfigured}
 			<div class="mx-auto max-w-xl pt-8">
-				<h2 class="mb-4 text-lg font-medium text-neutral-200">
+				<h2 class="mb-4 text-lg font-medium text-neutral-800">
 					Configure a Language Model
 				</h2>
-				<p class="mb-6 text-sm text-neutral-400">
+				<p class="mb-6 text-sm text-neutral-500">
 					Choose a provider to enable chat. You can run models locally or use
 					OpenAI/Anthropic APIs.
 				</p>
-				<div class="rounded-lg border border-neutral-700 bg-neutral-800 p-6">
+				<div class="rounded-lg border border-neutral-300 bg-surface-bright p-6">
 					<ProviderSelector onConfigured={handleProviderConfigured} />
 				</div>
 			</div>
 		{:else if isLoading}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-neutral-400">
+				<div class="text-center text-neutral-500">
 					<div class="mb-2 text-lg">Starting chat...</div>
 					<div class="text-sm">This may take a moment</div>
 				</div>
 			</div>
 		{:else if messages.length === 0}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-neutral-400">
+				<div class="text-center text-neutral-500">
 					<div class="mb-2 text-lg">Ask questions about your documents</div>
 					<div class="text-sm">
 						The agent can search and read documents to help you find information
@@ -422,24 +422,24 @@
 					>
 						<div
 							class="max-w-[80%] rounded-lg px-4 py-2 {message.role === 'user'
-								? 'bg-slate-600 text-white'
-								: 'bg-neutral-700 text-neutral-100'}"
+								? 'bg-primary-600 text-white'
+								: 'bg-surface-bright text-neutral-800 border border-neutral-200'}"
 						>
 							<Markdown content={block.text} />
 						</div>
 					</div>
 				{:else if block.type === 'tool_use'}
 					<details
-						class="mx-4 rounded border border-neutral-600 bg-neutral-800"
+						class="mx-4 rounded border border-neutral-300 bg-surface-bright"
 					>
 						<summary
-							class="cursor-pointer px-2 py-1 text-xs text-neutral-400 hover:text-neutral-300"
+							class="cursor-pointer px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"
 						>
 							Tool: {block.name}
 						</summary>
 						<div class="p-2">
 							<pre
-								class="max-h-24 overflow-auto text-xs text-neutral-400">{JSON.stringify(
+								class="max-h-24 overflow-auto text-xs text-neutral-600">{JSON.stringify(
 									block.arguments,
 									null,
 									2,
@@ -448,13 +448,13 @@
 					</details>
 				{:else if block.type === 'tool_result'}
 					<div
-						class="mx-4 rounded border border-neutral-600 bg-neutral-800/50 p-2 text-xs {block.is_error
-							? 'border-red-600/50'
+						class="mx-4 rounded border border-neutral-300 bg-surface-dim p-2 text-xs {block.is_error
+							? 'border-error/50'
 							: ''}"
 					>
 						<pre
-							class="max-h-48 overflow-auto text-neutral-300 {block.is_error
-								? 'text-red-300'
+							class="max-h-48 overflow-auto text-neutral-700 {block.is_error
+								? 'text-error'
 								: ''}">{block.content}</pre>
 					</div>
 				{/if}
@@ -467,31 +467,31 @@
 				{#if block.type === 'text'}
 					<div class="flex justify-start">
 						<div
-							class="max-w-[80%] rounded-lg bg-neutral-700 px-4 py-2 text-neutral-100"
+							class="max-w-[80%] rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
 						>
-							<Markdown content={block.text} /><span class="animate-pulse"
-								>▊</span
+							<Markdown content={block.text} /><span
+								class="animate-pulse text-primary-500">▊</span
 							>
 						</div>
 					</div>
 				{:else if block.type === 'tool_use'}
 					<div
-						class="mx-4 rounded border border-neutral-600 bg-neutral-800 p-2 text-xs"
+						class="mx-4 rounded border border-neutral-300 bg-surface-bright p-2 text-xs"
 					>
-						<div class="flex items-center gap-2 font-medium text-neutral-400">
+						<div class="flex items-center gap-2 font-medium text-neutral-500">
 							<span>Tool: {block.name}</span>
-							<span class="animate-pulse">...</span>
+							<span class="animate-pulse text-primary-500">...</span>
 						</div>
 					</div>
 				{:else if block.type === 'tool_result'}
 					<div
-						class="mx-4 rounded border border-neutral-600 bg-neutral-800/50 p-2 text-xs {block.is_error
-							? 'border-red-600/50'
+						class="mx-4 rounded border border-neutral-300 bg-surface-dim p-2 text-xs {block.is_error
+							? 'border-error/50'
 							: ''}"
 					>
 						<pre
-							class="max-h-32 overflow-auto text-neutral-300 {block.is_error
-								? 'text-red-300'
+							class="max-h-32 overflow-auto text-neutral-700 {block.is_error
+								? 'text-error'
 								: ''}">{block.content.slice(0, 300)}{block.content.length > 300
 								? '...'
 								: ''}</pre>
@@ -507,7 +507,7 @@
 	{/if}
 
 	<!-- Input Area -->
-	<div class="border-t border-neutral-700 p-4">
+	<div class="border-t border-neutral-300 bg-surface-bright p-4">
 		<div class="flex gap-2">
 			<GhostInput
 				type="text"

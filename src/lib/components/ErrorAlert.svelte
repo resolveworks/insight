@@ -12,11 +12,11 @@
 </script>
 
 {#if variant === 'banner'}
-	<div class="border-t border-red-700 bg-red-900/50 px-4 py-2 text-red-300">
+	<div class="border-t border-error/50 bg-error/10 px-4 py-2 text-error">
 		{@render children()}
 	</div>
 {:else}
-	<p class="text-sm text-red-400">
+	<p class="text-sm text-error">
 		{@render children()}
 	</p>
 {/if}

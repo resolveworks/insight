@@ -24,7 +24,7 @@
 	let effectivePlaceholder = $derived(ghostText || placeholder);
 
 	const inputClasses =
-		'flex-1 rounded-md border border-neutral-600 bg-neutral-900 px-3 py-2 text-neutral-100 placeholder-neutral-500 focus:border-slate-400 focus:outline-none disabled:opacity-50';
+		'flex-1 rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 placeholder-neutral-400 focus:border-tertiary-400 focus:outline-none disabled:opacity-50';
 
 	function handleKeyDown(e: KeyboardEvent) {
 		// Tab accepts ghost text when input is empty and ghost text exists
@@ -42,7 +42,7 @@
 
 {#if label}
 	<div class="flex flex-1 flex-col gap-2">
-		<label for={id} class="block text-sm font-medium text-neutral-300">
+		<label for={id} class="block text-sm font-medium text-neutral-700">
 			{label}
 		</label>
 		<input

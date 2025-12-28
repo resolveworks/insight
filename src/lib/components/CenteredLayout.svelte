@@ -18,8 +18,10 @@
 	};
 </script>
 
-<div class="flex h-screen items-center justify-center bg-neutral-900">
-	<div class="w-full {widthClasses[width]} p-8">
+<div class="flex h-screen items-center justify-center bg-neutral-700">
+	<div
+		class="w-full {widthClasses[width]} rounded-lg bg-surface p-8 shadow-medium"
+	>
 		{@render children()}
 	</div>
 </div>

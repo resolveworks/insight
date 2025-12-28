@@ -84,31 +84,31 @@
 		onComplete={handleSetupComplete}
 	/>
 {:else if appPhase.state === 'embedder-failed'}
-	<div class="flex h-screen items-center justify-center bg-neutral-900">
+	<div class="flex h-screen items-center justify-center bg-neutral-700">
 		<div class="max-w-md text-center">
-			<h1 class="mb-4 text-xl text-red-400">Failed to load embedding model</h1>
+			<h1 class="mb-4 text-xl text-error">Failed to load embedding model</h1>
 			<p class="mb-4 text-neutral-400">{appPhase.error}</p>
 			<button
 				onclick={() => {
 					appPhase = { state: 'setup-required' };
 				}}
-				class="rounded bg-slate-600 px-4 py-2 text-white hover:bg-slate-700"
+				class="rounded-md bg-primary-600 px-4 py-2 text-white hover:bg-primary-700"
 			>
 				Reconfigure Embedding Model
 			</button>
 		</div>
 	</div>
 {:else}
-	<main class="flex h-screen flex-col bg-neutral-900 text-neutral-100">
+	<main class="flex h-screen flex-col bg-surface-dim text-neutral-800">
 		<!-- Tab Navigation -->
-		<nav class="flex border-b border-neutral-700 bg-neutral-800">
+		<nav class="flex border-b border-neutral-300 bg-neutral-700">
 			{#each tabs as tab (tab.id)}
 				<a
 					href={resolve(tab.href as '/')}
 					class="px-6 py-3 text-sm font-medium transition-colors {currentTab ===
 					tab.id
-						? 'border-b-2 border-slate-400 text-slate-300'
-						: 'text-neutral-400 hover:text-neutral-200'}"
+						? 'border-b-2 border-primary-500 text-surface'
+						: 'text-neutral-300 hover:text-surface'}"
 				>
 					{tab.label}
 				</a>

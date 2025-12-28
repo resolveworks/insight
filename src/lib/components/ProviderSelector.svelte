@@ -224,13 +224,13 @@
 
 <div>
 	<!-- Provider Tabs -->
-	<div class="mb-6 flex border-b border-neutral-700">
+	<div class="mb-6 flex border-b border-neutral-300">
 		{#each families as family (family.id)}
 			<button
 				class="px-4 py-2 text-sm font-medium transition-colors -mb-px cursor-pointer
 					{selectedFamily === family.id
-					? 'text-slate-300 border-b-2 border-slate-400'
-					: 'text-neutral-400 hover:text-neutral-200'}"
+					? 'text-primary-700 border-b-2 border-primary-500'
+					: 'text-neutral-500 hover:text-neutral-700'}"
 				onclick={() => selectFamily(family.id)}
 			>
 				{family.name}
@@ -241,10 +241,10 @@
 	<!-- Current Provider Status (if active) -->
 	{#if currentProvider && currentProvider.type === selectedFamily}
 		<div
-			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-slate-500 bg-slate-900/30 text-neutral-200"
+			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-primary-400 bg-primary-50 text-neutral-700"
 		>
 			<svg
-				class="w-5 h-5 shrink-0 text-slate-400"
+				class="w-5 h-5 shrink-0 text-primary-500"
 				viewBox="0 0 24 24"
 				fill="none"
 				stroke="currentColor"
@@ -264,7 +264,7 @@
 				{/if}
 			</span>
 			<button
-				class="ml-auto text-xs text-neutral-400 hover:text-neutral-200 cursor-pointer"
+				class="ml-auto text-xs text-neutral-500 hover:text-neutral-700 cursor-pointer"
 				onclick={disableProvider}
 				disabled={status === 'configuring'}
 			>
@@ -282,7 +282,7 @@
 	{:else}
 		<!-- Remote Provider (OpenAI/Anthropic) -->
 		<div class="space-y-4">
-			<p class="text-sm text-neutral-400">
+			<p class="text-sm text-neutral-500">
 				{#if selectedFamily === 'openai'}
 					Enter your OpenAI API key to access GPT models.
 				{:else}
@@ -317,14 +317,14 @@
 				<div>
 					<label
 						for="model-select"
-						class="block text-sm font-medium text-neutral-300 mb-2"
+						class="block text-sm font-medium text-neutral-700 mb-2"
 					>
 						Model
 					</label>
 					<select
 						id="model-select"
 						bind:value={selectedModel}
-						class="w-full px-3 py-2 bg-neutral-900 border border-neutral-600 rounded-md text-neutral-200 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-transparent cursor-pointer"
+						class="w-full px-3 py-2 bg-surface-bright border border-neutral-300 rounded-md text-neutral-800 focus:outline-none focus:ring-2 focus:ring-tertiary-400 focus:border-transparent cursor-pointer"
 						disabled={status !== 'idle'}
 					>
 						{#each models as model (model.id)}

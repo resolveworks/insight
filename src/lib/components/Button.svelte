@@ -5,7 +5,7 @@
 
 	type Variant = 'primary' | 'secondary' | 'ghost';
 	type Size = 'sm' | 'md' | 'lg';
-	type Color = 'slate' | 'emerald';
+	type Color = 'primary' | 'accent';
 
 	interface Props extends HTMLButtonAttributes {
 		variant?: Variant;
@@ -19,7 +19,7 @@
 	let {
 		variant = 'primary',
 		size = 'md',
-		color = 'slate',
+		color = 'primary',
 		loading = false,
 		fullWidth = false,
 		disabled,
@@ -29,17 +29,18 @@
 	}: Props = $props();
 
 	const baseClasses =
-		'rounded-md font-medium text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
+		'rounded-md font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
 
 	const colorClasses: Record<Color, string> = {
-		slate: 'bg-slate-600 hover:bg-slate-700',
-		emerald: 'bg-emerald-600 hover:bg-emerald-700',
+		primary: 'bg-primary-600 hover:bg-primary-700 text-white',
+		accent: 'bg-tertiary-500 hover:bg-tertiary-600 text-white',
 	};
 
 	let variantClasses = $derived.by(() => ({
 		primary: colorClasses[color],
-		secondary: 'bg-neutral-600 hover:bg-neutral-500',
-		ghost: 'bg-transparent hover:bg-neutral-700 text-neutral-300',
+		secondary:
+			'bg-secondary-400 hover:bg-secondary-500 text-neutral-800 border border-secondary-600',
+		ghost: 'bg-transparent hover:bg-neutral-200 text-neutral-700',
 	}));
 
 	const sizeClasses: Record<Size, string> = {
