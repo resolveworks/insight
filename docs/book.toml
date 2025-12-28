@@ -14,3 +14,4 @@ git-repository-url = "https://github.com/resolveworks/insight"
 edit-url-template = "https://github.com/resolveworks/insight/edit/main/docs/{path}"
 additional-js = ["src/releases.js"]
 additional-css = ["src/custom.css"]
+additional-head = '<script defer src="https://analytics.resolve.works/script.js" data-website-id="b88b37dd-b693-47c2-b080-82e85ca34605"></script>'
