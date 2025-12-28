@@ -27,7 +27,7 @@
 			"prettier --write"
 		]
 	},
-	"license": "MIT",
+	"license": "AGPL-3.0-only",
 	"dependencies": {
 		"@fontsource-variable/inter": "^5.2.8",
 		"@tauri-apps/api": "^2",

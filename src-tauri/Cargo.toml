@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Local-first P2P document search for journalists"
 authors = ["you"]
 edition = "2021"
+license = "AGPL-3.0-only"
 
 [lib]
 name = "insight_lib"
