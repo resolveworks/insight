@@ -31,10 +31,10 @@ jobs:
           #cuda: true
 
           # macOS
-          - platform: macos-latest
+          - platform: macos-15
             rust_target: aarch64-apple-darwin
             features: metal
-          - platform: macos-latest
+          - platform: macos-15
             rust_target: x86_64-apple-darwin
             features: metal
 
@@ -81,10 +81,6 @@ jobs:
         with:
           workspaces: src-tauri
           shared-key: ${{ matrix.rust_target }}
-
-      - name: Install Metal toolchain
-        if: contains(matrix.platform, 'macos')
-        run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Install frontend dependencies
         run: pnpm install
