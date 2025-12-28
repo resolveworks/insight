@@ -58,7 +58,7 @@ GPU acceleration available via feature flags:
 
 ## Agent Tools
 
-The agent can search and read documents from the indexed collections. It iteratively gathers evidence to answer questions, citing sources.
+The agent has tools to search and read documents from indexed collections. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search—all document retrieval happens through the agent.
 
 ## Data Model
 
@@ -88,15 +88,15 @@ Namespace: 7f3a8b2c... ("Climate Research")
 
 ### What Syncs vs What's Local
 
-| Data            | Syncs                       | Stored in        |
-| --------------- | --------------------------- | ---------------- |
-| PDF files       | Yes                         | iroh-blobs       |
-| Extracted text  | Yes                         | iroh-blobs       |
-| File metadata   | Yes                         | iroh-docs        |
-| Collection info | Yes                         | iroh-docs        |
-| Embeddings      | Yes (keyed by model)        | iroh-docs        |
-| Search index    | No (built from synced data) | milli            |
-| LLM models      | No                          | ~/.cache/insight |
+| Data            | Syncs                       | Stored in                |
+| --------------- | --------------------------- | ------------------------ |
+| PDF files       | Yes                         | iroh-blobs               |
+| Extracted text  | Yes                         | iroh-blobs               |
+| File metadata   | Yes                         | iroh-docs                |
+| Collection info | Yes                         | iroh-docs                |
+| Embeddings      | Yes (keyed by model)        | iroh-docs                |
+| Search index    | No (built from synced data) | milli                    |
+| LLM models      | No                          | ~/.cache/huggingface/hub |
 
 ### Embedding Sync Strategy
 
@@ -129,15 +129,7 @@ When a new metadata entry arrives from a peer:
 
 ## Sync Model
 
-### Peer Collections (colleague's laptop)
-
-Full sync - because they might be offline when you need the files.
-
-### Server Collections (always-on instance)
-
-On-demand - fetch files when needed, server is always available.
-
-The "server" is just the same app running on a machine with better uptime.
+Collections sync fully between peers—all documents are copied so you have them even when colleagues are offline.
 
 ## Development
 
@@ -202,7 +194,7 @@ mockIPC((cmd, args) => {
 
 Focus on:
 
-- Critical user flows (search, document ingestion, chat)
+- Critical user flows (document ingestion, chat)
 - Complex logic that's hard to verify manually
 - Bug fixes (prevent regressions)
 

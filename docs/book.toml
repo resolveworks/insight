@@ -1,0 +1,14 @@
+[book]
+title = "Insight"
+description = "Local-first research agent for evidence-based journalism"
+authors = ["Insight Contributors"]
+language = "en"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/resolveworks/insight"
+edit-url-template = "https://github.com/resolveworks/insight/edit/main/docs/{path}"

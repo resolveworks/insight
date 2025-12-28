@@ -10,11 +10,10 @@ Newsrooms accumulate documents—leaks, court filings, FOIA responses, research 
 
 ## What Insight Does
 
-- **Ask questions, get answers** — AI assistant searches your documents and synthesizes answers with citations
+- **Ask questions, get answers** — AI agent searches your documents and synthesizes answers with citations
 - **Batteries included** — local LLM runs on-device, no API keys needed
-- **Search across documents** — full-text and semantic search (finds related concepts, not just keywords)
 - **Share with colleagues** — sync directly, laptop-to-laptop, no server required
-- **Work offline** — your documents, search index, and AI run on your machine
+- **Work offline** — your documents and AI run entirely on your machine
 
 ## How It Works
 
@@ -38,7 +37,7 @@ This is a **research project** exploring:
 
 - AI-assisted document research with local models
 - Practical P2P sync for document workflows
-- Local semantic search with embeddings
+- Agent-driven document research with embeddings
 - Trust models for journalist collaboration
 
 Not production-ready. Built to learn and prototype.
@@ -76,7 +75,7 @@ pnpm tauri build -- --features metal
 
 - **Journalists** managing sensitive document collections
 - **Newsrooms** wanting AI-assisted research without cloud dependencies
-- **Investigators** who need to search and analyze large document sets
+- **Investigators** who need to analyze large document sets
 - **Anyone** exploring local-first AI tools for research
 
 ## License
