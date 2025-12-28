@@ -44,7 +44,6 @@ jobs:
             rust_target: aarch64-apple-darwin
             features: metal
             artifact_name: macos
-            macos_deployment_target: '11.0'
 
     runs-on: ${{ matrix.platform }}
 
