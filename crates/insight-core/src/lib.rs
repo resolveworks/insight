@@ -83,7 +83,7 @@ pub use agent::provider::{
 pub use agent::{AgentContext, AgentEvent, CollectionInfo, Conversation};
 pub use config::{Config, Settings};
 pub use jobs::JobCoordinator;
-pub use storage::Storage;
+pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
 /// Check if embedding model is configured and downloaded.
 /// Returns (configured, downloaded).
@@ -165,11 +165,13 @@ impl AppState {
         let search = Arc::new(RwLock::new(index));
         let indexer_config = Arc::new(Mutex::new(indexer_config));
         let embedder = Arc::new(RwLock::new(None));
+        let embedding_model_id = Arc::new(RwLock::new(None));
 
         // Create job coordinator with shared resources
         let job_coordinator = JobCoordinator::new(
             storage.clone(),
             embedder.clone(),
+            embedding_model_id.clone(),
             search.clone(),
             indexer_config.clone(),
         );
@@ -180,7 +182,7 @@ impl AppState {
             search,
             indexer_config,
             embedder,
-            embedding_model_id: Arc::new(RwLock::new(None)),
+            embedding_model_id,
             chat_provider: Arc::new(RwLock::new(None)),
             provider_config: Arc::new(RwLock::new(None)),
             conversations: Arc::new(RwLock::new(HashMap::new())),

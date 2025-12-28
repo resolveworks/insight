@@ -36,6 +36,25 @@ pub struct DocumentMetadata {
     pub page_boundaries: Vec<usize>,
 }
 
+/// Embedding data for a document, stored per model under `embeddings/{doc_id}/{model_id}` key
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingData {
+    pub model_id: String,
+    pub dimensions: usize,
+    pub chunks: Vec<EmbeddingChunk>,
+    pub created_at: String,
+}
+
+/// A single chunk with its embedding vector
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingChunk {
+    pub index: usize,
+    pub content: String,
+    pub vector: Vec<f32>,
+    pub start_page: usize,
+    pub end_page: usize,
+}
+
 /// Storage layer using iroh for P2P content-addressed storage
 ///
 /// Uses iroh_docs::Engine via the Docs protocol wrapper for native event subscriptions.
@@ -397,6 +416,107 @@ impl Storage {
         Ok(entry.is_some())
     }
 
+    /// Store embeddings for a document
+    ///
+    /// Stores embedding data under `embeddings/{doc_id}/{model_id}` key.
+    /// This enables sharing embeddings between peers with the same model.
+    pub async fn store_embeddings(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        data: EmbeddingData,
+    ) -> Result<()> {
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        let data_bytes = serde_json::to_vec(&data)?;
+        let hash = self.store_blob(&data_bytes).await?;
+        let len = data_bytes.len() as u64;
+
+        let key = format!("embeddings/{}/{}", doc_id, data.model_id);
+        doc.set_hash(self.author_id, key.into_bytes(), hash, len)
+            .await?;
+
+        doc.close().await?;
+
+        tracing::debug!(
+            doc_id = %doc_id,
+            model_id = %data.model_id,
+            chunk_count = data.chunks.len(),
+            "Stored embeddings"
+        );
+
+        Ok(())
+    }
+
+    /// Get embeddings for a document and model
+    ///
+    /// Returns None if embeddings don't exist for this document/model combination.
+    pub async fn get_embeddings(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        model_id: &str,
+    ) -> Result<Option<EmbeddingData>> {
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let key = format!("embeddings/{}/{}", doc_id, model_id);
+        let query = Query::key_exact(key.as_bytes());
+        let entry = doc.get_one(query).await?;
+
+        let result = if let Some(entry) = entry {
+            let hash = entry.content_hash();
+            if let Some(data) = self.get_blob(&hash).await? {
+                Some(serde_json::from_slice(&data)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        doc.close().await?;
+        Ok(result)
+    }
+
+    /// Delete all embeddings for a document (all models)
+    pub async fn delete_embeddings(&self, namespace_id: NamespaceId, doc_id: &str) -> Result<()> {
+        use futures::StreamExt;
+
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(doc) => doc,
+            None => return Ok(()),
+        };
+
+        let prefix = format!("embeddings/{}/", doc_id);
+        let query = Query::key_prefix(prefix.as_bytes());
+        let stream = doc.get_many(query).await?;
+        tokio::pin!(stream);
+
+        let mut keys_to_delete = Vec::new();
+        while let Some(result) = stream.next().await {
+            let entry = result?;
+            keys_to_delete.push(entry.key().to_vec());
+        }
+
+        for key in keys_to_delete {
+            doc.del(self.author_id, key).await?;
+        }
+
+        doc.close().await?;
+
+        tracing::debug!(doc_id = %doc_id, "Deleted embeddings");
+
+        Ok(())
+    }
+
     /// Delete a document from a collection
     pub async fn delete_document(
         &self,
@@ -428,6 +548,9 @@ impl Storage {
         doc.del(self.author_id, file_key.into_bytes()).await?;
 
         doc.close().await?;
+
+        // Delete associated embeddings (all models)
+        self.delete_embeddings(namespace_id, document_id).await?;
 
         tracing::info!(
             "Deleted document '{}' from collection {}",

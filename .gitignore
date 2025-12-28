@@ -17,3 +17,4 @@ nul
 dev.bat
 # Rust build artifacts (workspace target at root)
 /target
+styles.css

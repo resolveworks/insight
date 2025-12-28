@@ -9,32 +9,34 @@
 //! ┌─────────────┐    ┌─────────────┐          │
 //! │  extract_tx │───▶│  store_tx   │──▶ iroh ─┘
 //! │  (8 tasks)  │    │  (storage)  │     │
-//! └─────────────┘    └─────────────┘     │ InsertLocal/InsertRemote
+//! └─────────────┘    └─────────────┘     │
+//!                                        │ InsertLocal/InsertRemote for files/*
 //!                                        ▼
-//!                    ┌─────────────┐    ┌─────────────┐
-//!                    │  embed_tx   │◀───│  DocWatcher │
-//!                    │  (batched)  │    └─────────────┘
-//!                    └─────────────┘
-//!                          │
-//!                          ▼
-//!                    ┌─────────────┐
-//!                    │  index_tx   │───▶ completed events
-//!                    │  (batched)  │
-//!                    └─────────────┘
+//!                     DocWatcher: Queue for embedding
+//!                                        │
+//!                                        ▼
+//!                     ┌─────────────┐
+//!                     │  embed_tx   │ → Generate embeddings, store to iroh
+//!                     │  (batched)  │
+//!                     └─────────────┘
+//!                                        │ InsertLocal/InsertRemote for embeddings/*
+//!                                        ▼
+//!                     DocWatcher: Index with vectors → completed
 //! ```
 //!
 //! The store worker stores documents in iroh, which fires events.
-//! DocWatcher subscribes to those events and triggers the embed → index pipeline.
+//! DocWatcher subscribes to those events and:
+//! 1. On files/* events: queues document for embedding generation
+//! 2. On embeddings/* events: indexes document with vectors (keyword + semantic search)
 
 mod embed;
 mod extract;
-mod index;
 mod types;
 pub mod watcher;
 mod worker;
 
-pub use types::{DocumentCompleted, DocumentFailed, Embedded, PipelineProgress, Stored};
-pub use watcher::{DocWatcher, DocumentIndexFailed, DocumentIndexed};
+pub use types::{DocumentCompleted, DocumentFailed, EmbedRequest};
+pub use watcher::{DocWatcher, WatcherContext};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -61,11 +63,13 @@ pub struct JobCoordinator {
     /// Sender to submit extraction jobs
     extract_tx: mpsc::Sender<ExtractRequest>,
     /// Sender to the embedding pipeline (shared with DocWatchers)
-    embed_tx: mpsc::Sender<Stored>,
+    embed_tx: mpsc::Sender<EmbedRequest>,
+    /// Sender for document completion notifications (shared with DocWatchers)
+    completed_tx: mpsc::Sender<DocumentCompleted>,
+    /// Receiver for document completion notifications
+    completed_rx: mpsc::Receiver<DocumentCompleted>,
     /// Cancellation token to stop all workers
     cancel: CancellationToken,
-    /// Receiver for completed documents (from index stage)
-    completed_rx: mpsc::Receiver<DocumentCompleted>,
     /// Receiver for failed extractions
     failed_rx: mpsc::Receiver<DocumentFailed>,
     /// Counter for pending extraction jobs
@@ -74,33 +78,44 @@ pub struct JobCoordinator {
     watchers: HashMap<NamespaceId, DocWatcher>,
     /// Storage reference for creating watchers
     storage: Arc<RwLock<Storage>>,
+    /// Search index reference for watchers
+    index: Arc<RwLock<Index>>,
+    /// Indexer config reference for watchers
+    indexer_config: Arc<Mutex<IndexerConfig>>,
+    /// Current embedding model ID for watchers
+    embedding_model_id: Arc<RwLock<Option<String>>>,
 }
 
 impl JobCoordinator {
     /// Create a new job coordinator with the given dependencies.
     ///
-    /// Spawns background workers for extraction, embedding, and indexing.
+    /// Spawns background workers for extraction and embedding.
     /// Call `watch_namespace()` to start watching collections for indexing.
     pub fn new(
         storage: Arc<RwLock<Storage>>,
         embedder: Arc<RwLock<Option<Embedder>>>,
+        embedding_model_id: Arc<RwLock<Option<String>>>,
         index: Arc<RwLock<Index>>,
         indexer_config: Arc<Mutex<IndexerConfig>>,
     ) -> Self {
         let cancel = CancellationToken::new();
         let pending = Arc::new(AtomicUsize::new(0));
 
-        // Channel for completed document notifications (from indexing)
-        let (completed_tx, completed_rx) = mpsc::channel::<DocumentCompleted>(64);
-
         // Channel for failed extraction notifications
         let (failed_tx, failed_rx) = mpsc::channel::<DocumentFailed>(64);
 
-        // Build embed → index pipeline
-        let index_tx = index::spawn(index, indexer_config, cancel.clone(), completed_tx);
-        let embed_tx = embed::spawn(embedder, cancel.clone(), index_tx);
+        // Channel for document completion notifications (from watchers)
+        let (completed_tx, completed_rx) = mpsc::channel::<DocumentCompleted>(64);
 
-        // Storage stage (no longer forwards to embed - just stores)
+        // Embed worker - receives EmbedRequest, stores embeddings to iroh
+        let embed_tx = embed::spawn(
+            embedder,
+            storage.clone(),
+            embedding_model_id.clone(),
+            cancel.clone(),
+        );
+
+        // Storage stage (stores extracted documents to iroh)
         let store_tx = spawn_store_worker(storage.clone(), cancel.clone());
 
         // Extraction stage
@@ -109,31 +124,39 @@ impl JobCoordinator {
         Self {
             extract_tx,
             embed_tx,
-            cancel,
+            completed_tx,
             completed_rx,
+            cancel,
             failed_rx,
             pending,
             watchers: HashMap::new(),
             storage,
+            index,
+            indexer_config,
+            embedding_model_id,
         }
     }
 
     /// Start watching a namespace for document events.
     ///
     /// When documents are added (locally or via sync), they will be
-    /// automatically sent through the embed → index pipeline.
+    /// automatically indexed and sent through the embedding pipeline.
     pub fn watch_namespace(&mut self, namespace_id: NamespaceId) {
         if self.watchers.contains_key(&namespace_id) {
             tracing::debug!(namespace = %namespace_id, "Already watching namespace");
             return;
         }
 
-        let watcher = DocWatcher::spawn(
-            namespace_id,
-            self.storage.clone(),
-            self.embed_tx.clone(),
-            self.cancel.clone(),
-        );
+        let ctx = WatcherContext {
+            storage: self.storage.clone(),
+            index: self.index.clone(),
+            indexer_config: self.indexer_config.clone(),
+            embed_tx: self.embed_tx.clone(),
+            completed_tx: self.completed_tx.clone(),
+            current_model_id: self.embedding_model_id.clone(),
+        };
+
+        let watcher = DocWatcher::spawn(namespace_id, ctx, self.cancel.clone());
 
         self.watchers.insert(namespace_id, watcher);
         tracing::info!(namespace = %namespace_id, "Started watching namespace");
@@ -183,11 +206,22 @@ impl JobCoordinator {
     ///
     /// Returns `None` if the pipeline is shut down.
     pub async fn recv_completed(&mut self) -> Option<DocumentCompleted> {
-        let doc = self.completed_rx.recv().await;
-        if doc.is_some() {
+        let completed = self.completed_rx.recv().await;
+        if completed.is_some() {
             self.pending.fetch_sub(1, Ordering::SeqCst);
         }
-        doc
+        completed
+    }
+
+    /// Try to receive a completed document without blocking.
+    pub fn try_recv_completed(&mut self) -> Option<DocumentCompleted> {
+        match self.completed_rx.try_recv() {
+            Ok(completed) => {
+                self.pending.fetch_sub(1, Ordering::SeqCst);
+                Some(completed)
+            }
+            Err(_) => None,
+        }
     }
 
     /// Receive the next failed extraction.
@@ -199,17 +233,6 @@ impl JobCoordinator {
             self.pending.fetch_sub(1, Ordering::SeqCst);
         }
         failed
-    }
-
-    /// Try to receive a completed document without blocking.
-    pub fn try_recv_completed(&mut self) -> Option<DocumentCompleted> {
-        match self.completed_rx.try_recv() {
-            Ok(doc) => {
-                self.pending.fetch_sub(1, Ordering::SeqCst);
-                Some(doc)
-            }
-            Err(_) => None,
-        }
     }
 
     /// Try to receive a failed extraction without blocking.
