@@ -62,7 +62,7 @@ default = []
 cuda = ["mistralrs/cuda", "mistralrs/flash-attn", "mistralrs/cudnn"]
 flash-attn = ["mistralrs/flash-attn"]
 cudnn = ["mistralrs/cudnn"]
-metal = ["mistralrs/metal"]
+metal = ["mistralrs/metal", "mistralrs/accelerate"]
 accelerate = ["mistralrs/accelerate"]
 mkl = ["mistralrs/mkl"]
 

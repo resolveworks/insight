@@ -8,11 +8,8 @@ on:
 permissions:
   contents: write
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  build:
+  release:
     strategy:
       fail-fast: false
       matrix:
@@ -20,43 +17,35 @@ jobs:
           # Linux
           - platform: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
-            artifact_name: linux
-          # - platform: ubuntu-latest
-          #   rust_target: x86_64-unknown-linux-gnu
-          #   features: cuda
-          #   suffix: -cuda
-          #   cuda: true
-          #   artifact_name: linux-cuda
+          #- platform: ubuntu-latest
+          #rust_target: x86_64-unknown-linux-gnu
+          #features: cuda,flash-attn,cudnn
+          #cuda: true
 
           # Windows
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            artifact_name: windows
-          # - platform: windows-latest
-          #   rust_target: x86_64-pc-windows-msvc
-          #   features: cuda
-          #   suffix: -cuda
-          #   cuda: true
-          #   artifact_name: windows-cuda
+          #- platform: windows-latest
+          #rust_target: x86_64-pc-windows-msvc
+          #features: cuda,flash-attn,cudnn
+          #cuda: true
 
-          # macOS (Apple Silicon)
+          # macOS
           - platform: macos-latest
             rust_target: aarch64-apple-darwin
             features: metal
-            artifact_name: macos
+          - platform: macos-latest
+            rust_target: x86_64-apple-darwin
+            features: metal
 
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Enable long paths (Windows)
-        if: contains(matrix.platform, 'windows')
-        run: git config --system core.longpaths true
-
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: contains(matrix.platform, 'ubuntu')
+        if: matrix.platform == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
@@ -68,7 +57,7 @@ jobs:
           method: network
 
       - name: Setup MSVC for CUDA (Windows)
-        if: matrix.cuda && contains(matrix.platform, 'windows')
+        if: matrix.cuda && matrix.platform == 'windows-latest'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Setup pnpm
@@ -79,69 +68,39 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 25
+          node-version: lts/*
           cache: pnpm
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.rust_target }}
+          targets: ${{ matrix.rust_target }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          shared-key: ${{ matrix.rust_target }}${{ matrix.suffix }}
+          shared-key: ${{ matrix.rust_target }}
+
+      - name: Install Metal toolchain (macOS 26+)
+        if: contains(matrix.platform, 'macos')
+        run: xcodebuild -downloadComponent MetalToolchain || true
 
       - name: Install frontend dependencies
         run: pnpm install
 
-      - name: Build Tauri app
-        id: tauri
+      - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CUDA_COMPUTE_CAP: ${{ matrix.cuda && '80' || '' }}
-          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target || '' }}
         with:
-          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Insight ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download for your platform.'
+          releaseDraft: true
           args: >-
             --target ${{ matrix.rust_target }}
             ${{ matrix.features && format('--features {0}', matrix.features) }}
-            ${{ matrix.suffix && format('--config ''{{"productName":"Insight{0}"}}''', matrix.suffix) }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: |
-            target/${{ matrix.rust_target }}/release/bundle/**/*.deb
-            target/${{ matrix.rust_target }}/release/bundle/**/*.rpm
-            target/${{ matrix.rust_target }}/release/bundle/**/*.AppImage
-            target/${{ matrix.rust_target }}/release/bundle/**/*.msi
-            target/${{ matrix.rust_target }}/release/bundle/**/*.exe
-            target/${{ matrix.rust_target }}/release/bundle/**/*.dmg
-            target/${{ matrix.rust_target }}/release/bundle/**/*.app.tar.gz
-          if-no-files-found: error
-
-  release:
-    needs: build
-    if: needs.build.result == 'success'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create ${{ github.ref_name }} \
-            --title "Insight ${{ github.ref_name }}" \
-            --notes "See the assets below to download for your platform." \
-            --draft
-          find artifacts -type f -exec gh release upload ${{ github.ref_name }} {} --clobber \;
