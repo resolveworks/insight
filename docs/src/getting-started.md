@@ -2,7 +2,7 @@
 
 ## Download
 
-<div id="download-links"></div>
+{{#include generated/downloads.html}}
 
 ### System Requirements
 

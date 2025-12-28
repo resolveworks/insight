@@ -12,5 +12,5 @@ default-theme = "light"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/resolveworks/insight"
 edit-url-template = "https://github.com/resolveworks/insight/edit/main/docs/{path}"
-additional-js = ["src/releases.js"]
+additional-js = ["src/platform-detect.js"]
 additional-css = ["src/custom.css"]
