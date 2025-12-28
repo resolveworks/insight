@@ -1,48 +1,45 @@
 # Getting Started
 
-## Installation
+## Download
 
-Download the latest release for your platform from the [releases page](https://github.com/resolveworks/insight/releases).
+<div id="download-links"></div>
 
 ### System Requirements
 
-- **macOS**: Apple Silicon (M1/M2/M3) recommended for best performance
-- **Windows**: x64, Windows 10 or later
-- **Linux**: x64, modern distribution with glibc 2.31+
+- **macOS**: Apple Silicon (M1/M2/M3) or Intel
+- **Windows**: Windows 10 or later
+- **Linux**: Most modern distributions
 
-### Storage Requirements
+## Choosing an AI Model
 
-- ~5 GB for the default model (Qwen3 8B Q4_K_M)
-- Additional space for your documents and search index
+Insight can use either local AI models or cloud services for chat. Your documents are always processed locally—only your questions and the AI's answers go through the cloud if you choose that option.
 
-## Models
+### Cloud Models (Recommended for most users)
 
-Insight uses local AI models that need to be downloaded before use. When you first use a feature that requires a model (chat or document processing), you'll be prompted to download it.
+If you have an API key from Anthropic or OpenAI, you can use their models. This is the easiest option and works well on any computer.
 
-Models are stored in the HuggingFace cache:
+### Local Models
 
-- **macOS/Linux**: `~/.cache/huggingface/hub/`
-- **Windows**: `%USERPROFILE%\.cache\huggingface\hub\`
+Running AI locally requires a powerful computer—ideally with a dedicated GPU (NVIDIA or Apple Silicon). On a typical laptop without a GPU, responses will be slow.
 
-The default language model is ~5 GB. An embedding model (~1.2 GB) is also needed for document processing.
+If you choose local models, Insight will download about 5 GB for the AI model on first use.
 
-## Creating Your First Collection
+## Create a Collection
+
+Collections are folders for organizing your documents. You might create one for each investigation or story you're working on.
 
 1. Click **New Collection**
-2. Give it a name (e.g., "Climate Research")
+2. Give it a name (e.g., "City Budget Investigation")
 3. Drag and drop PDF files into the collection
 
-Insight will:
+Insight will process each document so the AI can search and read them.
 
-- Extract text from each PDF
-- Generate embeddings for the AI agent
+## Ask Questions
 
-## Asking Questions
+Once your documents are processed, just ask questions in plain language:
 
-Once documents are processed, use the chat interface to ask questions:
+- "What was the total spending on consultants?"
+- "Find all mentions of Company X"
+- "Summarize the main findings from these reports"
 
-- "What are the main findings about carbon emissions?"
-- "Find all mentions of renewable energy targets"
-- "Summarize the methodology used in these studies"
-
-The agent will find relevant passages in your documents and synthesize an answer with citations.
+The AI will search through your documents, find relevant passages, and give you an answer with citations you can click to see the original source.

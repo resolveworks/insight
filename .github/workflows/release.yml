@@ -115,7 +115,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ steps.tauri.outputs.artifactPaths }}
+          path: |
+            target/${{ matrix.rust_target }}/release/bundle/**/*.deb
+            target/${{ matrix.rust_target }}/release/bundle/**/*.rpm
+            target/${{ matrix.rust_target }}/release/bundle/**/*.AppImage
+            target/${{ matrix.rust_target }}/release/bundle/**/*.msi
+            target/${{ matrix.rust_target }}/release/bundle/**/*.exe
+            target/${{ matrix.rust_target }}/release/bundle/**/*.dmg
+            target/${{ matrix.rust_target }}/release/bundle/**/*.app.tar.gz
           if-no-files-found: error
 
   release:

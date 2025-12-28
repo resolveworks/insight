@@ -1,52 +1,46 @@
 # Collections
 
-Collections are how Insight organizes documents. Each collection is a separate namespace with its own documents, search index, and sharing settings.
+Collections are how Insight organizes your documents. Think of them as folders—each collection holds a set of related documents with its own search and sharing settings.
 
-## Creating Collections
+## Creating a Collection
 
-Click **New Collection** and provide a name. Collections can represent:
+Click **New Collection** and give it a name. You might organize by:
 
-- A specific investigation or story
-- A beat (e.g., "City Council", "Climate")
-- A source type (e.g., "Court Documents", "FOIA Responses")
+- Investigation (e.g., "City Hall Contracts")
+- Beat (e.g., "Climate", "Housing")
+- Source type (e.g., "Court Documents", "FOIA Responses")
 
 ## Adding Documents
 
-Drag and drop PDF files into a collection, or use the **Add Files** button.
-
-Supported formats:
-
-- PDF (primary format)
+Drag and drop PDF files into a collection, or click **Add Files**.
 
 When you add a document, Insight:
 
-1. Extracts text from the PDF
-2. Stores both the original PDF and extracted text
-3. Generates embeddings for the AI agent
+1. Extracts the text so the AI can read it
+2. Prepares it for searching
+3. Stores everything locally on your computer
 
-## Sharing Collections
+## Sharing with Colleagues
 
-Collections can be shared peer-to-peer with colleagues.
+You can share collections directly with other Insight users—no cloud upload required.
 
-### Sharing with a Colleague
+### To Share
 
-1. Open the collection settings
+1. Open the collection
 2. Click **Share**
 3. Send the generated link to your colleague
 
-### Joining a Shared Collection
+### To Join
 
 1. Click **Join Collection**
-2. Paste the share link
-3. Documents will sync automatically
+2. Paste the link you received
+3. Documents will copy to your computer automatically
 
-### Sync Behavior
+Once synced, you both have full copies. You can work offline and still access everything.
 
-Collections sync fully—all documents are copied so you have them even when colleagues are offline.
+## Where Documents Are Stored
 
-## Collection Storage
-
-Collection data is stored locally:
+All your data stays on your computer:
 
 - **macOS/Linux**: `~/.local/share/insight/`
 - **Windows**: `%LOCALAPPDATA%\insight\`

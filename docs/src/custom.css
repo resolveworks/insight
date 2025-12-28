@@ -1,0 +1,33 @@
+/* Download section styles */
+#download-links {
+	margin: 1.5em 0;
+}
+
+.release-version {
+	margin-bottom: 1em;
+}
+
+.download-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75em;
+}
+
+.download-btn {
+	display: inline-block;
+	padding: 0.6em 1.2em;
+	background: var(--links);
+	color: var(--bg) !important;
+	text-decoration: none !important;
+	border-radius: 6px;
+	font-weight: 500;
+	transition: opacity 0.15s;
+}
+
+.download-btn:hover {
+	opacity: 0.85;
+}
+
+.download-btn.primary {
+	font-size: 1.1em;
+}

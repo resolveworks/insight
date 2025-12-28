@@ -1,36 +1,24 @@
 # Insight
 
-A local-first research agent for evidence-based journalism. Think Claude Code, but for documents and investigations.
+An AI research assistant for journalists. Your documents stay on your computer.
 
 ## Why Insight?
 
-Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight combines local LLM inference with P2P document sync to give journalists an AI research assistant that runs entirely on their hardware.
+Newsrooms deal with mountains of documents—court filings, FOIA responses, leaked files—but searching and analyzing them usually means uploading to cloud services you may not trust.
 
-## Key Features
+Insight is different. Your documents are processed and stored locally—they never leave your computer unless you choose to share them with a colleague. You can run the AI entirely on your machine, or use cloud models (Anthropic, OpenAI) for the chat while keeping your documents local.
 
-- **Local-first**: All processing happens on your machine. No data leaves your computer unless you explicitly share it.
-- **AI research agent**: Ask questions in natural language and get answers with citations from your documents.
-- **P2P sync**: Share collections with colleagues directly, laptop-to-laptop, without a central server.
-- **Offline capable**: Works without internet once models are downloaded.
+## What Can It Do?
 
-## How It Works
-
-```
-User Query
-    ↓
-Local LLM (via mistralrs)
-    ↓
-Tool Calling Loop (search, read documents)
-    ↓
-Synthesized Answer (with citations)
-```
-
-The agent iteratively gathers evidence from your documents and synthesizes answers—all running locally.
+- **Answer questions about your documents** — Ask in plain language, get answers with citations pointing to the exact source.
+- **Search smarter** — Finds relevant content even when you don't know the exact words to search for.
+- **Share securely** — Send collections directly to colleagues, laptop-to-laptop, without a server in between.
+- **Work offline** — Once set up, no internet needed.
 
 ## Quick Start
 
-1. [Download Insight](https://github.com/resolveworks/insight/releases) for your platform
-2. Create a collection and add documents
+1. [Download Insight](./getting-started.md) for your computer
+2. Create a collection and add your documents
 3. Start asking questions
 
-See [Getting Started](./getting-started.md) for detailed setup instructions.
+See [Getting Started](./getting-started.md) for step-by-step instructions.
