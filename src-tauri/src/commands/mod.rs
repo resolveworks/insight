@@ -25,28 +25,6 @@ pub struct CollectionInfo {
     pub created_at: String,
 }
 
-/// Single search hit (chunk-level result)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchHit {
-    /// Unique chunk ID (e.g., "doc123_chunk_5")
-    pub chunk_id: String,
-    /// Parent document info
-    pub document: DocumentInfo,
-    pub collection_id: String,
-    pub score: f32,
-    /// Chunk text content
-    pub snippet: String,
-}
-
-/// Paginated search response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResponse {
-    pub hits: Vec<SearchHit>,
-    pub total_hits: usize,
-    pub page: usize,
-    pub page_size: usize,
-}
-
 /// Get all collections
 #[tauri::command]
 pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<CollectionInfo>, String> {
@@ -125,10 +103,10 @@ pub struct DocumentAddedEvent {
     pub document: DocumentInfo,
 }
 
-/// Import multiple PDF files into a collection using the job pipeline.
+/// Import multiple PDF files into a collection.
 ///
-/// Files flow through: extraction → storage → (iroh event) → embedding → indexing
-/// Progress and completion events are emitted to the frontend.
+/// Files are extracted and stored by Storage::import_pdf().
+/// The DocWatcher handles embedding and indexing via iroh events.
 #[tauri::command]
 pub async fn import_pdfs_batch<R: tauri::Runtime>(
     paths: Vec<String>,
@@ -137,124 +115,123 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
     state: State<'_, AppState>,
 ) -> Result<BatchImportResult, String> {
     tracing::info!(
-        "Batch importing {} PDFs into collection {}",
+        "Importing {} PDFs into collection {}",
         paths.len(),
         collection_id
     );
 
-    // Validate collection ID
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    // Get the job coordinator
-    let mut coordinator_guard = state.job_coordinator.write().await;
-    let coordinator = coordinator_guard
-        .as_mut()
-        .ok_or("Job coordinator not initialized")?;
-
-    // Ensure the collection is being watched for indexing events
-    if !coordinator.is_watching(&namespace_id) {
-        coordinator.watch_namespace(namespace_id);
+    // Ensure the collection is being watched
+    {
+        let mut coordinator_guard = state.job_coordinator.write().await;
+        if let Some(coordinator) = coordinator_guard.as_mut() {
+            if !coordinator.is_watching(&namespace_id) {
+                coordinator.watch_namespace(namespace_id);
+            }
+        }
     }
-
-    // Convert paths to PathBuf
-    let path_bufs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-    let total = path_bufs.len();
-
-    // Submit all paths for import
-    coordinator.import(path_bufs, collection_id.clone()).await;
 
     let mut successful = Vec::new();
     let mut failed = Vec::new();
+    let mut pending = Vec::new();
 
-    // Release coordinator lock - we'll poll non-blocking in the loop
-    drop(coordinator_guard);
+    // Import each PDF
+    for path_str in &paths {
+        let path = std::path::Path::new(path_str);
+        let storage = state.storage.read().await;
 
-    // Collect results until all documents are processed
-    while successful.len() + failed.len() < total {
-        // Small delay to avoid busy-waiting
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        match storage.import_pdf(path, namespace_id).await {
+            Ok(metadata) => {
+                tracing::debug!(doc_id = %metadata.id, name = %metadata.name, "PDF stored");
+                pending.push((metadata.id, path_str.clone()));
+            }
+            Err(e) => {
+                tracing::error!("Import failed for {:?}: {}", path, e);
+                failed.push(BatchImportError {
+                    path: path_str.clone(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
 
-        // Collect completions and failures while holding coordinator lock
-        let (completed_batch, failed_batch) = {
+    // Wait for indexing completion
+    if !pending.is_empty() {
+        let timeout = std::time::Duration::from_secs(300);
+        let start = std::time::Instant::now();
+        let mut completed_ids = std::collections::HashSet::new();
+        let mut failed_ids = std::collections::HashSet::new();
+
+        while completed_ids.len() + failed_ids.len() < pending.len() {
+            if start.elapsed() > timeout {
+                for (doc_id, path) in &pending {
+                    if !completed_ids.contains(doc_id) && !failed_ids.contains(doc_id) {
+                        failed.push(BatchImportError {
+                            path: path.clone(),
+                            error: "Timeout waiting for indexing".to_string(),
+                        });
+                    }
+                }
+                break;
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
             let mut coordinator_guard = state.job_coordinator.write().await;
-            let coordinator = match coordinator_guard.as_mut() {
-                Some(c) => c,
-                None => break,
+            let Some(coordinator) = coordinator_guard.as_mut() else {
+                break;
             };
 
-            let mut completed = Vec::new();
-            let mut failures = Vec::new();
-
             while let Some(c) = coordinator.try_recv_completed() {
-                completed.push(c);
+                if pending.iter().any(|(id, _)| id == &c.doc_id) {
+                    completed_ids.insert(c.doc_id);
+                }
             }
+
             while let Some(f) = coordinator.try_recv_failed() {
-                failures.push(f);
-            }
-
-            (completed, failures)
-        };
-        // Coordinator lock released here
-
-        // Process completions with storage lock (acquired once for entire batch)
-        if !completed_batch.is_empty() {
-            let storage = state.storage.read().await;
-            for completed in completed_batch {
-                match storage.get_document(namespace_id, &completed.doc_id).await {
-                    Ok(Some(metadata)) => {
-                        let doc_info = DocumentInfo {
-                            id: metadata.id,
-                            name: metadata.name.clone(),
-                            pdf_hash: metadata.pdf_hash,
-                            text_hash: metadata.text_hash,
-                            page_count: metadata.page_count,
-                            tags: metadata.tags,
-                            created_at: metadata.created_at,
-                        };
-
-                        // Emit event to frontend
-                        let _ = app.emit(
-                            "document-added",
-                            DocumentAddedEvent {
-                                collection_id: collection_id.clone(),
-                                document: doc_info.clone(),
-                            },
-                        );
-
-                        successful.push(doc_info);
-                    }
-                    Ok(None) => {
-                        tracing::warn!(
-                            "Document {} completed but not found in storage",
-                            completed.doc_id
-                        );
+                for (doc_id, path) in &pending {
+                    if &f.path == path || &f.path == doc_id {
+                        failed_ids.insert(doc_id.clone());
                         failed.push(BatchImportError {
-                            path: completed.doc_id,
-                            error: "Document not found after indexing".to_string(),
+                            path: path.clone(),
+                            error: f.error.clone(),
                         });
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to fetch document metadata: {}", e);
-                        failed.push(BatchImportError {
-                            path: completed.doc_id,
-                            error: format!("Failed to fetch metadata: {}", e),
-                        });
+                        break;
                     }
                 }
             }
         }
 
-        // Process failures
-        for doc_failed in failed_batch {
-            failed.push(BatchImportError {
-                path: doc_failed.path,
-                error: doc_failed.error,
-            });
+        // Build successful list
+        let storage = state.storage.read().await;
+        for (doc_id, _path) in pending {
+            if completed_ids.contains(&doc_id) {
+                if let Ok(Some(m)) = storage.get_document(namespace_id, &doc_id).await {
+                    let doc_info = DocumentInfo {
+                        id: m.id,
+                        name: m.name.clone(),
+                        pdf_hash: m.pdf_hash,
+                        text_hash: m.text_hash,
+                        page_count: m.page_count,
+                        tags: m.tags,
+                        created_at: m.created_at,
+                    };
+                    let _ = app.emit(
+                        "document-added",
+                        DocumentAddedEvent {
+                            collection_id: collection_id.clone(),
+                            document: doc_info.clone(),
+                        },
+                    );
+                    successful.push(doc_info);
+                }
+            }
         }
     }
 
     tracing::info!(
-        "Batch import complete: {} successful, {} failed",
+        "Import complete: {} successful, {} failed",
         successful.len(),
         failed.len()
     );
@@ -352,7 +329,7 @@ pub async fn get_document_text(
     String::from_utf8(text_bytes).map_err(|e| format!("Invalid UTF-8 in text content: {}", e))
 }
 
-/// Get the text chunks for a document (computed on-the-fly, not stored)
+/// Get the text chunks for a document (read from stored embeddings)
 #[tauri::command]
 pub async fn get_document_chunks(
     collection_id: String,
@@ -361,39 +338,23 @@ pub async fn get_document_chunks(
 ) -> Result<Vec<String>, String> {
     let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
 
-    // Get document text
-    let storage = state.storage.read().await;
-
-    let document = storage
-        .get_document(namespace_id, &document_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Document not found".to_string())?;
-
-    let text_hash: iroh_blobs::Hash = document
-        .text_hash
-        .parse()
-        .map_err(|_| "Invalid text hash".to_string())?;
-
-    let text_bytes = storage
-        .get_blob(&text_hash)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Text content not found".to_string())?;
-
-    let text = String::from_utf8(text_bytes)
-        .map_err(|e| format!("Invalid UTF-8 in text content: {}", e))?;
-
-    // Drop storage lock before accessing embedder
-    drop(storage);
-
-    // Get chunks from embedder
-    let embedder_guard = state.embedder.read().await;
-    let embedder = embedder_guard
+    // Get current embedding model ID
+    let model_id_guard = state.embedding_model_id.read().await;
+    let model_id = model_id_guard
         .as_ref()
-        .ok_or_else(|| "Embedding model not loaded".to_string())?;
+        .ok_or_else(|| "No embedding model configured".to_string())?;
 
-    Ok(embedder.chunk_text(&text))
+    // Fetch stored embeddings
+    let storage = state.storage.read().await;
+    let embeddings = storage
+        .get_embeddings(namespace_id, &document_id, model_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match embeddings {
+        Some(data) => Ok(data.chunks.into_iter().map(|c| c.content).collect()),
+        None => Ok(vec![]), // No embeddings stored yet
+    }
 }
 
 /// Delete a document from a collection
@@ -421,12 +382,12 @@ pub async fn delete_document(
     }
 
     // Delete all chunks for this document from search index in background
-    let search = state.search.clone();
-    let indexer_config = state.indexer_config.clone();
+    let index_worker = state.index_worker.clone();
     tokio::spawn(async move {
-        let index = search.read().await;
-        let indexer_config = indexer_config.lock().await;
-        match search::delete_document_chunks(&index, &indexer_config, &document_id) {
+        match index_worker
+            .delete_document_chunks(document_id.clone())
+            .await
+        {
             Ok(count) => {
                 tracing::info!(
                     "Removed {} chunks for document {} from search index",
@@ -467,12 +428,12 @@ pub async fn delete_collection(
     }
 
     // Delete all chunks from search index in background
-    let search = state.search.clone();
-    let indexer_config = state.indexer_config.clone();
+    let index_worker = state.index_worker.clone();
     tokio::spawn(async move {
-        let index = search.read().await;
-        let indexer_config = indexer_config.lock().await;
-        match search::delete_chunks_by_collection(&index, &indexer_config, &collection_id) {
+        match index_worker
+            .delete_collection_chunks(collection_id.clone())
+            .await
+        {
             Ok(deleted_count) => {
                 tracing::info!(
                     "Removed {} chunks from search index for collection {}",
@@ -562,128 +523,6 @@ pub async fn import_collection(
         name: metadata.name,
         document_count,
         created_at: metadata.created_at,
-    })
-}
-
-/// Search documents
-///
-/// When `semantic_ratio > 0` and an embedding model is configured, performs hybrid search
-/// combining keyword (BM25) and vector similarity.
-#[tauri::command]
-pub async fn search(
-    query: String,
-    page: Option<usize>,
-    page_size: Option<usize>,
-    collection_ids: Option<Vec<String>>,
-    semantic_ratio: Option<f32>,
-    min_score: Option<f32>,
-    state: State<'_, AppState>,
-) -> Result<SearchResponse, String> {
-    let semantic_ratio = semantic_ratio.unwrap_or(0.0).clamp(0.0, 1.0);
-    let min_score = min_score.map(|s| s.clamp(0.0, 1.0));
-
-    tracing::info!(
-        "Searching for: {} (collections: {:?}, semantic_ratio: {})",
-        query,
-        collection_ids,
-        semantic_ratio
-    );
-
-    let index = state.search.read().await;
-
-    let page = page.unwrap_or(0);
-    let page_size = page_size.unwrap_or(20);
-    let offset = page * page_size;
-
-    let doc_count = search::get_document_count(&index).unwrap_or(0);
-    tracing::info!(
-        "Search params: page={}, page_size={}, offset={}, index_docs={}",
-        page,
-        page_size,
-        offset,
-        doc_count
-    );
-
-    // Generate query embedding if semantic search is requested
-    let query_vector = if semantic_ratio > 0.0 {
-        let embedder_guard = state.embedder.read().await;
-        let embedder = embedder_guard
-            .as_ref()
-            .ok_or("Semantic search requires a configured embedding model")?;
-        Some(embedder.embed(&query).await.map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-
-    let results = search::search_index(
-        &index,
-        search::SearchParams {
-            query: &query,
-            limit: page_size,
-            offset,
-            collection_ids: collection_ids.as_deref(),
-            query_vector,
-            semantic_ratio,
-            min_score,
-        },
-    )
-    .map_err(|e| e.to_string())?;
-
-    tracing::info!(
-        "Search returned: {} hits, total_hits={}",
-        results.hits.len(),
-        results.total_hits
-    );
-
-    let rtxn = index.read_txn().map_err(|e| e.to_string())?;
-
-    let mut hits = Vec::new();
-    for (i, hit) in results.hits.into_iter().enumerate() {
-        let doc = search::get_document(&index, &rtxn, hit.doc_id)
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default();
-
-        let get_str = |key: &str| -> String {
-            doc.get(key)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string()
-        };
-
-        let id = get_str("parent_id");
-        let name = get_str("parent_name");
-        let content = get_str("content");
-        let collection_id = get_str("collection_id");
-
-        // Content is now chunk text - use it as the snippet
-        let snippet = content.chars().take(500).collect::<String>();
-        let score = milli::score_details::ScoreDetails::global_score(hit.scores.iter()) as f32;
-
-        // Unique chunk ID from parent + global position
-        let chunk_id = format!("{}_{}", id, offset + i);
-
-        hits.push(SearchHit {
-            chunk_id,
-            document: DocumentInfo {
-                id,
-                name,
-                pdf_hash: String::new(),
-                text_hash: String::new(),
-                page_count: 0,
-                tags: vec![],
-                created_at: String::new(),
-            },
-            collection_id,
-            score,
-            snippet,
-        });
-    }
-
-    Ok(SearchResponse {
-        hits,
-        total_hits: results.total_hits,
-        page,
-        page_size,
     })
 }
 
@@ -852,7 +691,7 @@ pub async fn send_message(
     let config = state.config.clone();
     let storage = state.storage.clone();
     let search = state.search.clone();
-    let indexer_config = state.indexer_config.clone();
+    let index_worker = state.index_worker.clone();
     let embedder = state.embedder.clone();
     let embedding_model_id = state.embedding_model_id.clone();
     let chat_provider = state.chat_provider.clone();
@@ -875,7 +714,7 @@ pub async fn send_message(
             config,
             storage,
             search,
-            indexer_config,
+            index_worker,
             embedder,
             embedding_model_id,
             chat_provider: chat_provider.clone(),
@@ -954,15 +793,6 @@ pub async fn cancel_generation(
     Ok(())
 }
 
-/// Unload the chat provider to free memory
-#[tauri::command]
-pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
-    *state.chat_provider.write().await = None;
-    *state.provider_config.write().await = None;
-    tracing::info!("Chat provider unloaded");
-    Ok(())
-}
-
 // ============================================================================
 // Model Management Commands
 // ============================================================================
@@ -970,9 +800,6 @@ pub async fn unload_model(state: State<'_, AppState>) -> Result<(), String> {
 use crate::core::models::{
     self, DownloadProgress, EmbeddingModelInfo, LanguageModelInfo, ModelManager, ModelStatus,
 };
-
-#[cfg(test)]
-mod tests;
 
 /// Get list of available language models
 #[tauri::command]
@@ -1237,9 +1064,9 @@ pub async fn configure_embedding_model(
 
         // Configure milli index for vector search
         {
-            let index = state.search.read().await;
-            let indexer_config = state.indexer_config.lock().await;
-            search::configure_embedder(&index, &indexer_config, "default", model.dimensions)
+            let index = &*state.search;
+            let indexer_config = milli::update::IndexerConfig::default();
+            search::configure_embedder(index, &indexer_config, "default", model.dimensions)
                 .map_err(|e| format!("Failed to configure embedder in index: {}", e))?;
         }
 
@@ -1254,9 +1081,9 @@ pub async fn configure_embedding_model(
 
         // Remove embedder configuration from milli index
         {
-            let index = state.search.read().await;
-            let indexer_config = state.indexer_config.lock().await;
-            if let Err(e) = search::remove_embedder(&index, &indexer_config) {
+            let index = &*state.search;
+            let indexer_config = milli::update::IndexerConfig::default();
+            if let Err(e) = search::remove_embedder(index, &indexer_config) {
                 tracing::warn!("Failed to remove embedder from index: {}", e);
             }
         }

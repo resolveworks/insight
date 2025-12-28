@@ -20,7 +20,7 @@ pub mod storage;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use milli::update::IndexerConfig;
@@ -82,7 +82,7 @@ pub use agent::provider::{
 };
 pub use agent::{AgentContext, AgentEvent, CollectionInfo, Conversation};
 pub use config::{Config, Settings};
-pub use jobs::JobCoordinator;
+pub use jobs::{spawn_index_worker, IndexWorkerHandle, JobCoordinator};
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
 /// Check if embedding model is configured and downloaded.
@@ -110,10 +110,11 @@ pub struct AppState {
     pub config: Config,
     /// Storage - initialized in setup(), always available to commands
     pub storage: Arc<RwLock<Storage>>,
-    /// Search index - initialized in setup(), always available to commands
-    pub search: Arc<RwLock<Index>>,
-    /// Shared indexer config with thread pool
-    pub indexer_config: Arc<Mutex<IndexerConfig>>,
+    /// Search index - shared for reads, writes go through index worker
+    /// Note: No RwLock needed since LMDB handles read concurrency internally
+    pub search: Arc<Index>,
+    /// Index worker handle for search write operations (indexing, deletion)
+    pub index_worker: IndexWorkerHandle,
     /// Custom embedder for semantic search (None = full-text only, loaded async)
     pub embedder: Arc<RwLock<Option<Embedder>>>,
     /// Currently configured embedding model ID
@@ -139,7 +140,7 @@ impl AppState {
         // Fast async init - just opens files
         let storage = Storage::open(&config.iroh_dir).await?;
 
-        // Sync init
+        // Sync init - create index and indexer config
         let index = search::open_index(&config.search_dir)?;
         let indexer_config = IndexerConfig::default();
 
@@ -161,26 +162,29 @@ impl AppState {
             }
         }
 
+        // Wrap in Arc - shared between AppState (reads) and JobCoordinator (writes via worker)
         let storage = Arc::new(RwLock::new(storage));
-        let search = Arc::new(RwLock::new(index));
-        let indexer_config = Arc::new(Mutex::new(indexer_config));
+        let search = Arc::new(index);
         let embedder = Arc::new(RwLock::new(None));
         let embedding_model_id = Arc::new(RwLock::new(None));
 
-        // Create job coordinator with shared resources
+        // Spawn index worker - handles all milli write operations in a dedicated thread
+        // The worker is automatically cancelled when all handles are dropped
+        let index_worker = spawn_index_worker(search.clone(), indexer_config);
+
+        // Create job coordinator with shared index worker
         let job_coordinator = JobCoordinator::new(
             storage.clone(),
             embedder.clone(),
             embedding_model_id.clone(),
-            search.clone(),
-            indexer_config.clone(),
+            index_worker.clone(),
         );
 
         Ok(Self {
             config,
             storage,
             search,
-            indexer_config,
+            index_worker,
             embedder,
             embedding_model_id,
             chat_provider: Arc::new(RwLock::new(None)),

@@ -1,288 +1,112 @@
-//! Embedding worker.
+//! Embedding generation functions.
 //!
-//! Generates embeddings and stores them to iroh, triggering re-indexing via events.
-//! All chunks from multiple documents are embedded in a single GPU call.
+//! Generates embeddings for document text and stores them to iroh.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::{mpsc, RwLock};
-use tokio_util::sync::CancellationToken;
+use iroh_docs::NamespaceId;
 
 use crate::embeddings::Embedder;
-use crate::storage::{EmbeddingChunk, EmbeddingData, Storage};
-
-use super::types::EmbedRequest;
-use super::worker::{BatchConfig, Batcher};
-
-/// Maximum documents to batch together for embedding.
-const BATCH_SIZE: usize = 16;
-
-/// Maximum time to wait for a full batch before processing a partial one.
-const BATCH_TIMEOUT: Duration = Duration::from_millis(200);
+use crate::storage::{DocumentMetadata, EmbeddingChunk, EmbeddingData, Storage};
 
 /// Maximum chunks to send to GPU in one call (to avoid OOM).
 const MAX_CHUNKS_PER_GPU_CALL: usize = 256;
 
-/// Spawns the embedding worker.
+/// Generate and store embeddings for a document.
 ///
-/// Receives EmbedRequest, generates embeddings, and stores them to iroh.
-/// The DocWatcher will pick up the embeddings/* event and trigger re-indexing.
-pub fn spawn(
-    embedder: Arc<RwLock<Option<Embedder>>>,
-    storage: Arc<RwLock<Storage>>,
-    embedding_model_id: Arc<RwLock<Option<String>>>,
-    cancel: CancellationToken,
-) -> mpsc::Sender<EmbedRequest> {
-    let (tx, rx) = mpsc::channel::<EmbedRequest>(64);
+/// Fetches document text, generates embeddings, and stores them to iroh.
+/// This triggers an `embeddings/*` event that the DocWatcher will handle.
+pub async fn generate_embeddings(
+    storage: &Storage,
+    embedder: &Embedder,
+    model_id: &str,
+    namespace_id: NamespaceId,
+    metadata: &DocumentMetadata,
+) -> anyhow::Result<()> {
+    // Fetch text content
+    let text_hash: iroh_blobs::Hash = metadata
+        .text_hash
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid text hash for document {}", metadata.id))?;
 
-    let config = BatchConfig {
-        max_size: BATCH_SIZE,
-        max_wait: BATCH_TIMEOUT,
-    };
-    let mut batcher = Batcher::new(rx, config);
+    let text_bytes = storage
+        .get_blob(&text_hash)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Text blob not found for document {}", metadata.id))?;
 
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
+    let text = String::from_utf8(text_bytes)
+        .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in document {}: {}", metadata.id, e))?;
 
-                _ = cancel.cancelled() => {
-                    tracing::debug!("Embedding worker cancelled");
-                    break;
-                }
-
-                batch = batcher.next_batch() => {
-                    let Some(requests) = batch else {
-                        tracing::debug!("Embedding worker shutting down - channel closed");
-                        break;
-                    };
-
-                    let doc_count = requests.len();
-                    tracing::debug!("Processing embedding batch of {} documents", doc_count);
-
-                    // Process batch
-                    process_batch(
-                        &embedder,
-                        &storage,
-                        &embedding_model_id,
-                        requests,
-                    ).await;
-
-                    tracing::debug!("Completed embedding batch of {} documents", doc_count);
-                }
-            }
-        }
-
-        tracing::debug!("Embedding worker stopped");
-    });
-
-    tx
-}
-
-/// Process a batch of embedding requests.
-async fn process_batch(
-    embedder: &Arc<RwLock<Option<Embedder>>>,
-    storage: &Arc<RwLock<Storage>>,
-    embedding_model_id: &Arc<RwLock<Option<String>>>,
-    requests: Vec<EmbedRequest>,
-) {
-    let embedder_guard = embedder.read().await;
-    let model_id_guard = embedding_model_id.read().await;
-
-    let (emb, model_id) = match (&*embedder_guard, &*model_id_guard) {
-        (Some(emb), Some(model_id)) => (emb, model_id.clone()),
-        _ => {
-            tracing::debug!("No embedder configured, skipping batch");
-            return;
-        }
-    };
-
-    // Fetch document data for all requests
-    let mut docs_to_embed: Vec<DocToEmbed> = Vec::new();
-
-    for request in requests {
-        let storage_guard = storage.read().await;
-
-        // Fetch document metadata
-        let metadata = match storage_guard
-            .get_document(request.namespace_id, &request.doc_id)
-            .await
-        {
-            Ok(Some(m)) => m,
-            Ok(None) => {
-                tracing::warn!(doc_id = %request.doc_id, "Document not found for embedding");
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(doc_id = %request.doc_id, error = %e, "Failed to fetch document");
-                continue;
-            }
+    // Chunk the text
+    let chunks = embedder.chunk_text(&text);
+    if chunks.is_empty() {
+        tracing::warn!(doc_id = %metadata.id, "Document has no text to embed");
+        // Store empty embeddings so we still trigger the event
+        let embedding_data = EmbeddingData {
+            model_id: model_id.to_string(),
+            dimensions: embedder.dimensions,
+            chunks: vec![],
+            created_at: chrono::Utc::now().to_rfc3339(),
         };
-
-        // Fetch text content
-        let text_hash: iroh_blobs::Hash = match metadata.text_hash.parse() {
-            Ok(h) => h,
-            Err(_) => {
-                tracing::warn!(doc_id = %request.doc_id, "Invalid text hash");
-                continue;
-            }
-        };
-
-        let text = match storage_guard.get_blob(&text_hash).await {
-            Ok(Some(bytes)) => match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(doc_id = %request.doc_id, error = %e, "Invalid UTF-8 in text");
-                    continue;
-                }
-            },
-            Ok(None) => {
-                tracing::warn!(doc_id = %request.doc_id, "Text blob not found");
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(doc_id = %request.doc_id, error = %e, "Failed to fetch text blob");
-                continue;
-            }
-        };
-
-        docs_to_embed.push(DocToEmbed {
-            doc_id: request.doc_id,
-            name: request.name,
-            namespace_id: request.namespace_id,
-            text,
-            page_boundaries: metadata.page_boundaries,
-        });
+        storage
+            .store_embeddings(namespace_id, &metadata.id, embedding_data)
+            .await?;
+        return Ok(());
     }
 
-    if docs_to_embed.is_empty() {
-        return;
-    }
+    // Find chunk offsets for page mapping
+    let chunk_offsets = find_chunk_offsets(&text, &chunks);
 
-    // Chunk all documents and collect metadata
-    let mut all_chunks: Vec<String> = Vec::new();
-    let mut doc_infos: Vec<DocChunkInfo> = Vec::new();
-
-    for doc in &docs_to_embed {
-        let chunks = emb.chunk_text(&doc.text);
-        let start_idx = all_chunks.len();
-        let chunk_count = chunks.len();
-        let chunk_offsets = find_chunk_offsets(&doc.text, &chunks);
-
-        doc_infos.push(DocChunkInfo {
-            doc_id: doc.doc_id.clone(),
-            name: doc.name.clone(),
-            namespace_id: doc.namespace_id,
-            page_boundaries: doc.page_boundaries.clone(),
-            start_idx,
-            chunk_count,
-            chunk_offsets,
-            chunk_contents: chunks.clone(),
-        });
-
-        all_chunks.extend(chunks);
-    }
-
-    let total_chunks = all_chunks.len();
-    if total_chunks == 0 {
-        tracing::debug!("No chunks to embed");
-        return;
-    }
-
-    tracing::info!(
-        doc_count = docs_to_embed.len(),
-        total_chunks = total_chunks,
-        "Embedding all chunks in single GPU call"
+    tracing::debug!(
+        doc_id = %metadata.id,
+        chunk_count = chunks.len(),
+        "Generating embeddings"
     );
 
     // Embed all chunks
-    let chunk_refs: Vec<&str> = all_chunks.iter().map(|s| s.as_str()).collect();
-    let vectors = match embed_with_chunking(emb, &chunk_refs).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to embed chunks");
-            return;
-        }
+    let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+    let vectors = embed_with_chunking(embedder, &chunk_refs).await?;
+
+    // Build embedding chunks with page info
+    let embedding_chunks: Vec<EmbeddingChunk> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, content)| {
+            let chunk_start_offset = chunk_offsets.get(i).copied().unwrap_or(0);
+            let chunk_end_offset = chunk_start_offset + content.len();
+            let start_page =
+                crate::pdf::char_offset_to_page(chunk_start_offset, &metadata.page_boundaries);
+            let end_page =
+                crate::pdf::char_offset_to_page(chunk_end_offset, &metadata.page_boundaries);
+
+            EmbeddingChunk {
+                index: i,
+                content: content.clone(),
+                vector: vectors.get(i).cloned().unwrap_or_default(),
+                start_page,
+                end_page,
+            }
+        })
+        .collect();
+
+    // Store embeddings to iroh (triggers embeddings/* event)
+    let embedding_data = EmbeddingData {
+        model_id: model_id.to_string(),
+        dimensions: embedder.dimensions,
+        chunks: embedding_chunks,
+        created_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    // Store embeddings for each document
-    let dimensions = emb.dimensions;
-    drop(embedder_guard);
-    drop(model_id_guard);
+    storage
+        .store_embeddings(namespace_id, &metadata.id, embedding_data)
+        .await?;
 
-    for info in doc_infos {
-        let chunks: Vec<EmbeddingChunk> = (0..info.chunk_count)
-            .map(|i| {
-                let global_idx = info.start_idx + i;
-                let content = info.chunk_contents.get(i).cloned().unwrap_or_default();
-                let vector = vectors.get(global_idx).cloned().unwrap_or_default();
+    tracing::info!(
+        doc_id = %metadata.id,
+        name = %metadata.name,
+        chunk_count = chunks.len(),
+        "Stored embeddings"
+    );
 
-                let chunk_start_offset = info.chunk_offsets.get(i).copied().unwrap_or(0);
-                let chunk_end_offset = chunk_start_offset + content.len();
-                let start_page =
-                    crate::pdf::char_offset_to_page(chunk_start_offset, &info.page_boundaries);
-                let end_page =
-                    crate::pdf::char_offset_to_page(chunk_end_offset, &info.page_boundaries);
-
-                EmbeddingChunk {
-                    index: i,
-                    content,
-                    vector,
-                    start_page,
-                    end_page,
-                }
-            })
-            .collect();
-
-        let embedding_data = EmbeddingData {
-            model_id: model_id.clone(),
-            dimensions,
-            chunks,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-
-        // Store embeddings to iroh (triggers embeddings/* event)
-        let storage_guard = storage.read().await;
-        if let Err(e) = storage_guard
-            .store_embeddings(info.namespace_id, &info.doc_id, embedding_data)
-            .await
-        {
-            tracing::error!(
-                doc_id = %info.doc_id,
-                error = %e,
-                "Failed to store embeddings"
-            );
-        } else {
-            tracing::debug!(
-                doc_id = %info.doc_id,
-                name = %info.name,
-                chunk_count = info.chunk_count,
-                "Stored embeddings to iroh"
-            );
-        }
-    }
-}
-
-/// Document data fetched from storage for embedding.
-struct DocToEmbed {
-    doc_id: String,
-    name: String,
-    namespace_id: iroh_docs::NamespaceId,
-    text: String,
-    page_boundaries: Vec<usize>,
-}
-
-/// Metadata about a document's chunks for reassembly after batched embedding.
-struct DocChunkInfo {
-    doc_id: String,
-    name: String,
-    namespace_id: iroh_docs::NamespaceId,
-    page_boundaries: Vec<usize>,
-    start_idx: usize,
-    chunk_count: usize,
-    chunk_offsets: Vec<usize>,
-    chunk_contents: Vec<String>,
+    Ok(())
 }
 
 /// Find the starting byte offset of each chunk in the original text.
@@ -326,13 +150,8 @@ async fn embed_with_chunking(
     let mut all_vectors = Vec::with_capacity(chunks.len());
 
     for chunk_batch in chunks.chunks(MAX_CHUNKS_PER_GPU_CALL) {
-        match emb.embed_batch(chunk_batch).await {
-            Ok(vectors) => all_vectors.extend(vectors),
-            Err(e) => {
-                tracing::error!("Embedding batch failed: {}", e);
-                return Err(e);
-            }
-        }
+        let vectors = emb.embed_batch(chunk_batch).await?;
+        all_vectors.extend(vectors);
     }
 
     Ok(all_vectors)

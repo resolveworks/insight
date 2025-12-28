@@ -1,34 +1,33 @@
 //! Document watcher that subscribes to iroh events and triggers indexing.
 //!
 //! Watches for two event types:
-//! - `files/*` events: Queue document for embedding generation
-//! - `embeddings/*` events: Index document with embeddings (both keyword and semantic search)
+//! - `files/*` events: Generate embeddings and store them (triggers embeddings/*)
+//! - `embeddings/*` events: Index document with embeddings, notify completion
 
 use std::sync::Arc;
 
 use futures::StreamExt;
 use iroh_blobs::Hash;
 use iroh_docs::NamespaceId;
-use milli::update::IndexerConfig;
-use milli::Index;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::search::{self, ChunkToIndex};
+use crate::embeddings::Embedder;
+use crate::search::ChunkToIndex;
 use crate::storage::{EmbeddingData, LiveEvent, Storage};
 
-use super::types::{DocumentCompleted, EmbedRequest};
+use super::embed::generate_embeddings;
+use super::index::IndexWorkerHandle;
+use super::types::{DocumentCompleted, DocumentFailed};
 
 /// Shared context for document watchers.
-///
-/// Groups resources that are shared across all watcher instances.
 #[derive(Clone)]
 pub struct WatcherContext {
     pub storage: Arc<RwLock<Storage>>,
-    pub index: Arc<RwLock<Index>>,
-    pub indexer_config: Arc<Mutex<IndexerConfig>>,
-    pub embed_tx: mpsc::Sender<EmbedRequest>,
+    pub embedder: Arc<RwLock<Option<Embedder>>>,
+    pub index_worker: IndexWorkerHandle,
     pub completed_tx: mpsc::Sender<DocumentCompleted>,
+    pub failed_tx: mpsc::Sender<DocumentFailed>,
     pub current_model_id: Arc<RwLock<Option<String>>>,
 }
 
@@ -41,7 +40,7 @@ impl DocWatcher {
     /// Spawn a watcher for a specific namespace.
     ///
     /// Handles two event types:
-    /// - `files/*`: Queue for embedding generation
+    /// - `files/*`: Generate embeddings, store them (triggers embeddings/*)
     /// - `embeddings/*`: Index document with embeddings
     pub fn spawn(
         namespace_id: NamespaceId,
@@ -167,7 +166,7 @@ async fn handle_event(
 }
 
 /// Handle a document event (files/{doc_id}).
-/// Queue for embedding generation - indexing happens when embeddings arrive.
+/// Generate embeddings directly - this triggers embeddings/* event.
 async fn handle_document_event(
     key_str: &str,
     content_hash: Hash,
@@ -177,32 +176,62 @@ async fn handle_document_event(
     let doc_id = key_str.strip_prefix("files/").unwrap_or(key_str);
     tracing::debug!(doc_id = %doc_id, "Processing document event");
 
-    // Fetch document metadata to get the name
+    // Get embedder and model ID - fail if not configured
+    let embedder_guard = ctx.embedder.read().await;
+    let model_id_guard = ctx.current_model_id.read().await;
+
+    let (embedder, model_id) = match (&*embedder_guard, &*model_id_guard) {
+        (Some(emb), Some(mid)) => (emb, mid.clone()),
+        _ => {
+            let error = "No embedder configured - cannot process document";
+            tracing::error!(doc_id = %doc_id, error);
+            // Send failure notification
+            let _ = ctx
+                .failed_tx
+                .send(DocumentFailed {
+                    path: doc_id.to_string(),
+                    error: error.to_string(),
+                })
+                .await;
+            return Err(anyhow::anyhow!(error));
+        }
+    };
+
+    // Fetch document metadata
     let storage_guard = ctx.storage.read().await;
     let metadata_bytes = storage_guard
         .get_blob(&content_hash)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Metadata blob not found for {}", doc_id))?;
     let metadata: crate::storage::DocumentMetadata = serde_json::from_slice(&metadata_bytes)?;
-    drop(storage_guard);
 
     tracing::info!(
         doc_id = %metadata.id,
         name = %metadata.name,
-        "Document stored, queuing for embedding"
+        "Generating embeddings for document"
     );
 
-    // Queue for embedding generation
-    let embed_request = EmbedRequest {
-        doc_id: metadata.id,
-        name: metadata.name,
-        namespace_id,
-    };
-    ctx.embed_tx
-        .send(embed_request)
-        .await
-        .map_err(|_| anyhow::anyhow!("Embed channel closed"))?;
+    // Generate and store embeddings (this triggers embeddings/* event)
+    if let Err(e) =
+        generate_embeddings(&storage_guard, embedder, &model_id, namespace_id, &metadata).await
+    {
+        tracing::error!(
+            doc_id = %metadata.id,
+            error = %e,
+            "Failed to generate embeddings"
+        );
+        // Send failure notification
+        let _ = ctx
+            .failed_tx
+            .send(DocumentFailed {
+                path: metadata.name.clone(),
+                error: e.to_string(),
+            })
+            .await;
+        return Err(e);
+    }
 
+    // Note: completion is sent when embeddings/* event is handled
     Ok(())
 }
 
@@ -243,31 +272,32 @@ async fn handle_embedding_event(
 
     tracing::debug!(doc_id = %doc_id, model_id = %event_model_id, "Processing embedding event");
 
-    // Fetch embedding data
-    let storage_guard = ctx.storage.read().await;
-    let embedding_bytes = storage_guard
-        .get_blob(&content_hash)
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!("Embedding blob not found for {}/{}", doc_id, event_model_id)
-        })?;
-    let embedding_data: EmbeddingData = serde_json::from_slice(&embedding_bytes)?;
+    // Fetch embedding data and metadata from storage
+    let (embedding_data, metadata) = {
+        let storage_guard = ctx.storage.read().await;
+        let embedding_bytes = storage_guard
+            .get_blob(&content_hash)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Embedding blob not found for {}/{}", doc_id, event_model_id)
+            })?;
+        let embedding_data: EmbeddingData = serde_json::from_slice(&embedding_bytes)?;
 
-    // Fetch document metadata for page_count and name
-    let metadata = storage_guard
-        .get_document(namespace_id, doc_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Document not found: {}", doc_id))?;
-    drop(storage_guard);
+        let metadata = storage_guard
+            .get_document(namespace_id, doc_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Document not found: {}", doc_id))?;
+
+        (embedding_data, metadata)
+    }; // Storage lock released here
 
     // Delete old chunks before indexing (in case of re-embedding)
-    {
-        let index_guard = ctx.index.read().await;
-        let config_guard = ctx.indexer_config.lock().await;
-        let deleted = search::delete_document_chunks(&index_guard, &config_guard, doc_id)?;
-        if deleted > 0 {
-            tracing::debug!(doc_id = %doc_id, deleted = deleted, "Deleted old chunks");
-        }
+    let deleted = ctx
+        .index_worker
+        .delete_document_chunks(doc_id.to_string())
+        .await?;
+    if deleted > 0 {
+        tracing::debug!(doc_id = %doc_id, deleted = deleted, "Deleted old chunks");
     }
 
     // Convert EmbeddingData to chunks and index
@@ -293,10 +323,9 @@ async fn handle_embedding_event(
 
     let chunk_count = chunks_to_index.len();
 
+    // Send to index worker (runs in dedicated thread, doesn't block async runtime)
     if !chunks_to_index.is_empty() {
-        let index_guard = ctx.index.read().await;
-        let config_guard = ctx.indexer_config.lock().await;
-        search::index_chunks_batch(&index_guard, &config_guard, chunks_to_index)?;
+        ctx.index_worker.index_chunks(chunks_to_index).await?;
     }
 
     tracing::info!(

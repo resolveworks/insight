@@ -64,8 +64,6 @@ pub struct Storage {
     pub blobs: FsStore,
     /// Docs protocol wrapper containing the Engine
     docs: Docs,
-    /// iroh networking endpoint (local-only for now)
-    endpoint: Endpoint,
     /// Gossip protocol for pub/sub (used for P2P sync)
     #[allow(dead_code)]
     gossip: Gossip,
@@ -120,7 +118,6 @@ impl Storage {
         Ok(Self {
             blobs,
             docs,
-            endpoint,
             gossip,
             author_id,
         })
@@ -648,15 +645,53 @@ impl Storage {
         Ok(namespace_id)
     }
 
-    /// Shutdown the storage gracefully
-    pub async fn shutdown(self) -> Result<()> {
-        // Shutdown blobs store
-        self.blobs.shutdown().await?;
+    /// Import a PDF file into a collection.
+    ///
+    /// Extracts text, stores blobs, and creates metadata entry.
+    /// Returns the document metadata. The iroh event will trigger embedding/indexing.
+    pub async fn import_pdf(
+        &self,
+        path: &std::path::Path,
+        namespace_id: NamespaceId,
+    ) -> Result<DocumentMetadata> {
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown.pdf".to_string());
 
-        // Close the endpoint
-        self.endpoint.close().await;
+        // Extract text (blocking)
+        let extracted = crate::pdf::extract_text(path)?;
 
-        Ok(())
+        // Store PDF blob
+        let pdf_hash = self.store_blob(&extracted.pdf_bytes).await?.to_string();
+
+        // Check for duplicate
+        if self.has_pdf_hash(namespace_id, &pdf_hash).await? {
+            anyhow::bail!("Duplicate document: {}", file_name);
+        }
+
+        // Store text blob
+        let text_hash = self
+            .store_blob(extracted.text.as_bytes())
+            .await?
+            .to_string();
+
+        // Create metadata
+        let metadata = DocumentMetadata {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: file_name,
+            pdf_hash,
+            text_hash,
+            page_count: extracted.page_count,
+            tags: vec![],
+            created_at: chrono::Utc::now().to_rfc3339(),
+            page_boundaries: extracted.page_boundaries,
+        };
+
+        // Store document (triggers iroh event)
+        self.add_document(namespace_id, metadata.clone()).await?;
+
+        Ok(metadata)
     }
 }
 

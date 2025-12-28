@@ -61,7 +61,7 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
     };
     drop(embedder_guard);
 
-    let index = ctx.state.search.read().await;
+    let index = &*ctx.state.search;
     let collection_ids = ctx.collection_ids();
 
     let search_params = search::SearchParams {
@@ -78,7 +78,7 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
         ..Default::default()
     };
 
-    match search::search_index(&index, search_params) {
+    match search::search_index(index, search_params) {
         Ok(results) => {
             info!(
                 query = %query,
@@ -86,7 +86,7 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
                 hybrid = semantic_ratio > 0.0,
                 "Search completed"
             );
-            let formatted = format_search_results(&index, &results.hits, ctx);
+            let formatted = format_search_results(index, &results.hits, ctx);
             ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 content: formatted,
@@ -205,9 +205,9 @@ async fn execute_read_chunk(tool_call: &ToolCall, ctx: &AgentContext) -> ToolRes
     // Build the chunk ID: "{parent_id}_chunk_{chunk_index}"
     let chunk_id = format!("{}_chunk_{}", doc_id, chunk_index);
 
-    let index = ctx.state.search.read().await;
+    let index = &*ctx.state.search;
 
-    match search::get_document_by_external_id(&index, &chunk_id) {
+    match search::get_document_by_external_id(index, &chunk_id) {
         Ok(Some(content)) => {
             info!(
                 document_id = %doc_id,
@@ -605,7 +605,7 @@ mod tests {
 
         // Index some test documents
         {
-            let index = state.search.read().await;
+            let index = &*state.search;
             let config = test_indexer_config();
 
             let chunks = vec![
@@ -630,7 +630,7 @@ mod tests {
                     1,
                 ),
             ];
-            search::index_chunks_batch(&index, &config, chunks).unwrap();
+            search::index_chunks_batch(index, &config, chunks).unwrap();
         }
 
         let ctx = AgentContext {
@@ -682,7 +682,7 @@ mod tests {
 
         // Index documents in different collections
         {
-            let index = state.search.read().await;
+            let index = &*state.search;
             let config = test_indexer_config();
 
             let chunks = vec![
@@ -767,7 +767,7 @@ mod tests {
 
         // Index a document with content
         {
-            let index = state.search.read().await;
+            let index = &*state.search;
             let config = test_indexer_config();
 
             let chunks = vec![make_chunk(
@@ -780,7 +780,7 @@ mod tests {
                 1,
                 1,
             )];
-            search::index_chunks_batch(&index, &config, chunks).unwrap();
+            search::index_chunks_batch(index, &config, chunks).unwrap();
         }
 
         let ctx = AgentContext {
@@ -809,7 +809,7 @@ mod tests {
 
         // Index only chunk 0
         {
-            let index = state.search.read().await;
+            let index = &*state.search;
             let config = test_indexer_config();
 
             let chunks = vec![make_chunk(
@@ -822,7 +822,7 @@ mod tests {
                 1,
                 1,
             )];
-            search::index_chunks_batch(&index, &config, chunks).unwrap();
+            search::index_chunks_batch(index, &config, chunks).unwrap();
         }
 
         let ctx = AgentContext {

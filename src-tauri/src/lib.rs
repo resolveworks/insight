@@ -37,7 +37,7 @@ pub fn run() {
                 config: state.config.clone(),
                 storage: state.storage.clone(),
                 search: state.search.clone(),
-                indexer_config: state.indexer_config.clone(),
+                index_worker: state.index_worker.clone(),
                 embedder: state.embedder.clone(),
                 embedding_model_id: state.embedding_model_id.clone(),
                 chat_provider: state.chat_provider.clone(),
@@ -68,14 +68,12 @@ pub fn run() {
             commands::get_document_chunks,
             commands::import_pdfs_batch,
             commands::delete_document,
-            commands::search,
             // Conversation commands
             commands::list_conversations,
             commands::load_conversation,
             commands::start_chat,
             commands::send_message,
             commands::cancel_generation,
-            commands::unload_model,
             // Language model commands
             commands::get_available_language_models,
             commands::get_language_model_status,

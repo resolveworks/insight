@@ -1,138 +1,103 @@
-//! Job queue system for document import pipeline.
+//! Job system for document indexing.
 //!
 //! Architecture:
 //!
 //! ```text
-//! import(paths)                          DocWatcher (per namespace)
-//!      │                                       │
-//!      ▼                                       │ (subscribes to iroh events)
-//! ┌─────────────┐    ┌─────────────┐          │
-//! │  extract_tx │───▶│  store_tx   │──▶ iroh ─┘
-//! │  (8 tasks)  │    │  (storage)  │     │
-//! └─────────────┘    └─────────────┘     │
-//!                                        │ InsertLocal/InsertRemote for files/*
-//!                                        ▼
-//!                     DocWatcher: Queue for embedding
-//!                                        │
-//!                                        ▼
-//!                     ┌─────────────┐
-//!                     │  embed_tx   │ → Generate embeddings, store to iroh
-//!                     │  (batched)  │
-//!                     └─────────────┘
-//!                                        │ InsertLocal/InsertRemote for embeddings/*
-//!                                        ▼
-//!                     DocWatcher: Index with vectors → completed
+//! import_document() ──► Store to iroh ──► InsertLocal event
+//!                                              │
+//!                                              ▼
+//!                                        DocWatcher
+//!                                              │
+//!                         ┌────────────────────┴────────────────────┐
+//!                         │                                         │
+//!                         ▼                                         ▼
+//!                   files/* event                           embeddings/* event
+//!                         │                                         │
+//!                         ▼                                         ▼
+//!                 Embed & store embeddings                    Index chunks
+//!                 (triggers embeddings/*)                     Send completion
 //! ```
 //!
-//! The store worker stores documents in iroh, which fires events.
+//! The import function stores documents directly to iroh, which fires events.
 //! DocWatcher subscribes to those events and:
-//! 1. On files/* events: queues document for embedding generation
-//! 2. On embeddings/* events: indexes document with vectors (keyword + semantic search)
+//! 1. On files/* events: generates embeddings, stores them (triggers embeddings/*)
+//! 2. On embeddings/* events: indexes document with vectors, notifies completion
 
 mod embed;
-mod extract;
+mod index;
 mod types;
 pub mod watcher;
-mod worker;
 
-pub use types::{DocumentCompleted, DocumentFailed, EmbedRequest};
+pub use embed::generate_embeddings;
+pub use index::{spawn_index_worker, IndexWorkerHandle};
+pub use types::{DocumentCompleted, DocumentFailed};
 pub use watcher::{DocWatcher, WatcherContext};
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use iroh_docs::NamespaceId;
-use milli::update::IndexerConfig;
-use milli::Index;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::embeddings::Embedder;
-use crate::storage::{DocumentMetadata, Storage};
+use crate::storage::Storage;
 
-use extract::ExtractRequest;
-use types::Extracted;
-
-/// Coordinates the document import pipeline.
+/// Coordinates document watching and completion notifications.
 ///
-/// Manages extraction and storage workers. Indexing is triggered by
-/// DocWatcher instances that subscribe to iroh events.
+/// Manages DocWatcher instances that subscribe to iroh events.
+/// Import/storage is handled inline by the caller.
 pub struct JobCoordinator {
-    /// Sender to submit extraction jobs
-    extract_tx: mpsc::Sender<ExtractRequest>,
-    /// Sender to the embedding pipeline (shared with DocWatchers)
-    embed_tx: mpsc::Sender<EmbedRequest>,
     /// Sender for document completion notifications (shared with DocWatchers)
     completed_tx: mpsc::Sender<DocumentCompleted>,
     /// Receiver for document completion notifications
     completed_rx: mpsc::Receiver<DocumentCompleted>,
-    /// Cancellation token to stop all workers
-    cancel: CancellationToken,
-    /// Receiver for failed extractions
+    /// Sender for failed documents
+    failed_tx: mpsc::Sender<DocumentFailed>,
+    /// Receiver for failed documents
     failed_rx: mpsc::Receiver<DocumentFailed>,
-    /// Counter for pending extraction jobs
-    pending: Arc<AtomicUsize>,
+    /// Cancellation token to stop all watchers
+    cancel: CancellationToken,
     /// Active document watchers by namespace
     watchers: HashMap<NamespaceId, DocWatcher>,
     /// Storage reference for creating watchers
     storage: Arc<RwLock<Storage>>,
-    /// Search index reference for watchers
-    index: Arc<RwLock<Index>>,
-    /// Indexer config reference for watchers
-    indexer_config: Arc<Mutex<IndexerConfig>>,
+    /// Embedder for generating embeddings
+    embedder: Arc<RwLock<Option<Embedder>>>,
+    /// Index worker handle for search operations
+    index_worker: IndexWorkerHandle,
     /// Current embedding model ID for watchers
     embedding_model_id: Arc<RwLock<Option<String>>>,
 }
 
 impl JobCoordinator {
-    /// Create a new job coordinator with the given dependencies.
+    /// Create a new job coordinator.
     ///
-    /// Spawns background workers for extraction and embedding.
     /// Call `watch_namespace()` to start watching collections for indexing.
     pub fn new(
         storage: Arc<RwLock<Storage>>,
         embedder: Arc<RwLock<Option<Embedder>>>,
         embedding_model_id: Arc<RwLock<Option<String>>>,
-        index: Arc<RwLock<Index>>,
-        indexer_config: Arc<Mutex<IndexerConfig>>,
+        index_worker: IndexWorkerHandle,
     ) -> Self {
         let cancel = CancellationToken::new();
-        let pending = Arc::new(AtomicUsize::new(0));
-
-        // Channel for failed extraction notifications
-        let (failed_tx, failed_rx) = mpsc::channel::<DocumentFailed>(64);
 
         // Channel for document completion notifications (from watchers)
         let (completed_tx, completed_rx) = mpsc::channel::<DocumentCompleted>(64);
 
-        // Embed worker - receives EmbedRequest, stores embeddings to iroh
-        let embed_tx = embed::spawn(
-            embedder,
-            storage.clone(),
-            embedding_model_id.clone(),
-            cancel.clone(),
-        );
-
-        // Storage stage (stores extracted documents to iroh)
-        let store_tx = spawn_store_worker(storage.clone(), cancel.clone());
-
-        // Extraction stage
-        let extract_tx = extract::spawn(cancel.clone(), store_tx, failed_tx);
+        // Channel for failed documents
+        let (failed_tx, failed_rx) = mpsc::channel::<DocumentFailed>(64);
 
         Self {
-            extract_tx,
-            embed_tx,
             completed_tx,
             completed_rx,
-            cancel,
+            failed_tx,
             failed_rx,
-            pending,
+            cancel,
             watchers: HashMap::new(),
             storage,
-            index,
-            indexer_config,
+            embedder,
+            index_worker,
             embedding_model_id,
         }
     }
@@ -140,7 +105,7 @@ impl JobCoordinator {
     /// Start watching a namespace for document events.
     ///
     /// When documents are added (locally or via sync), they will be
-    /// automatically indexed and sent through the embedding pipeline.
+    /// automatically embedded and indexed.
     pub fn watch_namespace(&mut self, namespace_id: NamespaceId) {
         if self.watchers.contains_key(&namespace_id) {
             tracing::debug!(namespace = %namespace_id, "Already watching namespace");
@@ -149,10 +114,10 @@ impl JobCoordinator {
 
         let ctx = WatcherContext {
             storage: self.storage.clone(),
-            index: self.index.clone(),
-            indexer_config: self.indexer_config.clone(),
-            embed_tx: self.embed_tx.clone(),
+            embedder: self.embedder.clone(),
+            index_worker: self.index_worker.clone(),
             completed_tx: self.completed_tx.clone(),
+            failed_tx: self.failed_tx.clone(),
             current_model_id: self.embedding_model_id.clone(),
         };
 
@@ -180,196 +145,45 @@ impl JobCoordinator {
         self.watchers.len()
     }
 
-    /// Submit paths for import into a collection.
-    ///
-    /// Returns immediately after queueing. The collection must be watched
-    /// via `watch_namespace()` for documents to be indexed.
-    pub async fn import(&self, paths: Vec<PathBuf>, collection_id: String) -> usize {
-        let count = paths.len();
-        self.pending.fetch_add(count, Ordering::SeqCst);
-
-        for path in paths {
-            let req = ExtractRequest {
-                path,
-                collection_id: collection_id.clone(),
-            };
-            if self.extract_tx.send(req).await.is_err() {
-                tracing::warn!("Failed to submit extraction job - worker stopped");
-                break;
-            }
-        }
-
-        count
-    }
-
     /// Receive the next completed document (indexed).
     ///
     /// Returns `None` if the pipeline is shut down.
     pub async fn recv_completed(&mut self) -> Option<DocumentCompleted> {
-        let completed = self.completed_rx.recv().await;
-        if completed.is_some() {
-            self.pending.fetch_sub(1, Ordering::SeqCst);
-        }
-        completed
+        self.completed_rx.recv().await
     }
 
     /// Try to receive a completed document without blocking.
     pub fn try_recv_completed(&mut self) -> Option<DocumentCompleted> {
-        match self.completed_rx.try_recv() {
-            Ok(completed) => {
-                self.pending.fetch_sub(1, Ordering::SeqCst);
-                Some(completed)
-            }
-            Err(_) => None,
-        }
+        self.completed_rx.try_recv().ok()
     }
 
-    /// Receive the next failed extraction.
+    /// Receive the next failed document.
     ///
     /// Returns `None` if the pipeline is shut down.
     pub async fn recv_failed(&mut self) -> Option<DocumentFailed> {
-        let failed = self.failed_rx.recv().await;
-        if failed.is_some() {
-            self.pending.fetch_sub(1, Ordering::SeqCst);
-        }
-        failed
+        self.failed_rx.recv().await
     }
 
-    /// Try to receive a failed extraction without blocking.
+    /// Try to receive a failed document without blocking.
     pub fn try_recv_failed(&mut self) -> Option<DocumentFailed> {
-        match self.failed_rx.try_recv() {
-            Ok(failed) => {
-                self.pending.fetch_sub(1, Ordering::SeqCst);
-                Some(failed)
-            }
-            Err(_) => None,
-        }
+        self.failed_rx.try_recv().ok()
     }
 
-    /// Get the number of pending extraction jobs.
-    pub fn pending_count(&self) -> usize {
-        self.pending.load(Ordering::SeqCst)
-    }
-
-    /// Cancel all in-flight work and shut down workers.
+    /// Cancel all watchers and shut down.
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
 
-    /// Check if the pipeline has been cancelled.
+    /// Check if the coordinator has been cancelled.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
 }
 
-/// Spawn the storage worker that stores extracted documents.
-///
-/// Stores extracted PDFs and text in iroh-blobs, creates metadata entries.
-/// Iroh events will trigger the DocWatcher to index the document.
-fn spawn_store_worker(
-    storage: Arc<RwLock<Storage>>,
-    cancel: CancellationToken,
-) -> mpsc::Sender<Extracted> {
-    let (tx, mut rx) = mpsc::channel::<Extracted>(64);
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-
-                _ = cancel.cancelled() => {
-                    tracing::debug!("Store worker cancelled");
-                    break;
-                }
-
-                Some(extracted) = rx.recv() => {
-                    // Store blobs first to get content hashes
-                    let storage_guard = storage.read().await;
-
-                    let pdf_hash = match storage_guard.store_blob(&extracted.pdf_bytes).await {
-                        Ok(hash) => hash.to_string(),
-                        Err(e) => {
-                            tracing::error!("Failed to store PDF blob: {}", e);
-                            continue;
-                        }
-                    };
-
-                    // Parse collection ID as namespace (needed for duplicate check)
-                    let namespace_id = match extracted.collection_id.parse() {
-                        Ok(id) => id,
-                        Err(e) => {
-                            tracing::error!("Invalid collection ID '{}': {}", extracted.collection_id, e);
-                            continue;
-                        }
-                    };
-
-                    // Check for duplicate by pdf_hash (O(1) lookup via hash index)
-                    match storage_guard.has_pdf_hash(namespace_id, &pdf_hash).await {
-                        Ok(true) => {
-                            tracing::info!(
-                                name = %extracted.name,
-                                pdf_hash = %pdf_hash,
-                                collection_id = %extracted.collection_id,
-                                "Duplicate document detected, skipping import"
-                            );
-                            continue;
-                        }
-                        Ok(false) => {
-                            // No duplicate, proceed with import
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to check for duplicates: {}", e);
-                            // Continue with import on error - better to have duplicates than miss documents
-                        }
-                    }
-
-                    let text_hash = match storage_guard.store_blob(extracted.text.as_bytes()).await {
-                        Ok(hash) => hash.to_string(),
-                        Err(e) => {
-                            tracing::error!("Failed to store text blob: {}", e);
-                            continue;
-                        }
-                    };
-
-                    // Generate document ID
-                    let doc_id = uuid::Uuid::new_v4().to_string();
-
-                    // Store metadata - this triggers iroh InsertLocal event
-                    let metadata = DocumentMetadata {
-                        id: doc_id.clone(),
-                        name: extracted.name.clone(),
-                        pdf_hash,
-                        text_hash,
-                        page_count: extracted.page_count,
-                        tags: vec![],
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                        page_boundaries: extracted.page_boundaries,
-                    };
-
-                    if let Err(e) = storage_guard.add_document(namespace_id, metadata).await {
-                        tracing::error!("Failed to store document metadata: {}", e);
-                        continue;
-                    }
-
-                    tracing::debug!(
-                        doc_id = %doc_id,
-                        name = %extracted.name,
-                        collection_id = %extracted.collection_id,
-                        "Document stored, iroh event will trigger indexing"
-                    );
-                }
-
-                else => {
-                    tracing::debug!("Store worker shutting down - channel closed");
-                    break;
-                }
-            }
-        }
-
-        tracing::debug!("Store worker stopped");
-    });
-
-    tx
+impl Drop for JobCoordinator {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 #[cfg(test)]

@@ -39,12 +39,12 @@ jobs:
           #   cuda: true
           #   artifact_name: windows-cuda
 
-          # macOS
-          # - platform: macos-latest
-          #   rust_target: universal-apple-darwin
-          #   features: metal
-          #   artifact_name: macos
-          #   macos_deployment_target: '11.0'
+          # macOS (Apple Silicon)
+          - platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            features: metal
+            artifact_name: macos
+            macos_deployment_target: '11.0'
 
     runs-on: ${{ matrix.platform }}
 
@@ -116,25 +116,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: |
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.deb
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.rpm
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.msi
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.exe
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.app.tar.gz
+          path: ${{ steps.tauri.outputs.artifactPaths }}
           if-no-files-found: error
 
   release:
     needs: build
-    if: always() && !cancelled()
+    if: needs.build.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -147,6 +137,5 @@ jobs:
           gh release create ${{ github.ref_name }} \
             --title "Insight ${{ github.ref_name }}" \
             --notes "See the assets below to download for your platform." \
-            --draft || true
-          # Upload all artifacts
+            --draft
           find artifacts -type f -exec gh release upload ${{ github.ref_name }} {} --clobber \;

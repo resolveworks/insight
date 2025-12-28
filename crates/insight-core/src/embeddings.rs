@@ -19,10 +19,49 @@ const CHUNK_OVERLAP_TOKENS: usize = 50;
 
 /// Wrapper around mistralrs embedding model
 pub struct Embedder {
-    model: Arc<Model>,
-    splitter: TextSplitter<Tokenizer>,
+    model: Option<Arc<Model>>,
+    splitter: Box<dyn ChunkSplitter + Send + Sync>,
     /// Vector dimensions produced by this model
     pub dimensions: usize,
+}
+
+/// Trait for text chunking to allow mocking
+trait ChunkSplitter {
+    fn chunk<'a>(&self, text: &'a str) -> Vec<&'a str>;
+}
+
+struct TokenizerSplitter(TextSplitter<Tokenizer>);
+
+impl ChunkSplitter for TokenizerSplitter {
+    fn chunk<'a>(&self, text: &'a str) -> Vec<&'a str> {
+        self.0.chunks(text).collect()
+    }
+}
+
+struct SimpleSplitter(usize);
+
+impl ChunkSplitter for SimpleSplitter {
+    fn chunk<'a>(&self, text: &'a str) -> Vec<&'a str> {
+        // Simple character-based chunking for tests
+        let text = text.trim();
+        if text.is_empty() {
+            return vec![];
+        }
+        if text.len() <= self.0 {
+            return vec![text];
+        }
+        text.as_bytes()
+            .chunks(self.0)
+            .filter_map(|chunk| {
+                let s = std::str::from_utf8(chunk).ok()?;
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            })
+            .collect()
+    }
 }
 
 impl Embedder {
@@ -61,10 +100,21 @@ impl Embedder {
         tracing::info!("Embedding model loaded: {} ({}D)", hf_repo_id, dimensions);
 
         Ok(Self {
-            model: Arc::new(model),
-            splitter,
+            model: Some(Arc::new(model)),
+            splitter: Box::new(TokenizerSplitter(splitter)),
             dimensions,
         })
+    }
+
+    /// Create a mock embedder for testing.
+    ///
+    /// Returns dummy vectors instead of calling a real model.
+    pub fn mock(dimensions: usize) -> Self {
+        Self {
+            model: None,
+            splitter: Box::new(SimpleSplitter(500)),
+            dimensions,
+        }
     }
 
     /// Split text into chunks (for display purposes)
@@ -76,7 +126,8 @@ impl Embedder {
             return vec![];
         }
         self.splitter
-            .chunks(content)
+            .chunk(content)
+            .into_iter()
             .map(|s| s.to_string())
             .collect()
     }
@@ -91,11 +142,15 @@ impl Embedder {
             return Ok(vec![0.0; self.dimensions]);
         }
 
+        // Mock mode: return dummy vector
+        let Some(ref model) = self.model else {
+            return Ok(vec![0.1; self.dimensions]);
+        };
+
         tracing::debug!(text_len = text.len(), "Embedding single text");
 
         let start = std::time::Instant::now();
-        let result = self
-            .model
+        let result = model
             .generate_embedding(text)
             .await
             .context("Failed to generate embedding");
@@ -119,7 +174,7 @@ impl Embedder {
             return Ok(vec![vec![0.0; self.dimensions]]);
         }
 
-        let chunks: Vec<&str> = self.splitter.chunks(content).collect();
+        let chunks = self.splitter.chunk(content);
 
         tracing::info!(
             content_len = content.len(),
@@ -160,14 +215,18 @@ impl Embedder {
             return Ok(vec![]);
         }
 
+        // Mock mode: return dummy vectors
+        let Some(ref model) = self.model else {
+            return Ok(texts.iter().map(|_| vec![0.1; self.dimensions]).collect());
+        };
+
         tracing::debug!(batch_size = texts.len(), "Embedding batch");
 
         let start = std::time::Instant::now();
 
         let request = EmbeddingRequest::builder().add_prompts(texts.iter().map(|s| s.to_string()));
 
-        let result = self
-            .model
+        let result = model
             .generate_embeddings(request)
             .await
             .context("Failed to generate batch embeddings");
