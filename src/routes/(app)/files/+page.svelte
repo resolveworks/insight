@@ -8,6 +8,12 @@
 	import Button from '$lib/components/Button.svelte';
 	import Input from '$lib/components/Input.svelte';
 	import ErrorAlert from '$lib/components/ErrorAlert.svelte';
+	import {
+		getImportState,
+		startImport,
+		recordFailures,
+		completeImport,
+	} from '$lib/stores/import-state.svelte';
 
 	interface Collection {
 		id: string;
@@ -32,8 +38,12 @@
 
 	let collections = $state<Collection[]>([]);
 	let documents = $state<Document[]>([]);
-	let importing = $state(false);
 	let newCollectionName = $state('');
+
+	// Import state from global store (persists across navigation)
+	const importState = getImportState();
+	let importing = $derived(importState.importing);
+	let importProgress = $derived(importState.progress);
 	let selectedCollection = $state<string | null>(null);
 
 	// Sharing state
@@ -62,8 +72,8 @@
 
 		if (!files) return;
 
-		importing = true;
 		const paths = Array.isArray(files) ? files : [files];
+		startImport(selectedCollection, paths.length);
 
 		try {
 			const result = await invoke<ImportResult>('import_pdfs_batch', {
@@ -72,12 +82,13 @@
 			});
 
 			if (result.failed.length > 0) {
+				recordFailures(result.failed);
 				console.error('Some imports failed:', result.failed);
 			}
 		} catch (e) {
 			console.error('Batch import failed:', e);
 		}
-		importing = false;
+		completeImport();
 	}
 
 	async function loadDocuments(collectionId: string) {
@@ -357,7 +368,11 @@
 				{selectedCollection ? 'Documents' : 'Select a collection'}
 			</h2>
 			<Button onclick={importPdf} disabled={importing || !selectedCollection}>
-				{importing ? 'Importing...' : 'Import PDF'}
+				{#if importing && importProgress}
+					Importing {importProgress.completed}/{importProgress.total}...
+				{:else}
+					Import PDF
+				{/if}
 			</Button>
 		</div>
 		{#if documents.length === 0}
