@@ -383,3 +383,725 @@ async fn execute_list_documents(tool_call: &ToolCall, ctx: &AgentContext) -> Too
         is_error: false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::{self, ChunkToIndex};
+    use crate::AppState;
+    use crate::CollectionInfo;
+    use milli::update::IndexerConfig;
+
+    /// Create a minimal AppState for testing (no storage operations)
+    async fn create_test_state() -> AppState {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+
+        // Create directories
+        std::fs::create_dir_all(&config.iroh_dir).unwrap();
+        std::fs::create_dir_all(&config.search_dir).unwrap();
+
+        AppState::new(config).await.unwrap()
+    }
+
+    fn test_indexer_config() -> IndexerConfig {
+        IndexerConfig::default()
+    }
+
+    /// Helper to create a chunk for indexing
+    fn make_chunk(
+        parent_id: &str,
+        parent_name: &str,
+        content: &str,
+        collection_id: &str,
+        chunk_index: usize,
+        page_count: usize,
+        start_page: usize,
+        end_page: usize,
+    ) -> ChunkToIndex {
+        ChunkToIndex {
+            id: format!("{}_chunk_{}", parent_id, chunk_index),
+            parent_id: parent_id.to_string(),
+            parent_name: parent_name.to_string(),
+            chunk_index,
+            content: content.to_string(),
+            collection_id: collection_id.to_string(),
+            page_count,
+            start_page,
+            end_page,
+            vector: None,
+        }
+    }
+
+    // ==================== ToolCall / ToolResult Tests ====================
+
+    #[test]
+    fn test_tool_call_serialization() {
+        let tool_call = ToolCall {
+            id: "call_123".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"query": "climate report"}),
+        };
+
+        let json = serde_json::to_string(&tool_call).unwrap();
+        let parsed: ToolCall = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.id, "call_123");
+        assert_eq!(parsed.name, "search");
+        assert_eq!(parsed.arguments["query"], "climate report");
+    }
+
+    #[test]
+    fn test_tool_result_serialization() {
+        let result = ToolResult {
+            tool_call_id: "call_123".to_string(),
+            content: "Found 5 documents".to_string(),
+            is_error: false,
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: ToolResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.tool_call_id, "call_123");
+        assert_eq!(parsed.content, "Found 5 documents");
+        assert!(!parsed.is_error);
+    }
+
+    #[test]
+    fn test_tool_result_error_serialization() {
+        let result = ToolResult {
+            tool_call_id: "call_456".to_string(),
+            content: "Search error: index not found".to_string(),
+            is_error: true,
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: ToolResult = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.is_error);
+        assert!(parsed.content.contains("error"));
+    }
+
+    // ==================== execute_tool Tests ====================
+
+    #[tokio::test]
+    async fn test_execute_tool_unknown_tool() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_unknown".to_string(),
+            name: "nonexistent_tool".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let result = execute_tool(&tool_call, &ctx).await;
+
+        assert!(result.is_error);
+        assert_eq!(result.tool_call_id, "call_unknown");
+        assert!(result.content.contains("Unknown tool"));
+        assert!(result.content.contains("nonexistent_tool"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_dispatches_to_search() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_search".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"query": "test query"}),
+        };
+
+        let result = execute_tool(&tool_call, &ctx).await;
+
+        // Should not error (though may find no results)
+        assert!(!result.is_error);
+        assert_eq!(result.tool_call_id, "call_search");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_dispatches_to_read_chunk() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_read".to_string(),
+            name: "read_chunk".to_string(),
+            arguments: serde_json::json!({"document_id": "doc123", "chunk_index": 0}),
+        };
+
+        let result = execute_tool(&tool_call, &ctx).await;
+
+        // Should error because chunk doesn't exist
+        assert!(result.is_error);
+        assert_eq!(result.tool_call_id, "call_read");
+        assert!(result.content.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_dispatches_to_list_documents() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None, // No collections selected
+        };
+
+        let tool_call = ToolCall {
+            id: "call_list".to_string(),
+            name: "list_documents".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let result = execute_tool(&tool_call, &ctx).await;
+
+        // Should error because no collections selected
+        assert!(result.is_error);
+        assert_eq!(result.tool_call_id, "call_list");
+        assert!(result.content.contains("No collections selected"));
+    }
+
+    // ==================== execute_search Tests ====================
+
+    #[tokio::test]
+    async fn test_search_empty_query() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({}), // Missing query
+        };
+
+        let result = execute_search(&tool_call, &ctx).await;
+
+        // Empty query should still work (returns no results)
+        assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_indexed_documents() {
+        let state = create_test_state().await;
+
+        // Index some test documents
+        {
+            let index = state.search.read().await;
+            let config = test_indexer_config();
+
+            let chunks = vec![
+                make_chunk(
+                    "doc1",
+                    "Climate_Report.pdf",
+                    "Global temperatures are rising due to greenhouse gases.",
+                    "research",
+                    0,
+                    10,
+                    1,
+                    1,
+                ),
+                make_chunk(
+                    "doc2",
+                    "Financial_Summary.pdf",
+                    "Q4 revenue exceeded expectations with strong growth.",
+                    "finance",
+                    0,
+                    5,
+                    1,
+                    1,
+                ),
+            ];
+            search::index_chunks_batch(&index, &config, chunks).unwrap();
+        }
+
+        let ctx = AgentContext {
+            state,
+            collections: Some(vec![CollectionInfo {
+                id: "research".to_string(),
+                name: "Research Papers".to_string(),
+                document_count: 1,
+                total_pages: 10,
+            }]),
+        };
+
+        let tool_call = ToolCall {
+            id: "call_search".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"query": "climate temperatures"}),
+        };
+
+        let result = execute_search(&tool_call, &ctx).await;
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("Climate_Report.pdf"));
+        assert!(result.content.contains("relevant passages"));
+    }
+
+    #[tokio::test]
+    async fn test_search_no_results() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"query": "xyznonexistent123"}),
+        };
+
+        let result = execute_search(&tool_call, &ctx).await;
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("No matching passages"));
+    }
+
+    #[tokio::test]
+    async fn test_search_filters_by_collection() {
+        let state = create_test_state().await;
+
+        // Index documents in different collections
+        {
+            let index = state.search.read().await;
+            let config = test_indexer_config();
+
+            let chunks = vec![
+                make_chunk(
+                    "doc1",
+                    "Research_Paper.pdf",
+                    "Scientific research on climate change.",
+                    "research_col",
+                    0,
+                    10,
+                    1,
+                    1,
+                ),
+                make_chunk(
+                    "doc2",
+                    "Finance_Report.pdf",
+                    "Financial analysis for climate initiatives.",
+                    "finance_col",
+                    0,
+                    5,
+                    1,
+                    1,
+                ),
+            ];
+            search::index_chunks_batch(&index, &config, chunks).unwrap();
+        }
+
+        // Only search in research collection
+        let ctx = AgentContext {
+            state,
+            collections: Some(vec![CollectionInfo {
+                id: "research_col".to_string(),
+                name: "Research".to_string(),
+                document_count: 1,
+                total_pages: 10,
+            }]),
+        };
+
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"query": "climate"}),
+        };
+
+        let result = execute_search(&tool_call, &ctx).await;
+
+        assert!(!result.is_error);
+        // Should find research paper but not finance report
+        assert!(result.content.contains("Research_Paper.pdf"));
+        assert!(!result.content.contains("Finance_Report.pdf"));
+    }
+
+    // ==================== execute_read_chunk Tests ====================
+
+    #[tokio::test]
+    async fn test_read_chunk_not_found() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_read".to_string(),
+            name: "read_chunk".to_string(),
+            arguments: serde_json::json!({
+                "document_id": "nonexistent_doc",
+                "chunk_index": 0
+            }),
+        };
+
+        let result = execute_read_chunk(&tool_call, &ctx).await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("not found"));
+        assert!(result.content.contains("nonexistent_doc"));
+    }
+
+    #[tokio::test]
+    async fn test_read_chunk_success() {
+        let state = create_test_state().await;
+
+        // Index a document with content
+        {
+            let index = state.search.read().await;
+            let config = test_indexer_config();
+
+            let chunks = vec![make_chunk(
+                "test_doc",
+                "Test_Document.pdf",
+                "This is the content of chunk 0 with important information.",
+                "collection1",
+                0,
+                5,
+                1,
+                1,
+            )];
+            search::index_chunks_batch(&index, &config, chunks).unwrap();
+        }
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_read".to_string(),
+            name: "read_chunk".to_string(),
+            arguments: serde_json::json!({
+                "document_id": "test_doc",
+                "chunk_index": 0
+            }),
+        };
+
+        let result = execute_read_chunk(&tool_call, &ctx).await;
+
+        assert!(!result.is_error);
+        assert!(result.content.contains("important information"));
+    }
+
+    #[tokio::test]
+    async fn test_read_chunk_wrong_index() {
+        let state = create_test_state().await;
+
+        // Index only chunk 0
+        {
+            let index = state.search.read().await;
+            let config = test_indexer_config();
+
+            let chunks = vec![make_chunk(
+                "test_doc",
+                "Test.pdf",
+                "Content of chunk 0",
+                "col1",
+                0,
+                1,
+                1,
+                1,
+            )];
+            search::index_chunks_batch(&index, &config, chunks).unwrap();
+        }
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        // Try to read chunk 5 which doesn't exist
+        let tool_call = ToolCall {
+            id: "call_read".to_string(),
+            name: "read_chunk".to_string(),
+            arguments: serde_json::json!({
+                "document_id": "test_doc",
+                "chunk_index": 5
+            }),
+        };
+
+        let result = execute_read_chunk(&tool_call, &ctx).await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("not found"));
+        // Error message format: "Chunk 5 not found for document test_doc"
+        assert!(result.content.contains("Chunk 5"));
+    }
+
+    #[tokio::test]
+    async fn test_read_chunk_missing_arguments() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        // Missing document_id
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            name: "read_chunk".to_string(),
+            arguments: serde_json::json!({"chunk_index": 0}),
+        };
+
+        let result = execute_read_chunk(&tool_call, &ctx).await;
+
+        // Should handle gracefully (empty doc_id)
+        assert!(result.is_error);
+        assert!(result.content.contains("not found"));
+    }
+
+    // ==================== execute_list_documents Tests ====================
+
+    #[tokio::test]
+    async fn test_list_documents_no_collections() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let tool_call = ToolCall {
+            id: "call_list".to_string(),
+            name: "list_documents".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let result = execute_list_documents(&tool_call, &ctx).await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("No collections selected"));
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_empty_collections() {
+        let state = create_test_state().await;
+        let ctx = AgentContext {
+            state,
+            collections: Some(vec![]), // Empty list
+        };
+
+        let tool_call = ToolCall {
+            id: "call_list".to_string(),
+            name: "list_documents".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let result = execute_list_documents(&tool_call, &ctx).await;
+
+        assert!(result.is_error);
+        assert!(result.content.contains("No collections selected"));
+    }
+
+    // ==================== format_search_results Tests ====================
+
+    #[tokio::test]
+    async fn test_format_search_results_empty() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = search::open_index(temp_dir.path()).unwrap();
+
+        let config = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+        std::fs::create_dir_all(&config.iroh_dir).unwrap();
+        let state = AppState::new(config).await.unwrap();
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let hits: Vec<search::SearchHit> = vec![];
+        let result = format_search_results(&index, &hits, &ctx);
+
+        assert_eq!(result, "No matching passages found.");
+    }
+
+    #[tokio::test]
+    async fn test_format_search_results_with_collection_names() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = search::open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Index a document
+        let chunks = vec![make_chunk(
+            "doc1",
+            "Report.pdf",
+            "Important findings about the topic.",
+            "col_123",
+            0,
+            10,
+            1,
+            1,
+        )];
+        search::index_chunks_batch(&index, &config, chunks).unwrap();
+
+        // Search to get a hit
+        let results = search::search_index(
+            &index,
+            search::SearchParams {
+                query: "findings",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let cfg = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search2"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+        std::fs::create_dir_all(&cfg.iroh_dir).unwrap();
+        std::fs::create_dir_all(&cfg.search_dir).unwrap();
+        let state = AppState::new(cfg).await.unwrap();
+
+        let ctx = AgentContext {
+            state,
+            collections: Some(vec![CollectionInfo {
+                id: "col_123".to_string(),
+                name: "Research Collection".to_string(),
+                document_count: 1,
+                total_pages: 10,
+            }]),
+        };
+
+        let formatted = format_search_results(&index, &results.hits, &ctx);
+
+        assert!(formatted.contains("Report.pdf"));
+        assert!(formatted.contains("Research Collection"));
+        assert!(formatted.contains("relevant passages"));
+    }
+
+    #[tokio::test]
+    async fn test_format_search_results_truncates_long_content() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = search::open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Create content longer than 500 chars with real words for milli to tokenize
+        let long_content = "climate research findings ".repeat(30); // ~780 chars
+        let chunks = vec![make_chunk(
+            "doc1",
+            "Long.pdf",
+            &long_content,
+            "col1",
+            0,
+            1,
+            1,
+            1,
+        )];
+        search::index_chunks_batch(&index, &config, chunks).unwrap();
+
+        let results = search::search_index(
+            &index,
+            search::SearchParams {
+                query: "climate",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!results.hits.is_empty(), "Search should find the document");
+
+        let cfg = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search2"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+        std::fs::create_dir_all(&cfg.iroh_dir).unwrap();
+        std::fs::create_dir_all(&cfg.search_dir).unwrap();
+        let state = AppState::new(cfg).await.unwrap();
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let formatted = format_search_results(&index, &results.hits, &ctx);
+
+        // Should be truncated with "..."
+        assert!(
+            formatted.contains("..."),
+            "Long content should be truncated. Got: {}",
+            formatted
+        );
+        // Should not contain full 780 chars of content
+        assert!(formatted.len() < 1000);
+    }
+
+    #[tokio::test]
+    async fn test_format_search_results_page_references() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = search::open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        // Test different page scenarios
+        let chunks = vec![
+            // Single page reference
+            make_chunk("doc1", "Single.pdf", "Content A", "col1", 0, 10, 5, 5),
+            // Page range
+            make_chunk("doc2", "Range.pdf", "Content B", "col1", 0, 20, 3, 7),
+        ];
+        search::index_chunks_batch(&index, &config, chunks).unwrap();
+
+        let results = search::search_index(
+            &index,
+            search::SearchParams {
+                query: "Content",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let cfg = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search2"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+        std::fs::create_dir_all(&cfg.iroh_dir).unwrap();
+        std::fs::create_dir_all(&cfg.search_dir).unwrap();
+        let state = AppState::new(cfg).await.unwrap();
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let formatted = format_search_results(&index, &results.hits, &ctx);
+
+        // Should contain page references
+        assert!(formatted.contains("p. 5") || formatted.contains("pp. 3-7"));
+    }
+}

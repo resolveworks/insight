@@ -462,3 +462,766 @@ pub async fn run_agent_loop(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== CollectionInfo Tests ====================
+
+    #[test]
+    fn test_collection_info_serialization() {
+        let info = CollectionInfo {
+            id: "col_123".to_string(),
+            name: "Research Papers".to_string(),
+            document_count: 42,
+            total_pages: 500,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: CollectionInfo = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.id, "col_123");
+        assert_eq!(parsed.name, "Research Papers");
+        assert_eq!(parsed.document_count, 42);
+        assert_eq!(parsed.total_pages, 500);
+    }
+
+    #[test]
+    fn test_collection_info_default_counts() {
+        // Test that document_count and total_pages default to 0
+        let json = r#"{"id": "col_1", "name": "Test"}"#;
+        let parsed: CollectionInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(parsed.document_count, 0);
+        assert_eq!(parsed.total_pages, 0);
+    }
+
+    // ==================== AgentContext Tests ====================
+
+    #[test]
+    fn test_agent_context_collection_ids_none() {
+        // We can't easily create AppState in sync tests, so test the logic directly
+        let collections: Option<Vec<CollectionInfo>> = None;
+        let ids = collections
+            .as_ref()
+            .map(|cols| cols.iter().map(|c| c.id.clone()).collect::<Vec<_>>());
+
+        assert!(ids.is_none());
+    }
+
+    #[test]
+    fn test_agent_context_collection_ids_some() {
+        let collections = Some(vec![
+            CollectionInfo {
+                id: "col_1".to_string(),
+                name: "First".to_string(),
+                document_count: 0,
+                total_pages: 0,
+            },
+            CollectionInfo {
+                id: "col_2".to_string(),
+                name: "Second".to_string(),
+                document_count: 0,
+                total_pages: 0,
+            },
+        ]);
+
+        let ids: Option<Vec<String>> = collections
+            .as_ref()
+            .map(|cols| cols.iter().map(|c| c.id.clone()).collect());
+
+        assert_eq!(ids, Some(vec!["col_1".to_string(), "col_2".to_string()]));
+    }
+
+    #[test]
+    fn test_agent_context_collection_names() {
+        let collections = Some(vec![
+            CollectionInfo {
+                id: "col_1".to_string(),
+                name: "Research".to_string(),
+                document_count: 0,
+                total_pages: 0,
+            },
+            CollectionInfo {
+                id: "col_2".to_string(),
+                name: "Finance".to_string(),
+                document_count: 0,
+                total_pages: 0,
+            },
+        ]);
+
+        let names: Option<Vec<String>> = collections
+            .as_ref()
+            .map(|cols| cols.iter().map(|c| c.name.clone()).collect());
+
+        assert_eq!(
+            names,
+            Some(vec!["Research".to_string(), "Finance".to_string()])
+        );
+    }
+
+    // ==================== build_system_prompt Tests ====================
+
+    #[test]
+    fn test_build_system_prompt_no_collections() {
+        let prompt = build_system_prompt(None);
+
+        assert!(prompt.contains("research assistant"));
+        assert!(prompt.contains("journalists"));
+        assert!(!prompt.contains("You are searching documents in:"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_empty_collections() {
+        let collections: Vec<CollectionInfo> = vec![];
+        let prompt = build_system_prompt(Some(&collections));
+
+        assert!(prompt.contains("research assistant"));
+        assert!(!prompt.contains("You are searching documents in:"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_collections() {
+        let collections = vec![
+            CollectionInfo {
+                id: "col_1".to_string(),
+                name: "Climate Reports".to_string(),
+                document_count: 10,
+                total_pages: 250,
+            },
+            CollectionInfo {
+                id: "col_2".to_string(),
+                name: "Financial Data".to_string(),
+                document_count: 5,
+                total_pages: 100,
+            },
+        ];
+        let prompt = build_system_prompt(Some(&collections));
+
+        assert!(prompt.contains("You are searching documents in:"));
+        assert!(prompt.contains("Climate Reports"));
+        assert!(prompt.contains("10 documents"));
+        assert!(prompt.contains("250 pages"));
+        assert!(prompt.contains("Financial Data"));
+        assert!(prompt.contains("5 documents"));
+        assert!(prompt.contains("100 pages"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_singular_counts() {
+        let collections = vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "Single Doc".to_string(),
+            document_count: 1,
+            total_pages: 1,
+        }];
+        let prompt = build_system_prompt(Some(&collections));
+
+        assert!(prompt.contains("1 document"));
+        assert!(prompt.contains("1 page"));
+        // Should not contain plural forms
+        assert!(!prompt.contains("1 documents"));
+        assert!(!prompt.contains("1 pages"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_zero_stats() {
+        let collections = vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "Empty Collection".to_string(),
+            document_count: 0,
+            total_pages: 0,
+        }];
+        let prompt = build_system_prompt(Some(&collections));
+
+        assert!(prompt.contains("Empty Collection"));
+        // Should not show stats when both are 0
+        assert!(!prompt.contains("0 documents"));
+        assert!(!prompt.contains("0 pages"));
+    }
+
+    // ==================== MessageRole Tests ====================
+
+    #[test]
+    fn test_message_role_serialization() {
+        assert_eq!(
+            serde_json::to_string(&MessageRole::System).unwrap(),
+            "\"system\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MessageRole::User).unwrap(),
+            "\"user\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MessageRole::Assistant).unwrap(),
+            "\"assistant\""
+        );
+    }
+
+    #[test]
+    fn test_message_role_deserialization() {
+        assert_eq!(
+            serde_json::from_str::<MessageRole>("\"system\"").unwrap(),
+            MessageRole::System
+        );
+        assert_eq!(
+            serde_json::from_str::<MessageRole>("\"user\"").unwrap(),
+            MessageRole::User
+        );
+        assert_eq!(
+            serde_json::from_str::<MessageRole>("\"assistant\"").unwrap(),
+            MessageRole::Assistant
+        );
+    }
+
+    // ==================== ContentBlock Tests ====================
+
+    #[test]
+    fn test_content_block_text_serialization() {
+        let block = ContentBlock::Text {
+            text: "Hello world".to_string(),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+
+        assert!(json.contains("\"type\":\"text\""));
+        assert!(json.contains("\"text\":\"Hello world\""));
+
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello world"),
+            _ => panic!("Expected Text block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_use_serialization() {
+        let block = ContentBlock::ToolUse {
+            id: "call_123".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"query": "climate"}),
+        };
+        let json = serde_json::to_string(&block).unwrap();
+
+        assert!(json.contains("\"type\":\"tool_use\""));
+        assert!(json.contains("\"id\":\"call_123\""));
+        assert!(json.contains("\"name\":\"search\""));
+
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ContentBlock::ToolUse {
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(id, "call_123");
+                assert_eq!(name, "search");
+                assert_eq!(arguments["query"], "climate");
+            }
+            _ => panic!("Expected ToolUse block"),
+        }
+    }
+
+    #[test]
+    fn test_content_block_tool_result_serialization() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "call_123".to_string(),
+            content: "Found 5 documents".to_string(),
+            is_error: false,
+        };
+        let json = serde_json::to_string(&block).unwrap();
+
+        assert!(json.contains("\"type\":\"tool_result\""));
+        assert!(json.contains("\"tool_use_id\":\"call_123\""));
+        assert!(json.contains("\"is_error\":false"));
+
+        let parsed: ContentBlock = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "call_123");
+                assert_eq!(content, "Found 5 documents");
+                assert!(!is_error);
+            }
+            _ => panic!("Expected ToolResult block"),
+        }
+    }
+
+    // ==================== Message Tests ====================
+
+    #[test]
+    fn test_message_serialization() {
+        let message = Message {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text {
+                text: "Hello".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.role, MessageRole::User);
+        assert_eq!(parsed.content.len(), 1);
+    }
+
+    #[test]
+    fn test_message_multiple_blocks() {
+        let message = Message {
+            role: MessageRole::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "Searching...".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "search".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.content.len(), 2);
+    }
+
+    // ==================== Conversation Tests ====================
+
+    #[test]
+    fn test_conversation_new() {
+        let conv = Conversation::new("conv_123".to_string());
+
+        assert_eq!(conv.id, "conv_123");
+        assert_eq!(conv.title, "New conversation");
+        assert_eq!(conv.messages.len(), 1);
+        assert_eq!(conv.messages[0].role, MessageRole::System);
+
+        // Check system message contains base prompt
+        match &conv.messages[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert!(text.contains("research assistant"));
+            }
+            _ => panic!("Expected text block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_with_system_prompt() {
+        let conv =
+            Conversation::with_system_prompt("conv_1".to_string(), "Custom prompt".to_string());
+
+        assert_eq!(conv.messages.len(), 1);
+        match &conv.messages[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert_eq!(text, "Custom prompt");
+            }
+            _ => panic!("Expected text block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_with_collection_context() {
+        let collections = vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "Test Collection".to_string(),
+            document_count: 5,
+            total_pages: 50,
+        }];
+
+        let conv = Conversation::with_collection_context("conv_1".to_string(), Some(&collections));
+
+        match &conv.messages[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert!(text.contains("Test Collection"));
+                assert!(text.contains("5 documents"));
+            }
+            _ => panic!("Expected text block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_add_user_message() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        let initial_updated = conv.updated_at.clone();
+
+        // Small delay to ensure timestamp differs
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        conv.add_user_message("Hello!".to_string());
+
+        assert_eq!(conv.messages.len(), 2);
+        assert_eq!(conv.messages[1].role, MessageRole::User);
+        match &conv.messages[1].content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello!"),
+            _ => panic!("Expected text block"),
+        }
+
+        // updated_at should have changed
+        assert_ne!(conv.updated_at, initial_updated);
+    }
+
+    #[test]
+    fn test_conversation_add_assistant_message() {
+        let mut conv = Conversation::new("conv_1".to_string());
+
+        conv.add_assistant_message(vec![
+            ContentBlock::Text {
+                text: "Response".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "search".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        ]);
+
+        assert_eq!(conv.messages.len(), 2);
+        assert_eq!(conv.messages[1].role, MessageRole::Assistant);
+        assert_eq!(conv.messages[1].content.len(), 2);
+    }
+
+    #[test]
+    fn test_conversation_generate_title_short() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        conv.add_user_message("What is climate change?".to_string());
+
+        conv.generate_title();
+
+        assert_eq!(conv.title, "What is climate change?");
+    }
+
+    #[test]
+    fn test_conversation_generate_title_long() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        conv.add_user_message(
+            "This is a very long message that exceeds fifty characters and should be truncated"
+                .to_string(),
+        );
+
+        conv.generate_title();
+
+        assert_eq!(conv.title.len(), 50);
+        assert!(conv.title.ends_with("..."));
+    }
+
+    #[test]
+    fn test_conversation_generate_title_no_user_message() {
+        let mut conv = Conversation::new("conv_1".to_string());
+
+        conv.generate_title();
+
+        // Title should remain unchanged
+        assert_eq!(conv.title, "New conversation");
+    }
+
+    #[test]
+    fn test_conversation_serialization_roundtrip() {
+        let mut conv = Conversation::new("conv_123".to_string());
+        conv.add_user_message("Test message".to_string());
+        conv.add_assistant_message(vec![ContentBlock::Text {
+            text: "Response".to_string(),
+        }]);
+
+        let json = serde_json::to_string(&conv).unwrap();
+        let parsed: Conversation = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.id, "conv_123");
+        assert_eq!(parsed.messages.len(), 3);
+    }
+
+    // ==================== ContentDelta Tests ====================
+
+    #[test]
+    fn test_content_delta_serialization() {
+        let delta = ContentDelta::Text {
+            text: "chunk".to_string(),
+        };
+        let json = serde_json::to_string(&delta).unwrap();
+
+        assert!(json.contains("\"type\":\"text\""));
+        assert!(json.contains("\"text\":\"chunk\""));
+    }
+
+    // ==================== AgentEvent Tests ====================
+
+    #[test]
+    fn test_agent_event_content_block_start() {
+        let event = AgentEvent::ContentBlockStart {
+            block: ContentBlock::Text {
+                text: "Hi".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("\"type\":\"content_block_start\""));
+        assert!(json.contains("\"data\""));
+    }
+
+    #[test]
+    fn test_agent_event_content_block_delta() {
+        let event = AgentEvent::ContentBlockDelta {
+            delta: ContentDelta::Text {
+                text: "chunk".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("\"type\":\"content_block_delta\""));
+    }
+
+    #[test]
+    fn test_agent_event_content_block_stop() {
+        let event = AgentEvent::ContentBlockStop;
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("\"type\":\"content_block_stop\""));
+    }
+
+    #[test]
+    fn test_agent_event_done() {
+        let event = AgentEvent::Done;
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("\"type\":\"done\""));
+    }
+
+    #[test]
+    fn test_agent_event_error() {
+        let event = AgentEvent::Error {
+            message: "Something went wrong".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+
+        assert!(json.contains("\"type\":\"error\""));
+        assert!(json.contains("Something went wrong"));
+    }
+
+    // ==================== run_agent_loop Tests ====================
+
+    /// Mock provider for testing the agent loop
+    struct MockProvider {
+        responses: std::sync::Mutex<Vec<CompletionResult>>,
+    }
+
+    impl MockProvider {
+        fn new(responses: Vec<CompletionResult>) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(responses),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChatProvider for MockProvider {
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            event_tx: mpsc::Sender<ProviderEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<CompletionResult> {
+            // Get result while holding lock, then release before await
+            let result = {
+                let mut responses = self.responses.lock().unwrap();
+                if responses.is_empty() {
+                    CompletionResult::default()
+                } else {
+                    responses.remove(0)
+                }
+            };
+
+            // Stream text if present
+            if !result.text.is_empty() {
+                let _ = event_tx
+                    .send(ProviderEvent::TextDelta(result.text.clone()))
+                    .await;
+            }
+            let _ = event_tx.send(ProviderEvent::Done).await;
+
+            Ok(result)
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+
+        fn model_id(&self) -> &str {
+            "mock-model"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_loop_simple_response() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+        std::fs::create_dir_all(&config.iroh_dir).unwrap();
+        std::fs::create_dir_all(&config.search_dir).unwrap();
+        let state = crate::AppState::new(config).await.unwrap();
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let provider = MockProvider::new(vec![CompletionResult {
+            text: "Hello! I can help with that.".to_string(),
+            tool_calls: vec![],
+        }]);
+
+        let mut conversation = Conversation::new("test_conv".to_string());
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let cancel_token = CancellationToken::new();
+
+        run_agent_loop(
+            &provider,
+            &mut conversation,
+            "Hello".to_string(),
+            &ctx,
+            event_tx,
+            cancel_token,
+        )
+        .await
+        .unwrap();
+
+        // Check conversation was updated
+        assert_eq!(conversation.messages.len(), 3); // system + user + assistant
+
+        // Check events were emitted
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+
+        // Should have ContentBlockStart, ContentBlockDelta, ContentBlockStop, Done
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::Done)));
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_loop_cancellation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+        std::fs::create_dir_all(&config.iroh_dir).unwrap();
+        std::fs::create_dir_all(&config.search_dir).unwrap();
+        let state = crate::AppState::new(config).await.unwrap();
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        let provider = MockProvider::new(vec![]);
+        let mut conversation = Conversation::new("test_conv".to_string());
+        let (event_tx, _event_rx) = mpsc::channel(100);
+        let cancel_token = CancellationToken::new();
+
+        // Cancel before running
+        cancel_token.cancel();
+
+        let result = run_agent_loop(
+            &provider,
+            &mut conversation,
+            "Hello".to_string(),
+            &ctx,
+            event_tx,
+            cancel_token,
+        )
+        .await;
+
+        // Should complete without error (cancellation is graceful)
+        assert!(result.is_ok());
+
+        // Only user message should be added (cancelled before provider call completes)
+        assert_eq!(conversation.messages.len(), 2); // system + user
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_loop_with_tool_call() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search"),
+            settings_file: temp_dir.path().join("settings.json"),
+            conversations_dir: temp_dir.path().join("conversations"),
+        };
+        std::fs::create_dir_all(&config.iroh_dir).unwrap();
+        std::fs::create_dir_all(&config.search_dir).unwrap();
+        let state = crate::AppState::new(config).await.unwrap();
+
+        let ctx = AgentContext {
+            state,
+            collections: None,
+        };
+
+        // First response: tool call, second response: final text
+        let provider = MockProvider::new(vec![
+            CompletionResult {
+                text: String::new(),
+                tool_calls: vec![CompletedToolCall {
+                    id: "call_1".to_string(),
+                    name: "search".to_string(),
+                    arguments: serde_json::json!({"query": "test"}),
+                }],
+            },
+            CompletionResult {
+                text: "Based on my search, I found no results.".to_string(),
+                tool_calls: vec![],
+            },
+        ]);
+
+        let mut conversation = Conversation::new("test_conv".to_string());
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let cancel_token = CancellationToken::new();
+
+        run_agent_loop(
+            &provider,
+            &mut conversation,
+            "Search for test".to_string(),
+            &ctx,
+            event_tx,
+            cancel_token,
+        )
+        .await
+        .unwrap();
+
+        // Should have: system + user + assistant(tool call + result) + assistant(final)
+        assert!(conversation.messages.len() >= 3);
+
+        // Check that tool use and result blocks exist
+        let has_tool_use = conversation.messages.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+        });
+        let has_tool_result = conversation.messages.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        });
+
+        assert!(has_tool_use, "Should have a ToolUse block");
+        assert!(has_tool_result, "Should have a ToolResult block");
+
+        // Collect events
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::Done)));
+    }
+}

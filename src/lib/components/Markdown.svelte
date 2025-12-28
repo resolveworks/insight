@@ -21,7 +21,7 @@
 	{@html html}
 </div>
 
-<style lang="postcss">
+<style>
 	.markdown :global(p) {
 		margin: 0.5em 0;
 	}
