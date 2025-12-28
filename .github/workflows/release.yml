@@ -82,9 +82,9 @@ jobs:
           workspaces: src-tauri
           shared-key: ${{ matrix.rust_target }}
 
-      - name: Install Metal toolchain (macOS 26+)
+      - name: Install Metal toolchain
         if: contains(matrix.platform, 'macos')
-        run: xcodebuild -downloadComponent MetalToolchain || true
+        run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Install frontend dependencies
         run: pnpm install
