@@ -106,6 +106,7 @@ jobs:
           CUDA_COMPUTE_CAP: ${{ matrix.cuda && '80' || '' }}
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target || '' }}
         with:
+          projectPath: src-tauri
           args: >-
             --target ${{ matrix.rust_target }}
             ${{ matrix.features && format('--features {0}', matrix.features) }}
