@@ -92,9 +92,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CUDA_COMPUTE_CAP: ${{ matrix.cuda && '80' || '' }}
-          # Skip Metal shader precompilation - upstream mistral.rs build.rs is missing -std flag
-          # Shaders compile at runtime (JIT) instead
-          MISTRALRS_METAL_PRECOMPILE: ${{ contains(matrix.features, 'metal') && '0' || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Insight ${{ github.ref_name }}'

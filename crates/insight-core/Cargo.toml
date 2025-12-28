@@ -35,7 +35,7 @@ bytes = "1"
 rand = "0.9"
 
 # LLM inference
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs" }
+mistralrs = { git = "https://github.com/monneyboi/mistral.rs", branch = "monneyboi/metal" }
 hf-hub = { version = "0.4", features = ["tokio"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
