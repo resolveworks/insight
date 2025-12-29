@@ -1,17 +1,19 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use futures::Stream;
+use futures::{Stream, StreamExt};
+use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::Hash;
 use iroh_docs::api::protocol::{AddrInfoOptions, ShareMode};
 use iroh_docs::api::DocsApi;
 pub use iroh_docs::engine::LiveEvent;
+use iroh_docs::net::ALPN as DOCS_ALPN;
 use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
 use iroh_docs::{AuthorId, DocTicket, NamespaceId};
-use iroh_gossip::net::Gossip;
+use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
 /// Collection metadata stored in iroh-docs under `_collection` key
@@ -67,6 +69,9 @@ pub struct Storage {
     /// Gossip protocol for pub/sub (used for P2P sync)
     #[allow(dead_code)]
     gossip: Gossip,
+    /// Router for accepting incoming protocol connections
+    #[allow(dead_code)]
+    router: Router,
     /// Default author ID for this node
     author_id: AuthorId,
 }
@@ -106,19 +111,32 @@ impl Storage {
             .await
             .context("Failed to spawn docs engine")?;
 
+        // Create router to accept incoming connections for our protocols
+        // This is critical for P2P sync - without it, peers can discover us
+        // but can't establish protocol-level connections
+        let router = Router::builder(endpoint.clone())
+            .accept(DOCS_ALPN, docs.clone())
+            .accept(GOSSIP_ALPN, gossip.clone())
+            .spawn();
+
         // Get or create default author
         let author_id = docs.author_default().await?;
 
+        // Log node info for debugging connectivity
+        let addr = endpoint.addr();
         tracing::info!(
-            "Storage opened at {:?}, author: {}",
+            "Storage opened at {:?}, author: {}, node_id: {}, addrs: {:?}",
             path,
-            author_id.fmt_short()
+            author_id.fmt_short(),
+            addr.id.fmt_short(),
+            addr.addrs
         );
 
         Ok(Self {
             blobs,
             docs,
             gossip,
+            router,
             author_id,
         })
     }
@@ -629,19 +647,95 @@ impl Storage {
     /// Import a collection from a share ticket
     ///
     /// This registers the namespace locally and starts syncing with the peer
-    /// who shared it. The DocWatcher will pick up InsertRemote events and
-    /// trigger embedding + indexing automatically.
+    /// who shared it. Waits for the collection metadata to sync before returning.
+    /// The DocWatcher will pick up InsertRemote events and trigger embedding +
+    /// indexing automatically for document entries.
     pub async fn import_collection(&self, ticket_str: &str) -> Result<NamespaceId> {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
         let ticket: DocTicket = ticket_str.parse().context("Invalid share ticket")?;
 
-        // Import namespace and start syncing with peers listed in ticket
-        let doc = self.docs.api().import(ticket).await?;
+        // Log ticket info for debugging
+        tracing::info!("Ticket contains {} peer(s)", ticket.nodes.len());
+        for node in &ticket.nodes {
+            tracing::info!("  Peer {}: {:?}", node.id.fmt_short(), node.addrs);
+        }
+
+        // Import and subscribe to events so we can wait for the _collection entry
+        let (doc, mut events) = self.docs.api().import_and_subscribe(ticket).await?;
         let namespace_id = doc.id();
 
+        tracing::info!(
+            "Importing collection {}, waiting for metadata...",
+            namespace_id
+        );
+
+        // Check if _collection entry already exists (re-import case)
+        let query = Query::key_exact(b"_collection");
+        if let Some(entry) = doc.get_one(query).await? {
+            tracing::info!(
+                "Collection metadata already exists (hash: {})",
+                entry.content_hash()
+            );
+            doc.close().await?;
+            return Ok(namespace_id);
+        }
+
+        // Wait for the _collection entry to sync (with timeout)
+        // If peer is offline, this will timeout but the collection is still registered
+        // and will sync when the peer comes online
+        let sync_timeout = Duration::from_secs(10);
+        let wait_result = timeout(sync_timeout, async {
+            while let Some(event) = events.next().await {
+                match &event {
+                    Ok(e) => tracing::debug!("Import event: {}", e),
+                    Err(e) => tracing::debug!("Import event error: {}", e),
+                }
+                match event {
+                    Ok(LiveEvent::InsertRemote { entry, .. }) => {
+                        let key = String::from_utf8_lossy(entry.key());
+                        if key == "_collection" {
+                            tracing::info!("Received _collection entry from peer");
+                            return Ok(());
+                        }
+                    }
+                    Ok(LiveEvent::SyncFinished(result)) => {
+                        // Sync finished - check if we have the _collection entry now
+                        tracing::info!("Sync finished: {:?}", result);
+                        let query = Query::key_exact(b"_collection");
+                        if doc.get_one(query).await?.is_some() {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Event stream error during import: {}", e);
+                    }
+                    _ => {}
+                }
+            }
+            anyhow::bail!("Event stream ended without receiving _collection entry")
+        })
+        .await;
+
+        match wait_result {
+            Ok(Ok(())) => {
+                tracing::info!("Imported collection {}", namespace_id);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Import warning for {}: {}", namespace_id, e);
+                // Still return the namespace - the collection may sync later
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Timeout waiting for collection metadata for {}",
+                    namespace_id
+                );
+                // Still return the namespace - the collection may sync later
+            }
+        }
+
         doc.close().await?;
-
-        tracing::info!("Imported collection {}", namespace_id);
-
         Ok(namespace_id)
     }
 
