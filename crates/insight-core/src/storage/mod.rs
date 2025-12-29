@@ -6,13 +6,14 @@ use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::Hash;
+use iroh_blobs::{BlobsProtocol, ALPN as BLOBS_ALPN};
 use iroh_docs::api::protocol::{AddrInfoOptions, ShareMode};
 use iroh_docs::api::DocsApi;
 pub use iroh_docs::engine::LiveEvent;
 use iroh_docs::net::ALPN as DOCS_ALPN;
 use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
-use iroh_docs::{AuthorId, DocTicket, NamespaceId};
+use iroh_docs::{AuthorId, ContentStatus, DocTicket, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
@@ -107,14 +108,18 @@ impl Storage {
         // Create docs with Engine - uses the blobs api::Store (via Deref)
         let blobs_api = (*blobs).clone();
         let docs = Docs::persistent(docs_path)
-            .spawn(endpoint.clone(), blobs_api, gossip.clone())
+            .spawn(endpoint.clone(), blobs_api.clone(), gossip.clone())
             .await
             .context("Failed to spawn docs engine")?;
+
+        // Create blobs protocol handler for serving blob requests
+        let blobs_protocol = BlobsProtocol::new(&blobs_api, None);
 
         // Create router to accept incoming connections for our protocols
         // This is critical for P2P sync - without it, peers can discover us
         // but can't establish protocol-level connections
         let router = Router::builder(endpoint.clone())
+            .accept(BLOBS_ALPN, blobs_protocol)
             .accept(DOCS_ALPN, docs.clone())
             .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();
@@ -682,31 +687,64 @@ impl Storage {
             return Ok(namespace_id);
         }
 
-        // Wait for the _collection entry to sync (with timeout)
+        // Wait for the _collection entry to sync AND its content to be downloaded
         // If peer is offline, this will timeout but the collection is still registered
         // and will sync when the peer comes online
-        let sync_timeout = Duration::from_secs(10);
+        let sync_timeout = Duration::from_secs(30);
         let wait_result = timeout(sync_timeout, async {
+            // Track if we need to wait for content download
+            let mut pending_content_hash: Option<iroh_blobs::Hash> = None;
+
             while let Some(event) = events.next().await {
                 match &event {
                     Ok(e) => tracing::debug!("Import event: {}", e),
                     Err(e) => tracing::debug!("Import event error: {}", e),
                 }
                 match event {
-                    Ok(LiveEvent::InsertRemote { entry, .. }) => {
+                    Ok(LiveEvent::InsertRemote {
+                        entry,
+                        content_status,
+                        ..
+                    }) => {
                         let key = String::from_utf8_lossy(entry.key());
                         if key == "_collection" {
-                            tracing::info!("Received _collection entry from peer");
+                            let hash = entry.content_hash();
+                            tracing::info!(
+                                "Received _collection entry from peer (hash: {}, status: {:?})",
+                                hash,
+                                content_status
+                            );
+
+                            match content_status {
+                                ContentStatus::Complete => {
+                                    // Content already available, we're done
+                                    return Ok(());
+                                }
+                                _ => {
+                                    // Content needs to be downloaded, wait for ContentReady
+                                    tracing::info!("Waiting for content download...");
+                                    pending_content_hash = Some(hash);
+                                }
+                            }
+                        }
+                    }
+                    Ok(LiveEvent::ContentReady { hash }) => {
+                        tracing::debug!("Content ready: {}", hash);
+                        if pending_content_hash == Some(hash) {
+                            tracing::info!("Collection content downloaded");
                             return Ok(());
                         }
                     }
                     Ok(LiveEvent::SyncFinished(result)) => {
                         // Sync finished - check if we have the _collection entry now
                         tracing::info!("Sync finished: {:?}", result);
-                        let query = Query::key_exact(b"_collection");
-                        if doc.get_one(query).await?.is_some() {
-                            return Ok(());
+                        if pending_content_hash.is_none() {
+                            let query = Query::key_exact(b"_collection");
+                            if doc.get_one(query).await?.is_some() {
+                                return Ok(());
+                            }
                         }
+                        // If we're waiting for content, keep listening
                     }
                     Err(e) => {
                         tracing::warn!("Event stream error during import: {}", e);
