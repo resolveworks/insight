@@ -18,6 +18,8 @@ Insight can use either local AI models or cloud services for chat. Your document
 
 If you have an API key from Anthropic or OpenAI, you can use their models. Add your key in settings. This is the easiest option and works well on any computer.
 
+**You don't need the biggest model.** Smaller models like GPT-5 mini or Claude Haiku work well with Insight's agent—they're faster, cheaper, and handle document research tasks effectively. The agent harness does the heavy lifting of breaking down queries and gathering evidence, so even lightweight models produce good results.
+
 ### Local Models
 
 Running AI locally requires a powerful computer—ideally with a dedicated GPU (NVIDIA or Apple Silicon). On a typical laptop without a GPU, responses will be slow.

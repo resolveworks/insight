@@ -1,43 +1,40 @@
 # Insight
 
-**Local-first research agent for journalists and newsrooms.**
+**AI-powered research agent for journalists and newsrooms.**
 
-An AI-powered research assistant that runs entirely on your machine. Search documents, ask questions, get answers with citations—no cloud required.
-
-## The Problem
-
-Newsrooms accumulate documents—leaks, court filings, FOIA responses, research papers. Searching and analyzing them usually means uploading to cloud services you don't control. That's a problem when sources trust you with sensitive material.
+Search documents, ask questions, get answers with citations. Use cloud AI for convenience or run everything locally for maximum privacy.
 
 ## What Insight Does
 
 - **Ask questions, get answers** — AI agent searches your documents and synthesizes answers with citations
-- **Batteries included** — local LLM runs on-device, no API keys needed
-- **Share with colleagues** — sync directly, laptop-to-laptop, no server required
-- **Work offline** — your documents and AI run entirely on your machine
+- **Your choice of AI** — use cloud models (Anthropic, OpenAI) or run local models on-device
+- **Documents stay local** — your files are processed on your machine, never uploaded
+- **Share with colleagues** — sync collections peer-to-peer, no server required
+- **Work offline** — with local models, everything runs without internet
 
 ## How It Works
-
-Documents sync peer-to-peer using [iroh](https://iroh.computer/). Embeddings sync too—keyed by model, so peers using the same embedding model share computation. Each machine builds its own search index from synced data using [milli](https://github.com/meilisearch/milli). A local LLM (via [mistralrs](https://github.com/EricLBuehler/mistral.rs)) can search and read documents to answer your questions.
 
 ```
 You: "What do these documents say about the 2019 contract?"
     ↓
-Local LLM searches your documents
+AI agent searches your documents
     ↓
 Reads relevant files, synthesizes answer
     ↓
 "According to the March 2019 filing [doc: contract-v2.pdf]..."
 ```
 
-With local models, no data leaves your machine. Remote model providers will also be supported for users who prefer them.
+Your documents are indexed locally using [milli](https://github.com/meilisearch/milli) for hybrid full-text and vector search. The AI agent—powered by cloud models or a local LLM via [mistralrs](https://github.com/EricLBuehler/mistral.rs)—searches and reads documents to answer your questions.
+
+Collections sync peer-to-peer using [iroh](https://iroh.computer/), including pre-computed embeddings so collaborators don't redo the work.
 
 ## Project Status
 
 This is a **research project** exploring:
 
-- AI-assisted document research with local models
+- AI-assisted document research for journalism
 - Practical P2P sync for document workflows
-- Agent-driven document research with embeddings
+- Agent-driven search with hybrid full-text and vector retrieval
 - Trust models for journalist collaboration
 
 Not production-ready. Built to learn and prototype.
@@ -48,7 +45,7 @@ Not production-ready. Built to learn and prototype.
 | -------- | ------------ | -------------------------------------------- |
 | App      | Tauri + Rust | Single binary, cross-platform, no Electron   |
 | Frontend | Svelte 5     | Fast, minimal                                |
-| LLM      | mistralrs    | Local inference, GGUF models                 |
+| LLM      | mistralrs    | Local inference option (GGUF models)         |
 | P2P      | iroh         | Modern QUIC-based, handles NAT traversal     |
 | Search   | milli        | Full-text + vector search, runs locally      |
 | PDF      | lopdf        | Text extraction (opens in system PDF viewer) |
@@ -73,15 +70,11 @@ pnpm tauri build -- --features metal
 
 ## Who This Is For
 
-- **Journalists** managing sensitive document collections
-- **Newsrooms** wanting AI-assisted research without cloud dependencies
-- **Investigators** who need to analyze large document sets
-- **Anyone** exploring local-first AI tools for research
-
-## License
-
-[TBD]
+- **Journalists** managing document collections for investigations
+- **Newsrooms** wanting AI-assisted research with privacy options
+- **Investigators** who need to analyze and search large document sets
+- **Researchers** exploring AI tools for document-based work
 
 ---
 
-_Built as a research exploration of local-first AI for journalism._
+_A research exploration of AI-assisted journalism tools._
