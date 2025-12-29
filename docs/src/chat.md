@@ -40,14 +40,6 @@ You don't need to know which document contains the answer. Just ask, and the AI 
 
 Every answer includes citations. Click one to jump straight to that passage in the original document—so you can verify and quote accurately.
 
-## Model Options
+## Privacy Note
 
-### Cloud Models
-
-Insight works with Anthropic (Claude) and OpenAI (GPT) models. Add your API key in settings to use them. This is the recommended option for most users—fast responses on any computer.
-
-When using cloud models, your questions and the relevant document excerpts are sent to the provider. Your full documents stay on your computer.
-
-### Local Models
-
-You can also run AI models entirely on your machine. This keeps everything private but requires a powerful computer with a dedicated GPU (NVIDIA or Apple Silicon) for comfortable use. On a typical laptop, expect slower responses.
+When using cloud models, your questions and relevant document excerpts are sent to the provider. Your full documents stay on your computer. See [Getting Started](./getting-started.md#choosing-an-ai-model) for model options.

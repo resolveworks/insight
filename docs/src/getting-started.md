@@ -16,7 +16,7 @@ Insight can use either local AI models or cloud services for chat. Your document
 
 ### Cloud Models (Recommended for most users)
 
-If you have an API key from Anthropic or OpenAI, you can use their models. This is the easiest option and works well on any computer.
+If you have an API key from Anthropic or OpenAI, you can use their models. Add your key in settings. This is the easiest option and works well on any computer.
 
 ### Local Models
 
