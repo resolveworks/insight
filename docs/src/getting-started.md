@@ -4,11 +4,11 @@
 
 {{#include generated/downloads.html}}
 
-### System Requirements
+### Which file do I download?
 
-- **macOS**: Apple Silicon (M1/M2/M3) or Intel
-- **Windows**: Windows 10 or later
-- **Linux**: Most modern distributions
+- **macOS**: Download the `.dmg` file. Choose `aarch64` for newer Macs (M1/M2/M3/M4) or `x64` for older Intel Macs.
+- **Windows**: Download the `.exe` installer. (IT departments may prefer the `.msi`.)
+- **Linux**: Download `.deb` for Ubuntu/Debian, `.rpm` for Fedora/Red Hat, or `.AppImage` to run on any distribution.
 
 ## Choosing an AI Model
 
