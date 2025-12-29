@@ -143,7 +143,7 @@ pnpm tauri build  # Release build
 
 ```bash
 # NVIDIA
-cargo build --release --features cuda
+cargo build --release --features "cuda flash-attn cudnn"
 
 # Apple Silicon
 cargo build --release --features metal

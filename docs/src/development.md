@@ -49,7 +49,7 @@ pnpm tauri build
 
 ```bash
 # NVIDIA (CUDA)
-cd src-tauri && cargo build --release --features cuda
+cd src-tauri && cargo build --release --features "cuda flash-attn cudnn"
 
 # Apple Silicon (Metal)
 cd src-tauri && cargo build --release --features metal
