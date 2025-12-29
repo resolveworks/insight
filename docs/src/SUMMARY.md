@@ -11,5 +11,4 @@
 # Technical
 
 - [Architecture](./architecture.md)
-- [Data Model](./data-model.md)
 - [Development](./development.md)
