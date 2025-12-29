@@ -3,7 +3,7 @@ pub mod core;
 
 use tauri::Manager;
 
-use crate::core::{AppState, Config, TauriBootEmitter};
+use crate::core::{AppState, Config, ModelDownloadProgress, ModelStatus};
 
 /// Initialize tracing/logging with the given directives
 pub fn init_logging(directives: &[&str]) {
@@ -37,8 +37,31 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                let emitter = TauriBootEmitter(&app_handle);
-                state_clone.load_models_if_configured(&emitter).await;
+                use tauri::Emitter;
+
+                let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<ModelStatus>(10);
+                let (progress_tx, mut progress_rx) =
+                    tokio::sync::mpsc::channel::<ModelDownloadProgress>(100);
+
+                // Forward status events to frontend
+                let status_handle = app_handle.clone();
+                tokio::spawn(async move {
+                    while let Some(status) = status_rx.recv().await {
+                        let _ = status_handle.emit("model-status-changed", &status);
+                    }
+                });
+
+                // Forward progress events to frontend
+                let progress_handle = app_handle.clone();
+                tokio::spawn(async move {
+                    while let Some(progress) = progress_rx.recv().await {
+                        let _ = progress_handle.emit("model-download-progress", &progress);
+                    }
+                });
+
+                state_clone
+                    .load_models_if_configured(status_tx, progress_tx)
+                    .await;
             });
 
             Ok(())
@@ -61,20 +84,12 @@ pub fn run() {
             commands::start_chat,
             commands::send_message,
             commands::cancel_generation,
-            // Language model commands
-            commands::get_available_language_models,
-            commands::get_language_model_status,
-            commands::download_language_model,
-            commands::get_current_language_model,
-            commands::configure_language_model,
-            // Embedding model commands
-            commands::get_available_embedding_models,
-            commands::get_current_embedding_model,
-            commands::get_embedding_model_status,
-            commands::download_embedding_model,
-            commands::configure_embedding_model,
-            // Boot
-            commands::get_boot_status,
+            // Model commands (unified)
+            commands::get_available_models,
+            commands::get_model_status,
+            commands::download_model,
+            commands::get_current_model,
+            commands::configure_model,
             // Provider management
             commands::get_provider_families,
             commands::get_current_provider,

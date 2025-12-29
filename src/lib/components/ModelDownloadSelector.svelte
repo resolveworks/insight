@@ -1,16 +1,11 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
-	import { listen } from '@tauri-apps/api/event';
 	import { onMount } from 'svelte';
 	import type { ModelSelectorConfig } from '$lib/models/config';
-	import {
-		getDownloadState,
-		startDownload,
-		clearDownload,
-		setLoadedModel,
-	} from '$lib/stores/model-state.svelte';
+	import { getModelState } from '$lib/stores/model-state.svelte';
 	import Button from './Button.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
+	import DownloadProgress from './DownloadProgress.svelte';
 
 	export interface ModelInfo {
 		id: string;
@@ -36,9 +31,11 @@
 	let status = $state<Status>('loading');
 	let error = $state<string | null>(null);
 
-	// Get download state from global store (persists across navigation)
-	let downloadState = $derived(getDownloadState(config));
-	let isDownloading = $derived(downloadState.status === 'downloading');
+	// Get model state from global store
+	let modelState = $derived(getModelState(config.modelType));
+	let isDownloading = $derived(
+		!modelState.ready && modelState.progress !== null,
+	);
 
 	// Derived state
 	let canDownload = $derived(
@@ -77,18 +74,6 @@
 				: config.accentColor === 'emerald'
 					? 'text-tertiary-600'
 					: 'text-neutral-600',
-		btn:
-			config.accentColor === 'slate'
-				? 'bg-primary-500 hover:bg-primary-600'
-				: config.accentColor === 'emerald'
-					? 'bg-tertiary-500 hover:bg-tertiary-600'
-					: 'bg-neutral-500 hover:bg-neutral-600',
-		progress:
-			config.accentColor === 'slate'
-				? 'bg-primary-500'
-				: config.accentColor === 'emerald'
-					? 'bg-tertiary-500'
-					: 'bg-neutral-500',
 	});
 
 	async function load() {
@@ -96,9 +81,13 @@
 		error = null;
 
 		try {
-			models = await invoke<ModelInfo[]>(config.listCommand);
+			models = await invoke<ModelInfo[]>('get_available_models', {
+				modelType: config.modelType,
+			});
 			if (models.length > 0) {
-				activeId = await invoke<string | null>(config.currentCommand);
+				activeId = await invoke<string | null>('get_current_model', {
+					modelType: config.modelType,
+				});
 				selectedId = activeId ?? models[0].id;
 				await checkStatus();
 			}
@@ -113,7 +102,8 @@
 		if (!selectedId) return;
 
 		try {
-			const result = await invoke<{ status: string }>(config.statusCommand, {
+			const result = await invoke<{ status: string }>('get_model_status', {
+				modelType: config.modelType,
 				modelId: selectedId,
 			});
 			isDownloaded = result.status === 'Ready';
@@ -132,19 +122,15 @@
 		if (!selectedId) return;
 
 		error = null;
-		startDownload(config, selectedId);
 
 		try {
-			// Listen for completion to update local downloaded state
-			const unlisten = await listen(config.completeEvent, () => {
-				isDownloaded = true;
-				unlisten();
+			await invoke('download_model', {
+				modelType: config.modelType,
+				modelId: selectedId,
 			});
-
-			await invoke(config.downloadCommand, { modelId: selectedId });
+			isDownloaded = true;
 		} catch (e) {
 			error = `Download failed: ${e}`;
-			clearDownload(config);
 		}
 	}
 
@@ -155,9 +141,11 @@
 		error = null;
 
 		try {
-			await invoke(config.configureCommand, { modelId: selectedId });
+			await invoke('configure_model', {
+				modelType: config.modelType,
+				modelId: selectedId,
+			});
 			activeId = selectedId;
-			setLoadedModel(config, selectedId);
 			onConfigured?.(selectedId);
 		} catch (e) {
 			error = `Failed to configure: ${e}`;
@@ -171,7 +159,10 @@
 		error = null;
 
 		try {
-			await invoke(config.configureCommand, { modelId: null });
+			await invoke('configure_model', {
+				modelType: config.modelType,
+				modelId: null,
+			});
 			activeId = null;
 			onConfigured?.(null);
 		} catch (e) {
@@ -181,14 +172,6 @@
 		}
 	}
 
-	function formatBytes(bytes: number): string {
-		if (bytes === 0) return '0 B';
-		const k = 1024;
-		const sizes = ['B', 'KB', 'MB', 'GB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-	}
-
 	onMount(load);
 </script>
 
@@ -196,29 +179,11 @@
 	{#if status === 'loading'}
 		<p class="text-neutral-500 text-center py-4">Loading models...</p>
 	{:else if isDownloading}
-		<div class="text-center">
-			<h3 class="text-lg text-neutral-700 mb-4">Downloading {config.title}</h3>
-			{#if downloadState.progress}
-				<p class="text-sm text-neutral-500 mb-2">
-					File {downloadState.progress.file_index} of {downloadState.progress
-						.total_files}: {downloadState.progress.file.split('/').pop()}
-				</p>
-				<div class="h-2 bg-neutral-200 rounded-full overflow-hidden mb-2">
-					<div
-						class="h-full transition-[width] duration-300 {accentClasses.progress}"
-						style="width: {downloadState.progress.overall_progress * 100}%"
-					></div>
-				</div>
-				<p class="text-xs text-neutral-500">
-					{formatBytes(downloadState.progress.downloaded)} / {formatBytes(
-						downloadState.progress.total,
-					)}
-					({Math.round(downloadState.progress.overall_progress * 100)}%)
-				</p>
-			{:else}
-				<p class="text-sm text-neutral-500 mb-2">Starting download...</p>
-			{/if}
-		</div>
+		<DownloadProgress
+			modelType={config.modelType}
+			title="Downloading {config.title}"
+			accentColor={config.accentColor === 'emerald' ? 'accent' : 'primary'}
+		/>
 	{:else}
 		<div
 			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm {activeId

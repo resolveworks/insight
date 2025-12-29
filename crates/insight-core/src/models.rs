@@ -252,20 +252,6 @@ pub struct DownloadProgress {
     pub total_files: usize,
 }
 
-/// Model download status
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "status")]
-pub enum ModelStatus {
-    /// Model is not downloaded
-    NotDownloaded,
-    /// Model is being downloaded
-    Downloading { progress: DownloadProgress },
-    /// Model is fully downloaded and ready
-    Ready { path: PathBuf },
-    /// Download failed
-    Failed { error: String },
-}
-
 /// Minimum interval between progress updates (100ms)
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(100);
 
@@ -396,20 +382,47 @@ impl ModelManager {
             .map(|p| p.parent().unwrap().to_path_buf())
     }
 
-    /// Download a model with progress tracking
+    /// Download a model with status and progress tracking
     ///
     /// Downloads all required files and returns the model directory path.
+    /// Emits status events (Downloading, Ready, Failed) and progress events.
     pub async fn download<M: ModelSpec>(
         &self,
         model: &M,
-        progress_tx: mpsc::Sender<DownloadProgress>,
+        model_type: crate::ModelType,
+        status_tx: mpsc::Sender<crate::ModelStatus>,
+        progress_tx: mpsc::Sender<crate::ModelDownloadProgress>,
     ) -> Result<PathBuf> {
+        // Emit downloading status
+        let _ = status_tx
+            .send(crate::ModelStatus::Downloading {
+                model_type,
+                model_id: model.id().to_string(),
+                model_name: model.name().to_string(),
+            })
+            .await;
+
         let all_files = model.required_files();
         let total_files = all_files.len();
-        let mut first_path: Option<PathBuf> = None;
 
         for (idx, (repo_id, filename)) in all_files.iter().enumerate() {
             let repo = self.api.model(repo_id.clone());
+
+            // Create a channel to receive raw progress, then wrap with model_type
+            let (raw_tx, mut raw_rx) = mpsc::channel::<DownloadProgress>(100);
+            let wrapped_tx = progress_tx.clone();
+
+            // Forward progress with model_type wrapper
+            tokio::spawn(async move {
+                while let Some(progress) = raw_rx.recv().await {
+                    let _ = wrapped_tx
+                        .send(crate::ModelDownloadProgress {
+                            model_type,
+                            progress,
+                        })
+                        .await;
+                }
+            });
 
             let shared = Arc::new(SharedProgress {
                 file: Mutex::new(filename.clone()),
@@ -422,16 +435,19 @@ impl ModelManager {
                 file_index: idx + 1,
                 total_files,
                 shared,
-                tx: progress_tx.clone(),
+                tx: raw_tx,
             };
 
-            let path = repo
-                .download_with_progress(filename, progress)
-                .await
-                .with_context(|| format!("Failed to download {}", filename))?;
-
-            if first_path.is_none() {
-                first_path = Some(path);
+            if let Err(e) = repo.download_with_progress(filename, progress).await {
+                let error = format!("Failed to download {}: {}", filename, e);
+                let _ = status_tx
+                    .send(crate::ModelStatus::Failed {
+                        model_type,
+                        model_id: model.id().to_string(),
+                        error: error.clone(),
+                    })
+                    .await;
+                return Err(anyhow::anyhow!(error));
             }
         }
 

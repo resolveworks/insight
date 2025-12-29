@@ -25,52 +25,53 @@ use tokio_util::sync::CancellationToken;
 
 use milli::update::IndexerConfig;
 use milli::Index;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use embeddings::Embedder;
 
-/// Boot phase events for frontend synchronization
+/// Model type identifier
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelType {
+    Embedding,
+    Language,
+}
+
+/// Model status for frontend synchronization
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "phase")]
-pub enum BootPhase {
-    /// Starting collection watchers
-    WatchingCollections,
-    /// Storage and search index initialized, ready to check model configuration
-    StorageReady {
-        embedding_configured: bool,
-        embedding_model_id: Option<String>,
-        embedding_downloaded: bool,
-    },
-    /// Embedding model needs to be downloaded before loading
-    EmbedderDownloadRequired {
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum ModelStatus {
+    /// Model is being downloaded
+    Downloading {
+        model_type: ModelType,
         model_id: String,
         model_name: String,
     },
-    /// Embedding model is being loaded
-    EmbedderLoading {
+    /// Model is being loaded into memory
+    Loading {
+        model_type: ModelType,
         model_id: String,
         model_name: String,
     },
-    /// Embedding model loaded successfully
-    EmbedderReady { model_id: String },
-    /// Embedding model failed to load
-    EmbedderFailed { model_id: String, error: String },
-    /// All models loaded, app is ready
-    AppReady,
+    /// Model is ready for use
+    Ready {
+        model_type: ModelType,
+        model_id: String,
+    },
+    /// Model failed to download or load
+    Failed {
+        model_type: ModelType,
+        model_id: String,
+        error: String,
+    },
 }
 
-/// Trait for emitting boot phase events.
-///
-/// Implement this trait to receive boot phase notifications during app startup.
-pub trait BootPhaseEmitter: Send + Sync {
-    fn emit_boot_phase(&self, phase: BootPhase);
-}
-
-/// No-op implementation for testing
-pub struct NoOpEmitter;
-
-impl BootPhaseEmitter for NoOpEmitter {
-    fn emit_boot_phase(&self, _phase: BootPhase) {}
+/// Download progress with model type
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelDownloadProgress {
+    pub model_type: ModelType,
+    #[serde(flatten)]
+    pub progress: models::DownloadProgress,
 }
 
 pub use agent::provider::anthropic::AnthropicProvider;
@@ -87,29 +88,12 @@ pub use jobs::{
 };
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
-/// Check if embedding model is configured and downloaded.
-/// Returns (configured, downloaded).
-pub async fn check_embedding_status(settings: &Settings) -> (bool, bool) {
-    let Some(ref model_id) = settings.embedding_model_id else {
-        return (false, false);
-    };
-    let Some(model) = models::get_embedding_model(model_id) else {
-        return (false, false);
-    };
-    let downloaded = match models::ModelManager::new().await {
-        Ok(manager) => manager.is_downloaded(&model),
-        Err(e) => {
-            tracing::warn!("Failed to create model manager: {}", e);
-            false
-        }
-    };
-    (true, downloaded)
-}
-
 /// Application state shared across Tauri commands
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
+    /// Model manager for downloading and checking model status
+    pub model_manager: Arc<models::ModelManager>,
     /// Storage - initialized in setup(), always available to commands
     pub storage: Arc<RwLock<Storage>>,
     /// Search index - shared for reads, writes go through index worker
@@ -141,6 +125,9 @@ impl AppState {
     /// Create AppState with initialized storage and search.
     /// Called from setup() where Tauri's async runtime is available.
     pub async fn new(config: Config) -> anyhow::Result<Self> {
+        // Initialize model manager (HuggingFace cache + API client)
+        let model_manager = Arc::new(models::ModelManager::new().await?);
+
         // Fast async init - just opens files
         let storage = Storage::open(&config.iroh_dir).await?;
 
@@ -178,6 +165,7 @@ impl AppState {
 
         Ok(Self {
             config,
+            model_manager,
             storage,
             search,
             index_worker,
@@ -196,77 +184,102 @@ impl AppState {
     /// Load configured models on startup.
     /// Called in background after setup() completes.
     ///
-    /// Uses the provided emitter to send boot phase events.
-    pub async fn load_models_if_configured<E: BootPhaseEmitter>(&self, emitter: &E) {
-        let settings = Settings::load(&self.config.settings_file);
-
-        // Emit WatchingCollections phase
-        emitter.emit_boot_phase(BootPhase::WatchingCollections);
+    /// Auto-downloads the default embedding model if not configured.
+    /// Sends status changes to `status_tx` and download progress to `progress_tx`.
+    pub async fn load_models_if_configured(
+        &self,
+        status_tx: tokio::sync::mpsc::Sender<ModelStatus>,
+        progress_tx: tokio::sync::mpsc::Sender<ModelDownloadProgress>,
+    ) {
+        let mut settings = Settings::load(&self.config.settings_file);
 
         // Start watching existing collections for indexing events
         self.watch_existing_collections().await;
-
-        let (embedding_configured, embedding_downloaded) = check_embedding_status(&settings).await;
-
-        // Emit StorageReady so frontend knows initialization is complete
-        emitter.emit_boot_phase(BootPhase::StorageReady {
-            embedding_configured,
-            embedding_model_id: settings.embedding_model_id.clone(),
-            embedding_downloaded,
-        });
 
         // Load chat provider if configured
         if let Some(ref provider_config) = settings.provider {
             self.load_provider_from_config(provider_config).await;
         }
 
-        // Load embedding model if configured AND downloaded
-        if let Some(ref model_id) = settings.embedding_model_id {
-            if let Some(model) = models::get_embedding_model(model_id) {
-                if !embedding_downloaded {
-                    // Model needs to be downloaded - emit event and let frontend handle it
-                    tracing::info!(
-                        "Embedding model '{}' not downloaded, waiting for user action",
-                        model_id
-                    );
-                    emitter.emit_boot_phase(BootPhase::EmbedderDownloadRequired {
+        // Auto-configure default embedding model if not set
+        let model_id = match settings.embedding_model_id.clone() {
+            Some(id) => id,
+            None => {
+                let default_model = models::default_embedding_model();
+                tracing::info!(
+                    "No embedding model configured, using default: {}",
+                    default_model.id
+                );
+                settings.embedding_model_id = Some(default_model.id.clone());
+                if let Err(e) = settings.save(&self.config.settings_file) {
+                    tracing::warn!("Failed to save default embedding model setting: {}", e);
+                }
+                default_model.id
+            }
+        };
+
+        // Get model info
+        let model = match models::get_embedding_model(&model_id) {
+            Some(m) => m,
+            None => {
+                tracing::error!("Unknown embedding model: {}", model_id);
+                let _ = status_tx
+                    .send(ModelStatus::Failed {
+                        model_type: ModelType::Embedding,
                         model_id: model_id.clone(),
-                        model_name: model.name.clone(),
-                    });
-                    // Don't emit AppReady - frontend will trigger download and reload
-                    return;
-                }
+                        error: format!("Unknown embedding model: {}", model_id),
+                    })
+                    .await;
+                return;
+            }
+        };
 
-                // Model is downloaded, proceed to load it
-                emitter.emit_boot_phase(BootPhase::EmbedderLoading {
-                    model_id: model_id.clone(),
-                    model_name: model.name.clone(),
-                });
-
-                tracing::info!("Loading embedding model '{}'...", model_id);
-                match Embedder::new(&model.hf_repo_id, model.dimensions).await {
-                    Ok(emb) => {
-                        *self.embedder.write().await = Some(emb);
-                        *self.embedding_model_id.write().await = Some(model_id.clone());
-
-                        tracing::info!("Embedding model '{}' loaded", model_id);
-                        emitter.emit_boot_phase(BootPhase::EmbedderReady {
-                            model_id: model_id.clone(),
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to load embedder: {}", e);
-                        emitter.emit_boot_phase(BootPhase::EmbedderFailed {
-                            model_id: model_id.clone(),
-                            error: e.to_string(),
-                        });
-                    }
-                }
+        // Download if not cached
+        if !self.model_manager.is_downloaded(&model) {
+            if let Err(e) = self
+                .model_manager
+                .download(&model, ModelType::Embedding, status_tx.clone(), progress_tx)
+                .await
+            {
+                tracing::error!("Failed to download embedding model: {}", e);
+                return;
             }
         }
 
-        emitter.emit_boot_phase(BootPhase::AppReady);
-        tracing::info!("Backend ready");
+        // Load model into memory
+        let _ = status_tx
+            .send(ModelStatus::Loading {
+                model_type: ModelType::Embedding,
+                model_id: model_id.clone(),
+                model_name: model.name.clone(),
+            })
+            .await;
+
+        tracing::info!("Loading embedding model '{}'...", model_id);
+        match Embedder::new(&model.hf_repo_id, model.dimensions).await {
+            Ok(emb) => {
+                *self.embedder.write().await = Some(emb);
+                *self.embedding_model_id.write().await = Some(model_id.clone());
+
+                tracing::info!("Embedding model '{}' loaded", model_id);
+                let _ = status_tx
+                    .send(ModelStatus::Ready {
+                        model_type: ModelType::Embedding,
+                        model_id: model_id.clone(),
+                    })
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to load embedder: {}", e);
+                let _ = status_tx
+                    .send(ModelStatus::Failed {
+                        model_type: ModelType::Embedding,
+                        model_id: model_id.clone(),
+                        error: e.to_string(),
+                    })
+                    .await;
+            }
+        }
     }
 
     /// Load a chat provider from saved configuration.
@@ -279,33 +292,21 @@ impl AppState {
             ProviderConfig::Local { model_id } => {
                 // For local models, we need to check if it's downloaded
                 if let Some(model) = models::get_language_model(model_id) {
-                    match models::ModelManager::new().await {
-                        Ok(manager) => {
-                            if manager.is_downloaded(&model) {
-                                if let Some(path) = manager.get_path(&model) {
-                                    match LocalProvider::load(&path, &model).await {
-                                        Ok(provider) => {
-                                            *self.chat_provider.write().await =
-                                                Some(Box::new(provider));
-                                            *self.provider_config.write().await =
-                                                Some(config.clone());
-                                            tracing::info!("Loaded local provider: {}", model_id);
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to load local provider: {}", e);
-                                        }
-                                    }
+                    if self.model_manager.is_downloaded(&model) {
+                        if let Some(path) = self.model_manager.get_path(&model) {
+                            match LocalProvider::load(&path, &model).await {
+                                Ok(provider) => {
+                                    *self.chat_provider.write().await = Some(Box::new(provider));
+                                    *self.provider_config.write().await = Some(config.clone());
+                                    tracing::info!("Loaded local provider: {}", model_id);
                                 }
-                            } else {
-                                tracing::info!(
-                                    "Local model '{}' not downloaded, skipping",
-                                    model_id
-                                );
+                                Err(e) => {
+                                    tracing::error!("Failed to load local provider: {}", e);
+                                }
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to create model manager: {}", e);
-                        }
+                    } else {
+                        tracing::info!("Local model '{}' not downloaded, skipping", model_id);
                     }
                 } else {
                     tracing::warn!("Unknown local model: {}", model_id);

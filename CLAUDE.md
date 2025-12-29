@@ -247,8 +247,8 @@ Focus on:
 ├── iroh/               # iroh data (blobs, docs)
 └── search/             # milli index
 
-~/.cache/insight/
-└── models/             # Downloaded LLM files (GGUF + tokenizers)
+~/.cache/huggingface/hub/
+└── models--*/          # LLM files (downloaded via hf-hub)
 ```
 
 ## Conventions

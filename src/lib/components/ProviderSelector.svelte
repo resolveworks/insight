@@ -209,8 +209,7 @@
 		error = null;
 
 		try {
-			// Call configure with null to disable
-			await invoke('configure_language_model', { modelId: null });
+			await invoke('configure_model', { modelType: 'language', modelId: null });
 			setProvider(null);
 		} catch (e) {
 			error = `Failed to disable: ${e}`;
