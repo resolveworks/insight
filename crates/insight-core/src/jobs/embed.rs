@@ -21,18 +21,14 @@ pub async fn generate_embeddings_data(
     storage: &Storage,
     embedder: &Embedder,
     model_id: &str,
+    namespace_id: NamespaceId,
     metadata: &DocumentMetadata,
 ) -> anyhow::Result<EmbeddingData> {
-    // Fetch text content
-    let text_hash: iroh_blobs::Hash = metadata
-        .text_hash
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid text hash for document {}", metadata.id))?;
-
+    // Fetch text content from the files/{id}/text entry
     let text_bytes = storage
-        .get_blob(&text_hash)
+        .get_document_text(namespace_id, &metadata.id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Text blob not found for document {}", metadata.id))?;
+        .ok_or_else(|| anyhow::anyhow!("Text not found for document {}", metadata.id))?;
 
     let text = String::from_utf8(text_bytes)
         .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in document {}: {}", metadata.id, e))?;
@@ -112,7 +108,8 @@ pub async fn generate_and_store_embeddings(
     namespace_id: NamespaceId,
     metadata: &DocumentMetadata,
 ) -> anyhow::Result<EmbeddingData> {
-    let embedding_data = generate_embeddings_data(storage, embedder, model_id, metadata).await?;
+    let embedding_data =
+        generate_embeddings_data(storage, embedder, model_id, namespace_id, metadata).await?;
 
     storage
         .store_embeddings(namespace_id, &metadata.id, embedding_data.clone())

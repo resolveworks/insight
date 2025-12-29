@@ -17,6 +17,92 @@ use iroh_docs::{AuthorId, ContentStatus, DocTicket, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
+// =============================================================================
+// Key Structure Constants
+// =============================================================================
+//
+// Document entries follow the pattern: files/{doc_id}/{part}
+// where part is one of: meta, text, source, embeddings/{model_id}
+//
+// This structure ensures iroh-docs syncs all parts automatically,
+// including model-specific embeddings which contain chunked text + vectors.
+
+/// Key for collection metadata
+pub const COLLECTION_KEY: &[u8] = b"_collection";
+
+/// Prefix for all document entries
+const FILES_PREFIX: &str = "files/";
+
+/// Suffix for document metadata entries
+const META_SUFFIX: &str = "/meta";
+
+/// Suffix for document text entries
+const TEXT_SUFFIX: &str = "/text";
+
+/// Suffix for document source file entries
+const SOURCE_SUFFIX: &str = "/source";
+
+/// Prefix for hash index (duplicate detection)
+const HASH_INDEX_PREFIX: &str = "_hash_index/";
+
+/// Part name for embeddings (stored under files/{doc_id}/embeddings/{model_id})
+const EMBEDDINGS_PART: &str = "/embeddings/";
+
+/// Build the key for a document's metadata entry
+#[inline]
+pub fn doc_meta_key(doc_id: &str) -> String {
+    format!("{}{}{}", FILES_PREFIX, doc_id, META_SUFFIX)
+}
+
+/// Build the key for a document's text entry
+#[inline]
+pub fn doc_text_key(doc_id: &str) -> String {
+    format!("{}{}{}", FILES_PREFIX, doc_id, TEXT_SUFFIX)
+}
+
+/// Build the key for a document's source file entry
+#[inline]
+pub fn doc_source_key(doc_id: &str) -> String {
+    format!("{}{}{}", FILES_PREFIX, doc_id, SOURCE_SUFFIX)
+}
+
+/// Build the key for a hash index entry
+#[inline]
+fn hash_index_key(hash: &str) -> String {
+    format!("{}{}", HASH_INDEX_PREFIX, hash)
+}
+
+/// Build the key prefix for a document's embeddings
+/// Pattern: files/{doc_id}/embeddings/
+#[inline]
+fn embeddings_prefix(doc_id: &str) -> String {
+    format!("{}{}{}", FILES_PREFIX, doc_id, EMBEDDINGS_PART)
+}
+
+/// Build the key for a specific embedding
+/// Pattern: files/{doc_id}/embeddings/{model_id}
+#[inline]
+fn embedding_key(doc_id: &str, model_id: &str) -> String {
+    format!("{}{}{}{}", FILES_PREFIX, doc_id, EMBEDDINGS_PART, model_id)
+}
+
+/// Check if a key is a document metadata entry
+#[inline]
+pub fn is_doc_meta_key(key: &str) -> bool {
+    key.starts_with(FILES_PREFIX) && key.ends_with(META_SUFFIX)
+}
+
+/// Extract the document ID from a files/{id}/meta key
+#[inline]
+pub fn extract_doc_id(key: &str) -> Option<&str> {
+    key.strip_prefix(FILES_PREFIX)
+        .and_then(|s| s.strip_suffix(META_SUFFIX))
+}
+
+// =============================================================================
+// Data Structures
+// =============================================================================
+
 /// Collection metadata stored in iroh-docs under `_collection` key
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionMetadata {
@@ -24,19 +110,28 @@ pub struct CollectionMetadata {
     pub created_at: String,
 }
 
-/// Document metadata stored in iroh-docs under `files/{id}` key
+/// Document metadata stored in iroh-docs under `files/{id}/meta` key
+///
+/// The actual content is stored in separate entries:
+/// - `files/{id}/text` - extracted text content
+/// - `files/{id}/source` - original file bytes (PDF, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentMetadata {
     pub id: String,
     pub name: String,
-    pub pdf_hash: String,
-    pub text_hash: String,
+    /// MIME type or file extension (e.g., "application/pdf", "pdf")
+    #[serde(default = "default_file_type")]
+    pub file_type: String,
     pub page_count: usize,
     pub tags: Vec<String>,
     pub created_at: String,
     /// Character offset where each page ends (for chunk-to-page mapping)
     #[serde(default)]
     pub page_boundaries: Vec<usize>,
+}
+
+fn default_file_type() -> String {
+    "application/pdf".to_string()
 }
 
 /// Embedding data for a document, stored per model under `embeddings/{doc_id}/{model_id}` key
@@ -285,7 +380,9 @@ impl Storage {
         Ok(metadata)
     }
 
-    /// Count documents in a collection
+    /// Count documents in a collection.
+    ///
+    /// Counts only `files/*/meta` entries (one per document).
     pub async fn count_documents(&self, namespace_id: NamespaceId) -> Result<usize> {
         use futures::StreamExt;
 
@@ -294,20 +391,40 @@ impl Storage {
             None => return Ok(0),
         };
 
-        // Query for all entries with prefix "files/"
+        // Query for all entries with prefix "files/" and count only /meta entries
         let query = Query::key_prefix(b"files/");
         let stream = doc.get_many(query).await?;
-        let count = stream.count().await;
+        tokio::pin!(stream);
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            if let Ok(entry) = result {
+                let key = String::from_utf8_lossy(entry.key());
+                if key.ends_with("/meta") {
+                    count += 1;
+                }
+            }
+        }
 
         doc.close().await?;
         Ok(count)
     }
 
-    /// Add a document to a collection
+    /// Add a complete document to a collection with all its parts.
+    ///
+    /// Stores three entries:
+    /// - `files/{id}/meta` - document metadata (JSON)
+    /// - `files/{id}/text` - extracted text content
+    /// - `files/{id}/source` - original file bytes
+    ///
+    /// Also creates a hash index entry for duplicate detection.
     pub async fn add_document(
         &self,
         namespace_id: NamespaceId,
         metadata: DocumentMetadata,
+        text_content: &[u8],
+        source_content: &[u8],
+        source_hash: &str,
     ) -> Result<()> {
         let doc = self
             .docs
@@ -316,19 +433,42 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        // Store metadata in blob storage
+        // Store metadata entry at files/{id}/meta
         let metadata_bytes = serde_json::to_vec(&metadata)?;
-        let hash = self.store_blob(&metadata_bytes).await?;
-        let len = metadata_bytes.len() as u64;
+        let meta_hash = self.store_blob(&metadata_bytes).await?;
+        let meta_key = doc_meta_key(&metadata.id);
+        doc.set_hash(
+            self.author_id,
+            meta_key.into_bytes(),
+            meta_hash,
+            metadata_bytes.len() as u64,
+        )
+        .await?;
 
-        // Store reference in iroh-docs under `files/{id}` key
-        let key = format!("files/{}", metadata.id);
-        doc.set_hash(self.author_id, key.into_bytes(), hash, len)
-            .await?;
+        // Store text entry at files/{id}/text
+        let text_hash = self.store_blob(text_content).await?;
+        let text_key = doc_text_key(&metadata.id);
+        doc.set_hash(
+            self.author_id,
+            text_key.into_bytes(),
+            text_hash,
+            text_content.len() as u64,
+        )
+        .await?;
+
+        // Store source entry at files/{id}/source
+        let source_blob_hash = self.store_blob(source_content).await?;
+        let source_key = doc_source_key(&metadata.id);
+        doc.set_hash(
+            self.author_id,
+            source_key.into_bytes(),
+            source_blob_hash,
+            source_content.len() as u64,
+        )
+        .await?;
 
         // Create hash index entry for O(1) duplicate detection
-        // Store document ID as the value (small blob)
-        let index_key = format!("_hash_index/{}", metadata.pdf_hash);
+        let index_key = hash_index_key(source_hash);
         let doc_id_bytes = metadata.id.as_bytes();
         let doc_id_hash = self.store_blob(doc_id_bytes).await?;
         doc.set_hash(
@@ -351,6 +491,8 @@ impl Storage {
     }
 
     /// List all documents in a collection
+    ///
+    /// Queries for all `files/*/meta` entries and returns their metadata.
     pub async fn list_documents(&self, namespace_id: NamespaceId) -> Result<Vec<DocumentMetadata>> {
         use futures::StreamExt;
 
@@ -359,6 +501,7 @@ impl Storage {
             None => return Ok(Vec::new()),
         };
 
+        // Query for all entries - we'll filter for /meta suffix
         let query = Query::key_prefix(b"files/");
         let stream = doc.get_many(query).await?;
         tokio::pin!(stream);
@@ -366,6 +509,13 @@ impl Storage {
         let mut documents = Vec::new();
         while let Some(result) = stream.next().await {
             let entry = result?;
+            let key = String::from_utf8_lossy(entry.key());
+
+            // Only process /meta entries
+            if !key.ends_with("/meta") {
+                continue;
+            }
+
             let hash = entry.content_hash();
 
             if let Some(data) = self.get_blob(&hash).await? {
@@ -382,7 +532,7 @@ impl Storage {
         Ok(documents)
     }
 
-    /// Get a single document from a collection by ID
+    /// Get a single document's metadata from a collection by ID
     pub async fn get_document(
         &self,
         namespace_id: NamespaceId,
@@ -393,7 +543,7 @@ impl Storage {
             None => return Ok(None),
         };
 
-        let key = format!("files/{}", document_id);
+        let key = doc_meta_key(document_id);
         let query = Query::key_exact(key.as_bytes());
         let entry = doc.get_one(query).await?;
 
@@ -419,16 +569,70 @@ impl Storage {
         Ok(metadata)
     }
 
-    /// Check if a document with the given PDF hash exists (O(1) lookup via hash index)
+    /// Get a document's extracted text content
+    pub async fn get_document_text(
+        &self,
+        namespace_id: NamespaceId,
+        document_id: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let key = doc_text_key(document_id);
+        let query = Query::key_exact(key.as_bytes());
+        let entry = doc.get_one(query).await?;
+
+        let text = if let Some(entry) = entry {
+            self.get_blob(&entry.content_hash()).await?
+        } else {
+            None
+        };
+
+        doc.close().await?;
+        Ok(text)
+    }
+
+    /// Get a document's original source file
+    pub async fn get_document_source(
+        &self,
+        namespace_id: NamespaceId,
+        document_id: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let key = doc_source_key(document_id);
+        let query = Query::key_exact(key.as_bytes());
+        let entry = doc.get_one(query).await?;
+
+        let source = if let Some(entry) = entry {
+            self.get_blob(&entry.content_hash()).await?
+        } else {
+            None
+        };
+
+        doc.close().await?;
+        Ok(source)
+    }
+
+    /// Check if a document with the given source hash exists (O(1) lookup via hash index)
     ///
-    /// Uses the `_hash_index/{pdf_hash}` key for constant-time duplicate detection.
-    pub async fn has_pdf_hash(&self, namespace_id: NamespaceId, pdf_hash: &str) -> Result<bool> {
+    /// Uses the `_hash_index/{hash}` key for constant-time duplicate detection.
+    pub async fn has_source_hash(
+        &self,
+        namespace_id: NamespaceId,
+        source_hash: &str,
+    ) -> Result<bool> {
         let doc = match self.docs.api().open(namespace_id).await? {
             Some(doc) => doc,
             None => return Ok(false),
         };
 
-        let key = format!("_hash_index/{}", pdf_hash);
+        let key = hash_index_key(source_hash);
         let query = Query::key_exact(key.as_bytes());
         let entry = doc.get_one(query).await?;
 
@@ -457,7 +661,7 @@ impl Storage {
         let hash = self.store_blob(&data_bytes).await?;
         let len = data_bytes.len() as u64;
 
-        let key = format!("embeddings/{}/{}", doc_id, data.model_id);
+        let key = embedding_key(doc_id, &data.model_id);
         doc.set_hash(self.author_id, key.into_bytes(), hash, len)
             .await?;
 
@@ -487,7 +691,7 @@ impl Storage {
             None => return Ok(None),
         };
 
-        let key = format!("embeddings/{}/{}", doc_id, model_id);
+        let key = embedding_key(doc_id, model_id);
         let query = Query::key_exact(key.as_bytes());
         let entry = doc.get_one(query).await?;
 
@@ -515,7 +719,7 @@ impl Storage {
             None => return Ok(()),
         };
 
-        let prefix = format!("embeddings/{}/", doc_id);
+        let prefix = embeddings_prefix(doc_id);
         let query = Query::key_prefix(prefix.as_bytes());
         let stream = doc.get_many(query).await?;
         tokio::pin!(stream);
@@ -538,6 +742,13 @@ impl Storage {
     }
 
     /// Delete a document from a collection
+    ///
+    /// Removes all entries for this document:
+    /// - `files/{id}/meta`
+    /// - `files/{id}/text`
+    /// - `files/{id}/source`
+    /// - `_hash_index/{source_hash}` (for duplicate detection)
+    /// - All embeddings
     pub async fn delete_document(
         &self,
         namespace_id: NamespaceId,
@@ -550,22 +761,23 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        // First, get the document metadata to find the pdf_hash for index cleanup
-        let file_key = format!("files/{}", document_id);
-        let query = Query::key_exact(file_key.as_bytes());
+        // Get the source content hash for index cleanup
+        let source_key = doc_source_key(document_id);
+        let query = Query::key_exact(source_key.as_bytes());
         if let Some(entry) = doc.get_one(query).await? {
-            let hash = entry.content_hash();
-            if let Some(data) = self.get_blob(&hash).await? {
-                if let Ok(metadata) = serde_json::from_slice::<DocumentMetadata>(&data) {
-                    // Delete the hash index entry
-                    let index_key = format!("_hash_index/{}", metadata.pdf_hash);
-                    doc.del(self.author_id, index_key.into_bytes()).await?;
-                }
-            }
+            // The content_hash is the hash of the source file - use it to delete the index
+            let source_hash = entry.content_hash().to_string();
+            let index_key = hash_index_key(&source_hash);
+            doc.del(self.author_id, index_key.into_bytes()).await?;
         }
 
-        // Delete the document entry
-        doc.del(self.author_id, file_key.into_bytes()).await?;
+        // Delete all document entries
+        let meta_key = doc_meta_key(document_id);
+        let text_key = doc_text_key(document_id);
+
+        doc.del(self.author_id, meta_key.into_bytes()).await?;
+        doc.del(self.author_id, text_key.into_bytes()).await?;
+        doc.del(self.author_id, source_key.into_bytes()).await?;
 
         doc.close().await?;
 
@@ -777,9 +989,13 @@ impl Storage {
         Ok(namespace_id)
     }
 
-    /// Import a PDF file into a collection (storage only).
+    /// Import a PDF file into a collection.
     ///
-    /// Extracts text, stores blobs, and creates metadata entry.
+    /// Extracts text, stores all content as separate entries:
+    /// - `files/{id}/meta` - document metadata
+    /// - `files/{id}/text` - extracted text
+    /// - `files/{id}/source` - original PDF bytes
+    ///
     /// Returns the document metadata.
     ///
     /// Note: This only stores the document. For local imports that need
@@ -797,34 +1013,34 @@ impl Storage {
         // Extract text (blocking)
         let extracted = crate::pdf::extract_text(path)?;
 
-        // Store PDF blob
-        let pdf_hash = self.store_blob(&extracted.pdf_bytes).await?.to_string();
+        // Compute hash of source file for duplicate detection
+        let source_hash = blake3::hash(&extracted.pdf_bytes).to_string();
 
         // Check for duplicate
-        if self.has_pdf_hash(namespace_id, &pdf_hash).await? {
+        if self.has_source_hash(namespace_id, &source_hash).await? {
             anyhow::bail!("Duplicate document: {}", file_name);
         }
 
-        // Store text blob
-        let text_hash = self
-            .store_blob(extracted.text.as_bytes())
-            .await?
-            .to_string();
-
-        // Create metadata
+        // Create metadata (no longer contains hashes)
         let metadata = DocumentMetadata {
             id: uuid::Uuid::new_v4().to_string(),
             name: file_name,
-            pdf_hash,
-            text_hash,
+            file_type: "application/pdf".to_string(),
             page_count: extracted.page_count,
             tags: vec![],
             created_at: chrono::Utc::now().to_rfc3339(),
             page_boundaries: extracted.page_boundaries,
         };
 
-        // Store document (triggers iroh event)
-        self.add_document(namespace_id, metadata.clone()).await?;
+        // Store document with all its parts
+        self.add_document(
+            namespace_id,
+            metadata.clone(),
+            extracted.text.as_bytes(),
+            &extracted.pdf_bytes,
+            &source_hash,
+        )
+        .await?;
 
         Ok(metadata)
     }
@@ -905,29 +1121,53 @@ mod tests {
 
         let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
 
-        // Add a document
+        // Add a document with all its parts
         let doc = DocumentMetadata {
             id: "doc-1".to_string(),
             name: "test.pdf".to_string(),
-            pdf_hash: "abc123".to_string(),
-            text_hash: "def456".to_string(),
+            file_type: "application/pdf".to_string(),
             page_count: 5,
             tags: vec!["test".to_string()],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             page_boundaries: vec![],
         };
-        storage.add_document(collection_id, doc).await.unwrap();
+        let text_content = b"This is the extracted text";
+        let source_content = b"PDF bytes here";
+        let source_hash = blake3::hash(source_content).to_string();
+        storage
+            .add_document(
+                collection_id,
+                doc,
+                text_content,
+                source_content,
+                &source_hash,
+            )
+            .await
+            .unwrap();
 
-        // Count should be 1
+        // Count should be 1 (counts documents, not entries)
         let count = storage.count_documents(collection_id).await.unwrap();
         assert_eq!(count, 1);
 
-        // List documents
+        // List documents (should return 1 document metadata)
         let docs = storage.list_documents(collection_id).await.unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].id, "doc-1");
         assert_eq!(docs[0].name, "test.pdf");
         assert_eq!(docs[0].page_count, 5);
+
+        // Verify we can retrieve text and source
+        let text = storage
+            .get_document_text(collection_id, "doc-1")
+            .await
+            .unwrap();
+        assert_eq!(text, Some(text_content.to_vec()));
+
+        let source = storage
+            .get_document_source(collection_id, "doc-1")
+            .await
+            .unwrap();
+        assert_eq!(source, Some(source_content.to_vec()));
     }
 
     #[tokio::test]
@@ -941,27 +1181,39 @@ mod tests {
         let doc1 = DocumentMetadata {
             id: "doc-1".to_string(),
             name: "first.pdf".to_string(),
-            pdf_hash: "abc".to_string(),
-            text_hash: "def".to_string(),
+            file_type: "application/pdf".to_string(),
             page_count: 1,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             page_boundaries: vec![],
         };
+        let source1 = b"source1";
+        let hash1 = blake3::hash(source1).to_string();
+
         let doc2 = DocumentMetadata {
             id: "doc-2".to_string(),
             name: "second.pdf".to_string(),
-            pdf_hash: "ghi".to_string(),
-            text_hash: "jkl".to_string(),
+            file_type: "application/pdf".to_string(),
             page_count: 2,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             page_boundaries: vec![],
         };
-        storage.add_document(collection_id, doc1).await.unwrap();
-        storage.add_document(collection_id, doc2).await.unwrap();
+        let source2 = b"source2";
+        let hash2 = blake3::hash(source2).to_string();
 
-        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 2);
+        storage
+            .add_document(collection_id, doc1, b"text1", source1, &hash1)
+            .await
+            .unwrap();
+        storage
+            .add_document(collection_id, doc2, b"text2", source2, &hash2)
+            .await
+            .unwrap();
+
+        // Should have 2 documents (6 entries total)
+        let docs = storage.list_documents(collection_id).await.unwrap();
+        assert_eq!(docs.len(), 2);
 
         // Delete first document
         storage
@@ -1007,20 +1259,24 @@ mod tests {
         // Subscribe to events
         let mut stream = storage.subscribe(collection_id).await.unwrap();
 
-        // Add a document - this should trigger an InsertLocal event
+        // Add a document - this should trigger InsertLocal events
         let doc = DocumentMetadata {
             id: "doc-events".to_string(),
             name: "events.pdf".to_string(),
-            pdf_hash: "hash1".to_string(),
-            text_hash: "hash2".to_string(),
+            file_type: "application/pdf".to_string(),
             page_count: 1,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             page_boundaries: vec![],
         };
-        storage.add_document(collection_id, doc).await.unwrap();
+        let source = b"source";
+        let hash = blake3::hash(source).to_string();
+        storage
+            .add_document(collection_id, doc, b"text", source, &hash)
+            .await
+            .unwrap();
 
-        // We should receive an InsertLocal event
+        // We should receive InsertLocal events (one for each entry)
         // Use a timeout to avoid hanging if no event is received
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next()).await;
 
@@ -1043,9 +1299,12 @@ mod tests {
 
         let (collection_id, _) = storage.create_collection("Duplicates Test").await.unwrap();
 
+        let source_content = b"unique source content";
+        let source_hash = blake3::hash(source_content).to_string();
+
         // Initially, no document with this hash exists
         assert!(!storage
-            .has_pdf_hash(collection_id, "pdf-hash-123")
+            .has_source_hash(collection_id, &source_hash)
             .await
             .unwrap());
 
@@ -1053,24 +1312,26 @@ mod tests {
         let doc = DocumentMetadata {
             id: "doc-1".to_string(),
             name: "report.pdf".to_string(),
-            pdf_hash: "pdf-hash-123".to_string(),
-            text_hash: "text-hash-456".to_string(),
+            file_type: "application/pdf".to_string(),
             page_count: 10,
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             page_boundaries: vec![],
         };
-        storage.add_document(collection_id, doc).await.unwrap();
+        storage
+            .add_document(collection_id, doc, b"text", source_content, &source_hash)
+            .await
+            .unwrap();
 
         // Now the hash should be detected
         assert!(storage
-            .has_pdf_hash(collection_id, "pdf-hash-123")
+            .has_source_hash(collection_id, &source_hash)
             .await
             .unwrap());
 
         // Different hash should not be detected
         assert!(!storage
-            .has_pdf_hash(collection_id, "different-hash")
+            .has_source_hash(collection_id, "different-hash")
             .await
             .unwrap());
 
@@ -1082,7 +1343,7 @@ mod tests {
 
         // Hash index should be cleaned up
         assert!(!storage
-            .has_pdf_hash(collection_id, "pdf-hash-123")
+            .has_source_hash(collection_id, &source_hash)
             .await
             .unwrap());
     }

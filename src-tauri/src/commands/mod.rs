@@ -9,8 +9,7 @@ use iroh_docs::NamespaceId;
 pub struct DocumentInfo {
     pub id: String,
     pub name: String,
-    pub pdf_hash: String,
-    pub text_hash: String,
+    pub file_type: String,
     pub page_count: usize,
     pub tags: Vec<String>,
     pub created_at: String,
@@ -154,8 +153,7 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
                 let doc_info = DocumentInfo {
                     id: metadata.id,
                     name: metadata.name.clone(),
-                    pdf_hash: metadata.pdf_hash,
-                    text_hash: metadata.text_hash,
+                    file_type: metadata.file_type,
                     page_count: metadata.page_count,
                     tags: metadata.tags,
                     created_at: metadata.created_at,
@@ -211,8 +209,7 @@ pub async fn get_documents(
         .map(|m| DocumentInfo {
             id: m.id,
             name: m.name,
-            pdf_hash: m.pdf_hash,
-            text_hash: m.text_hash,
+            file_type: m.file_type,
             page_count: m.page_count,
             tags: m.tags,
             created_at: m.created_at,
@@ -240,8 +237,7 @@ pub async fn get_document(
     Ok(DocumentInfo {
         id: document.id,
         name: document.name,
-        pdf_hash: document.pdf_hash,
-        text_hash: document.text_hash,
+        file_type: document.file_type,
         page_count: document.page_count,
         tags: document.tags,
         created_at: document.created_at,
@@ -259,21 +255,9 @@ pub async fn get_document_text(
 
     let storage = state.storage.read().await;
 
-    // Get document metadata to find text hash
-    let document = storage
-        .get_document(namespace_id, &document_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Document not found".to_string())?;
-
-    // Parse the text hash and fetch the blob
-    let text_hash: iroh_blobs::Hash = document
-        .text_hash
-        .parse()
-        .map_err(|_| "Invalid text hash".to_string())?;
-
+    // Fetch text directly from files/{id}/text entry
     let text_bytes = storage
-        .get_blob(&text_hash)
+        .get_document_text(namespace_id, &document_id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Text content not found".to_string())?;

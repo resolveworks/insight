@@ -8,8 +8,7 @@
 	interface Document {
 		id: string;
 		name: string;
-		pdf_hash: string;
-		text_hash: string;
+		file_type: string;
 		page_count: number;
 		tags: string[];
 		created_at: string;
@@ -57,11 +56,6 @@
 		} catch {
 			return dateString;
 		}
-	}
-
-	function truncateHash(hash: string): string {
-		if (hash.length <= 16) return hash;
-		return `${hash.slice(0, 8)}...${hash.slice(-8)}`;
 	}
 
 	async function loadChunks() {
@@ -157,33 +151,19 @@
 						</tr>
 						<tr>
 							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
+								>Type</td
+							>
+							<td class="px-4 py-3 text-sm text-neutral-700"
+								>{document.file_type}</td
+							>
+						</tr>
+						<tr>
+							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
 								>Pages</td
 							>
 							<td class="px-4 py-3 text-sm text-neutral-700"
 								>{document.page_count}</td
 							>
-						</tr>
-						<tr>
-							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
-								>PDF Hash</td
-							>
-							<td
-								class="px-4 py-3 font-mono text-sm text-neutral-700"
-								title={document.pdf_hash}
-							>
-								{truncateHash(document.pdf_hash)}
-							</td>
-						</tr>
-						<tr>
-							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
-								>Text Hash</td
-							>
-							<td
-								class="px-4 py-3 font-mono text-sm text-neutral-700"
-								title={document.text_hash}
-							>
-								{truncateHash(document.text_hash)}
-							</td>
 						</tr>
 						<tr>
 							<td class="px-4 py-3 text-sm font-medium text-neutral-500"

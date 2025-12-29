@@ -69,20 +69,31 @@ Each collection is an iroh-docs namespace. Sharing a collection = sharing namesp
 ```
 Namespace: 7f3a8b2c... ("Climate Research")
 │
-├── files/abc123     → blob with metadata JSON
-├── files/def456     → blob with metadata JSON
-└── _collection      → blob with collection settings
+├── files/abc123/meta                → document metadata (JSON)
+├── files/abc123/text                → extracted text content
+├── files/abc123/source              → original file bytes (PDF, etc.)
+├── files/abc123/embeddings/qwen3    → chunked text + vectors for model
+├── files/def456/meta                → document metadata (JSON)
+├── files/def456/text                → extracted text content
+├── files/def456/source              → original file bytes
+├── files/def456/embeddings/qwen3    → chunked text + vectors for model
+├── _hash_index/{hash}               → duplicate detection index
+└── _collection                      → collection settings
 ```
 
-### Document Metadata (stored as blob, referenced by entry)
+All document data (content, source, embeddings) is grouped under `files/{doc_id}/`. This is the idiomatic iroh pattern: each entry's content IS the blob data. When iroh-docs syncs entries, it automatically syncs their content blobs, enabling seamless P2P document sharing.
+
+### Document Metadata (files/{id}/meta)
 
 ```json
 {
+	"id": "abc123",
 	"name": "paper.pdf",
-	"pdf_hash": "blake3-hash-of-pdf",
-	"text_hash": "blake3-hash-of-extracted-text",
+	"file_type": "application/pdf",
+	"page_count": 42,
 	"tags": ["research", "climate"],
-	"created_at": "2024-01-15T10:30:00Z"
+	"created_at": "2024-01-15T10:30:00Z",
+	"page_boundaries": [0, 1500, 3200]
 }
 ```
 
@@ -100,11 +111,31 @@ Namespace: 7f3a8b2c... ("Climate Research")
 
 ### Embedding Sync Strategy
 
-Embeddings are stored in iroh-docs under `embeddings/{doc_id}/{model_id}`. This design:
+Embeddings are stored under `files/{doc_id}/embeddings/{model_id}`, grouping all document data together. Each embedding entry contains both the chunked text and vectors:
+
+```json
+{
+	"model_id": "qwen3",
+	"dimensions": 1024,
+	"chunks": [
+		{
+			"index": 0,
+			"content": "text of chunk...",
+			"vector": [0.1, 0.2, ...],
+			"start_page": 1,
+			"end_page": 1
+		}
+	],
+	"created_at": "2024-01-15T10:30:00Z"
+}
+```
+
+This design:
 
 - **Avoids redundant computation** — generating embeddings is expensive, so peers share them
 - **Preserves model flexibility** — different peers can use different embedding models
 - **Enables offline use** — embeddings sync with documents, ready for immediate search
+- **Groups all document data** — everything about a document lives under one prefix
 
 When a peer receives a document, it checks for existing embeddings matching its configured model. If found, they're used directly. If not (different model or new document), embeddings are generated locally and stored for other peers to use.
 
@@ -114,18 +145,22 @@ When a peer receives a document, it checks for existing embeddings matching its 
 
 1. User adds PDF to collection
 2. Extract text via lopdf
-3. Store PDF blob → get `pdf_hash`
-4. Store text blob → get `text_hash`
-5. Create metadata entry in iroh-docs
-6. Index text + generate embeddings in milli
+3. Store three entries in iroh-docs:
+   - `files/{id}/meta` — metadata JSON
+   - `files/{id}/text` — extracted text
+   - `files/{id}/source` — original PDF bytes
+4. Chunk text, generate embeddings, store at `files/{id}/embeddings/{model_id}`
+5. Index chunks in milli for search
 
 ### On Sync
 
-When a new metadata entry arrives from a peer:
+When document entries arrive from a peer, iroh-docs automatically syncs the entry content blobs. The SyncWatcher listens for `files/*/meta` entries and triggers processing:
 
-1. Fetch text blob using `text_hash`
-2. Index text + generate embeddings in milli
-3. PDF blob fetched on-demand (when user opens document)
+1. Text is already available at `files/{id}/text` (synced by iroh)
+2. Check for existing embeddings at `files/{id}/embeddings/{model_id}`
+3. If embeddings exist for configured model, use them; otherwise generate locally
+4. Index chunks in milli for search
+5. Source file at `files/{id}/source` is available immediately
 
 ## Sync Model
 

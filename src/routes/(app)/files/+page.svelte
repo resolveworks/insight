@@ -24,8 +24,7 @@
 	interface Document {
 		id: string;
 		name: string;
-		pdf_hash: string;
-		text_hash: string;
+		file_type: string;
 		page_count: number;
 		tags: string[];
 		created_at: string;

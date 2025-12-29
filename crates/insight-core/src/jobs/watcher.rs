@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::embeddings::Embedder;
-use crate::storage::{LiveEvent, Storage};
+use crate::storage::{extract_doc_id, is_doc_meta_key, LiveEvent, Storage};
 
 use super::index::IndexWorkerHandle;
 use super::process_document;
@@ -150,13 +150,16 @@ async fn handle_event(
 
     let key = String::from_utf8_lossy(entry.key());
 
-    // Only process files/* events (document metadata)
-    // Ignore embeddings/*, _collection, _hash_index, etc.
-    if !key.starts_with("files/") {
+    // Only process files/*/meta events (document metadata entries)
+    // The text and source entries are synced automatically by iroh-docs,
+    // so we only need to react to the metadata entry to trigger processing.
+    if !is_doc_meta_key(&key) {
         return Ok(());
     }
 
-    let doc_id = key.strip_prefix("files/").unwrap_or(&key);
+    // Extract doc_id from "files/{doc_id}/meta"
+    let doc_id = extract_doc_id(&key).unwrap_or(&key);
+
     tracing::info!(doc_id = %doc_id, "Processing document from peer");
 
     // Get embedder and model ID
@@ -171,7 +174,7 @@ async fn handle_event(
         }
     };
 
-    // Fetch document metadata
+    // Fetch document metadata from the entry content
     let storage_guard = storage.read().await;
     let metadata_bytes = storage_guard
         .get_blob(&entry.content_hash())
@@ -180,6 +183,7 @@ async fn handle_event(
     let metadata: crate::storage::DocumentMetadata = serde_json::from_slice(&metadata_bytes)?;
 
     // Process document (shared function)
+    // With the new structure, text content is at files/{id}/text which iroh syncs automatically
     process_document(
         &storage_guard,
         emb,
@@ -201,10 +205,27 @@ async fn handle_event(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_key_prefix_matching() {
-        assert!("files/doc-123".starts_with("files/"));
-        assert!(!"embeddings/doc-123/qwen3".starts_with("files/"));
-        assert!(!"_collection".starts_with("files/"));
+    fn test_key_matching() {
+        // Only files/*/meta should trigger processing
+        assert!(is_doc_meta_key("files/doc-123/meta"));
+
+        // Text and source entries should not trigger processing
+        assert!(!is_doc_meta_key("files/doc-123/text"));
+        assert!(!is_doc_meta_key("files/doc-123/source"));
+
+        // Other keys should not trigger
+        assert!(!is_doc_meta_key("embeddings/doc-123/qwen3"));
+        assert!(!is_doc_meta_key("_collection"));
+    }
+
+    #[test]
+    fn test_extract_doc_id() {
+        assert_eq!(extract_doc_id("files/doc-123/meta"), Some("doc-123"));
+        assert_eq!(extract_doc_id("files/abc/meta"), Some("abc"));
+        assert_eq!(extract_doc_id("files/doc-123/text"), None);
+        assert_eq!(extract_doc_id("_collection"), None);
     }
 }

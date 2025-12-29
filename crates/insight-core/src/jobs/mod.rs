@@ -86,9 +86,15 @@ pub async fn process_document(
 ) -> anyhow::Result<EmbeddingData> {
     let collection_id = namespace_id.to_string();
 
-    // Generate embeddings
+    // Generate embeddings (fetches text from files/{id}/text entry)
     let embedding_data =
-        embed::generate_embeddings_data(storage, embedder, model_id, metadata).await?;
+        embed::generate_embeddings_data(storage, embedder, model_id, namespace_id, metadata)
+            .await?;
+
+    // Store embeddings to iroh so they can be retrieved later and synced to peers
+    storage
+        .store_embeddings(namespace_id, &metadata.id, embedding_data.clone())
+        .await?;
 
     // Delete old chunks (in case of re-processing)
     let deleted = index_worker
