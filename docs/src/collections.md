@@ -37,10 +37,3 @@ You can share collections directly with other Insight users—no cloud upload re
 3. Documents will copy to your computer automatically
 
 Once synced, you both have full copies. You can work offline and still access everything.
-
-## Where Documents Are Stored
-
-All your data stays on your computer:
-
-- **macOS/Linux**: `~/.local/share/insight/`
-- **Windows**: `%LOCALAPPDATA%\insight\`
