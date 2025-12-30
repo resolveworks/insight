@@ -6,6 +6,7 @@
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { onDestroy, onMount, getContext } from 'svelte';
 	import Button from '$lib/components/Button.svelte';
+	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
 	import {
 		getImportState,
 		startImport,
@@ -46,6 +47,11 @@
 		collectionsContext.list.find((c) => c.id === collectionId)?.name ??
 			'Collection',
 	);
+
+	const breadcrumbs = $derived([
+		{ label: 'Files', href: '/files' },
+		{ label: collectionName },
+	]);
 
 	let unlistenDocAdded: UnlistenFn;
 
@@ -130,45 +136,58 @@
 	});
 </script>
 
-<div class="p-6">
-	<div class="mb-4 flex items-center justify-between">
-		<h2 class="text-sm font-medium text-neutral-600">
-			{collectionName}
-		</h2>
-		<Button onclick={importPdf} disabled={importing}>
-			{#if importing && importProgress}
-				Importing {importProgress.completed}/{importProgress.total}...
-			{:else}
-				Import PDF
-			{/if}
-		</Button>
-	</div>
-	{#if documents.length === 0}
-		<p class="text-sm italic text-neutral-500">No documents yet</p>
-	{:else}
-		<ul class="space-y-2">
-			{#each documents as doc (doc.id)}
-				<li
-					class="group flex items-center justify-between rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
-				>
-					<a href={resolve(`/files/${collectionId}/${doc.id}`)} class="flex-1">
-						<span
-							class="text-neutral-800 transition-colors hover:text-primary-600"
-							>{doc.name}</span
-						>
-						<span class="ml-2 text-xs text-neutral-500"
-							>{doc.page_count} pages</span
-						>
-					</a>
-					<button
-						onclick={() => deleteDocument(doc.id)}
-						class="hidden text-neutral-400 hover:text-error group-hover:block"
-						title="Delete document"
+<div class="flex h-full flex-col">
+	<!-- Header -->
+	<header class="border-b border-neutral-200 bg-surface-bright px-6 py-4">
+		<div class="flex items-center justify-between">
+			<Breadcrumb segments={breadcrumbs} />
+			<Button onclick={importPdf} disabled={importing}>
+				{#if importing && importProgress}
+					Importing {importProgress.completed}/{importProgress.total}...
+				{:else}
+					Import PDF
+				{/if}
+			</Button>
+		</div>
+	</header>
+
+	<!-- Content -->
+	<div class="flex-1 overflow-y-auto p-6">
+		{#if documents.length === 0}
+			<div class="flex flex-col items-center justify-center py-12">
+				<p class="text-neutral-500">No documents yet</p>
+				<p class="mt-1 text-sm text-neutral-400">
+					Import PDFs to add documents to this collection.
+				</p>
+			</div>
+		{:else}
+			<ul class="space-y-2">
+				{#each documents as doc (doc.id)}
+					<li
+						class="group flex items-center justify-between rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
-						x
-					</button>
-				</li>
-			{/each}
-		</ul>
-	{/if}
+						<a
+							href={resolve(`/files/${collectionId}/${doc.id}`)}
+							class="flex-1"
+						>
+							<span
+								class="text-neutral-800 transition-colors hover:text-primary-600"
+								>{doc.name}</span
+							>
+							<span class="ml-2 text-xs text-neutral-500"
+								>{doc.page_count} pages</span
+							>
+						</a>
+						<button
+							onclick={() => deleteDocument(doc.id)}
+							class="hidden text-neutral-400 hover:text-error group-hover:block"
+							title="Delete document"
+						>
+							x
+						</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
 </div>
