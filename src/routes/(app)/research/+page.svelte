@@ -1,20 +1,11 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { invoke } from '@tauri-apps/api/core';
-	import { onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import Chat from '$lib/components/Chat.svelte';
 	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
+	import * as collectionsStore from '$lib/stores/collections.svelte';
 
 	const STORAGE_KEY = 'insight:activeConversationId';
-
-	interface Collection {
-		id: string;
-		name: string;
-		document_count: number;
-		total_pages: number;
-		created_at?: string;
-	}
 
 	interface CollectionInfo {
 		id: string;
@@ -42,8 +33,8 @@
 		}
 	});
 
-	// Collection filters
-	let collections = $state<Collection[]>([]);
+	// Collection filters - use the global store
+	const collections = $derived(collectionsStore.getCollections());
 	let selectedCollections = new SvelteSet<string>();
 
 	// Derive collection info for the Chat component
@@ -80,18 +71,6 @@
 		await chatComponent?.newConversation();
 	}
 
-	async function loadCollections() {
-		try {
-			collections = await invoke<Collection[]>('get_collections');
-			// Select all collections by default
-			for (const c of collections) {
-				selectedCollections.add(c.id);
-			}
-		} catch (e) {
-			console.error('Failed to load collections:', e);
-		}
-	}
-
 	function selectAll() {
 		for (const c of collections) {
 			selectedCollections.add(c.id);
@@ -102,8 +81,15 @@
 		selectedCollections.clear();
 	}
 
-	onMount(() => {
-		loadCollections();
+	// Select all collections when they load
+	let initialSelectionDone = false;
+	$effect(() => {
+		if (!initialSelectionDone && collections.length > 0) {
+			for (const c of collections) {
+				selectedCollections.add(c.id);
+			}
+			initialSelectionDone = true;
+		}
 	});
 </script>
 

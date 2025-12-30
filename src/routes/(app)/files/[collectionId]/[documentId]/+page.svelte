@@ -4,6 +4,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
+	import * as collections from '$lib/stores/collections.svelte';
 
 	interface Document {
 		id: string;
@@ -14,16 +15,9 @@
 		created_at: string;
 	}
 
-	interface Collection {
-		id: string;
-		name: string;
-		document_count: number;
-	}
-
 	let document = $state<Document | null>(null);
 	let content = $state<string | null>(null);
 	let chunks = $state<string[] | null>(null);
-	let collectionName = $state<string>('');
 	let loading = $state(true);
 	let loadingContent = $state(false);
 	let loadingChunks = $state(false);
@@ -33,11 +27,14 @@
 
 	const collectionId = $derived($page.params.collectionId);
 	const documentId = $derived($page.params.documentId);
+	const collection = $derived(
+		collectionId ? collections.getCollection(collectionId) : undefined,
+	);
 
 	const breadcrumbs = $derived([
 		{ label: 'Files', href: '/files' },
 		{
-			label: collectionName || 'Collection',
+			label: collection?.name || 'Collection',
 			href: `/files/${collectionId}`,
 		},
 		{ label: document?.name || 'Document' },
@@ -85,13 +82,6 @@
 
 	onMount(async () => {
 		try {
-			// Load collection name
-			const collections = await invoke<Collection[]>('get_collections');
-			const collection = collections.find((c) => c.id === collectionId);
-			if (collection) {
-				collectionName = collection.name;
-			}
-
 			// Load document metadata
 			document = await invoke<Document>('get_document', {
 				collectionId,

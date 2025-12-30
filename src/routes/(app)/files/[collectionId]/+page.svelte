@@ -4,13 +4,10 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy, onMount, getContext } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
-	import {
-		getCollectionProgress,
-		isImporting,
-	} from '$lib/stores/import-state.svelte';
+	import * as collections from '$lib/stores/collections.svelte';
 
 	interface Document {
 		id: string;
@@ -21,25 +18,20 @@
 		created_at: string;
 	}
 
-	interface CollectionsContext {
-		list: { id: string; name: string; document_count: number }[];
-		selected: string | null;
-	}
-
-	const collectionsContext = getContext<CollectionsContext>('collections');
-
 	let documents = $state<Document[]>([]);
 
 	const collectionId = $derived($page.params.collectionId);
-	const collectionName = $derived(
-		collectionsContext.list.find((c) => c.id === collectionId)?.name ??
-			'Collection',
+	const collection = $derived(
+		collectionId ? collections.getCollection(collectionId) : undefined,
 	);
+	const collectionName = $derived(collection?.name ?? 'Collection');
 
 	// Import state from global store (persists across navigation)
-	const importing = $derived(collectionId ? isImporting(collectionId) : false);
+	const importing = $derived(
+		collectionId ? collections.isImporting(collectionId) : false,
+	);
 	const importProgress = $derived(
-		collectionId ? getCollectionProgress(collectionId) : undefined,
+		collectionId ? collections.getImportProgress(collectionId) : undefined,
 	);
 
 	const breadcrumbs = $derived([
@@ -63,16 +55,7 @@
 		if (!files) return;
 
 		const paths = Array.isArray(files) ? files : [files];
-
-		try {
-			// Use the new start_import command - it queues files and processes async
-			await invoke('start_import', {
-				paths,
-				collectionId,
-			});
-		} catch (e) {
-			console.error('Failed to start import:', e);
-		}
+		await collections.startImport(collectionId, paths);
 	}
 
 	async function loadDocuments() {

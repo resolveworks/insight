@@ -1,28 +1,11 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { getContext } from 'svelte';
 	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Input from '$lib/components/Input.svelte';
 	import ErrorAlert from '$lib/components/ErrorAlert.svelte';
-
-	interface Collection {
-		id: string;
-		name: string;
-		document_count: number;
-	}
-
-	interface CollectionsContext {
-		list: Collection[];
-		selected: string | null;
-		createCollection: (name: string) => Promise<Collection | null>;
-		deleteCollection: (id: string) => Promise<boolean>;
-		shareCollection: (id: string) => Promise<string | null>;
-		importCollection: (ticket: string) => Promise<Collection | null>;
-	}
-
-	const collections = getContext<CollectionsContext>('collections');
+	import * as collections from '$lib/stores/collections.svelte';
 
 	// Create collection state
 	let newCollectionName = $state('');
@@ -39,6 +22,8 @@
 	let importError = $state<string | null>(null);
 
 	const breadcrumbs = [{ label: 'Files' }];
+
+	const collectionList = $derived(collections.getCollections());
 
 	async function handleCreateCollection() {
 		if (!newCollectionName.trim()) return;
@@ -160,7 +145,7 @@
 		</div>
 
 		<!-- Collections grid -->
-		{#if collections.list.length === 0}
+		{#if collectionList.length === 0}
 			<div class="flex flex-col items-center justify-center py-12">
 				<p class="text-neutral-500">No collections yet</p>
 				<p class="mt-1 text-sm text-neutral-400">
@@ -169,7 +154,7 @@
 			</div>
 		{:else}
 			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-				{#each collections.list as collection (collection.id)}
+				{#each collectionList as collection (collection.id)}
 					<div
 						class="group relative rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
