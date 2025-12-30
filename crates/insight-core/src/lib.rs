@@ -162,24 +162,6 @@ impl AppState {
         let index = search::open_index(&config.search_dir)?;
         let indexer_config = IndexerConfig::default();
 
-        // Configure embedder in search index if previously set
-        let settings = Settings::load(&config.settings_file);
-        if let Some(ref model_id) = settings.embedding_model_id {
-            if let Some(model) = models::get_embedding_model(model_id) {
-                if let Err(e) =
-                    search::configure_embedder(&index, &indexer_config, "default", model.dimensions)
-                {
-                    tracing::warn!("Failed to configure embedder in index: {}", e);
-                } else {
-                    tracing::info!(
-                        "Configured embedder '{}' ({}D) in search index",
-                        model_id,
-                        model.dimensions
-                    );
-                }
-            }
-        }
-
         // Wrap in Arc for sharing
         let storage = Arc::new(RwLock::new(storage));
         let search = Arc::new(index);
@@ -303,6 +285,16 @@ impl AppState {
             Ok(emb) => {
                 *self.embedder.write().await = Some(emb);
                 *self.embedding_model_id.write().await = Some(model_id.clone());
+
+                // Configure embedder in search index for vector search
+                // This must happen before any documents with vectors can be indexed
+                if let Err(e) = self
+                    .index_worker
+                    .configure_embedder("default".to_string(), model.dimensions)
+                    .await
+                {
+                    tracing::warn!("Failed to configure embedder in index: {}", e);
+                }
 
                 tracing::info!("Embedding model '{}' loaded", model_id);
                 let _ = status_tx

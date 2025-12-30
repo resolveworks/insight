@@ -434,7 +434,7 @@
 						</summary>
 						<div class="p-2">
 							<pre
-								class="max-h-24 overflow-auto text-xs text-neutral-600">{JSON.stringify(
+								class="max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{JSON.stringify(
 									block.arguments,
 									null,
 									2,
@@ -448,7 +448,7 @@
 							: ''}"
 					>
 						<pre
-							class="max-h-48 overflow-auto text-neutral-700 {block.is_error
+							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-neutral-700 {block.is_error
 								? 'text-error'
 								: ''}">{block.content}</pre>
 					</div>
@@ -485,7 +485,7 @@
 							: ''}"
 					>
 						<pre
-							class="max-h-32 overflow-auto text-neutral-700 {block.is_error
+							class="max-h-32 overflow-auto whitespace-pre-wrap break-words text-neutral-700 {block.is_error
 								? 'text-error'
 								: ''}">{block.content.slice(0, 300)}{block.content.length > 300
 								? '...'

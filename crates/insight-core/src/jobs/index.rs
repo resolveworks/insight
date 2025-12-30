@@ -32,6 +32,12 @@ pub enum IndexRequest {
         collection_id: String,
         response_tx: oneshot::Sender<anyhow::Result<usize>>,
     },
+    /// Configure embedder for vector search.
+    ConfigureEmbedder {
+        embedder_name: String,
+        dimensions: usize,
+        response_tx: oneshot::Sender<anyhow::Result<()>>,
+    },
 }
 
 /// Handle to send requests to the index worker.
@@ -85,6 +91,28 @@ impl IndexWorkerHandle {
         self.tx
             .send(IndexRequest::DeleteCollection {
                 collection_id,
+                response_tx,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("Index worker channel closed"))?;
+        response_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("Index worker dropped response"))?
+    }
+
+    /// Configure embedder for vector search.
+    ///
+    /// This must be called before indexing documents with vectors.
+    pub async fn configure_embedder(
+        &self,
+        embedder_name: String,
+        dimensions: usize,
+    ) -> anyhow::Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.tx
+            .send(IndexRequest::ConfigureEmbedder {
+                embedder_name,
+                dimensions,
                 response_tx,
             })
             .await
@@ -174,6 +202,23 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
                 tracing::error!(collection_id = %collection_id, error = %e, "Failed to delete collection chunks");
             } else if let Ok(count) = result {
                 tracing::debug!(collection_id = %collection_id, deleted = count, "Deleted collection chunks");
+            }
+
+            let _ = response_tx.send(result);
+        }
+
+        IndexRequest::ConfigureEmbedder {
+            embedder_name,
+            dimensions,
+            response_tx,
+        } => {
+            tracing::debug!(embedder_name = %embedder_name, dimensions, "Processing configure embedder request");
+
+            let result =
+                search::configure_embedder(index, indexer_config, &embedder_name, dimensions);
+
+            if let Err(ref e) = result {
+                tracing::error!(embedder_name = %embedder_name, error = %e, "Failed to configure embedder");
             }
 
             let _ = response_tx.send(result);
