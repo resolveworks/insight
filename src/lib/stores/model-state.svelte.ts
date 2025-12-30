@@ -1,8 +1,9 @@
 /**
  * Global store for model state.
- * Listens to model-status-changed and model-download-progress events from backend.
+ * Queries backend for initial state and listens for real-time updates.
  */
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export type ModelType = 'embedding' | 'language';
 
@@ -21,7 +22,6 @@ export interface ModelState {
 	progress: DownloadProgress | null;
 }
 
-/** Status event from backend */
 interface ModelStatusEvent {
 	status: 'downloading' | 'loading' | 'ready' | 'failed';
 	model_type: ModelType;
@@ -30,7 +30,6 @@ interface ModelStatusEvent {
 	error?: string;
 }
 
-/** Progress event from backend */
 interface ModelDownloadProgressEvent {
 	model_type: ModelType;
 	file: string;
@@ -41,76 +40,68 @@ interface ModelDownloadProgressEvent {
 	total_files: number;
 }
 
-const initialState: ModelState = {
+interface EmbeddingStatus {
+	ready: boolean;
+	error: string | null;
+	model_id: string | null;
+}
+
+const embeddingState = $state<ModelState>({
 	ready: false,
 	error: null,
 	progress: null,
-};
-
-// Module-level reactive state (persists across component mounts)
-const embeddingState = $state<ModelState>({ ...initialState });
-const languageState = $state<ModelState>({ ...initialState });
-
-// Track if listeners have been set up
-let listenersInitialized = false;
-const unlisteners: UnlistenFn[] = [];
-
-function getStateForType(modelType: ModelType): ModelState {
-	return modelType === 'embedding' ? embeddingState : languageState;
-}
+});
+const languageState = $state<ModelState>({
+	ready: false,
+	error: null,
+	progress: null,
+});
 
 function updateState(modelType: ModelType, updates: Partial<ModelState>) {
 	const state = modelType === 'embedding' ? embeddingState : languageState;
 	Object.assign(state, updates);
 }
 
-async function setupListeners() {
-	if (listenersInitialized) return;
-	listenersInitialized = true;
+// Initialize on module load
+if (typeof window !== 'undefined') {
+	// Query current embedding state
+	invoke<EmbeddingStatus>('get_embedding_status')
+		.then((status) => {
+			updateState('embedding', {
+				ready: status.ready,
+				error: status.error,
+				progress: null,
+			});
+		})
+		.catch((e) => console.error('Failed to get embedding status:', e));
 
 	// Listen for status changes
-	unlisteners.push(
-		await listen<ModelStatusEvent>('model-status-changed', (e) => {
-			const { status, model_type, error } = e.payload;
+	listen<ModelStatusEvent>('model-status-changed', (e) => {
+		const { status, model_type, error } = e.payload;
+		const state = model_type === 'embedding' ? embeddingState : languageState;
 
-			updateState(model_type, {
-				ready: status === 'ready',
-				error: status === 'failed' ? (error ?? 'Unknown error') : null,
-				// Clear progress when not downloading
-				progress:
-					status === 'downloading'
-						? getStateForType(model_type).progress
-						: null,
-			});
-		}),
-	);
+		updateState(model_type, {
+			ready: status === 'ready',
+			error: status === 'failed' ? (error ?? 'Unknown error') : null,
+			progress: status === 'downloading' ? state.progress : null,
+		});
+	});
 
 	// Listen for download progress
-	unlisteners.push(
-		await listen<ModelDownloadProgressEvent>('model-download-progress', (e) => {
-			const { model_type, ...progress } = e.payload;
-
-			updateState(model_type, { progress });
-		}),
-	);
+	listen<ModelDownloadProgressEvent>('model-download-progress', (e) => {
+		const { model_type, ...progress } = e.payload;
+		updateState(model_type, { progress });
+	});
 }
 
-// Initialize listeners when module is imported (in browser context)
-if (typeof window !== 'undefined') {
-	setupListeners();
-}
-
-/** Get model state for a model type */
 export function getModelState(modelType: ModelType): ModelState {
 	return modelType === 'embedding' ? embeddingState : languageState;
 }
 
-/** Get embedding model state */
 export function getEmbeddingState(): ModelState {
 	return embeddingState;
 }
 
-/** Get language model state */
 export function getLanguageState(): ModelState {
 	return languageState;
 }

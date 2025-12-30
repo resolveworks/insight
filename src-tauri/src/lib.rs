@@ -88,6 +88,7 @@ pub fn run() {
             // Model commands (unified)
             commands::get_available_models,
             commands::get_model_status,
+            commands::get_embedding_status,
             commands::download_model,
             commands::get_current_model,
             commands::configure_model,

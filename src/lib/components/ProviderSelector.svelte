@@ -9,7 +9,6 @@
 	import {
 		getProviderState,
 		setProvider,
-		initProviderState,
 	} from '$lib/stores/provider-state.svelte';
 
 	interface ProviderFamily {
@@ -70,34 +69,30 @@
 		return false;
 	});
 
+	// Sync UI to active provider
+	$effect(() => {
+		if (currentProvider) {
+			selectedFamily = currentProvider.type;
+
+			if (
+				currentProvider.type === 'openai' ||
+				currentProvider.type === 'anthropic'
+			) {
+				apiKey = currentProvider.api_key;
+				selectedModel = currentProvider.model;
+				verifyApiKey();
+			}
+		}
+	});
+
 	async function load() {
 		try {
-			// Load provider families and stored API keys in parallel
 			const [familiesResult, keysResult] = await Promise.all([
 				invoke<ProviderFamily[]>('get_provider_families'),
 				invoke<StoredApiKeys>('get_stored_api_keys'),
 			]);
 			families = familiesResult;
 			storedKeys = keysResult;
-
-			// Ensure provider state is initialized
-			await initProviderState();
-
-			// Set initial tab based on current provider
-			if (currentProvider) {
-				selectedFamily = currentProvider.type;
-
-				// Pre-populate for remote providers
-				if (
-					currentProvider.type === 'openai' ||
-					currentProvider.type === 'anthropic'
-				) {
-					apiKey = currentProvider.api_key;
-					selectedModel = currentProvider.model;
-					// Fetch models to populate dropdown
-					await verifyApiKey();
-				}
-			}
 		} catch (e) {
 			error = `Failed to load providers: ${e}`;
 		}

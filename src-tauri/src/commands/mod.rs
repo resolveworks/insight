@@ -870,6 +870,29 @@ pub async fn download_model(
     Ok(())
 }
 
+/// Embedding model status for frontend sync
+#[derive(Debug, Clone, Serialize)]
+pub struct EmbeddingStatus {
+    pub ready: bool,
+    pub error: Option<String>,
+    pub model_id: Option<String>,
+}
+
+/// Get the current embedding model status
+///
+/// Used by the frontend to sync state on HMR reload or initial load.
+#[tauri::command]
+pub async fn get_embedding_status(state: State<'_, AppState>) -> CommandResult<EmbeddingStatus> {
+    let embedder_guard = state.embedder.read().await;
+    let model_id_guard = state.embedding_model_id.read().await;
+
+    Ok(EmbeddingStatus {
+        ready: embedder_guard.is_some(),
+        error: None, // Errors are transient during load, not persisted
+        model_id: model_id_guard.clone(),
+    })
+}
+
 /// Get the currently configured model ID for a type
 #[tauri::command]
 pub async fn get_current_model(
