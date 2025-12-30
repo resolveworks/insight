@@ -23,11 +23,16 @@
 mod embed;
 mod import;
 mod index;
+mod processing;
 pub mod watcher;
 
 pub use embed::{generate_and_store_embeddings, generate_embeddings_data};
 pub use import::{ImportFileStatus, ImportProgress, ImportTracker};
 pub use index::{spawn_index_worker, IndexWorkerHandle};
+pub use processing::{
+    spawn_processing_worker, DocumentToProcess, ProcessingEvent, ProcessingProgress,
+    ProcessingStatus, ProcessingWorkerHandle,
+};
 pub use watcher::SyncWatcher;
 
 use std::path::Path;

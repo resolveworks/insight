@@ -32,6 +32,15 @@ export interface ImportProgress {
 	in_progress: number;
 }
 
+export interface ProcessingProgress {
+	collection_id: string;
+	total: number;
+	completed: number;
+	failed: number;
+	pending: number;
+	in_progress: number;
+}
+
 interface DocumentAddedEvent {
 	collection_id: string;
 	document: Document;
@@ -42,10 +51,12 @@ let collections = $state<Collection[]>([]);
 let loading = $state(false);
 let error = $state<string | null>(null);
 let importProgress = $state<Record<string, ImportProgress>>({});
+let processingProgress = $state<Record<string, ProcessingProgress>>({});
 
 // Track unlisten functions for cleanup
 let unlistenDocAdded: UnlistenFn | null = null;
 let unlistenImportProgress: UnlistenFn | null = null;
+let unlistenProcessingProgress: UnlistenFn | null = null;
 
 function updateCollectionDocCount(collectionId: string, delta: number) {
 	collections = collections.map((c) =>
@@ -64,6 +75,20 @@ function updateImportProgress(progress: ImportProgress) {
 	} else {
 		importProgress = {
 			...importProgress,
+			[progress.collection_id]: progress,
+		};
+	}
+}
+
+function updateProcessingProgress(progress: ProcessingProgress) {
+	if (progress.pending === 0 && progress.in_progress === 0) {
+		// Processing complete, remove from tracking
+		const updated = { ...processingProgress };
+		delete updated[progress.collection_id];
+		processingProgress = updated;
+	} else {
+		processingProgress = {
+			...processingProgress,
 			[progress.collection_id]: progress,
 		};
 	}
@@ -95,6 +120,19 @@ async function loadImportProgress() {
 	}
 }
 
+async function loadProcessingProgress() {
+	try {
+		const allProgress = await invoke<ProcessingProgress[]>(
+			'get_processing_progress',
+		);
+		for (const progress of allProgress) {
+			updateProcessingProgress(progress);
+		}
+	} catch (e) {
+		console.error('Failed to get processing progress:', e);
+	}
+}
+
 async function setupEventListeners() {
 	unlistenDocAdded = await listen<DocumentAddedEvent>(
 		'document-added',
@@ -110,12 +148,32 @@ async function setupEventListeners() {
 			updateImportProgress(event.payload);
 		},
 	);
+
+	unlistenProcessingProgress = await listen<{ collection_id: string }>(
+		'processing-progress',
+		async () => {
+			// Event only contains collection_id, fetch full progress
+			try {
+				const allProgress = await invoke<ProcessingProgress[]>(
+					'get_processing_progress',
+				);
+				// Clear existing progress and update with fresh data
+				processingProgress = {};
+				for (const progress of allProgress) {
+					updateProcessingProgress(progress);
+				}
+			} catch (e) {
+				console.error('Failed to refresh processing progress:', e);
+			}
+		},
+	);
 }
 
 // Initialize on module load
 if (typeof window !== 'undefined') {
 	loadCollections();
 	loadImportProgress();
+	loadProcessingProgress();
 	setupEventListeners();
 }
 
@@ -127,6 +185,8 @@ export function cleanup() {
 	unlistenDocAdded = null;
 	unlistenImportProgress?.();
 	unlistenImportProgress = null;
+	unlistenProcessingProgress?.();
+	unlistenProcessingProgress = null;
 }
 
 // =============================================================================
@@ -298,4 +358,40 @@ export function getAllImportProgress(): ImportProgress[] {
  */
 export function hasActiveImports(): boolean {
 	return Object.keys(importProgress).length > 0;
+}
+
+// =============================================================================
+// Processing progress (embedding + indexing)
+// =============================================================================
+
+/**
+ * Get processing progress for a specific collection.
+ */
+export function getProcessingProgress(
+	collectionId: string,
+): ProcessingProgress | undefined {
+	return processingProgress[collectionId];
+}
+
+/**
+ * Check if any processing is active for a collection.
+ */
+export function isProcessing(collectionId: string): boolean {
+	const progress = processingProgress[collectionId];
+	if (!progress) return false;
+	return progress.pending > 0 || progress.in_progress > 0;
+}
+
+/**
+ * Get all active processing progress.
+ */
+export function getAllProcessingProgress(): ProcessingProgress[] {
+	return Object.values(processingProgress);
+}
+
+/**
+ * Check if any processing is active globally.
+ */
+export function hasActiveProcessing(): boolean {
+	return Object.keys(processingProgress).length > 0;
 }

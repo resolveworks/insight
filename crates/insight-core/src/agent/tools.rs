@@ -455,7 +455,8 @@ mod tests {
         std::fs::create_dir_all(&config.iroh_dir).unwrap();
         std::fs::create_dir_all(&config.search_dir).unwrap();
 
-        AppState::new(config).await.unwrap()
+        let (state, _rx) = AppState::new(config).await.unwrap();
+        state
     }
 
     fn test_indexer_config() -> IndexerConfig {
@@ -977,7 +978,7 @@ mod tests {
             conversations_dir: temp_dir.path().join("conversations"),
         };
         std::fs::create_dir_all(&config.iroh_dir).unwrap();
-        let state = AppState::new(config).await.unwrap();
+        let (state, _rx) = AppState::new(config).await.unwrap();
 
         let ctx = AgentContext {
             state,
@@ -1029,7 +1030,7 @@ mod tests {
         };
         std::fs::create_dir_all(&cfg.iroh_dir).unwrap();
         std::fs::create_dir_all(&cfg.search_dir).unwrap();
-        let state = AppState::new(cfg).await.unwrap();
+        let (state, _rx) = AppState::new(cfg).await.unwrap();
 
         let ctx = AgentContext {
             state,
@@ -1090,7 +1091,7 @@ mod tests {
         };
         std::fs::create_dir_all(&cfg.iroh_dir).unwrap();
         std::fs::create_dir_all(&cfg.search_dir).unwrap();
-        let state = AppState::new(cfg).await.unwrap();
+        let (state, _rx) = AppState::new(cfg).await.unwrap();
 
         let ctx = AgentContext {
             state,
@@ -1143,7 +1144,7 @@ mod tests {
         };
         std::fs::create_dir_all(&cfg.iroh_dir).unwrap();
         std::fs::create_dir_all(&cfg.search_dir).unwrap();
-        let state = AppState::new(cfg).await.unwrap();
+        let (state, _rx) = AppState::new(cfg).await.unwrap();
 
         let ctx = AgentContext {
             state,

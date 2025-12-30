@@ -100,8 +100,9 @@ pub use agent::provider::{
 pub use agent::{AgentContext, AgentEvent, Conversation};
 pub use config::{Config, Settings};
 pub use jobs::{
-    import_and_index_pdf, process_document, spawn_index_worker, ImportFileStatus, ImportProgress,
-    ImportTracker, IndexWorkerHandle, SyncWatcher,
+    import_and_index_pdf, process_document, spawn_index_worker, spawn_processing_worker,
+    DocumentToProcess, ImportFileStatus, ImportProgress, ImportTracker, IndexWorkerHandle,
+    ProcessingEvent, ProcessingProgress, ProcessingWorkerHandle, SyncWatcher,
 };
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
@@ -138,12 +139,19 @@ pub struct AppState {
     sync_cancel: CancellationToken,
     /// Import tracker for tracking and resuming file imports
     pub import_tracker: ImportTracker,
+    /// Processing worker for embedding + indexing documents
+    pub processing_worker: ProcessingWorkerHandle,
 }
+
+use tokio::sync::mpsc;
 
 impl AppState {
     /// Create AppState with initialized storage and search.
     /// Called from setup() where Tauri's async runtime is available.
-    pub async fn new(config: Config) -> anyhow::Result<Self> {
+    ///
+    /// Returns the state and a receiver for processing events (document indexed, etc.)
+    /// that should be forwarded to the frontend.
+    pub async fn new(config: Config) -> anyhow::Result<(Self, mpsc::Receiver<ProcessingEvent>)> {
         // Initialize model manager (HuggingFace cache + API client)
         let model_manager = Arc::new(models::ModelManager::new().await?);
 
@@ -182,26 +190,38 @@ impl AppState {
         // The worker is automatically stopped when all handles are dropped
         let index_worker = spawn_index_worker(search.clone(), indexer_config);
 
+        // Spawn processing worker - handles embedding + indexing asynchronously
+        let (processing_worker, processing_events) = spawn_processing_worker(
+            storage.clone(),
+            embedder.clone(),
+            embedding_model_id.clone(),
+            index_worker.clone(),
+        );
+
         // Initialize import tracker (in-memory only)
         let import_tracker = ImportTracker::new();
 
-        Ok(Self {
-            config,
-            model_manager,
-            storage,
-            search,
-            index_worker,
-            embedder,
-            embedding_model_id,
-            chat_provider: Arc::new(RwLock::new(None)),
-            provider_config: Arc::new(RwLock::new(None)),
-            conversations: Arc::new(RwLock::new(HashMap::new())),
-            active_generations: Arc::new(RwLock::new(HashMap::new())),
-            active_predictions: Arc::new(RwLock::new(HashMap::new())),
-            sync_watchers: Arc::new(RwLock::new(HashMap::new())),
-            sync_cancel: CancellationToken::new(),
-            import_tracker,
-        })
+        Ok((
+            Self {
+                config,
+                model_manager,
+                storage,
+                search,
+                index_worker,
+                embedder,
+                embedding_model_id,
+                chat_provider: Arc::new(RwLock::new(None)),
+                provider_config: Arc::new(RwLock::new(None)),
+                conversations: Arc::new(RwLock::new(HashMap::new())),
+                active_generations: Arc::new(RwLock::new(HashMap::new())),
+                active_predictions: Arc::new(RwLock::new(HashMap::new())),
+                sync_watchers: Arc::new(RwLock::new(HashMap::new())),
+                sync_cancel: CancellationToken::new(),
+                import_tracker,
+                processing_worker,
+            },
+            processing_events,
+        ))
     }
 
     /// Load configured models on startup.
@@ -391,9 +411,7 @@ impl AppState {
         let watcher = SyncWatcher::spawn(
             namespace_id,
             self.storage.clone(),
-            self.embedder.clone(),
-            self.embedding_model_id.clone(),
-            self.index_worker.clone(),
+            self.processing_worker.clone(),
             self.sync_cancel.clone(),
         );
 

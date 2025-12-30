@@ -18,12 +18,18 @@
 	);
 	const collectionName = $derived(collection?.name ?? 'Collection');
 
-	// Import state from global store (persists across navigation)
+	// Import and processing state from global store (persists across navigation)
 	const importing = $derived(
 		collectionId ? collections.isImporting(collectionId) : false,
 	);
 	const importProgress = $derived(
 		collectionId ? collections.getImportProgress(collectionId) : undefined,
+	);
+	const processing = $derived(
+		collectionId ? collections.isProcessing(collectionId) : false,
+	);
+	const processingProgress = $derived(
+		collectionId ? collections.getProcessingProgress(collectionId) : undefined,
 	);
 
 	const breadcrumbs = $derived([
@@ -104,13 +110,20 @@
 	<header class="border-b border-neutral-200 bg-surface-bright px-6 py-4">
 		<div class="flex items-center justify-between">
 			<Breadcrumb segments={breadcrumbs} />
-			<Button onclick={importPdf} disabled={importing}>
+			<div class="flex items-center gap-3">
 				{#if importing && importProgress}
-					Importing ({importProgress.pending + importProgress.in_progress} remaining)
-				{:else}
-					Import PDF
+					<span class="text-sm text-neutral-500">
+						Importing {importProgress.pending + importProgress.in_progress}...
+					</span>
 				{/if}
-			</Button>
+				{#if processing && processingProgress}
+					<span class="text-sm text-neutral-500">
+						Indexing {processingProgress.pending +
+							processingProgress.in_progress}...
+					</span>
+				{/if}
+				<Button onclick={importPdf} disabled={importing}>Import PDF</Button>
+			</div>
 		</div>
 	</header>
 

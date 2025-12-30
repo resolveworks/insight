@@ -4,7 +4,7 @@ pub mod error;
 
 use tauri::Manager;
 
-use crate::core::{AppState, Config, ModelDownloadProgress, ModelStatus};
+use crate::core::{AppState, Config, ModelDownloadProgress, ModelStatus, ProcessingEvent};
 
 /// Initialize tracing/logging with the given directives
 pub fn init_logging(directives: &[&str]) {
@@ -29,7 +29,8 @@ pub fn run() {
             config.ensure_dirs()?;
 
             // Initialize state using Tauri's async runtime (fast, ~100ms)
-            let state = tauri::async_runtime::block_on(AppState::new(config))?;
+            let (state, mut processing_events) =
+                tauri::async_runtime::block_on(AppState::new(config))?;
             app.manage(state);
 
             // Load models in background (slow, 20-30s)
@@ -60,6 +61,19 @@ pub fn run() {
                     }
                 });
 
+                // Forward processing events to frontend
+                let processing_handle = app_handle.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = processing_events.recv().await {
+                        let event_name = match &event {
+                            ProcessingEvent::Indexed { .. } => "document-indexed",
+                            ProcessingEvent::Failed { .. } => "processing-failed",
+                            ProcessingEvent::ProgressChanged { .. } => "processing-progress",
+                        };
+                        let _ = processing_handle.emit(event_name, &event);
+                    }
+                });
+
                 state_clone
                     .load_models_if_configured(status_tx, progress_tx)
                     .await;
@@ -79,6 +93,7 @@ pub fn run() {
             commands::get_document_chunks,
             commands::start_import,
             commands::get_import_progress,
+            commands::get_processing_progress,
             commands::delete_document,
             // Conversation commands
             commands::list_conversations,

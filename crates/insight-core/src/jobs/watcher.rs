@@ -1,6 +1,6 @@
 //! Sync watcher for handling documents arriving from peers.
 //!
-//! Watches a namespace for InsertRemote events and processes them.
+//! Watches a namespace for InsertRemote events and queues them for processing.
 //! Local imports are handled directly (not through events).
 
 use std::sync::Arc;
@@ -10,11 +10,9 @@ use iroh_docs::NamespaceId;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::embeddings::Embedder;
 use crate::storage::{extract_doc_id, is_doc_meta_key, LiveEvent, Storage};
 
-use super::index::IndexWorkerHandle;
-use super::process_document;
+use super::processing::{DocumentToProcess, ProcessingWorkerHandle};
 
 /// Watches a namespace for documents arriving from peers.
 ///
@@ -27,14 +25,12 @@ pub struct SyncWatcher {
 impl SyncWatcher {
     /// Spawn a sync watcher for a namespace.
     ///
-    /// The watcher subscribes to namespace events and processes documents
-    /// that arrive from peers (InsertRemote events).
+    /// The watcher subscribes to namespace events and queues documents
+    /// that arrive from peers (InsertRemote events) for processing.
     pub fn spawn(
         namespace_id: NamespaceId,
         storage: Arc<RwLock<Storage>>,
-        embedder: Arc<RwLock<Option<Embedder>>>,
-        model_id: Arc<RwLock<Option<String>>>,
-        index_worker: IndexWorkerHandle,
+        processing_worker: ProcessingWorkerHandle,
         cancel: CancellationToken,
     ) -> Self {
         let cancel_clone = cancel.clone();
@@ -43,9 +39,7 @@ impl SyncWatcher {
             if let Err(e) = run_watcher(
                 namespace_id,
                 storage,
-                embedder,
-                model_id,
-                index_worker,
+                processing_worker,
                 cancel_clone.clone(),
             )
             .await
@@ -72,9 +66,7 @@ impl SyncWatcher {
 async fn run_watcher(
     namespace_id: NamespaceId,
     storage: Arc<RwLock<Storage>>,
-    embedder: Arc<RwLock<Option<Embedder>>>,
-    model_id: Arc<RwLock<Option<String>>>,
-    index_worker: IndexWorkerHandle,
+    processing_worker: ProcessingWorkerHandle,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     // Subscribe to namespace events
@@ -103,9 +95,7 @@ async fn run_watcher(
                             &live_event,
                             namespace_id,
                             &storage,
-                            &embedder,
-                            &model_id,
-                            &index_worker,
+                            &processing_worker,
                         ).await {
                             tracing::warn!(
                                 namespace = %namespace_id,
@@ -138,9 +128,7 @@ async fn handle_event(
     event: &LiveEvent,
     namespace_id: NamespaceId,
     storage: &Arc<RwLock<Storage>>,
-    embedder: &Arc<RwLock<Option<Embedder>>>,
-    model_id: &Arc<RwLock<Option<String>>>,
-    index_worker: &IndexWorkerHandle,
+    processing_worker: &ProcessingWorkerHandle,
 ) -> anyhow::Result<()> {
     // Only handle InsertRemote - local imports are processed directly
     let entry = match event {
@@ -160,19 +148,7 @@ async fn handle_event(
     // Extract doc_id from "files/{doc_id}/meta"
     let doc_id = extract_doc_id(&key).unwrap_or(&key);
 
-    tracing::info!(doc_id = %doc_id, "Processing document from peer");
-
-    // Get embedder and model ID
-    let embedder_guard = embedder.read().await;
-    let model_id_guard = model_id.read().await;
-
-    let (emb, mid) = match (&*embedder_guard, &*model_id_guard) {
-        (Some(e), Some(m)) => (e, m.clone()),
-        _ => {
-            tracing::warn!(doc_id = %doc_id, "No embedder configured, skipping sync document");
-            return Ok(());
-        }
-    };
+    tracing::info!(doc_id = %doc_id, "Received document from peer, queuing for processing");
 
     // Fetch document metadata from the entry content
     let storage_guard = storage.read().await;
@@ -181,23 +157,20 @@ async fn handle_event(
         .await?
         .ok_or_else(|| anyhow::anyhow!("Metadata blob not found for {}", doc_id))?;
     let metadata: crate::storage::DocumentMetadata = serde_json::from_slice(&metadata_bytes)?;
+    drop(storage_guard);
 
-    // Process document (shared function)
-    // With the new structure, text content is at files/{id}/text which iroh syncs automatically
-    process_document(
-        &storage_guard,
-        emb,
-        &mid,
-        namespace_id,
-        index_worker,
-        &metadata,
-    )
-    .await?;
+    // Queue for processing (embedding + indexing happens asynchronously)
+    processing_worker
+        .queue(DocumentToProcess {
+            namespace_id,
+            metadata: metadata.clone(),
+        })
+        .await?;
 
     tracing::info!(
         doc_id = %metadata.id,
         name = %metadata.name,
-        "Synced document from peer"
+        "Queued synced document for processing"
     );
 
     Ok(())
