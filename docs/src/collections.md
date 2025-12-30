@@ -37,3 +37,26 @@ You can share collections directly with other Insight users—no cloud upload re
 3. Documents will copy to your computer automatically
 
 Once synced, you both have full copies. You can work offline and still access everything.
+
+### Revoking Access
+
+Insight uses capability-based sharing—when you share a collection, you give someone a cryptographic key that grants access. This has an important implication:
+
+**You cannot revoke access once shared.**
+
+Once someone has the key:
+
+- They keep any documents already synced to their computer
+- They can continue syncing with other peers who have the collection
+- There's no central server that can block their access
+
+This is a fundamental tradeoff of decentralized systems: you get privacy and no single point of failure, but you lose centralized control.
+
+**If you need to stop sharing with someone:**
+
+1. Create a new collection
+2. Copy the documents you want to keep sharing
+3. Share the new collection only with trusted colleagues
+4. Stop using the old collection
+
+For sensitive material, consider who truly needs access before sharing. Once shared, assume the recipient has permanent access to everything in that collection.
