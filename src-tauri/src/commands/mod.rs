@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::core::{import_and_index_pdf, search, AppState, CollectionInfo};
+use crate::error::{CommandError, CommandResult, ResultExt};
 use iroh_docs::NamespaceId;
 
 /// Document metadata returned to frontend
@@ -17,13 +18,10 @@ pub struct DocumentInfo {
 
 /// Get all collections
 #[tauri::command]
-pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<CollectionInfo>, String> {
+pub async fn get_collections(state: State<'_, AppState>) -> CommandResult<Vec<CollectionInfo>> {
     let storage = state.storage.read().await;
 
-    let collections = storage
-        .list_collections()
-        .await
-        .map_err(|e| e.to_string())?;
+    let collections = storage.list_collections().await.storage_err()?;
 
     // Build CollectionInfo for each collection
     let mut result = Vec::with_capacity(collections.len());
@@ -51,15 +49,12 @@ pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<Collectio
 pub async fn create_collection(
     name: String,
     state: State<'_, AppState>,
-) -> Result<CollectionInfo, String> {
+) -> CommandResult<CollectionInfo> {
     tracing::info!("Creating collection: {}", name);
 
     let storage = state.storage.read().await;
 
-    let (namespace_id, metadata) = storage
-        .create_collection(&name)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (namespace_id, metadata) = storage.create_collection(&name).await.storage_err()?;
 
     drop(storage);
 
@@ -105,14 +100,16 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
     collection_id: String,
     app: AppHandle<R>,
     state: State<'_, AppState>,
-) -> Result<BatchImportResult, String> {
+) -> CommandResult<BatchImportResult> {
     tracing::info!(
         "Importing {} PDFs into collection {}",
         paths.len(),
         collection_id
     );
 
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     // Get embedder and model ID (required for import)
     let embedder_guard = state.embedder.read().await;
@@ -120,11 +117,7 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
 
     let (embedder, model_id) = match (&*embedder_guard, &*model_id_guard) {
         (Some(e), Some(m)) => (e, m.clone()),
-        _ => {
-            return Err(
-                "Embedder not configured. Please configure an embedding model first.".into(),
-            )
-        }
+        _ => return Err(CommandError::embedder_not_configured()),
     };
 
     let mut successful = Vec::new();
@@ -192,15 +185,14 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
 pub async fn get_documents(
     collection_id: String,
     state: State<'_, AppState>,
-) -> Result<Vec<DocumentInfo>, String> {
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+) -> CommandResult<Vec<DocumentInfo>> {
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     let storage = state.storage.read().await;
 
-    let documents = storage
-        .list_documents(namespace_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let documents = storage.list_documents(namespace_id).await.storage_err()?;
 
     Ok(documents
         .into_iter()
@@ -221,16 +213,18 @@ pub async fn get_document(
     collection_id: String,
     document_id: String,
     state: State<'_, AppState>,
-) -> Result<DocumentInfo, String> {
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+) -> CommandResult<DocumentInfo> {
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     let storage = state.storage.read().await;
 
     let document = storage
         .get_document(namespace_id, &document_id)
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Document not found".to_string())?;
+        .storage_err()?
+        .ok_or(CommandError::document_not_found())?;
 
     Ok(DocumentInfo {
         id: document.id,
@@ -248,8 +242,10 @@ pub async fn get_document_text(
     collection_id: String,
     document_id: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+) -> CommandResult<String> {
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     let storage = state.storage.read().await;
 
@@ -257,10 +253,12 @@ pub async fn get_document_text(
     let text_bytes = storage
         .get_document_text(namespace_id, &document_id)
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Text content not found".to_string())?;
+        .storage_err()?
+        .ok_or(CommandError::text_not_found())?;
 
-    String::from_utf8(text_bytes).map_err(|e| format!("Invalid UTF-8 in text content: {}", e))
+    String::from_utf8(text_bytes).map_err(|e| CommandError::InvalidUtf8 {
+        message: format!("Invalid UTF-8 in text content: {}", e),
+    })
 }
 
 /// Get the text chunks for a document (read from stored embeddings)
@@ -269,21 +267,23 @@ pub async fn get_document_chunks(
     collection_id: String,
     document_id: String,
     state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+) -> CommandResult<Vec<String>> {
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     // Get current embedding model ID
     let model_id_guard = state.embedding_model_id.read().await;
     let model_id = model_id_guard
         .as_ref()
-        .ok_or_else(|| "No embedding model configured".to_string())?;
+        .ok_or(CommandError::embedder_not_configured())?;
 
     // Fetch stored embeddings
     let storage = state.storage.read().await;
     let embeddings = storage
         .get_embeddings(namespace_id, &document_id, model_id)
         .await
-        .map_err(|e| e.to_string())?;
+        .storage_err()?;
 
     match embeddings {
         Some(data) => Ok(data.chunks.into_iter().map(|c| c.content).collect()),
@@ -297,14 +297,16 @@ pub async fn delete_document(
     collection_id: String,
     document_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     tracing::info!(
         "Deleting document {} from collection {}",
         document_id,
         collection_id
     );
 
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     // Delete from storage first
     {
@@ -312,7 +314,7 @@ pub async fn delete_document(
         storage
             .delete_document(namespace_id, &document_id)
             .await
-            .map_err(|e| e.to_string())?;
+            .storage_err()?;
     }
 
     // Delete all chunks for this document from search index in background
@@ -347,10 +349,12 @@ pub async fn delete_document(
 pub async fn delete_collection(
     collection_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     tracing::info!("Deleting collection {}", collection_id);
 
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     // Delete from storage first
     {
@@ -358,7 +362,7 @@ pub async fn delete_collection(
         storage
             .delete_collection(namespace_id)
             .await
-            .map_err(|e| e.to_string())?;
+            .storage_err()?;
     }
 
     // Delete all chunks from search index in background
@@ -397,21 +401,23 @@ pub async fn share_collection(
     collection_id: String,
     writable: bool,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     tracing::info!(
         "Sharing collection {} (writable: {})",
         collection_id,
         writable
     );
 
-    let namespace_id: NamespaceId = collection_id.parse().map_err(|_| "Invalid collection ID")?;
+    let namespace_id: NamespaceId = collection_id
+        .parse()
+        .map_err(|_| CommandError::invalid_collection_id())?;
 
     let storage = state.storage.read().await;
 
     storage
         .share_collection(namespace_id, writable)
         .await
-        .map_err(|e| e.to_string())
+        .storage_err()
 }
 
 /// Import a collection from a share ticket
@@ -422,15 +428,12 @@ pub async fn share_collection(
 pub async fn import_collection(
     ticket: String,
     state: State<'_, AppState>,
-) -> Result<CollectionInfo, String> {
+) -> CommandResult<CollectionInfo> {
     tracing::info!("Importing collection from ticket");
 
     let namespace_id = {
         let storage = state.storage.read().await;
-        storage
-            .import_collection(&ticket)
-            .await
-            .map_err(|e| e.to_string())?
+        storage.import_collection(&ticket).await.storage_err()?
     };
 
     // Start watching the imported collection for sync events
@@ -442,8 +445,8 @@ pub async fn import_collection(
     let metadata = storage
         .get_collection_metadata(namespace_id)
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or("Collection metadata not found after import")?;
+        .storage_err()?
+        .ok_or(CommandError::collection_not_found())?;
 
     let documents = storage
         .list_documents(namespace_id)
@@ -472,8 +475,8 @@ use tokio_util::sync::CancellationToken;
 #[tauri::command]
 pub async fn list_conversations(
     state: State<'_, AppState>,
-) -> Result<Vec<conversations::ConversationSummary>, String> {
-    conversations::list_conversations(&state.config.conversations_dir).map_err(|e| e.to_string())
+) -> CommandResult<Vec<conversations::ConversationSummary>> {
+    conversations::list_conversations(&state.config.conversations_dir).storage_err()
 }
 
 /// Load a conversation by ID
@@ -481,9 +484,9 @@ pub async fn list_conversations(
 pub async fn load_conversation(
     conversation_id: String,
     state: State<'_, AppState>,
-) -> Result<agent::Conversation, String> {
+) -> CommandResult<agent::Conversation> {
     let path = conversations::conversation_path(&state.config.conversations_dir, &conversation_id);
-    let conversation = conversations::load_conversation(&path).map_err(|e| e.to_string())?;
+    let conversation = conversations::load_conversation(&path).storage_err()?;
 
     // Add to in-memory cache
     state
@@ -503,11 +506,11 @@ pub async fn load_conversation(
 pub async fn start_chat(
     collections: Option<Vec<agent::CollectionInfo>>,
     state: State<'_, AppState>,
-) -> Result<agent::Conversation, String> {
+) -> CommandResult<agent::Conversation> {
     // Verify provider is configured
     let provider_guard = state.chat_provider.read().await;
     if provider_guard.is_none() {
-        return Err("No chat provider configured".to_string());
+        return Err(CommandError::provider_not_configured());
     }
     drop(provider_guard);
 
@@ -556,7 +559,7 @@ pub async fn start_chat(
 
     // Save to disk
     conversations::save_conversation(&state.config.conversations_dir, &conversation)
-        .map_err(|e| e.to_string())?;
+        .storage_err()?;
 
     state
         .conversations
@@ -578,7 +581,7 @@ pub async fn send_message(
     collections: Option<Vec<agent::CollectionInfo>>,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     tracing::info!(
         "Sending message to conversation {}: {}",
         conversation_id,
@@ -589,14 +592,14 @@ pub async fn send_message(
     let mut conversations = state.conversations.write().await;
     let conversation = conversations
         .get_mut(&conversation_id)
-        .ok_or("Conversation not found")?
+        .ok_or(CommandError::conversation_not_found())?
         .clone();
     drop(conversations);
 
     // Verify provider is configured
     let provider_guard = state.chat_provider.read().await;
     if provider_guard.is_none() {
-        return Err("No chat provider configured".to_string());
+        return Err(CommandError::provider_not_configured());
     }
     drop(provider_guard);
 
@@ -695,7 +698,7 @@ pub async fn send_message(
 pub async fn cancel_generation(
     conversation_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let generations = state.active_generations.read().await;
     if let Some(token) = generations.get(&conversation_id) {
         token.cancel();
@@ -748,7 +751,7 @@ impl From<models::EmbeddingModelInfo> for ModelInfo {
 
 /// Get list of available models for a type
 #[tauri::command]
-pub async fn get_available_models(model_type: ModelType) -> Result<Vec<ModelInfo>, String> {
+pub async fn get_available_models(model_type: ModelType) -> CommandResult<Vec<ModelInfo>> {
     Ok(match model_type {
         ModelType::Language => models::available_language_models()
             .into_iter()
@@ -775,16 +778,16 @@ pub async fn get_model_status(
     model_type: ModelType,
     model_id: String,
     state: State<'_, AppState>,
-) -> Result<DownloadStatus, String> {
+) -> CommandResult<DownloadStatus> {
     let is_downloaded = match model_type {
         ModelType::Language => {
             let model = models::get_language_model(&model_id)
-                .ok_or_else(|| format!("Model not found: {}", model_id))?;
+                .ok_or(CommandError::model_not_found(&model_id))?;
             state.model_manager.is_downloaded(&model)
         }
         ModelType::Embedding => {
             let model = models::get_embedding_model(&model_id)
-                .ok_or_else(|| format!("Model not found: {}", model_id))?;
+                .ok_or(CommandError::model_not_found(&model_id))?;
             state.model_manager.is_downloaded(&model)
         }
     };
@@ -803,19 +806,19 @@ pub async fn download_model(
     model_id: String,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     use crate::core::{ModelDownloadProgress, ModelStatus};
 
     // Check if already downloaded and get model for download
     let is_downloaded = match model_type {
         ModelType::Language => {
             let model = models::get_language_model(&model_id)
-                .ok_or_else(|| format!("Model not found: {}", model_id))?;
+                .ok_or(CommandError::model_not_found(&model_id))?;
             state.model_manager.is_downloaded(&model)
         }
         ModelType::Embedding => {
             let model = models::get_embedding_model(&model_id)
-                .ok_or_else(|| format!("Model not found: {}", model_id))?;
+                .ok_or(CommandError::model_not_found(&model_id))?;
             state.model_manager.is_downloaded(&model)
         }
     };
@@ -852,7 +855,7 @@ pub async fn download_model(
                 .model_manager
                 .download(&model, model_type, status_tx, progress_tx)
                 .await
-                .map_err(|e| e.to_string())?;
+                .external_err()?;
         }
         ModelType::Embedding => {
             let model = models::get_embedding_model(&model_id).unwrap();
@@ -860,7 +863,7 @@ pub async fn download_model(
                 .model_manager
                 .download(&model, model_type, status_tx, progress_tx)
                 .await
-                .map_err(|e| e.to_string())?;
+                .external_err()?;
         }
     }
 
@@ -872,7 +875,7 @@ pub async fn download_model(
 pub async fn get_current_model(
     model_type: ModelType,
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> CommandResult<Option<String>> {
     Ok(match model_type {
         ModelType::Language => {
             let provider_config = state.provider_config.read().await;
@@ -891,7 +894,7 @@ pub async fn configure_model(
     model_type: ModelType,
     model_id: Option<String>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     match model_type {
         ModelType::Language => configure_language_model_impl(model_id, state).await,
         ModelType::Embedding => configure_embedding_model_impl(model_id, state).await,
@@ -901,12 +904,11 @@ pub async fn configure_model(
 async fn configure_language_model_impl(
     model_id: Option<String>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     use crate::core::{LocalProvider, ProviderConfig, Settings};
 
     if let Some(ref id) = model_id {
-        let model = models::get_language_model(id)
-            .ok_or_else(|| format!("Language model not found: {}", id))?;
+        let model = models::get_language_model(id).ok_or(CommandError::model_not_found(id))?;
 
         tracing::info!(
             "Configuring local language model: {} ({})",
@@ -917,11 +919,11 @@ async fn configure_language_model_impl(
         let model_path = state
             .model_manager
             .get_path(&model)
-            .ok_or_else(|| format!("Model not downloaded: {}", id))?;
+            .ok_or(CommandError::model_not_downloaded(id))?;
 
         let provider = LocalProvider::load(&model_path, &model)
             .await
-            .map_err(|e| format!("Failed to load model: {}", e))?;
+            .map_err(|e| CommandError::internal(format!("Failed to load model: {}", e)))?;
 
         let provider_config = ProviderConfig::Local {
             model_id: id.clone(),
@@ -931,9 +933,7 @@ async fn configure_language_model_impl(
 
         let mut settings = Settings::load(&state.config.settings_file);
         settings.provider = Some(provider_config);
-        settings
-            .save(&state.config.settings_file)
-            .map_err(|e| e.to_string())?;
+        settings.save(&state.config.settings_file).storage_err()?;
     } else {
         tracing::info!("Unloading chat provider");
         *state.chat_provider.write().await = None;
@@ -941,9 +941,7 @@ async fn configure_language_model_impl(
 
         let mut settings = Settings::load(&state.config.settings_file);
         settings.provider = None;
-        settings
-            .save(&state.config.settings_file)
-            .map_err(|e| e.to_string())?;
+        settings.save(&state.config.settings_file).storage_err()?;
     }
 
     Ok(())
@@ -952,12 +950,11 @@ async fn configure_language_model_impl(
 async fn configure_embedding_model_impl(
     model_id: Option<String>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     use crate::core::{Embedder, Settings};
 
     if let Some(ref id) = model_id {
-        let model = models::get_embedding_model(id)
-            .ok_or_else(|| format!("Embedding model not found: {}", id))?;
+        let model = models::get_embedding_model(id).ok_or(CommandError::model_not_found(id))?;
 
         tracing::info!(
             "Configuring embedding model: {} ({})",
@@ -967,13 +964,15 @@ async fn configure_embedding_model_impl(
 
         let embedder = Embedder::new(&model.hf_repo_id, model.dimensions)
             .await
-            .map_err(|e| format!("Failed to load embedder: {}", e))?;
+            .map_err(|e| CommandError::internal(format!("Failed to load embedder: {}", e)))?;
 
         {
             let index = &*state.search;
             let indexer_config = milli::update::IndexerConfig::default();
             search::configure_embedder(index, &indexer_config, "default", model.dimensions)
-                .map_err(|e| format!("Failed to configure embedder in index: {}", e))?;
+                .map_err(|e| {
+                    CommandError::internal(format!("Failed to configure embedder in index: {}", e))
+                })?;
         }
 
         *state.embedder.write().await = Some(embedder);
@@ -995,9 +994,7 @@ async fn configure_embedding_model_impl(
 
     let mut settings = Settings::load(&state.config.settings_file);
     settings.embedding_model_id = model_id;
-    settings
-        .save(&state.config.settings_file)
-        .map_err(|e| e.to_string())?;
+    settings.save(&state.config.settings_file).storage_err()?;
 
     Ok(())
 }
@@ -1021,25 +1018,23 @@ pub async fn get_provider_families() -> Vec<ProviderFamily> {
 #[tauri::command]
 pub async fn get_current_provider(
     state: State<'_, AppState>,
-) -> Result<Option<ProviderConfig>, String> {
+) -> CommandResult<Option<ProviderConfig>> {
     let config = state.provider_config.read().await;
     Ok(config.clone())
 }
 
 /// Fetch available models from OpenAI API
 #[tauri::command]
-pub async fn fetch_openai_models(api_key: String) -> Result<Vec<RemoteModelInfo>, String> {
-    OpenAIProvider::fetch_models(&api_key)
-        .await
-        .map_err(|e| e.to_string())
+pub async fn fetch_openai_models(api_key: String) -> CommandResult<Vec<RemoteModelInfo>> {
+    OpenAIProvider::fetch_models(&api_key).await.external_err()
 }
 
 /// Fetch available models for Anthropic (verifies API key)
 #[tauri::command]
-pub async fn fetch_anthropic_models(api_key: String) -> Result<Vec<RemoteModelInfo>, String> {
+pub async fn fetch_anthropic_models(api_key: String) -> CommandResult<Vec<RemoteModelInfo>> {
     AnthropicProvider::verify_api_key(&api_key)
         .await
-        .map_err(|e| e.to_string())
+        .external_err()
 }
 
 /// Configure OpenAI as the chat provider
@@ -1048,7 +1043,7 @@ pub async fn configure_openai_provider(
     api_key: String,
     model: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     use crate::core::Settings;
 
     tracing::info!("Configuring OpenAI provider with model: {}", model);
@@ -1067,9 +1062,7 @@ pub async fn configure_openai_provider(
     let mut settings = Settings::load(&state.config.settings_file);
     settings.provider = Some(config);
     settings.openai_api_key = Some(api_key);
-    settings
-        .save(&state.config.settings_file)
-        .map_err(|e| e.to_string())?;
+    settings.save(&state.config.settings_file).storage_err()?;
 
     tracing::info!("OpenAI provider configured successfully");
     Ok(())
@@ -1081,7 +1074,7 @@ pub async fn configure_anthropic_provider(
     api_key: String,
     model: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     use crate::core::Settings;
 
     tracing::info!("Configuring Anthropic provider with model: {}", model);
@@ -1100,9 +1093,7 @@ pub async fn configure_anthropic_provider(
     let mut settings = Settings::load(&state.config.settings_file);
     settings.provider = Some(config);
     settings.anthropic_api_key = Some(api_key);
-    settings
-        .save(&state.config.settings_file)
-        .map_err(|e| e.to_string())?;
+    settings.save(&state.config.settings_file).storage_err()?;
 
     tracing::info!("Anthropic provider configured successfully");
     Ok(())
@@ -1110,7 +1101,7 @@ pub async fn configure_anthropic_provider(
 
 /// Get stored API keys (for auto-populating when switching providers)
 #[tauri::command]
-pub async fn get_stored_api_keys(state: State<'_, AppState>) -> Result<StoredApiKeys, String> {
+pub async fn get_stored_api_keys(state: State<'_, AppState>) -> CommandResult<StoredApiKeys> {
     use crate::core::Settings;
 
     let settings = Settings::load(&state.config.settings_file);
@@ -1144,7 +1135,7 @@ Rules:
 pub async fn predict_next_message(
     conversation_id: String,
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> CommandResult<Option<String>> {
     // Get conversation
     let conversations = state.conversations.read().await;
     let conversation = match conversations.get(&conversation_id) {
@@ -1258,7 +1249,7 @@ pub async fn predict_next_message(
 pub async fn cancel_prediction(
     conversation_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let predictions = state.active_predictions.read().await;
     if let Some(token) = predictions.get(&conversation_id) {
         token.cancel();
