@@ -5,7 +5,7 @@
 	import DownloadProgress from '$lib/components/DownloadProgress.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import Button from '$lib/components/Button.svelte';
-	import { getEmbeddingState } from '$lib/stores/model-state.svelte';
+	import { getEmbeddingState } from '$lib/stores/provider-state.svelte';
 
 	let { children } = $props();
 
@@ -52,7 +52,7 @@
 	</CenteredLayout>
 {:else if embeddingState.progress}
 	<CenteredLayout width="sm">
-		<DownloadProgress modelType="embedding" />
+		<DownloadProgress providerType="embedding" />
 		<p class="mt-6 text-center text-sm text-neutral-500">
 			This is a one-time download. The model will be cached locally.
 		</p>

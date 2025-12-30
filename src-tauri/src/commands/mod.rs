@@ -5,6 +5,12 @@ use crate::core::{import_and_index_pdf, search, AppState, CollectionInfo, Import
 use crate::error::{CommandError, CommandResult, ResultExt};
 use iroh_docs::NamespaceId;
 
+/// Parse a collection ID string into a NamespaceId
+fn parse_collection_id(id: &str) -> CommandResult<NamespaceId> {
+    id.parse()
+        .map_err(|_| CommandError::invalid_collection_id())
+}
+
 /// Document metadata returned to frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentInfo {
@@ -99,9 +105,7 @@ pub async fn start_import<R: tauri::Runtime>(
         collection_id
     );
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     // Verify embedder is ready before queuing
     {
@@ -255,9 +259,7 @@ pub async fn get_documents(
     collection_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<DocumentInfo>> {
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     let storage = state.storage.read().await;
 
@@ -283,9 +285,7 @@ pub async fn get_document(
     document_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<DocumentInfo> {
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     let storage = state.storage.read().await;
 
@@ -312,9 +312,7 @@ pub async fn get_document_text(
     document_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<String> {
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     let storage = state.storage.read().await;
 
@@ -337,9 +335,7 @@ pub async fn get_document_chunks(
     document_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<String>> {
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     // Get current embedding model ID
     let model_id_guard = state.embedding_model_id.read().await;
@@ -373,9 +369,7 @@ pub async fn delete_document(
         collection_id
     );
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     // Delete from storage first
     {
@@ -421,9 +415,7 @@ pub async fn delete_collection(
 ) -> CommandResult<()> {
     tracing::info!("Deleting collection {}", collection_id);
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     // Delete from storage first
     {
@@ -477,9 +469,7 @@ pub async fn share_collection(
         writable
     );
 
-    let namespace_id: NamespaceId = collection_id
-        .parse()
-        .map_err(|_| CommandError::invalid_collection_id())?;
+    let namespace_id = parse_collection_id(&collection_id)?;
 
     let storage = state.storage.read().await;
 
@@ -577,11 +567,9 @@ pub async fn start_chat(
     state: State<'_, AppState>,
 ) -> CommandResult<agent::Conversation> {
     // Verify provider is configured
-    let provider_guard = state.chat_provider.read().await;
-    if provider_guard.is_none() {
+    if state.chat_provider.read().await.is_none() {
         return Err(CommandError::provider_not_configured());
     }
-    drop(provider_guard);
 
     // Enrich collection info with document counts and total pages
     let enriched_collections = match collections {
@@ -658,19 +646,18 @@ pub async fn send_message(
     );
 
     // Get conversation
-    let mut conversations = state.conversations.write().await;
-    let conversation = conversations
-        .get_mut(&conversation_id)
+    let conversation = state
+        .conversations
+        .read()
+        .await
+        .get(&conversation_id)
         .ok_or(CommandError::conversation_not_found())?
         .clone();
-    drop(conversations);
 
     // Verify provider is configured
-    let provider_guard = state.chat_provider.read().await;
-    if provider_guard.is_none() {
+    if state.chat_provider.read().await.is_none() {
         return Err(CommandError::provider_not_configured());
     }
-    drop(provider_guard);
 
     // Create cancellation token
     let cancel_token = CancellationToken::new();
@@ -939,26 +926,50 @@ pub async fn download_model(
     Ok(())
 }
 
-/// Embedding model status for frontend sync
+/// Unified provider status for frontend sync
 #[derive(Debug, Clone, Serialize)]
-pub struct EmbeddingStatus {
-    pub ready: bool,
-    pub error: Option<String>,
+pub struct ProviderStatus {
+    /// Provider type: "local", "openai", "anthropic", or null if not configured
+    pub provider_type: Option<String>,
+    /// Model ID within the provider
     pub model_id: Option<String>,
+    /// Whether the provider is ready to use
+    pub ready: bool,
+    /// Error message if failed (transient, not persisted)
+    pub error: Option<String>,
 }
 
-/// Get the current embedding model status
+/// Get the current provider status for embedding or language
 ///
 /// Used by the frontend to sync state on HMR reload or initial load.
 #[tauri::command]
-pub async fn get_embedding_status(state: State<'_, AppState>) -> CommandResult<EmbeddingStatus> {
-    let embedder_guard = state.embedder.read().await;
-    let model_id_guard = state.embedding_model_id.read().await;
+pub async fn get_provider_status(
+    model_type: ModelType,
+    state: State<'_, AppState>,
+) -> CommandResult<ProviderStatus> {
+    Ok(match model_type {
+        ModelType::Embedding => {
+            let embedder_guard = state.embedder.read().await;
+            let model_id_guard = state.embedding_model_id.read().await;
 
-    Ok(EmbeddingStatus {
-        ready: embedder_guard.is_some(),
-        error: None, // Errors are transient during load, not persisted
-        model_id: model_id_guard.clone(),
+            ProviderStatus {
+                provider_type: model_id_guard.as_ref().map(|_| "local".to_string()),
+                model_id: model_id_guard.clone(),
+                ready: embedder_guard.is_some(),
+                error: None,
+            }
+        }
+        ModelType::Language => {
+            let provider_guard = state.chat_provider.read().await;
+            let config_guard = state.provider_config.read().await;
+
+            ProviderStatus {
+                provider_type: config_guard.as_ref().map(|c| c.provider_type().to_string()),
+                model_id: config_guard.as_ref().map(|c| c.model_id().to_string()),
+                ready: provider_guard.is_some(),
+                error: None,
+            }
+        }
     })
 }
 
@@ -1229,12 +1240,10 @@ pub async fn predict_next_message(
     state: State<'_, AppState>,
 ) -> CommandResult<Option<String>> {
     // Get conversation
-    let conversations = state.conversations.read().await;
-    let conversation = match conversations.get(&conversation_id) {
+    let conversation = match state.conversations.read().await.get(&conversation_id) {
         Some(c) => c.clone(),
         None => return Ok(None),
     };
-    drop(conversations);
 
     // Don't predict if conversation is too short (need at least user + assistant message)
     let non_system_messages = conversation

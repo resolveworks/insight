@@ -7,8 +7,8 @@
 	import Input from './Input.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 	import {
-		getProviderState,
-		setProvider,
+		getLanguageState,
+		setLanguageProvider,
 	} from '$lib/stores/provider-state.svelte';
 
 	interface ProviderFamily {
@@ -40,9 +40,8 @@
 	let families = $state<ProviderFamily[]>([]);
 	let selectedFamily = $state<string>('local');
 
-	// Use global provider state
-	const providerState = getProviderState();
-	let currentProvider = $derived(providerState.provider);
+	// Use global language provider state
+	const languageState = getLanguageState();
 
 	// Stored API keys (for switching between providers without re-entering)
 	let storedKeys = $state<StoredApiKeys>({ openai: null, anthropic: null });
@@ -57,30 +56,37 @@
 
 	// Check if the current provider matches selected family and model
 	let isCurrentActive = $derived(() => {
-		if (!currentProvider) return false;
-		if (currentProvider.type !== selectedFamily) return false;
-		if (currentProvider.type === 'local') return true;
+		if (!languageState.providerType) return false;
+		if (languageState.providerType !== selectedFamily) return false;
+		if (languageState.providerType === 'local') return true;
 		if (
-			currentProvider.type === 'openai' ||
-			currentProvider.type === 'anthropic'
+			languageState.providerType === 'openai' ||
+			languageState.providerType === 'anthropic'
 		) {
-			return currentProvider.model === selectedModel;
+			return languageState.modelId === selectedModel;
 		}
 		return false;
 	});
 
-	// Sync UI to active provider
+	// Sync UI to active provider on initial load
 	$effect(() => {
-		if (currentProvider) {
-			selectedFamily = currentProvider.type;
+		if (languageState.providerType) {
+			selectedFamily = languageState.providerType;
 
 			if (
-				currentProvider.type === 'openai' ||
-				currentProvider.type === 'anthropic'
+				languageState.providerType === 'openai' ||
+				languageState.providerType === 'anthropic'
 			) {
-				apiKey = currentProvider.api_key;
-				selectedModel = currentProvider.model;
-				verifyApiKey();
+				selectedModel = languageState.modelId;
+				// Use stored API key for verification
+				const storedKey =
+					languageState.providerType === 'openai'
+						? storedKeys.openai
+						: storedKeys.anthropic;
+				if (storedKey) {
+					apiKey = storedKey;
+					verifyApiKey();
+				}
 			}
 		}
 	});
@@ -108,13 +114,19 @@
 		apiKey = '';
 
 		// Restore state if switching to current provider's family
-		if (currentProvider?.type === id) {
+		if (languageState.providerType === id) {
 			if (
-				currentProvider.type === 'openai' ||
-				currentProvider.type === 'anthropic'
+				languageState.providerType === 'openai' ||
+				languageState.providerType === 'anthropic'
 			) {
-				apiKey = currentProvider.api_key;
-				selectedModel = currentProvider.model;
+				const storedKey =
+					languageState.providerType === 'openai'
+						? storedKeys.openai
+						: storedKeys.anthropic;
+				if (storedKey) {
+					apiKey = storedKey;
+				}
+				selectedModel = languageState.modelId;
 				// Re-verify to populate models
 				verifyApiKey();
 			}
@@ -177,11 +189,7 @@
 			}
 
 			// Update global provider state
-			setProvider({
-				type: selectedFamily as 'openai' | 'anthropic',
-				api_key: apiKey,
-				model: selectedModel,
-			});
+			setLanguageProvider(selectedFamily, selectedModel);
 
 			// Notify parent
 			onConfigured?.();
@@ -194,7 +202,7 @@
 
 	function handleLocalProviderConfigured(modelId: string | null) {
 		if (modelId) {
-			setProvider({ type: 'local', model_id: modelId });
+			setLanguageProvider('local', modelId);
 			onConfigured?.();
 		}
 	}
@@ -205,7 +213,7 @@
 
 		try {
 			await invoke('configure_model', { modelType: 'language', modelId: null });
-			setProvider(null);
+			setLanguageProvider(null, null);
 		} catch (e) {
 			error = `Failed to disable: ${e}`;
 		} finally {
@@ -233,7 +241,7 @@
 	</div>
 
 	<!-- Current Provider Status (if active) -->
-	{#if currentProvider && currentProvider.type === selectedFamily}
+	{#if languageState.providerType && languageState.providerType === selectedFamily}
 		<div
 			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-primary-400 bg-primary-50 text-neutral-700"
 		>
@@ -251,10 +259,10 @@
 				/>
 			</svg>
 			<span>
-				{#if currentProvider.type === 'local'}
+				{#if languageState.providerType === 'local'}
 					Local model active
 				{:else}
-					{currentProvider.type === 'openai' ? 'OpenAI' : 'Anthropic'}: {currentProvider.model}
+					{languageState.providerType === 'openai' ? 'OpenAI' : 'Anthropic'}: {languageState.modelId}
 				{/if}
 			</span>
 			<button

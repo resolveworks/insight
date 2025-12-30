@@ -1,22 +1,22 @@
 <script lang="ts">
 	import {
-		getModelState,
-		type ModelType,
-	} from '$lib/stores/model-state.svelte';
+		getProviderState,
+		type ProviderType,
+	} from '$lib/stores/provider-state.svelte';
 
 	type Props = {
-		modelType: ModelType;
+		providerType: ProviderType;
 		title?: string;
 		accentColor?: 'primary' | 'accent';
 	};
 
 	let {
-		modelType,
+		providerType,
 		title = 'Downloading model',
 		accentColor = 'accent',
 	}: Props = $props();
 
-	let state = $derived(getModelState(modelType));
+	let state = $derived(getProviderState(providerType));
 
 	let progressBarClass = $derived(
 		accentColor === 'primary' ? 'bg-primary-500' : 'bg-tertiary-500',

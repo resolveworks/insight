@@ -1,9 +1,9 @@
-import type { ModelType } from '$lib/stores/model-state.svelte';
+import type { ProviderType } from '$lib/stores/provider-state.svelte';
 
 /** Configuration for model selector component */
 export interface ModelSelectorConfig {
-	/** Model type for store lookup and unified commands */
-	modelType: ModelType;
+	/** Provider type for store lookup and unified commands */
+	providerType: ProviderType;
 	/** Display title */
 	title: string;
 	/** Accent color */
@@ -11,13 +11,13 @@ export interface ModelSelectorConfig {
 }
 
 export const languageModelConfig: ModelSelectorConfig = {
-	modelType: 'language',
+	providerType: 'language',
 	title: 'Language Model',
 	accentColor: 'slate',
 };
 
 export const embeddingModelConfig: ModelSelectorConfig = {
-	modelType: 'embedding',
+	providerType: 'embedding',
 	title: 'Embedding Model',
 	accentColor: 'emerald',
 };

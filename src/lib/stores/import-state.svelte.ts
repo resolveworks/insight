@@ -1,8 +1,9 @@
 /**
  * Global store for import progress state.
- * Tracks active imports via backend events.
+ * Queries backend for initial state and tracks updates via events.
  */
-import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export interface ImportProgress {
 	collection_id: string;
@@ -13,24 +14,55 @@ export interface ImportProgress {
 	in_progress: number;
 }
 
-// Plain object for reactivity - reassign to trigger updates
+// Module-level reactive state
 let progressByCollection = $state<Record<string, ImportProgress>>({});
 
-// Listen for progress updates from backend
-if (typeof window !== 'undefined') {
-	listen<ImportProgress>('import-progress', (event) => {
-		const progress = event.payload;
-		if (progress.pending === 0 && progress.in_progress === 0) {
-			// Import complete, remove from tracking
-			delete progressByCollection[progress.collection_id];
-			progressByCollection = { ...progressByCollection };
-		} else {
-			progressByCollection = {
-				...progressByCollection,
-				[progress.collection_id]: progress,
-			};
+// Track unlisten function for cleanup
+let unlisten: UnlistenFn | null = null;
+
+function updateProgress(progress: ImportProgress) {
+	if (progress.pending === 0 && progress.in_progress === 0) {
+		// Import complete, remove from tracking
+		const updated = { ...progressByCollection };
+		delete updated[progress.collection_id];
+		progressByCollection = updated;
+	} else {
+		progressByCollection = {
+			...progressByCollection,
+			[progress.collection_id]: progress,
+		};
+	}
+}
+
+async function queryInitialState() {
+	try {
+		const allProgress = await invoke<ImportProgress[]>('get_import_progress');
+		for (const progress of allProgress) {
+			updateProgress(progress);
 		}
+	} catch (e) {
+		console.error('Failed to get import progress:', e);
+	}
+}
+
+async function setupEventListener() {
+	unlisten = await listen<ImportProgress>('import-progress', (event) => {
+		updateProgress(event.payload);
 	});
+}
+
+// Initialize on module load
+if (typeof window !== 'undefined') {
+	queryInitialState();
+	setupEventListener();
+}
+
+/**
+ * Cleanup event listener. Call this on app unmount if needed.
+ */
+export function cleanup() {
+	unlisten?.();
+	unlisten = null;
 }
 
 /** Get import progress for a specific collection */

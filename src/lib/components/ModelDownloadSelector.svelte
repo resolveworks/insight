@@ -2,7 +2,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import type { ModelSelectorConfig } from '$lib/models/config';
-	import { getModelState } from '$lib/stores/model-state.svelte';
+	import { getProviderState } from '$lib/stores/provider-state.svelte';
 	import Button from './Button.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 	import DownloadProgress from './DownloadProgress.svelte';
@@ -31,10 +31,10 @@
 	let status = $state<Status>('loading');
 	let error = $state<string | null>(null);
 
-	// Get model state from global store
-	let modelState = $derived(getModelState(config.modelType));
+	// Get provider state from global store
+	let providerState = $derived(getProviderState(config.providerType));
 	let isDownloading = $derived(
-		!modelState.ready && modelState.progress !== null,
+		!providerState.ready && providerState.progress !== null,
 	);
 
 	// Derived state
@@ -82,11 +82,11 @@
 
 		try {
 			models = await invoke<ModelInfo[]>('get_available_models', {
-				modelType: config.modelType,
+				modelType: config.providerType,
 			});
 			if (models.length > 0) {
 				activeId = await invoke<string | null>('get_current_model', {
-					modelType: config.modelType,
+					modelType: config.providerType,
 				});
 				selectedId = activeId ?? models[0].id;
 				await checkStatus();
@@ -103,7 +103,7 @@
 
 		try {
 			const result = await invoke<{ status: string }>('get_model_status', {
-				modelType: config.modelType,
+				modelType: config.providerType,
 				modelId: selectedId,
 			});
 			isDownloaded = result.status === 'Ready';
@@ -125,7 +125,7 @@
 
 		try {
 			await invoke('download_model', {
-				modelType: config.modelType,
+				modelType: config.providerType,
 				modelId: selectedId,
 			});
 			isDownloaded = true;
@@ -142,7 +142,7 @@
 
 		try {
 			await invoke('configure_model', {
-				modelType: config.modelType,
+				modelType: config.providerType,
 				modelId: selectedId,
 			});
 			activeId = selectedId;
@@ -160,7 +160,7 @@
 
 		try {
 			await invoke('configure_model', {
-				modelType: config.modelType,
+				modelType: config.providerType,
 				modelId: null,
 			});
 			activeId = null;
@@ -180,7 +180,7 @@
 		<p class="text-neutral-500 text-center py-4">Loading models...</p>
 	{:else if isDownloading}
 		<DownloadProgress
-			modelType={config.modelType}
+			providerType={config.providerType}
 			title="Downloading {config.title}"
 			accentColor={config.accentColor === 'emerald' ? 'accent' : 'primary'}
 		/>
