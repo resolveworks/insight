@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::core::{import_and_index_pdf, search, AppState, CollectionInfo};
+use crate::core::{import_and_index_pdf, search, AppState, CollectionInfo, ImportProgress};
 use crate::error::{CommandError, CommandResult, ResultExt};
 use iroh_docs::NamespaceId;
 
@@ -70,19 +70,6 @@ pub async fn create_collection(
     })
 }
 
-/// Result of batch import
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchImportResult {
-    pub successful: Vec<DocumentInfo>,
-    pub failed: Vec<BatchImportError>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchImportError {
-    pub path: String,
-    pub error: String,
-}
-
 /// Event payload for document added
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentAddedEvent {
@@ -90,19 +77,24 @@ pub struct DocumentAddedEvent {
     pub document: DocumentInfo,
 }
 
-/// Import multiple PDF files into a collection.
+// ============================================================================
+// Import Commands
+// ============================================================================
+
+/// Start importing files into a collection.
 ///
-/// Each file is imported and indexed directly (no event-based processing).
-/// Returns when all documents are fully indexed and searchable.
+/// Queues files for import and processes them asynchronously.
+/// Progress is reported via `import-progress` events.
+/// Returns immediately with initial progress.
 #[tauri::command]
-pub async fn import_pdfs_batch<R: tauri::Runtime>(
+pub async fn start_import<R: tauri::Runtime>(
     paths: Vec<String>,
     collection_id: String,
     app: AppHandle<R>,
     state: State<'_, AppState>,
-) -> CommandResult<BatchImportResult> {
+) -> CommandResult<ImportProgress> {
     tracing::info!(
-        "Importing {} PDFs into collection {}",
+        "Starting import: {} files into collection {}",
         paths.len(),
         collection_id
     );
@@ -111,21 +103,72 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
         .parse()
         .map_err(|_| CommandError::invalid_collection_id())?;
 
-    // Get embedder and model ID (required for import)
-    let embedder_guard = state.embedder.read().await;
-    let model_id_guard = state.embedding_model_id.read().await;
+    // Verify embedder is ready before queuing
+    {
+        let embedder_guard = state.embedder.read().await;
+        let model_id_guard = state.embedding_model_id.read().await;
+        if embedder_guard.is_none() || model_id_guard.is_none() {
+            return Err(CommandError::embedder_not_configured());
+        }
+    }
 
-    let (embedder, model_id) = match (&*embedder_guard, &*model_id_guard) {
-        (Some(e), Some(m)) => (e, m.clone()),
-        _ => return Err(CommandError::embedder_not_configured()),
-    };
+    // Queue files for import
+    state
+        .import_tracker
+        .queue_files(&collection_id, &paths)
+        .await;
 
-    let mut successful = Vec::new();
-    let mut failed = Vec::new();
+    // Emit initial progress event
+    let progress = state.import_tracker.get_progress(&collection_id).await;
+    let _ = app.emit("import-progress", &progress);
 
-    // Import and index each PDF directly
-    for path_str in &paths {
-        let path = std::path::Path::new(path_str);
+    // Clone what we need for the async task
+    let state_clone = state.inner().clone();
+    let app_clone = app.clone();
+
+    // Spawn async task to process the imports
+    tokio::spawn(async move {
+        process_pending_imports(namespace_id, state_clone, app_clone).await;
+    });
+
+    Ok(progress)
+}
+
+/// Process all pending imports for a collection
+async fn process_pending_imports<R: tauri::Runtime>(
+    namespace_id: NamespaceId,
+    state: AppState,
+    app: AppHandle<R>,
+) {
+    let collection_id = namespace_id.to_string();
+
+    // Get pending file paths
+    let pending_paths = state.import_tracker.pending_paths(&collection_id).await;
+
+    for path_str in pending_paths {
+        // Mark file as in progress
+        state.import_tracker.mark_in_progress(&path_str).await;
+
+        // Emit progress event
+        let progress = state.import_tracker.get_progress(&collection_id).await;
+        let _ = app.emit("import-progress", &progress);
+
+        // Get embedder and model ID
+        let embedder_guard = state.embedder.read().await;
+        let model_id_guard = state.embedding_model_id.read().await;
+
+        let (embedder, model_id) = match (&*embedder_guard, &*model_id_guard) {
+            (Some(e), Some(m)) => (e, m.clone()),
+            _ => {
+                state
+                    .import_tracker
+                    .mark_failed(&path_str, "Embedder not configured".to_string())
+                    .await;
+                continue;
+            }
+        };
+
+        let path = std::path::Path::new(&path_str);
         let storage = state.storage.read().await;
 
         match import_and_index_pdf(
@@ -142,7 +185,7 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
                 tracing::info!(doc_id = %metadata.id, name = %metadata.name, "PDF imported and indexed");
 
                 let doc_info = DocumentInfo {
-                    id: metadata.id,
+                    id: metadata.id.clone(),
                     name: metadata.name.clone(),
                     file_type: metadata.file_type,
                     page_count: metadata.page_count,
@@ -150,34 +193,60 @@ pub async fn import_pdfs_batch<R: tauri::Runtime>(
                     created_at: metadata.created_at,
                 };
 
-                // Emit event for frontend
+                // Mark file as completed
+                state
+                    .import_tracker
+                    .mark_completed(&path_str, metadata.id)
+                    .await;
+
+                // Emit document-added event for UI updates
                 let _ = app.emit(
                     "document-added",
                     DocumentAddedEvent {
                         collection_id: collection_id.clone(),
-                        document: doc_info.clone(),
+                        document: doc_info,
                     },
                 );
-
-                successful.push(doc_info);
             }
             Err(e) => {
                 tracing::error!("Import failed for {:?}: {}", path, e);
-                failed.push(BatchImportError {
-                    path: path_str.clone(),
-                    error: e.to_string(),
-                });
+                state
+                    .import_tracker
+                    .mark_failed(&path_str, e.to_string())
+                    .await;
             }
         }
+
+        // Drop the guards before emitting
+        drop(embedder_guard);
+        drop(model_id_guard);
+        drop(storage);
+
+        // Emit progress event
+        let progress = state.import_tracker.get_progress(&collection_id).await;
+        let _ = app.emit("import-progress", &progress);
     }
 
+    // Log before cleanup
+    let progress = state.import_tracker.get_progress(&collection_id).await;
     tracing::info!(
-        "Import complete: {} successful, {} failed",
-        successful.len(),
-        failed.len()
+        "Import complete for {}: {} successful, {} failed",
+        collection_id,
+        progress.completed,
+        progress.failed
     );
 
-    Ok(BatchImportResult { successful, failed })
+    // Cleanup finished files
+    state
+        .import_tracker
+        .cleanup_collection(&collection_id)
+        .await;
+}
+
+/// Get import progress for all collections
+#[tauri::command]
+pub async fn get_import_progress(state: State<'_, AppState>) -> CommandResult<Vec<ImportProgress>> {
+    Ok(state.import_tracker.get_all_progress().await)
 }
 
 /// Get all documents in a collection

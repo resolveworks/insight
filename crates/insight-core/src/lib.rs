@@ -100,7 +100,8 @@ pub use agent::provider::{
 pub use agent::{AgentContext, AgentEvent, Conversation};
 pub use config::{Config, Settings};
 pub use jobs::{
-    import_and_index_pdf, process_document, spawn_index_worker, IndexWorkerHandle, SyncWatcher,
+    import_and_index_pdf, process_document, spawn_index_worker, ImportFileStatus, ImportProgress,
+    ImportTracker, IndexWorkerHandle, SyncWatcher,
 };
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
@@ -135,6 +136,8 @@ pub struct AppState {
     sync_watchers: Arc<RwLock<HashMap<iroh_docs::NamespaceId, SyncWatcher>>>,
     /// Master cancellation token for all sync watchers
     sync_cancel: CancellationToken,
+    /// Import tracker for tracking and resuming file imports
+    pub import_tracker: ImportTracker,
 }
 
 impl AppState {
@@ -179,6 +182,9 @@ impl AppState {
         // The worker is automatically stopped when all handles are dropped
         let index_worker = spawn_index_worker(search.clone(), indexer_config);
 
+        // Initialize import tracker (in-memory only)
+        let import_tracker = ImportTracker::new();
+
         Ok(Self {
             config,
             model_manager,
@@ -194,6 +200,7 @@ impl AppState {
             active_predictions: Arc::new(RwLock::new(HashMap::new())),
             sync_watchers: Arc::new(RwLock::new(HashMap::new())),
             sync_cancel: CancellationToken::new(),
+            import_tracker,
         })
     }
 

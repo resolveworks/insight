@@ -8,10 +8,8 @@
 	import Button from '$lib/components/Button.svelte';
 	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
 	import {
-		getImportState,
-		startImport,
-		recordFailures,
-		completeImport,
+		getCollectionProgress,
+		isImporting,
 	} from '$lib/stores/import-state.svelte';
 
 	interface Document {
@@ -23,11 +21,6 @@
 		created_at: string;
 	}
 
-	interface ImportResult {
-		successful: Document[];
-		failed: { path: string; error: string }[];
-	}
-
 	interface CollectionsContext {
 		list: { id: string; name: string; document_count: number }[];
 		selected: string | null;
@@ -37,15 +30,16 @@
 
 	let documents = $state<Document[]>([]);
 
-	// Import state from global store (persists across navigation)
-	const importState = getImportState();
-	let importing = $derived(importState.importing);
-	let importProgress = $derived(importState.progress);
-
 	const collectionId = $derived($page.params.collectionId);
 	const collectionName = $derived(
 		collectionsContext.list.find((c) => c.id === collectionId)?.name ??
 			'Collection',
+	);
+
+	// Import state from global store (persists across navigation)
+	const importing = $derived(collectionId ? isImporting(collectionId) : false);
+	const importProgress = $derived(
+		collectionId ? getCollectionProgress(collectionId) : undefined,
 	);
 
 	const breadcrumbs = $derived([
@@ -69,22 +63,16 @@
 		if (!files) return;
 
 		const paths = Array.isArray(files) ? files : [files];
-		startImport(collectionId, paths.length);
 
 		try {
-			const result = await invoke<ImportResult>('import_pdfs_batch', {
+			// Use the new start_import command - it queues files and processes async
+			await invoke('start_import', {
 				paths,
 				collectionId,
 			});
-
-			if (result.failed.length > 0) {
-				recordFailures(result.failed);
-				console.error('Some imports failed:', result.failed);
-			}
 		} catch (e) {
-			console.error('Batch import failed:', e);
+			console.error('Failed to start import:', e);
 		}
-		completeImport();
 	}
 
 	async function loadDocuments() {
@@ -143,7 +131,7 @@
 			<Breadcrumb segments={breadcrumbs} />
 			<Button onclick={importPdf} disabled={importing}>
 				{#if importing && importProgress}
-					Importing {importProgress.completed}/{importProgress.total}...
+					Importing ({importProgress.pending + importProgress.in_progress} remaining)
 				{:else}
 					Import PDF
 				{/if}

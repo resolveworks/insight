@@ -77,7 +77,8 @@ pub fn run() {
             commands::get_document,
             commands::get_document_text,
             commands::get_document_chunks,
-            commands::import_pdfs_batch,
+            commands::start_import,
+            commands::get_import_progress,
             commands::delete_document,
             // Conversation commands
             commands::list_conversations,

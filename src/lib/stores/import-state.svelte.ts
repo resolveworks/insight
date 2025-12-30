@@ -1,66 +1,58 @@
 /**
  * Global store for import progress state.
- * Tracks in-flight imports across page navigation.
+ * Tracks active imports via backend events.
  */
 import { listen } from '@tauri-apps/api/event';
 
 export interface ImportProgress {
-	collectionId: string;
+	collection_id: string;
 	total: number;
 	completed: number;
-	failed: { path: string; error: string }[];
+	failed: number;
+	pending: number;
+	in_progress: number;
 }
 
-const importState = $state<{
-	importing: boolean;
-	progress: ImportProgress | null;
-}>({
-	importing: false,
-	progress: null,
-});
+// Plain object for reactivity - reassign to trigger updates
+let progressByCollection = $state<Record<string, ImportProgress>>({});
 
-// Listen for document-added events to track progress
+// Listen for progress updates from backend
 if (typeof window !== 'undefined') {
-	listen<{ collection_id: string; document: unknown }>(
-		'document-added',
-		(event) => {
-			if (importState.progress?.collectionId === event.payload.collection_id) {
-				importState.progress.completed++;
-			}
-		},
-	);
+	listen<ImportProgress>('import-progress', (event) => {
+		const progress = event.payload;
+		if (progress.pending === 0 && progress.in_progress === 0) {
+			// Import complete, remove from tracking
+			delete progressByCollection[progress.collection_id];
+			progressByCollection = { ...progressByCollection };
+		} else {
+			progressByCollection = {
+				...progressByCollection,
+				[progress.collection_id]: progress,
+			};
+		}
+	});
 }
 
-export function startImport(collectionId: string, totalFiles: number) {
-	importState.importing = true;
-	importState.progress = {
-		collectionId,
-		total: totalFiles,
-		completed: 0,
-		failed: [],
-	};
+/** Get import progress for a specific collection */
+export function getCollectionProgress(
+	collectionId: string,
+): ImportProgress | undefined {
+	return progressByCollection[collectionId];
 }
 
-export function recordFailures(failures: { path: string; error: string }[]) {
-	if (importState.progress) {
-		importState.progress.failed = failures;
-	}
+/** Check if any imports are active for a collection */
+export function isImporting(collectionId: string): boolean {
+	const progress = progressByCollection[collectionId];
+	if (!progress) return false;
+	return progress.pending > 0 || progress.in_progress > 0;
 }
 
-export function completeImport() {
-	importState.importing = false;
-	importState.progress = null;
+/** Get all active import progress */
+export function getAllProgress(): ImportProgress[] {
+	return Object.values(progressByCollection);
 }
 
-export function getImportState() {
-	return importState;
-}
-
-export function getRemainingCount(): number {
-	if (!importState.progress) return 0;
-	return (
-		importState.progress.total -
-		importState.progress.completed -
-		importState.progress.failed.length
-	);
+/** Check if any imports are active globally */
+export function hasActiveImports(): boolean {
+	return Object.keys(progressByCollection).length > 0;
 }

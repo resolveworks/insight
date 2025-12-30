@@ -21,10 +21,12 @@
 //! Remote sync uses `SyncWatcher` which calls the same shared function.
 
 mod embed;
+mod import;
 mod index;
 pub mod watcher;
 
 pub use embed::{generate_and_store_embeddings, generate_embeddings_data};
+pub use import::{ImportFileStatus, ImportProgress, ImportTracker};
 pub use index::{spawn_index_worker, IndexWorkerHandle};
 pub use watcher::SyncWatcher;
 
