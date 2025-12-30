@@ -7,6 +7,7 @@
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
+	import type { Collection } from '$lib/stores/collections.svelte';
 
 	// Content block types matching backend
 	type ContentBlock =
@@ -49,19 +50,10 @@
 		updated_at: string;
 	}
 
-	/** Collection info for filtering agent searches */
-	interface CollectionInfo {
-		id: string;
-		name: string;
-		document_count?: number;
-		total_pages?: number;
-		created_at?: string;
-	}
-
 	type Props = {
 		onConversationStart?: (id: string) => void;
 		/** Collections to filter agent searches to */
-		collections?: CollectionInfo[];
+		collections?: Collection[];
 		/** Initial conversation ID to load on mount */
 		initialConversationId?: string | null;
 	};

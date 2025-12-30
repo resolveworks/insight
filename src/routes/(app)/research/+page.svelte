@@ -4,16 +4,9 @@
 	import Chat from '$lib/components/Chat.svelte';
 	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
 	import * as collectionsStore from '$lib/stores/collections.svelte';
+	import type { Collection } from '$lib/stores/collections.svelte';
 
 	const STORAGE_KEY = 'insight:activeConversationId';
-
-	interface CollectionInfo {
-		id: string;
-		name: string;
-		document_count?: number;
-		total_pages?: number;
-		created_at?: string;
-	}
 
 	let chatComponent = $state<Chat | null>(null);
 	let conversationSidebar = $state<ConversationSidebar | null>(null);
@@ -42,7 +35,7 @@
 		if (selectedCollections.size === 0) return [];
 		return collections
 			.filter((c) => selectedCollections.has(c.id))
-			.map((c): CollectionInfo => ({ id: c.id, name: c.name }));
+			.map((c): Collection => ({ ...c }));
 	});
 
 	// Track previous selection to detect changes

@@ -8,15 +8,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
 	import * as collections from '$lib/stores/collections.svelte';
-
-	interface Document {
-		id: string;
-		name: string;
-		file_type: string;
-		page_count: number;
-		tags: string[];
-		created_at: string;
-	}
+	import type { Document } from '$lib/stores/collections.svelte';
 
 	let documents = $state<Document[]>([]);
 
