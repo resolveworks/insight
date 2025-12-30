@@ -37,6 +37,22 @@ pub enum ModelType {
     Language,
 }
 
+/// Collection info - canonical definition used across API responses and agent context
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionInfo {
+    pub id: String,
+    pub name: String,
+    /// Number of documents in this collection
+    #[serde(default)]
+    pub document_count: usize,
+    /// Total pages across all documents
+    #[serde(default)]
+    pub total_pages: usize,
+    /// When the collection was created (ISO 8601)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
 /// Model status for frontend synchronization
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
@@ -81,7 +97,7 @@ pub use agent::provider::{
     get_provider_families, get_tool_definitions, ChatProvider, CompletedToolCall, CompletionResult,
     ProviderConfig, ProviderEvent, ProviderFamily, RemoteModelInfo, ToolDefinition,
 };
-pub use agent::{AgentContext, AgentEvent, CollectionInfo, Conversation};
+pub use agent::{AgentContext, AgentEvent, Conversation};
 pub use config::{Config, Settings};
 pub use jobs::{
     import_and_index_pdf, process_document, spawn_index_worker, IndexWorkerHandle, SyncWatcher,

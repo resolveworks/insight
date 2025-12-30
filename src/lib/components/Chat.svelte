@@ -53,6 +53,9 @@
 	interface CollectionInfo {
 		id: string;
 		name: string;
+		document_count?: number;
+		total_pages?: number;
+		created_at?: string;
 	}
 
 	type Props = {

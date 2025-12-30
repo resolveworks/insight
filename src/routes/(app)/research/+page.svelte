@@ -12,11 +12,16 @@
 		id: string;
 		name: string;
 		document_count: number;
+		total_pages: number;
+		created_at?: string;
 	}
 
 	interface CollectionInfo {
 		id: string;
 		name: string;
+		document_count?: number;
+		total_pages?: number;
+		created_at?: string;
 	}
 
 	let chatComponent = $state<Chat | null>(null);

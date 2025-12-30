@@ -13,18 +13,8 @@ pub use provider::{
 };
 pub use tools::{execute_tool, ToolCall, ToolResult};
 
-/// Info about a collection for agent context
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct CollectionInfo {
-    pub id: String,
-    pub name: String,
-    /// Number of documents in this collection
-    #[serde(default)]
-    pub document_count: usize,
-    /// Total pages across all documents
-    #[serde(default)]
-    pub total_pages: usize,
-}
+// Re-export CollectionInfo from crate root for convenience
+pub use crate::CollectionInfo;
 
 /// Context for agent execution - holds state and per-request configuration
 #[derive(Clone)]
@@ -476,6 +466,7 @@ mod tests {
             name: "Research Papers".to_string(),
             document_count: 42,
             total_pages: 500,
+            created_at: Some("2024-01-15T10:30:00Z".to_string()),
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -485,6 +476,7 @@ mod tests {
         assert_eq!(parsed.name, "Research Papers");
         assert_eq!(parsed.document_count, 42);
         assert_eq!(parsed.total_pages, 500);
+        assert_eq!(parsed.created_at, Some("2024-01-15T10:30:00Z".to_string()));
     }
 
     #[test]
@@ -518,12 +510,14 @@ mod tests {
                 name: "First".to_string(),
                 document_count: 0,
                 total_pages: 0,
+                created_at: None,
             },
             CollectionInfo {
                 id: "col_2".to_string(),
                 name: "Second".to_string(),
                 document_count: 0,
                 total_pages: 0,
+                created_at: None,
             },
         ]);
 
@@ -542,12 +536,14 @@ mod tests {
                 name: "Research".to_string(),
                 document_count: 0,
                 total_pages: 0,
+                created_at: None,
             },
             CollectionInfo {
                 id: "col_2".to_string(),
                 name: "Finance".to_string(),
                 document_count: 0,
                 total_pages: 0,
+                created_at: None,
             },
         ]);
 
@@ -589,12 +585,14 @@ mod tests {
                 name: "Climate Reports".to_string(),
                 document_count: 10,
                 total_pages: 250,
+                created_at: None,
             },
             CollectionInfo {
                 id: "col_2".to_string(),
                 name: "Financial Data".to_string(),
                 document_count: 5,
                 total_pages: 100,
+                created_at: None,
             },
         ];
         let prompt = build_system_prompt(Some(&collections));
@@ -615,6 +613,7 @@ mod tests {
             name: "Single Doc".to_string(),
             document_count: 1,
             total_pages: 1,
+            created_at: None,
         }];
         let prompt = build_system_prompt(Some(&collections));
 
@@ -632,6 +631,7 @@ mod tests {
             name: "Empty Collection".to_string(),
             document_count: 0,
             total_pages: 0,
+            created_at: None,
         }];
         let prompt = build_system_prompt(Some(&collections));
 
@@ -829,6 +829,7 @@ mod tests {
             name: "Test Collection".to_string(),
             document_count: 5,
             total_pages: 50,
+            created_at: None,
         }];
 
         let conv = Conversation::with_collection_context("conv_1".to_string(), Some(&collections));

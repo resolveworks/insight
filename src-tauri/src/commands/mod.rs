@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::core::{import_and_index_pdf, search, AppState};
+use crate::core::{import_and_index_pdf, search, AppState, CollectionInfo};
 use iroh_docs::NamespaceId;
 
 /// Document metadata returned to frontend
@@ -12,15 +12,6 @@ pub struct DocumentInfo {
     pub file_type: String,
     pub page_count: usize,
     pub tags: Vec<String>,
-    pub created_at: String,
-}
-
-/// Collection metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CollectionInfo {
-    pub id: String,
-    pub name: String,
-    pub document_count: usize,
     pub created_at: String,
 }
 
@@ -37,12 +28,18 @@ pub async fn get_collections(state: State<'_, AppState>) -> Result<Vec<Collectio
     // Build CollectionInfo for each collection
     let mut result = Vec::with_capacity(collections.len());
     for (namespace_id, metadata) in collections {
-        let document_count = storage.count_documents(namespace_id).await.unwrap_or(0);
+        let documents = storage
+            .list_documents(namespace_id)
+            .await
+            .unwrap_or_default();
+        let document_count = documents.len();
+        let total_pages: usize = documents.iter().map(|d| d.page_count).sum();
         result.push(CollectionInfo {
             id: namespace_id.to_string(),
             name: metadata.name,
             document_count,
-            created_at: metadata.created_at,
+            total_pages,
+            created_at: Some(metadata.created_at),
         });
     }
 
@@ -73,7 +70,8 @@ pub async fn create_collection(
         id: namespace_id.to_string(),
         name: metadata.name,
         document_count: 0,
-        created_at: metadata.created_at,
+        total_pages: 0,
+        created_at: Some(metadata.created_at),
     })
 }
 
@@ -447,13 +445,19 @@ pub async fn import_collection(
         .map_err(|e| e.to_string())?
         .ok_or("Collection metadata not found after import")?;
 
-    let document_count = storage.count_documents(namespace_id).await.unwrap_or(0);
+    let documents = storage
+        .list_documents(namespace_id)
+        .await
+        .unwrap_or_default();
+    let document_count = documents.len();
+    let total_pages: usize = documents.iter().map(|d| d.page_count).sum();
 
     Ok(CollectionInfo {
         id: namespace_id.to_string(),
         name: metadata.name,
         document_count,
-        created_at: metadata.created_at,
+        total_pages,
+        created_at: Some(metadata.created_at),
     })
 }
 
@@ -535,6 +539,7 @@ pub async fn start_chat(
                     name: col.name,
                     document_count,
                     total_pages,
+                    created_at: None,
                 });
             }
             Some(enriched)

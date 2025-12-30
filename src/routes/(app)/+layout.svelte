@@ -43,19 +43,6 @@
 {:else if embeddingState.error}
 	<CenteredLayout width="sm">
 		<div class="text-center">
-			<svg
-				class="mx-auto mb-6 h-12 w-12 text-error"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-			>
-				<path
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-				/>
-			</svg>
 			<h1 class="mb-2 text-xl text-error">Failed to load embedding model</h1>
 			<p class="mb-6 text-sm text-neutral-500">{embeddingState.error}</p>
 			<Button color="accent" size="lg" onclick={() => window.location.reload()}>
@@ -65,21 +52,6 @@
 	</CenteredLayout>
 {:else if embeddingState.progress}
 	<CenteredLayout width="sm">
-		<div class="mb-6 text-center">
-			<svg
-				class="mx-auto h-12 w-12 text-tertiary-500"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-			>
-				<path
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-				/>
-			</svg>
-		</div>
 		<DownloadProgress modelType="embedding" />
 		<p class="mt-6 text-center text-sm text-neutral-500">
 			This is a one-time download. The model will be cached locally.
@@ -88,8 +60,11 @@
 {:else}
 	<CenteredLayout width="sm">
 		<div class="text-center">
-			<LoadingSpinner size="lg" color="accent" />
-			<p class="mt-6 text-sm text-neutral-500">Loading model...</p>
+			<h1 class="mb-2 text-xl text-neutral-700">Loading model</h1>
+			<p class="mb-6 text-sm text-neutral-500">
+				Initializing the embedding model for search
+			</p>
+			<LoadingSpinner size="md" color="accent" class="mx-auto" />
 		</div>
 	</CenteredLayout>
 {/if}

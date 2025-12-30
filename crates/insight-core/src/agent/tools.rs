@@ -688,6 +688,7 @@ mod tests {
                 name: "Research Papers".to_string(),
                 document_count: 1,
                 total_pages: 10,
+                created_at: None,
             }]),
         };
 
@@ -766,6 +767,7 @@ mod tests {
                 name: "Research".to_string(),
                 document_count: 1,
                 total_pages: 10,
+                created_at: None,
             }]),
         };
 
@@ -1036,6 +1038,7 @@ mod tests {
                 name: "Research Collection".to_string(),
                 document_count: 1,
                 total_pages: 10,
+                created_at: None,
             }]),
         };
 
