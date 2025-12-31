@@ -989,58 +989,182 @@ impl Storage {
         Ok(namespace_id)
     }
 
-    /// Import a PDF file into a collection.
+    // =========================================================================
+    // Two-phase import methods (for pipeline)
+    // =========================================================================
+
+    /// Phase 1: Store PDF source bytes into a collection.
     ///
-    /// Extracts text, stores all content as separate entries:
-    /// - `files/{id}/meta` - document metadata
-    /// - `files/{id}/text` - extracted text
+    /// This is the first phase of the pipeline - just copies the PDF bytes
+    /// to iroh storage without text extraction. Creates:
+    /// - `files/{id}/meta` - minimal metadata (no page_count/boundaries yet)
     /// - `files/{id}/source` - original PDF bytes
+    /// - `_hash_index/{hash}` - duplicate detection index
     ///
-    /// Returns the document metadata.
+    /// Returns `(doc_id, source_hash)` for the next phase.
     ///
-    /// Note: This only stores the document. For local imports that need
-    /// immediate embedding and indexing, use `jobs::import_and_index_pdf()`.
-    pub async fn import_pdf(
+    /// Note: Metadata is incomplete until `extract_and_store_text()` is called.
+    pub async fn store_pdf_source(
         &self,
         path: &std::path::Path,
         namespace_id: NamespaceId,
-    ) -> Result<DocumentMetadata> {
+    ) -> Result<(String, String)> {
         let file_name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown.pdf".to_string());
 
-        // Extract text (blocking)
-        let extracted = crate::pdf::extract_text(path)?;
+        // Read PDF bytes
+        let pdf_bytes = std::fs::read(path).context("Failed to read PDF file")?;
 
-        // Compute hash of source file for duplicate detection
-        let source_hash = blake3::hash(&extracted.pdf_bytes).to_string();
+        // Compute hash for duplicate detection
+        let source_hash = blake3::hash(&pdf_bytes).to_string();
 
         // Check for duplicate
         if self.has_source_hash(namespace_id, &source_hash).await? {
             anyhow::bail!("Duplicate document: {}", file_name);
         }
 
-        // Create metadata (no longer contains hashes)
+        let doc_id = uuid::Uuid::new_v4().to_string();
+
+        // Create minimal metadata (page_count/boundaries filled in during extract phase)
         let metadata = DocumentMetadata {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: doc_id.clone(),
             name: file_name,
             file_type: "application/pdf".to_string(),
-            page_count: extracted.page_count,
+            page_count: 0, // Unknown until extraction
             tags: vec![],
             created_at: chrono::Utc::now().to_rfc3339(),
-            page_boundaries: extracted.page_boundaries,
+            page_boundaries: vec![], // Unknown until extraction
         };
 
-        // Store document with all its parts
-        self.add_document(
-            namespace_id,
-            metadata.clone(),
-            extracted.text.as_bytes(),
-            &extracted.pdf_bytes,
-            &source_hash,
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        // Store metadata entry at files/{id}/meta
+        let metadata_bytes = serde_json::to_vec(&metadata)?;
+        let meta_hash = self.store_blob(&metadata_bytes).await?;
+        let meta_key = doc_meta_key(&doc_id);
+        doc.set_hash(
+            self.author_id,
+            meta_key.into_bytes(),
+            meta_hash,
+            metadata_bytes.len() as u64,
         )
         .await?;
+
+        // Store source entry at files/{id}/source
+        let source_blob_hash = self.store_blob(&pdf_bytes).await?;
+        let source_key = doc_source_key(&doc_id);
+        doc.set_hash(
+            self.author_id,
+            source_key.into_bytes(),
+            source_blob_hash,
+            pdf_bytes.len() as u64,
+        )
+        .await?;
+
+        // Create hash index entry for O(1) duplicate detection
+        let index_key = hash_index_key(&source_hash);
+        let doc_id_bytes = doc_id.as_bytes();
+        let doc_id_hash = self.store_blob(doc_id_bytes).await?;
+        doc.set_hash(
+            self.author_id,
+            index_key.into_bytes(),
+            doc_id_hash,
+            doc_id_bytes.len() as u64,
+        )
+        .await?;
+
+        doc.close().await?;
+
+        tracing::info!(
+            doc_id = %doc_id,
+            "Stored PDF source for {}",
+            metadata.name
+        );
+
+        Ok((doc_id, source_hash))
+    }
+
+    /// Phase 2: Extract text from stored PDF and save to iroh.
+    ///
+    /// This is the second phase of the pipeline - extracts text from
+    /// the PDF source bytes already in storage, then:
+    /// - Updates `files/{id}/meta` with page_count and page_boundaries
+    /// - Creates `files/{id}/text` with extracted text
+    ///
+    /// Returns the complete document metadata.
+    pub async fn extract_and_store_text(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+    ) -> Result<DocumentMetadata> {
+        // Get the stored source bytes
+        let source_bytes = self
+            .get_document_source(namespace_id, doc_id)
+            .await?
+            .context("Source not found - was store_pdf_source() called?")?;
+
+        // Extract text (CPU-bound) - run on blocking thread pool
+        let extracted =
+            tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source_bytes))
+                .await
+                .context("Extract task panicked")??;
+
+        // Get current metadata and update it
+        let mut metadata = self
+            .get_document(namespace_id, doc_id)
+            .await?
+            .context("Metadata not found")?;
+
+        metadata.page_count = extracted.page_count;
+        metadata.page_boundaries = extracted.page_boundaries;
+
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        // Update metadata entry with page info
+        let metadata_bytes = serde_json::to_vec(&metadata)?;
+        let meta_hash = self.store_blob(&metadata_bytes).await?;
+        let meta_key = doc_meta_key(doc_id);
+        doc.set_hash(
+            self.author_id,
+            meta_key.into_bytes(),
+            meta_hash,
+            metadata_bytes.len() as u64,
+        )
+        .await?;
+
+        // Store text entry at files/{id}/text
+        let text_bytes = extracted.text.as_bytes();
+        let text_hash = self.store_blob(text_bytes).await?;
+        let text_key = doc_text_key(doc_id);
+        doc.set_hash(
+            self.author_id,
+            text_key.into_bytes(),
+            text_hash,
+            text_bytes.len() as u64,
+        )
+        .await?;
+
+        doc.close().await?;
+
+        tracing::info!(
+            doc_id = %doc_id,
+            page_count = extracted.page_count,
+            text_len = extracted.text.len(),
+            "Extracted and stored text for {}",
+            metadata.name
+        );
 
         Ok(metadata)
     }
@@ -1343,6 +1467,115 @@ mod tests {
 
         // Hash index should be cleaned up
         assert!(!storage
+            .has_source_hash(collection_id, &source_hash)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_two_phase_import() {
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        // Helper to create minimal PDF
+        fn create_test_pdf(text: &str) -> Vec<u8> {
+            let mut doc = Document::with_version("1.4");
+            let font_id = doc.add_object(dictionary! {
+                "Type" => "Font",
+                "Subtype" => "Type1",
+                "BaseFont" => "Helvetica",
+            });
+            let content = format!("BT /F1 12 Tf 100 700 Td ({}) Tj ET", text);
+            let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+            let resources_id = doc.add_object(dictionary! {
+                "Font" => dictionary! { "F1" => font_id },
+            });
+            let page_id = doc.add_object(dictionary! {
+                "Type" => "Page",
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "Resources" => resources_id,
+                "Contents" => content_id,
+            });
+            let pages_id = doc.add_object(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            });
+            if let Ok(page) = doc.get_object_mut(page_id) {
+                if let Object::Dictionary(ref mut dict) = page {
+                    dict.set("Parent", pages_id);
+                }
+            }
+            let catalog_id = doc.add_object(dictionary! {
+                "Type" => "Catalog",
+                "Pages" => pages_id,
+            });
+            doc.trailer.set("Root", catalog_id);
+            let mut buffer = Vec::new();
+            doc.save_to(&mut buffer).unwrap();
+            buffer
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Two Phase Test").await.unwrap();
+
+        // Create a test PDF file
+        let pdf_path = temp_dir.path().join("test.pdf");
+        let pdf_bytes = create_test_pdf("Hello World");
+        std::fs::write(&pdf_path, &pdf_bytes).unwrap();
+
+        // Phase 1: Store source
+        let (doc_id, source_hash) = storage
+            .store_pdf_source(&pdf_path, collection_id)
+            .await
+            .unwrap();
+        assert!(!doc_id.is_empty());
+        assert!(!source_hash.is_empty());
+
+        // After phase 1: metadata exists but page_count is 0
+        let meta1 = storage.get_document(collection_id, &doc_id).await.unwrap();
+        assert!(meta1.is_some());
+        let meta1 = meta1.unwrap();
+        assert_eq!(meta1.page_count, 0);
+        assert!(meta1.page_boundaries.is_empty());
+
+        // Source should exist
+        let source = storage
+            .get_document_source(collection_id, &doc_id)
+            .await
+            .unwrap();
+        assert!(source.is_some());
+        assert_eq!(source.unwrap(), pdf_bytes);
+
+        // Text should NOT exist yet
+        let text = storage
+            .get_document_text(collection_id, &doc_id)
+            .await
+            .unwrap();
+        assert!(text.is_none());
+
+        // Phase 2: Extract and store text
+        let metadata = storage
+            .extract_and_store_text(collection_id, &doc_id)
+            .await
+            .unwrap();
+
+        // Now page_count should be populated
+        assert_eq!(metadata.page_count, 1);
+        assert!(!metadata.page_boundaries.is_empty());
+
+        // Text should now exist
+        let text = storage
+            .get_document_text(collection_id, &doc_id)
+            .await
+            .unwrap();
+        assert!(text.is_some());
+        let text_bytes = text.unwrap();
+        let text_str = String::from_utf8_lossy(&text_bytes);
+        assert!(!text_str.is_empty());
+
+        // Duplicate detection should work
+        assert!(storage
             .has_source_hash(collection_id, &source_hash)
             .await
             .unwrap());

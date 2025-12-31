@@ -13,7 +13,10 @@ use milli::update::IndexerConfig;
 use milli::Index;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::search::{self, ChunkToIndex};
+use super::{
+    configure_embedder, delete_chunks_by_collection, delete_document_chunks, index_chunks_batch,
+    ChunkToIndex,
+};
 
 /// Request to the index worker.
 pub enum IndexRequest {
@@ -161,7 +164,7 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
             let chunk_count = chunks.len();
             tracing::debug!(chunk_count, "Processing index request");
 
-            let result = search::index_chunks_batch(index, indexer_config, chunks);
+            let result = index_chunks_batch(index, indexer_config, chunks);
 
             if let Err(ref e) = result {
                 tracing::error!(error = %e, "Failed to index chunks");
@@ -179,7 +182,7 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
         } => {
             tracing::debug!(doc_id = %doc_id, "Processing delete document chunks request");
 
-            let result = search::delete_document_chunks(index, indexer_config, &doc_id);
+            let result = delete_document_chunks(index, indexer_config, &doc_id);
 
             if let Err(ref e) = result {
                 tracing::error!(doc_id = %doc_id, error = %e, "Failed to delete document chunks");
@@ -196,7 +199,7 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
         } => {
             tracing::debug!(collection_id = %collection_id, "Processing delete collection chunks request");
 
-            let result = search::delete_chunks_by_collection(index, indexer_config, &collection_id);
+            let result = delete_chunks_by_collection(index, indexer_config, &collection_id);
 
             if let Err(ref e) = result {
                 tracing::error!(collection_id = %collection_id, error = %e, "Failed to delete collection chunks");
@@ -214,8 +217,7 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
         } => {
             tracing::debug!(embedder_name = %embedder_name, dimensions, "Processing configure embedder request");
 
-            let result =
-                search::configure_embedder(index, indexer_config, &embedder_name, dimensions);
+            let result = configure_embedder(index, indexer_config, &embedder_name, dimensions);
 
             if let Err(ref e) = result {
                 tracing::error!(embedder_name = %embedder_name, error = %e, "Failed to configure embedder");

@@ -1066,7 +1066,7 @@ mod tests {
         };
         std::fs::create_dir_all(&config.iroh_dir).unwrap();
         std::fs::create_dir_all(&config.search_dir).unwrap();
-        let (state, _rx) = crate::AppState::new(config).await.unwrap();
+        let (state, _progress_rx) = crate::AppState::new(config).await.unwrap();
 
         let ctx = AgentContext {
             state,
@@ -1118,7 +1118,7 @@ mod tests {
         };
         std::fs::create_dir_all(&config.iroh_dir).unwrap();
         std::fs::create_dir_all(&config.search_dir).unwrap();
-        let (state, _rx) = crate::AppState::new(config).await.unwrap();
+        let (state, _progress_rx) = crate::AppState::new(config).await.unwrap();
 
         let ctx = AgentContext {
             state,
@@ -1162,7 +1162,7 @@ mod tests {
         };
         std::fs::create_dir_all(&config.iroh_dir).unwrap();
         std::fs::create_dir_all(&config.search_dir).unwrap();
-        let (state, _rx) = crate::AppState::new(config).await.unwrap();
+        let (state, _progress_rx) = crate::AppState::new(config).await.unwrap();
 
         let ctx = AgentContext {
             state,

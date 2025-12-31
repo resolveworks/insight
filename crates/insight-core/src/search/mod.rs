@@ -1,3 +1,7 @@
+mod index_worker;
+
+pub use index_worker::{spawn_index_worker, IndexWorkerHandle};
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;

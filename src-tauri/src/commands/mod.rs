@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::core::{
-    search, AppState, CollectionInfo, DocumentToProcess, ImportProgress, ProcessingProgress,
-};
+use crate::core::{search, AppState, CollectionInfo, PipelineProgress};
 use crate::error::{CommandError, CommandResult, ResultExt};
 use iroh_docs::NamespaceId;
 
@@ -91,21 +89,21 @@ pub struct DocumentAddedEvent {
 
 /// Start importing files into a collection.
 ///
-/// Queues files for import and processes them asynchronously.
+/// This queues files for the event-driven import pipeline:
+/// 1. Store PDF source → triggers extract
+/// 2. Extract text → triggers embed
+/// 3. Generate embeddings → triggers index
+/// 4. Index → document searchable
 ///
-/// Two-phase import pipeline:
-/// - Phase 1 (storage): Extracts text and stores to iroh - fast, no embedder needed
-/// - Phase 2 (processing): Generates embeddings and indexes - async, queued
-///
-/// Progress is reported via `import-progress` and `processing-progress` events.
-/// Returns immediately with initial import progress.
+/// Progress is tracked per-stage via the pipeline.
+/// Returns immediately with initial progress.
 #[tauri::command]
 pub async fn start_import<R: tauri::Runtime>(
     paths: Vec<String>,
     collection_id: String,
     app: AppHandle<R>,
     state: State<'_, AppState>,
-) -> CommandResult<ImportProgress> {
+) -> CommandResult<PipelineProgress> {
     tracing::info!(
         "Starting import: {} files into collection {}",
         paths.len(),
@@ -114,156 +112,76 @@ pub async fn start_import<R: tauri::Runtime>(
 
     let namespace_id = parse_collection_id(&collection_id)?;
 
-    // Warn if embedder not ready (documents will queue for processing)
+    // Warn if embedder not ready
     {
         let embedder_guard = state.embedder.read().await;
         if embedder_guard.is_none() {
             tracing::warn!(
-                "Embedder not yet configured - documents will be stored but indexing will be queued"
+                "Embedder not yet configured - documents will be stored but embedding will fail"
             );
         }
     }
 
-    // Queue files for import
-    state
-        .import_tracker
-        .queue_files(&collection_id, &paths)
-        .await;
+    // Convert paths to PathBuf
+    let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
 
-    // Emit initial progress event
-    let progress = state.import_tracker.get_progress(&collection_id).await;
-    let _ = app.emit("import-progress", &progress);
-
-    // Clone what we need for the async task
-    let state_clone = state.inner().clone();
+    // Clone pipeline for async task
+    let pipeline = state.pipeline.clone();
     let app_clone = app.clone();
+    let collection_id_clone = collection_id.clone();
 
-    // Spawn async task to process the imports
+    // Spawn async task to import files
     tokio::spawn(async move {
-        process_pending_imports(namespace_id, state_clone, app_clone).await;
+        let (success, errors) = pipeline.import_files(namespace_id, paths).await;
+
+        tracing::info!(
+            "Import complete for {}: {} successful, {} failed",
+            collection_id_clone,
+            success,
+            errors.len()
+        );
+
+        for (path, error) in &errors {
+            tracing::error!("Failed to import {:?}: {}", path, error);
+        }
+
+        // Emit progress update
+        if let Some(progress) = pipeline.get_progress(&collection_id_clone).await {
+            let _ = app_clone.emit("pipeline-progress", &progress);
+        }
     });
+
+    // Return initial progress
+    let progress = state
+        .pipeline
+        .get_progress(&collection_id)
+        .await
+        .unwrap_or_else(|| PipelineProgress {
+            collection_id: collection_id.clone(),
+            ..Default::default()
+        });
 
     Ok(progress)
 }
 
-/// Process all pending imports for a collection.
+/// Get pipeline progress for all active collections
 ///
-/// This is Phase 1 of the two-phase import pipeline:
-/// - Phase 1 (here): Store PDF/text to iroh - fast, no embedder needed
-/// - Phase 2 (processing worker): Generate embeddings + index - async, queued
-///
-/// Documents are immediately visible after Phase 1 but not yet searchable.
-/// The processing worker handles Phase 2 and emits events when documents become searchable.
-async fn process_pending_imports<R: tauri::Runtime>(
-    namespace_id: NamespaceId,
-    state: AppState,
-    app: AppHandle<R>,
-) {
-    let collection_id = namespace_id.to_string();
-
-    // Get pending file paths
-    let pending_paths = state.import_tracker.pending_paths(&collection_id).await;
-
-    for path_str in pending_paths {
-        // Mark file as in progress
-        state.import_tracker.mark_in_progress(&path_str).await;
-
-        // Emit progress event
-        let progress = state.import_tracker.get_progress(&collection_id).await;
-        let _ = app.emit("import-progress", &progress);
-
-        let path = std::path::Path::new(&path_str);
-
-        // Phase 1: Store PDF to iroh (no embedder needed)
-        let storage = state.storage.read().await;
-        let import_result = storage.import_pdf(path, namespace_id).await;
-        drop(storage);
-
-        match import_result {
-            Ok(metadata) => {
-                tracing::info!(doc_id = %metadata.id, name = %metadata.name, "PDF stored (Phase 1)");
-
-                let doc_info = DocumentInfo {
-                    id: metadata.id.clone(),
-                    name: metadata.name.clone(),
-                    file_type: metadata.file_type.clone(),
-                    page_count: metadata.page_count,
-                    tags: metadata.tags.clone(),
-                    created_at: metadata.created_at.clone(),
-                };
-
-                // Mark import (storage) as completed
-                state
-                    .import_tracker
-                    .mark_completed(&path_str, metadata.id.clone())
-                    .await;
-
-                // Emit document-added event - document is visible but not yet searchable
-                let _ = app.emit(
-                    "document-added",
-                    DocumentAddedEvent {
-                        collection_id: collection_id.clone(),
-                        document: doc_info,
-                    },
-                );
-
-                // Phase 2: Queue for embedding + indexing (async)
-                if let Err(e) = state
-                    .processing_worker
-                    .queue(DocumentToProcess {
-                        namespace_id,
-                        metadata,
-                    })
-                    .await
-                {
-                    tracing::error!("Failed to queue document for processing: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::error!("Import failed for {:?}: {}", path, e);
-                state
-                    .import_tracker
-                    .mark_failed(&path_str, e.to_string())
-                    .await;
-            }
-        }
-
-        // Emit progress event
-        let progress = state.import_tracker.get_progress(&collection_id).await;
-        let _ = app.emit("import-progress", &progress);
-    }
-
-    // Log before cleanup
-    let progress = state.import_tracker.get_progress(&collection_id).await;
-    tracing::info!(
-        "Import (storage) complete for {}: {} successful, {} failed",
-        collection_id,
-        progress.completed,
-        progress.failed
-    );
-
-    // Cleanup finished files
-    state
-        .import_tracker
-        .cleanup_collection(&collection_id)
-        .await;
-}
-
-/// Get import progress for all collections
+/// Returns progress for each stage: Store, Extract, Embed, Index.
+/// Each stage has counts for pending, active, completed, and failed items.
 #[tauri::command]
-pub async fn get_import_progress(state: State<'_, AppState>) -> CommandResult<Vec<ImportProgress>> {
-    Ok(state.import_tracker.get_all_progress().await)
-}
-
-/// Get processing progress for all collections
-///
-/// Processing is Phase 2 of the import pipeline (embedding + indexing).
-/// Documents in the processing queue are stored but not yet searchable.
-#[tauri::command]
-pub async fn get_processing_progress(
+pub async fn get_pipeline_progress(
     state: State<'_, AppState>,
-) -> CommandResult<Vec<ProcessingProgress>> {
-    Ok(state.processing_worker.get_all_progress().await)
+) -> CommandResult<Vec<PipelineProgress>> {
+    Ok(state.pipeline.get_all_progress().await)
+}
+
+/// Get pipeline progress for a specific collection
+#[tauri::command]
+pub async fn get_collection_pipeline_progress(
+    collection_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<Option<PipelineProgress>> {
+    Ok(state.pipeline.get_progress(&collection_id).await)
 }
 
 /// Get all documents in a collection

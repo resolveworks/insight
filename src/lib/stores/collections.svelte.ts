@@ -23,22 +23,21 @@ export interface Document {
 	created_at: string;
 }
 
-export interface ImportProgress {
-	collection_id: string;
-	total: number;
+/** Per-stage progress counts */
+export interface StageProgress {
+	pending: number;
+	active: number;
 	completed: number;
 	failed: number;
-	pending: number;
-	in_progress: number;
 }
 
-export interface ProcessingProgress {
+/** Pipeline progress for a collection across all stages */
+export interface PipelineProgress {
 	collection_id: string;
-	total: number;
-	completed: number;
-	failed: number;
-	pending: number;
-	in_progress: number;
+	store: StageProgress;
+	extract: StageProgress;
+	embed: StageProgress;
+	index: StageProgress;
 }
 
 interface DocumentAddedEvent {
@@ -50,13 +49,11 @@ interface DocumentAddedEvent {
 let collections = $state<Collection[]>([]);
 let loading = $state(false);
 let error = $state<string | null>(null);
-let importProgress = $state<Record<string, ImportProgress>>({});
-let processingProgress = $state<Record<string, ProcessingProgress>>({});
+let pipelineProgress = $state<Record<string, PipelineProgress>>({});
 
 // Track unlisten functions for cleanup
 let unlistenDocAdded: UnlistenFn | null = null;
-let unlistenImportProgress: UnlistenFn | null = null;
-let unlistenProcessingProgress: UnlistenFn | null = null;
+let unlistenPipelineProgress: UnlistenFn | null = null;
 
 function updateCollectionDocCount(collectionId: string, delta: number) {
 	collections = collections.map((c) =>
@@ -66,29 +63,30 @@ function updateCollectionDocCount(collectionId: string, delta: number) {
 	);
 }
 
-function updateImportProgress(progress: ImportProgress) {
-	if (progress.pending === 0 && progress.in_progress === 0) {
-		// Import complete, remove from tracking
-		const updated = { ...importProgress };
-		delete updated[progress.collection_id];
-		importProgress = updated;
-	} else {
-		importProgress = {
-			...importProgress,
-			[progress.collection_id]: progress,
-		};
-	}
+/** Check if a stage has active work */
+function stageIsActive(stage: StageProgress): boolean {
+	return stage.pending > 0 || stage.active > 0;
 }
 
-function updateProcessingProgress(progress: ProcessingProgress) {
-	if (progress.pending === 0 && progress.in_progress === 0) {
-		// Processing complete, remove from tracking
-		const updated = { ...processingProgress };
+/** Check if any stage in the pipeline is active */
+function pipelineIsActive(progress: PipelineProgress): boolean {
+	return (
+		stageIsActive(progress.store) ||
+		stageIsActive(progress.extract) ||
+		stageIsActive(progress.embed) ||
+		stageIsActive(progress.index)
+	);
+}
+
+function updatePipelineProgress(progress: PipelineProgress) {
+	if (!pipelineIsActive(progress)) {
+		// Pipeline complete for this collection, remove from tracking
+		const updated = { ...pipelineProgress };
 		delete updated[progress.collection_id];
-		processingProgress = updated;
+		pipelineProgress = updated;
 	} else {
-		processingProgress = {
-			...processingProgress,
+		pipelineProgress = {
+			...pipelineProgress,
 			[progress.collection_id]: progress,
 		};
 	}
@@ -109,27 +107,16 @@ async function loadCollections() {
 	}
 }
 
-async function loadImportProgress() {
+async function loadPipelineProgress() {
 	try {
-		const allProgress = await invoke<ImportProgress[]>('get_import_progress');
-		for (const progress of allProgress) {
-			updateImportProgress(progress);
-		}
-	} catch (e) {
-		console.error('Failed to get import progress:', e);
-	}
-}
-
-async function loadProcessingProgress() {
-	try {
-		const allProgress = await invoke<ProcessingProgress[]>(
-			'get_processing_progress',
+		const allProgress = await invoke<PipelineProgress[]>(
+			'get_pipeline_progress',
 		);
 		for (const progress of allProgress) {
-			updateProcessingProgress(progress);
+			updatePipelineProgress(progress);
 		}
 	} catch (e) {
-		console.error('Failed to get processing progress:', e);
+		console.error('Failed to get pipeline progress:', e);
 	}
 }
 
@@ -142,29 +129,10 @@ async function setupEventListeners() {
 		},
 	);
 
-	unlistenImportProgress = await listen<ImportProgress>(
-		'import-progress',
+	unlistenPipelineProgress = await listen<PipelineProgress>(
+		'pipeline-progress',
 		(event) => {
-			updateImportProgress(event.payload);
-		},
-	);
-
-	unlistenProcessingProgress = await listen<{ collection_id: string }>(
-		'processing-progress',
-		async () => {
-			// Event only contains collection_id, fetch full progress
-			try {
-				const allProgress = await invoke<ProcessingProgress[]>(
-					'get_processing_progress',
-				);
-				// Clear existing progress and update with fresh data
-				processingProgress = {};
-				for (const progress of allProgress) {
-					updateProcessingProgress(progress);
-				}
-			} catch (e) {
-				console.error('Failed to refresh processing progress:', e);
-			}
+			updatePipelineProgress(event.payload);
 		},
 	);
 }
@@ -172,8 +140,7 @@ async function setupEventListeners() {
 // Initialize on module load
 if (typeof window !== 'undefined') {
 	loadCollections();
-	loadImportProgress();
-	loadProcessingProgress();
+	loadPipelineProgress();
 	setupEventListeners();
 }
 
@@ -183,10 +150,8 @@ if (typeof window !== 'undefined') {
 export function cleanup() {
 	unlistenDocAdded?.();
 	unlistenDocAdded = null;
-	unlistenImportProgress?.();
-	unlistenImportProgress = null;
-	unlistenProcessingProgress?.();
-	unlistenProcessingProgress = null;
+	unlistenPipelineProgress?.();
+	unlistenPipelineProgress = null;
 }
 
 // =============================================================================
@@ -308,7 +273,7 @@ export async function importCollection(
 }
 
 // =============================================================================
-// Document imports
+// Document imports and pipeline progress
 // =============================================================================
 
 /**
@@ -320,7 +285,11 @@ export async function startImport(
 	paths: string[],
 ): Promise<boolean> {
 	try {
-		await invoke('start_import', { paths, collectionId });
+		const progress = await invoke<PipelineProgress>('start_import', {
+			paths,
+			collectionId,
+		});
+		updatePipelineProgress(progress);
 		return true;
 	} catch (e) {
 		console.error('Failed to start import:', e);
@@ -329,69 +298,33 @@ export async function startImport(
 }
 
 /**
- * Get import progress for a specific collection.
+ * Get pipeline progress for a specific collection.
  */
-export function getImportProgress(
+export function getPipelineProgress(
 	collectionId: string,
-): ImportProgress | undefined {
-	return importProgress[collectionId];
+): PipelineProgress | undefined {
+	return pipelineProgress[collectionId];
 }
 
 /**
- * Check if any imports are active for a collection.
- */
-export function isImporting(collectionId: string): boolean {
-	const progress = importProgress[collectionId];
-	if (!progress) return false;
-	return progress.pending > 0 || progress.in_progress > 0;
-}
-
-/**
- * Get all active import progress.
- */
-export function getAllImportProgress(): ImportProgress[] {
-	return Object.values(importProgress);
-}
-
-/**
- * Check if any imports are active globally.
- */
-export function hasActiveImports(): boolean {
-	return Object.keys(importProgress).length > 0;
-}
-
-// =============================================================================
-// Processing progress (embedding + indexing)
-// =============================================================================
-
-/**
- * Get processing progress for a specific collection.
- */
-export function getProcessingProgress(
-	collectionId: string,
-): ProcessingProgress | undefined {
-	return processingProgress[collectionId];
-}
-
-/**
- * Check if any processing is active for a collection.
+ * Check if any pipeline stage is active for a collection.
  */
 export function isProcessing(collectionId: string): boolean {
-	const progress = processingProgress[collectionId];
+	const progress = pipelineProgress[collectionId];
 	if (!progress) return false;
-	return progress.pending > 0 || progress.in_progress > 0;
+	return pipelineIsActive(progress);
 }
 
 /**
- * Get all active processing progress.
+ * Get all active pipeline progress.
  */
-export function getAllProcessingProgress(): ProcessingProgress[] {
-	return Object.values(processingProgress);
+export function getAllPipelineProgress(): PipelineProgress[] {
+	return Object.values(pipelineProgress);
 }
 
 /**
- * Check if any processing is active globally.
+ * Check if any pipeline is active globally.
  */
-export function hasActiveProcessing(): boolean {
-	return Object.keys(processingProgress).length > 0;
+export function hasActivePipeline(): boolean {
+	return Object.keys(pipelineProgress).length > 0;
 }

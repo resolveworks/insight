@@ -6,15 +6,15 @@
 //! - PDF text extraction (lopdf)
 //! - Embedding generation (mistralrs)
 //! - Agent/conversation handling
-//! - Job pipeline for document import
+//! - Event-driven pipeline for document import
 
 pub mod agent;
 pub mod config;
 pub mod conversations;
 pub mod embeddings;
-pub mod jobs;
 pub mod models;
 pub mod pdf;
+pub mod pipeline;
 pub mod search;
 pub mod storage;
 
@@ -99,11 +99,8 @@ pub use agent::provider::{
 };
 pub use agent::{AgentContext, AgentEvent, Conversation};
 pub use config::{Config, Settings};
-pub use jobs::{
-    import_and_index_pdf, process_document, spawn_index_worker, spawn_processing_worker,
-    DocumentToProcess, ImportFileStatus, ImportProgress, ImportTracker, IndexWorkerHandle,
-    ProcessingEvent, ProcessingProgress, ProcessingWorkerHandle, SyncWatcher,
-};
+pub use pipeline::{Pipeline, PipelineProgress, StageProgress};
+pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
 /// Application state shared across Tauri commands
@@ -133,25 +130,19 @@ pub struct AppState {
     pub active_generations: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Cancellation tokens for active predictions (tab completion)
     pub active_predictions: Arc<RwLock<HashMap<String, CancellationToken>>>,
-    /// Sync watchers for collections (handles documents from peers)
-    sync_watchers: Arc<RwLock<HashMap<iroh_docs::NamespaceId, SyncWatcher>>>,
-    /// Master cancellation token for all sync watchers
-    sync_cancel: CancellationToken,
-    /// Import tracker for tracking and resuming file imports
-    pub import_tracker: ImportTracker,
-    /// Processing worker for embedding + indexing documents
-    pub processing_worker: ProcessingWorkerHandle,
+    /// Event-driven document processing pipeline
+    pub pipeline: Arc<Pipeline>,
 }
-
-use tokio::sync::mpsc;
 
 impl AppState {
     /// Create AppState with initialized storage and search.
     /// Called from setup() where Tauri's async runtime is available.
     ///
-    /// Returns the state and a receiver for processing events (document indexed, etc.)
+    /// Returns the state and a receiver for pipeline progress events
     /// that should be forwarded to the frontend.
-    pub async fn new(config: Config) -> anyhow::Result<(Self, mpsc::Receiver<ProcessingEvent>)> {
+    pub async fn new(
+        config: Config,
+    ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<PipelineProgress>)> {
         // Initialize model manager (HuggingFace cache + API client)
         let model_manager = Arc::new(models::ModelManager::new().await?);
 
@@ -169,19 +160,15 @@ impl AppState {
         let embedding_model_id = Arc::new(RwLock::new(None));
 
         // Spawn index worker - handles all milli write operations in a dedicated thread
-        // The worker is automatically stopped when all handles are dropped
         let index_worker = spawn_index_worker(search.clone(), indexer_config);
 
-        // Spawn processing worker - handles embedding + indexing asynchronously
-        let (processing_worker, processing_events) = spawn_processing_worker(
+        // Create event-driven pipeline for document processing
+        let (pipeline, progress_rx) = Pipeline::new(
             storage.clone(),
             embedder.clone(),
             embedding_model_id.clone(),
             index_worker.clone(),
         );
-
-        // Initialize import tracker (in-memory only)
-        let import_tracker = ImportTracker::new();
 
         Ok((
             Self {
@@ -197,12 +184,9 @@ impl AppState {
                 conversations: Arc::new(RwLock::new(HashMap::new())),
                 active_generations: Arc::new(RwLock::new(HashMap::new())),
                 active_predictions: Arc::new(RwLock::new(HashMap::new())),
-                sync_watchers: Arc::new(RwLock::new(HashMap::new())),
-                sync_cancel: CancellationToken::new(),
-                import_tracker,
-                processing_worker,
+                pipeline: Arc::new(pipeline),
             },
-            processing_events,
+            progress_rx,
         ))
     }
 
@@ -362,10 +346,9 @@ impl AppState {
         }
     }
 
-    /// Start watching all existing collections for sync events.
+    /// Start watching all existing collections for pipeline events.
     ///
-    /// This watches for documents arriving from peers (InsertRemote events).
-    /// Local imports are processed directly without events.
+    /// This enables the event-driven pipeline for all existing collections.
     async fn watch_existing_collections(&self) {
         let collections = {
             let storage = self.storage.read().await;
@@ -379,44 +362,23 @@ impl AppState {
         };
 
         for (namespace_id, metadata) in &collections {
-            self.watch_namespace(*namespace_id).await;
+            self.pipeline.watch(*namespace_id).await;
             tracing::debug!("Watching collection '{}' ({})", metadata.name, namespace_id);
         }
 
         tracing::info!(
-            "Started watching {} existing collections for sync",
+            "Started watching {} existing collections",
             collections.len()
         );
     }
 
-    /// Start watching a namespace for sync events (documents from peers).
-    ///
-    /// This is only needed for remote sync. Local imports are processed directly.
+    /// Start watching a namespace for pipeline events.
     pub async fn watch_namespace(&self, namespace_id: iroh_docs::NamespaceId) {
-        let mut watchers = self.sync_watchers.write().await;
-
-        if watchers.contains_key(&namespace_id) {
-            tracing::debug!(namespace = %namespace_id, "Already watching namespace");
-            return;
-        }
-
-        let watcher = SyncWatcher::spawn(
-            namespace_id,
-            self.storage.clone(),
-            self.processing_worker.clone(),
-            self.sync_cancel.clone(),
-        );
-
-        watchers.insert(namespace_id, watcher);
-        tracing::debug!(namespace = %namespace_id, "Started sync watcher");
+        self.pipeline.watch(namespace_id).await;
     }
 
-    /// Stop watching a namespace for sync events.
+    /// Stop watching a namespace.
     pub async fn unwatch_namespace(&self, namespace_id: &iroh_docs::NamespaceId) {
-        let mut watchers = self.sync_watchers.write().await;
-        if let Some(watcher) = watchers.remove(namespace_id) {
-            watcher.stop();
-            tracing::debug!(namespace = %namespace_id, "Stopped sync watcher");
-        }
+        self.pipeline.unwatch(namespace_id).await;
     }
 }

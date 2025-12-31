@@ -18,18 +18,22 @@
 	);
 	const collectionName = $derived(collection?.name ?? 'Collection');
 
-	// Import and processing state from global store (persists across navigation)
-	const importing = $derived(
-		collectionId ? collections.isImporting(collectionId) : false,
-	);
-	const importProgress = $derived(
-		collectionId ? collections.getImportProgress(collectionId) : undefined,
-	);
+	// Pipeline progress from global store (persists across navigation)
 	const processing = $derived(
 		collectionId ? collections.isProcessing(collectionId) : false,
 	);
-	const processingProgress = $derived(
-		collectionId ? collections.getProcessingProgress(collectionId) : undefined,
+	const pipelineProgress = $derived(
+		collectionId ? collections.getPipelineProgress(collectionId) : undefined,
+	);
+	const stages = $derived(
+		pipelineProgress
+			? [
+					{ name: 'Store', data: pipelineProgress.store },
+					{ name: 'Extract', data: pipelineProgress.extract },
+					{ name: 'Embed', data: pipelineProgress.embed },
+					{ name: 'Index', data: pipelineProgress.index },
+				]
+			: [],
 	);
 
 	const breadcrumbs = $derived([
@@ -110,21 +114,34 @@
 	<header class="border-b border-neutral-200 bg-surface-bright px-6 py-4">
 		<div class="flex items-center justify-between">
 			<Breadcrumb segments={breadcrumbs} />
-			<div class="flex items-center gap-3">
-				{#if importing && importProgress}
-					<span class="text-sm text-neutral-500">
-						Importing {importProgress.pending + importProgress.in_progress}...
-					</span>
-				{/if}
-				{#if processing && processingProgress}
-					<span class="text-sm text-neutral-500">
-						Indexing {processingProgress.pending +
-							processingProgress.in_progress}...
-					</span>
-				{/if}
-				<Button onclick={importPdf} disabled={importing}>Import PDF</Button>
-			</div>
+			<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
 		</div>
+
+		{#if processing && stages.length > 0}
+			<div class="mt-4 grid grid-cols-4 gap-4">
+				{#each stages as stage (stage.name)}
+					{@const total =
+						stage.data.pending +
+						stage.data.active +
+						stage.data.completed +
+						stage.data.failed}
+					{@const done = stage.data.completed + stage.data.failed}
+					{@const percent = total > 0 ? (done / total) * 100 : 0}
+					<div class="flex flex-col gap-1">
+						<div class="flex justify-between text-xs text-neutral-500">
+							<span>{stage.name}</span>
+							<span>{done}/{total}</span>
+						</div>
+						<div class="h-1.5 w-full rounded-full bg-neutral-200">
+							<div
+								class="h-1.5 rounded-full bg-primary-500 transition-all"
+								style="width: {percent}%"
+							></div>
+						</div>
+					</div>
+				{/each}
+			</div>
+		{/if}
 	</header>
 
 	<!-- Content -->

@@ -19,7 +19,11 @@ pub struct ExtractedDocument {
 /// Extract text from a PDF file
 pub fn extract_text(path: &Path) -> Result<ExtractedDocument> {
     let pdf_bytes = std::fs::read(path).context("Failed to read PDF file")?;
+    extract_text_from_bytes(pdf_bytes)
+}
 
+/// Extract text from PDF bytes (for use when PDF is already in memory/storage)
+pub fn extract_text_from_bytes(pdf_bytes: Vec<u8>) -> Result<ExtractedDocument> {
     let doc = lopdf::Document::load_mem(&pdf_bytes).context("Failed to parse PDF")?;
 
     let mut pages: Vec<u32> = doc.get_pages().keys().cloned().collect();
