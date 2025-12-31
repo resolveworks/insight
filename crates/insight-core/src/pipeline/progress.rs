@@ -86,19 +86,13 @@ impl ProgressTracker {
         )
     }
 
-    /// Queue a job (sync version for event handlers).
-    /// Spawns async work in background to avoid blocking.
-    pub fn queue(&self, collection_id: &str, stage: Stage) {
-        let tracker = self.clone();
-        let collection_id = collection_id.to_string();
-        tokio::spawn(async move {
-            tracker
-                .apply(ProgressUpdate::Queued {
-                    collection_id,
-                    stage,
-                })
-                .await;
-        });
+    /// Queue a job for processing.
+    pub async fn queue(&self, collection_id: &str, stage: Stage) {
+        self.apply(ProgressUpdate::Queued {
+            collection_id: collection_id.to_string(),
+            stage,
+        })
+        .await;
     }
 
     /// Apply a progress update.

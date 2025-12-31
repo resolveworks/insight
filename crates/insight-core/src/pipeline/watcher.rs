@@ -148,7 +148,8 @@ async fn run_watcher(
                             &current_model_id,
                             &senders,
                             &progress,
-                        );
+                        )
+                        .await;
                     }
                     Some(Err(e)) => {
                         tracing::warn!(
@@ -170,7 +171,7 @@ async fn run_watcher(
     Ok(())
 }
 
-fn handle_event(
+async fn handle_event(
     event: &LiveEvent,
     namespace_id: NamespaceId,
     collection_id: &str,
@@ -193,7 +194,7 @@ fn handle_event(
     if is_source_key(&key) && is_local {
         // Local source stored → queue extract
         tracing::debug!(doc_id = %doc_id, "Source stored, queuing extract");
-        progress.queue(collection_id, Stage::Extract);
+        progress.queue(collection_id, Stage::Extract).await;
         let _ = senders.extract.send(ExtractJob {
             namespace_id,
             doc_id,
@@ -201,7 +202,7 @@ fn handle_event(
     } else if is_text_key(&key) {
         // Text ready → queue embed
         tracing::debug!(doc_id = %doc_id, is_local, "Text ready, queuing embed");
-        progress.queue(collection_id, Stage::Embed);
+        progress.queue(collection_id, Stage::Embed).await;
         let _ = senders.embed.send(EmbedJob {
             namespace_id,
             doc_id,
@@ -214,7 +215,7 @@ fn handle_event(
         if let Some(ref mid) = model_id {
             if mid == event_model_id {
                 tracing::debug!(doc_id = %doc_id, model = %event_model_id, "Embeddings ready, queuing index");
-                progress.queue(collection_id, Stage::Index);
+                progress.queue(collection_id, Stage::Index).await;
                 let _ = senders.index.send(IndexJob {
                     namespace_id,
                     doc_id,
