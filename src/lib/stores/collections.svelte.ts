@@ -84,6 +84,9 @@ function updatePipelineProgress(progress: PipelineProgress) {
 		const updated = { ...pipelineProgress };
 		delete updated[progress.collection_id];
 		pipelineProgress = updated;
+
+		// Refresh collections to get updated document counts
+		loadCollections();
 	} else {
 		pipelineProgress = {
 			...pipelineProgress,
