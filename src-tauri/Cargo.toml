@@ -1,6 +1,6 @@
 [package]
 name = "insight"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first P2P document search for journalists"
 authors = ["you"]
 edition = "2021"

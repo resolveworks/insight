@@ -4959,7 +4959,7 @@ dependencies = [
 
 [[package]]
 name = "insight"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "insight-core",
@@ -4983,7 +4983,7 @@ dependencies = [
 
 [[package]]
 name = "insight-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-openai",
