@@ -20,7 +20,9 @@ iroh-io = "0.6"
 lopdf = "0.38"
 
 # Search (milli from meilisearch)
-milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.30.1" }
+milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1" }
+# milli exposes http_client::policy::IpPolicy in its public API; we need to construct one
+http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1", package = "http-client" }
 bumpalo = "3"
 fst = "0.4.7"
 roaring = "0.10.7"

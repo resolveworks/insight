@@ -10,16 +10,20 @@ use anyhow::{Context, Result};
 use bumpalo::Bump;
 use fst::Streamer;
 
+use http_client::policy::IpPolicy;
 use milli::documents::mmap_from_objects;
 use milli::heed::{EnvOpenOptions, RoTxn};
-use milli::progress::Progress;
+use milli::progress::{EmbedderStats, Progress};
 use milli::prompt::Prompt;
 use milli::score_details::ScoringStrategy;
-use milli::update::new::indexer::{self, DocumentOperation};
-use milli::update::{IndexerConfig, Setting};
+use milli::update::new::indexer::{self, IndexOperations};
+use milli::update::{IndexerConfig, MissingDocumentPolicy, Setting};
 use milli::vector::settings::{EmbedderSource, EmbeddingSettings};
 use milli::vector::{embedder::manual, Embedder, RuntimeEmbedder, RuntimeEmbedders};
-use milli::{FilterableAttributesRule, Index, TermsMatchingStrategy};
+use milli::{
+    CreateOrOpen, Filter, FilterCondition, FilterableAttributesRule, Index, IndexFilter,
+    IndexFilterCondition, TermsMatchingStrategy,
+};
 use roaring::RoaringBitmap;
 use serde_json::{json, Map, Value};
 
@@ -28,6 +32,73 @@ use std::collections::HashMap;
 /// Default map size for the LMDB environment (10 GB)
 /// This is the maximum size the database can grow to
 const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
+
+/// Parse a filter string directly into an `IndexFilter`.
+///
+/// milli's `Filter::from_str` produces a `Filter`, but `Search::filter` now wants
+/// an `IndexFilter` (the variant without `Foreign` conditions). We only ever build
+/// simple field/IN filters, so conversion is mechanical.
+fn parse_index_filter(expr: &str) -> Result<Option<IndexFilter<'_>>> {
+    let Some(filter) =
+        Filter::from_str(expr).map_err(|e| anyhow::anyhow!("Filter error: {e:?}"))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(IndexFilter::from(condition_to_index_condition(
+        filter.condition,
+    ))))
+}
+
+fn condition_to_index_condition(cond: FilterCondition<'_>) -> IndexFilterCondition<'_> {
+    match cond {
+        FilterCondition::Not(inner) => {
+            IndexFilterCondition::Not(Box::new(condition_to_index_condition(*inner)))
+        }
+        FilterCondition::Condition { fid, op } => IndexFilterCondition::Condition { fid, op },
+        FilterCondition::In { fid, els } => IndexFilterCondition::In { fid, els },
+        FilterCondition::Or(children) => IndexFilterCondition::Or(
+            children
+                .into_iter()
+                .map(condition_to_index_condition)
+                .collect(),
+        ),
+        FilterCondition::And(children) => IndexFilterCondition::And(
+            children
+                .into_iter()
+                .map(condition_to_index_condition)
+                .collect(),
+        ),
+        FilterCondition::VectorExists {
+            fid,
+            embedder,
+            filter,
+        } => IndexFilterCondition::VectorExists {
+            fid,
+            embedder,
+            filter,
+        },
+        FilterCondition::GeoLowerThan {
+            point,
+            radius,
+            resolution,
+        } => IndexFilterCondition::GeoLowerThan {
+            point,
+            radius,
+            resolution,
+        },
+        FilterCondition::GeoBoundingBox {
+            top_right_point,
+            bottom_left_point,
+        } => IndexFilterCondition::GeoBoundingBox {
+            top_right_point,
+            bottom_left_point,
+        },
+        FilterCondition::GeoPolygon { points } => IndexFilterCondition::GeoPolygon { points },
+        FilterCondition::Foreign { .. } => {
+            unreachable!("foreign filters are never constructed by insight-core")
+        }
+    }
+}
 
 /// Get an embedder from the index's stored configuration
 ///
@@ -53,8 +124,12 @@ fn get_embedder_from_index(
     match config {
         Some(cfg) => {
             // Create embedder from stored options
-            let embedder = Embedder::new(cfg.config.embedder_options.clone(), 0)
-                .map_err(|e| anyhow::anyhow!("Failed to create embedder: {}", e))?;
+            let embedder = Embedder::new(
+                cfg.config.embedder_options.clone(),
+                0,
+                IpPolicy::danger_always_allow(),
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create embedder: {}", e))?;
             let quantized = cfg.config.quantized.unwrap_or(false);
             Ok(Some((Arc::new(embedder), quantized)))
         }
@@ -94,7 +169,8 @@ pub fn open_index(path: &Path) -> Result<Index> {
     env_options.map_size(DEFAULT_MAP_SIZE);
     let env_options = env_options.read_txn_without_tls();
 
-    let index = Index::new(env_options, path, true).context("Failed to create milli index")?;
+    let index = Index::new(env_options, path, CreateOrOpen::create_without_shards())
+        .context("Failed to create milli index")?;
 
     // Configure filterable attributes for collection and document filtering
     let needs_setup = {
@@ -119,7 +195,12 @@ pub fn open_index(path: &Path) -> Result<Index> {
             FilterableAttributesRule::Field("collection_id".to_string()),
             FilterableAttributesRule::Field("parent_id".to_string()),
         ]);
-        settings.execute(&|| false, &Progress::default(), Default::default())?;
+        settings.execute(
+            &|| false,
+            &Progress::default(),
+            &IpPolicy::danger_always_allow(),
+            Arc::new(EmbedderStats::default()),
+        )?;
         wtxn.commit()?;
         tracing::info!("Configured primary key and filterable attributes");
     }
@@ -175,7 +256,12 @@ pub fn configure_embedder(
     embedders_map.insert(embedder_name.to_string(), Setting::Set(embedder_settings));
     settings.set_embedder_settings(embedders_map);
 
-    settings.execute(&|| false, &Progress::default(), Default::default())?;
+    settings.execute(
+        &|| false,
+        &Progress::default(),
+        &IpPolicy::danger_always_allow(),
+        Arc::new(EmbedderStats::default()),
+    )?;
     wtxn.commit()?;
 
     // Verify the embedder was registered with an ID
@@ -205,7 +291,12 @@ pub fn remove_embedder(index: &Index, indexer_config: &IndexerConfig) -> Result<
     let mut wtxn = index.write_txn()?;
     let mut settings = milli::update::Settings::new(&mut wtxn, index, indexer_config);
     settings.reset_embedder_settings();
-    settings.execute(&|| false, &Progress::default(), Default::default())?;
+    settings.execute(
+        &|| false,
+        &Progress::default(),
+        &IpPolicy::danger_always_allow(),
+        Arc::new(EmbedderStats::default()),
+    )?;
     wtxn.commit()?;
 
     tracing::info!("Embedder configuration removed");
@@ -372,8 +463,8 @@ fn index_chunk_batch(
     let db_fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut new_fields_ids_map = db_fields_ids_map.clone();
 
-    let mut operation = DocumentOperation::new();
-    operation.replace_documents(&mmap)?;
+    let mut operation = IndexOperations::new();
+    operation.replace_documents(&mmap, MissingDocumentPolicy::Create)?;
 
     let indexer_alloc = Bump::new();
     let (document_changes, operation_stats, primary_key) = operation.into_changes(
@@ -416,7 +507,8 @@ fn index_chunk_batch(
                 embedders,
                 &|| false,
                 &Progress::default(),
-                &Default::default(),
+                &IpPolicy::danger_always_allow(),
+                &EmbedderStats::default(),
             )
         })
         .map_err(|e| anyhow::anyhow!("Thread pool error: {}", e))??;
@@ -537,7 +629,8 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
     } = params;
 
     let rtxn = index.read_txn()?;
-    let mut search = milli::Search::new(&rtxn, index);
+    let progress = Progress::default();
+    let mut search = milli::Search::new(&rtxn, index, &progress);
     search.query(query);
     search.limit(limit);
     search.offset(offset);
@@ -551,9 +644,7 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
         format!("collection_id IN [{}]", quoted.join(", "))
     });
     if let Some(ref fs) = filter_str {
-        if let Some(f) =
-            milli::Filter::from_str(fs).map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?
-        {
+        if let Some(f) = parse_index_filter(fs)? {
             search.filter(f);
         }
     }
@@ -638,12 +729,11 @@ pub fn delete_document_chunks(
 
     // Build filter for parent_id
     let filter_str = format!("parent_id = \"{}\"", parent_id);
-    let mut search = milli::Search::new(&rtxn, index);
+    let progress = Progress::default();
+    let mut search = milli::Search::new(&rtxn, index, &progress);
     search.query("");
     search.limit(usize::MAX);
-    if let Some(f) = milli::Filter::from_str(&filter_str)
-        .map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?
-    {
+    if let Some(f) = parse_index_filter(&filter_str)? {
         search.filter(f);
     }
 
@@ -707,12 +797,11 @@ pub fn get_collection_terms(
         let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
         let filter_str = format!("collection_id IN [{}]", quoted.join(", "));
 
-        let mut search = milli::Search::new(&rtxn, index);
+        let progress = Progress::default();
+        let mut search = milli::Search::new(&rtxn, index, &progress);
         search.query("");
         search.limit(usize::MAX);
-        if let Some(f) = milli::Filter::from_str(&filter_str)
-            .map_err(|e| anyhow::anyhow!("Filter error: {:?}", e))?
-        {
+        if let Some(f) = parse_index_filter(&filter_str)? {
             search.filter(f);
         }
 
@@ -780,7 +869,7 @@ fn delete_chunks_by_id(
     let db_fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut new_fields_ids_map = db_fields_ids_map.clone();
 
-    let mut operation = DocumentOperation::new();
+    let mut operation = IndexOperations::new();
     operation.delete_documents(&chunk_ids_refs);
 
     let indexer_alloc = Bump::new();
@@ -816,7 +905,8 @@ fn delete_chunks_by_id(
                 RuntimeEmbedders::default(),
                 &|| false,
                 &Progress::default(),
-                &Default::default(),
+                &IpPolicy::danger_always_allow(),
+                &EmbedderStats::default(),
             )
         })
         .map_err(|e| anyhow::anyhow!("Thread pool error: {}", e))??;
