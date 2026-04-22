@@ -1,248 +1,85 @@
 <script lang="ts">
-	import { invoke } from '@tauri-apps/api/core';
-	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy, onMount, tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import Markdown from './Markdown.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 	import type { Collection } from '$lib/stores/collections.svelte';
-
-	// Content block types matching backend
-	type ContentBlock =
-		| { type: 'text'; text: string }
-		| { type: 'tool_use'; id: string; name: string; arguments: object }
-		| {
-				type: 'tool_result';
-				tool_use_id: string;
-				content: string;
-				is_error: boolean;
-		  };
-
-	// A chat message is a block with a role attached
-	interface ChatMessage {
-		role: 'user' | 'assistant';
-		block: ContentBlock;
-	}
-
-	// Delta content for streaming
-	type ContentDelta = { type: 'text'; text: string };
-
-	// Agent events matching backend
-	type AgentEvent =
-		| { type: 'content_block_start'; data: { block: ContentBlock } }
-		| { type: 'content_block_delta'; data: { delta: ContentDelta } }
-		| { type: 'content_block_stop' }
-		| { type: 'done' }
-		| { type: 'error'; data: { message: string } };
-
-	interface BackendMessage {
-		role: 'system' | 'user' | 'assistant';
-		content: ContentBlock[];
-	}
-
-	interface Conversation {
-		id: string;
-		title: string;
-		messages: BackendMessage[];
-		created_at: string;
-		updated_at: string;
-	}
+	import { getLanguageState } from '$lib/stores/provider-state.svelte';
+	import * as chat from '$lib/stores/conversations.svelte';
 
 	type Props = {
-		onConversationStart?: (id: string) => void;
 		/** Collections to filter agent searches to */
 		collections?: Collection[];
-		/** Initial conversation ID to load on mount */
-		initialConversationId?: string | null;
 	};
 
-	let {
-		onConversationStart,
-		collections,
-		initialConversationId = null,
-	}: Props = $props();
-
-	let conversationId = $state<string | null>(null);
-	let messages = $state<ChatMessage[]>([]);
-	let inputValue = $state('');
-	let isGenerating = $state(false);
-	let isLoading = $state(false);
-	let error = $state<string | null>(null);
-
-	// Streaming state: blocks being built for current response
-	let streamingBlocks = $state<ContentBlock[]>([]);
+	let { collections }: Props = $props();
 
 	// Provider state
-	let providerConfigured = $state(false);
-	let checkingProvider = $state(true);
+	const languageState = $derived(getLanguageState());
+	const providerConfigured = $derived(languageState.ready);
 
-	// Prediction state (tab completion)
+	// Reactive reads from the conversations store
+	const activeId = $derived(chat.getActiveId());
+	const messages = $derived(chat.getActiveMessages());
+	const streamingBlocks = $derived(chat.getStreamingBlocks());
+	const isGenerating = $derived(chat.getIsGenerating());
+	const isLoading = $derived(chat.getIsLoading());
+	const error = $derived(chat.getError());
+
+	// View-local state
+	let inputValue = $state('');
 	let prediction = $state<string>('');
 	let isPredicting = $state(false);
 	let predictionTimeout: ReturnType<typeof setTimeout> | undefined;
-
-	let unlistenAgent: UnlistenFn | undefined;
 	let messagesContainer: HTMLElement | undefined;
 
-	async function checkProviderStatus() {
-		checkingProvider = true;
-		try {
-			const config = await invoke<object | null>('get_current_provider');
-			providerConfigured = config !== null;
-		} catch (e) {
-			console.error('Failed to check provider status:', e);
-			providerConfigured = false;
-		} finally {
-			checkingProvider = false;
-		}
-	}
-
-	async function handleProviderConfigured() {
-		providerConfigured = true;
-		await startChat();
-	}
-
-	async function startChat() {
-		if (!providerConfigured) return;
-		try {
-			isLoading = true;
-			error = null;
-			const conv = await invoke<Conversation>('start_chat', {
-				collections: collections && collections.length > 0 ? collections : null,
+	// Initialize the store once the language provider is ready.
+	$effect(() => {
+		if (providerConfigured) {
+			untrack(() => {
+				chat.ensureInitialized(collections ?? null);
 			});
-			conversationId = conv.id;
-			messages = [];
-
-			if (conversationId) {
-				unlistenAgent = await listen<AgentEvent>(
-					`agent-event-${conversationId}`,
-					handleAgentEvent,
-				);
-				onConversationStart?.(conversationId);
-			}
-		} catch (e) {
-			error = `Failed to start chat: ${e}`;
-			console.error('Failed to start chat:', e);
-		} finally {
-			isLoading = false;
 		}
-	}
+	});
 
-	/** Load an existing conversation by ID */
-	export async function loadConversation(id: string) {
-		try {
-			isLoading = true;
-			error = null;
+	// Auto-scroll to bottom whenever chat content changes. Reading message /
+	// streaming lengths + the live tail text is what tells $effect to re-run.
+	$effect(() => {
+		const lastStreaming = streamingBlocks.at(-1);
+		const tailChars =
+			lastStreaming?.type === 'text' ? lastStreaming.text.length : 0;
+		const hasContent =
+			messages.length > 0 || streamingBlocks.length > 0 || tailChars > 0;
 
-			// Clean up existing listener
-			unlistenAgent?.();
+		if (!hasContent) return;
 
-			const conv = await invoke<Conversation>('load_conversation', {
-				conversationId: id,
-			});
-			conversationId = conv.id;
-
-			// Flatten backend messages into individual blocks
-			messages = conv.messages
-				.filter((m) => m.role === 'user' || m.role === 'assistant')
-				.flatMap((m) =>
-					m.content.map((block) => ({
-						role: m.role as 'user' | 'assistant',
-						block,
-					})),
-				);
-
-			// Set up event listener for this conversation
-			unlistenAgent = await listen<AgentEvent>(
-				`agent-event-${conversationId}`,
-				handleAgentEvent,
-			);
-		} catch (e) {
-			error = `Failed to load conversation: ${e}`;
-			console.error('Failed to load conversation:', e);
-		} finally {
-			isLoading = false;
-
-			// Scroll to the end of the conversation after DOM updates
-			await tick();
+		tick().then(() => {
 			if (messagesContainer) {
 				messagesContainer.scrollTop = messagesContainer.scrollHeight;
 			}
-		}
-	}
-
-	/** Start a new conversation (reset state) */
-	export async function newConversation() {
-		unlistenAgent?.();
-		conversationId = null;
-		messages = [];
-		streamingBlocks = [];
-		error = null;
-
-		if (providerConfigured) {
-			await startChat();
-		}
-	}
+		});
+	});
 
 	async function sendMessage() {
-		if (!inputValue.trim() || !conversationId || isGenerating) return;
-
-		const userMessage = inputValue.trim();
+		if (!inputValue.trim() || isGenerating) return;
+		const text = inputValue;
 		inputValue = '';
-		error = null;
-
-		// Add user message immediately
-		messages = [
-			...messages,
-			{ role: 'user', block: { type: 'text', text: userMessage } },
-		];
-
-		// Scroll to show user message
-		await tick();
-		if (messagesContainer) {
-			messagesContainer.scrollTop = messagesContainer.scrollHeight;
-		}
-
-		isGenerating = true;
-		streamingBlocks = [];
-
-		try {
-			await invoke('send_message', {
-				conversationId,
-				message: userMessage,
-				collections: collections && collections.length > 0 ? collections : null,
-			});
-		} catch (e) {
-			error = `Failed to send message: ${e}`;
-			console.error('Failed to send message:', e);
-			isGenerating = false;
-		}
+		await chat.sendMessage(text, collections ?? null);
 	}
 
 	async function cancelGeneration() {
-		if (conversationId) {
-			await invoke('cancel_generation', { conversationId });
-			isGenerating = false;
-		}
+		await chat.cancelGeneration();
 	}
 
-	// Prediction functions (tab completion)
+	// Prediction (tab completion)
 	async function requestPrediction() {
-		if (!conversationId || isPredicting || isGenerating || inputValue) return;
-
+		if (!activeId || isPredicting || isGenerating || inputValue) return;
 		isPredicting = true;
 		try {
-			const result = await invoke<string | null>('predict_next_message', {
-				conversationId,
-			});
-			// Only set prediction if input is still empty
-			if (result && !inputValue) {
-				prediction = result;
-			}
-		} catch (e) {
-			console.error('Prediction failed:', e);
+			const result = await chat.predictNextMessage();
+			if (result && !inputValue) prediction = result;
 		} finally {
 			isPredicting = false;
 		}
@@ -250,95 +87,28 @@
 
 	async function cancelPrediction() {
 		clearTimeout(predictionTimeout);
-		if (conversationId) {
-			try {
-				await invoke('cancel_prediction', { conversationId });
-			} catch {
-				// Ignore cancellation errors
-			}
-		}
+		await chat.cancelPrediction();
 	}
 
 	function handleAcceptPrediction() {
 		prediction = '';
 	}
 
-	// Trigger prediction when input becomes empty
 	$effect(() => {
-		// Clear prediction if user types
 		if (inputValue) {
 			prediction = '';
 			cancelPrediction();
 			return;
 		}
-
-		// Don't predict during generation, loading, or without conversation
-		if (isGenerating || isLoading || !conversationId || messages.length === 0) {
+		if (isGenerating || isLoading || !activeId || messages.length === 0) {
 			prediction = '';
 			return;
 		}
-
-		// Debounce prediction request (wait 500ms after input becomes empty)
 		clearTimeout(predictionTimeout);
 		predictionTimeout = setTimeout(() => {
 			requestPrediction();
 		}, 500);
 	});
-
-	async function handleAgentEvent(event: { payload: AgentEvent }) {
-		const payload = event.payload;
-
-		switch (payload.type) {
-			case 'content_block_start':
-				// Push new block
-				streamingBlocks = [...streamingBlocks, payload.data.block];
-				break;
-
-			case 'content_block_delta': {
-				// Update last block
-				const lastIdx = streamingBlocks.length - 1;
-				if (lastIdx >= 0) {
-					const block = streamingBlocks[lastIdx];
-					const delta = payload.data.delta;
-					if (delta.type === 'text' && block.type === 'text') {
-						streamingBlocks = [
-							...streamingBlocks.slice(0, lastIdx),
-							{ type: 'text', text: block.text + delta.text },
-						];
-					}
-				}
-				break;
-			}
-
-			case 'content_block_stop':
-				// Block complete, nothing to do
-				break;
-
-			case 'done': {
-				// Move streaming blocks to messages
-				const newMessages = streamingBlocks.map((block) => ({
-					role: 'assistant' as const,
-					block,
-				}));
-				messages = [...messages, ...newMessages];
-				streamingBlocks = [];
-				isGenerating = false;
-				break;
-			}
-
-			case 'error':
-				error = payload.data?.message || 'Unknown error';
-				console.error('Agent error:', payload.data?.message);
-				isGenerating = false;
-				break;
-		}
-
-		// Auto-scroll after DOM updates
-		await tick();
-		if (messagesContainer) {
-			messagesContainer.scrollTop = messagesContainer.scrollHeight;
-		}
-	}
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey) {
@@ -346,23 +116,6 @@
 			sendMessage();
 		}
 	}
-
-	onMount(async () => {
-		await checkProviderStatus();
-		if (providerConfigured) {
-			if (initialConversationId) {
-				// Restore previous conversation
-				await loadConversation(initialConversationId);
-			} else if (!conversationId) {
-				await startChat();
-			}
-		}
-	});
-
-	onDestroy(() => {
-		unlistenAgent?.();
-		clearTimeout(predictionTimeout);
-	});
 </script>
 
 <div class="flex h-full flex-col bg-surface">
@@ -371,13 +124,7 @@
 		bind:this={messagesContainer}
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
-		{#if checkingProvider}
-			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-neutral-500">
-					<div class="text-lg">Checking provider...</div>
-				</div>
-			</div>
-		{:else if !providerConfigured}
+		{#if !providerConfigured}
 			<div class="mx-auto max-w-xl pt-8">
 				<h2 class="mb-4 text-lg font-medium text-neutral-800">
 					Configure a Language Model
@@ -387,7 +134,7 @@
 					OpenAI/Anthropic APIs.
 				</p>
 				<div class="rounded-lg border border-neutral-300 bg-surface-bright p-6">
-					<ProviderSelector onConfigured={handleProviderConfigured} />
+					<ProviderSelector />
 				</div>
 			</div>
 		{:else if isLoading}
