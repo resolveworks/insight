@@ -181,6 +181,7 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<Tool> {
                 name: t.name.clone(),
                 description: Some(t.description.clone()),
                 parameters: Some(json_to_hashmap(&t.parameters)),
+                strict: None,
             },
         })
         .collect()

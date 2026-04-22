@@ -321,6 +321,7 @@ pub fn index_chunks_batch(
 }
 
 /// Index a batch of chunks
+#[allow(clippy::result_large_err)]
 fn index_chunk_batch(
     index: &Index,
     indexer_config: &IndexerConfig,
@@ -756,13 +757,14 @@ pub fn get_collection_terms(
     }
 
     // Sort by frequency (descending) and take top N
-    term_counts.sort_by(|a, b| b.doc_count.cmp(&a.doc_count));
+    term_counts.sort_by_key(|t| std::cmp::Reverse(t.doc_count));
     term_counts.truncate(limit);
 
     Ok(term_counts)
 }
 
 /// Delete chunks by their IDs
+#[allow(clippy::result_large_err)]
 fn delete_chunks_by_id(
     index: &Index,
     indexer_config: &IndexerConfig,
