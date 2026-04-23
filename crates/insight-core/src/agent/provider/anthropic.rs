@@ -15,7 +15,7 @@ use super::{
     ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent, RemoteModelInfo,
     ToolDefinition,
 };
-use crate::agent::{ContentBlock, Message, MessageRole};
+use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
@@ -281,17 +281,16 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessa
     for msg in messages {
         match msg.role {
             MessageRole::System => {
-                // Extract system message text
-                let text: String = msg
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                system = Some(text);
+                system = Some(msg.text());
+            }
+            MessageRole::Context => {
+                // Anthropic accepts only one leading system prompt, so we
+                // inject breadcrumbs as tagged user-role notes at the point
+                // they occurred in the transcript.
+                result.push(AnthropicMessage {
+                    role: "user".to_string(),
+                    content: AnthropicContent::Text(render_context_message(&msg.text())),
+                });
             }
             MessageRole::User => {
                 let content = convert_user_blocks(&msg.content);

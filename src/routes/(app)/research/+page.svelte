@@ -1,23 +1,18 @@
 <script lang="ts">
-	import { SvelteSet } from 'svelte/reactivity';
 	import Chat from '$lib/components/Chat.svelte';
 	import CollectionFilter from '$lib/components/CollectionFilter.svelte';
 	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
 	import FilterSidebar from '$lib/components/FilterSidebar.svelte';
 	import * as collectionsStore from '$lib/stores/collections.svelte';
 	import * as chat from '$lib/stores/conversations.svelte';
-	import type { Collection } from '$lib/stores/collections.svelte';
 
-	// Collection filters. Empty set means "all collections" (no filter).
 	const collections = $derived(collectionsStore.getCollections());
-	let selectedCollections = new SvelteSet<string>();
+	const selected = $derived(chat.getActiveCollections());
 
-	const selectedCollectionInfos = $derived.by(() => {
-		if (selectedCollections.size === 0) return [];
-		return collections
-			.filter((c) => selectedCollections.has(c.id))
-			.map((c): Collection => ({ ...c }));
-	});
+	async function handleAdd(id: string) {
+		const found = collectionsStore.getCollection(id);
+		if (found) await chat.addActiveCollection(found);
+	}
 </script>
 
 <div class="flex h-full">
@@ -28,18 +23,23 @@
 		<div class="flex-1 overflow-y-auto">
 			<ConversationSidebar
 				onSelect={(id) => chat.selectConversation(id)}
-				onNew={() => chat.newConversation(selectedCollectionInfos)}
+				onNew={() => chat.newConversation()}
 			/>
 		</div>
 	</aside>
 
 	<!-- Main: Chat -->
 	<div class="flex-1">
-		<Chat collections={selectedCollectionInfos} />
+		<Chat />
 	</div>
 
-	<!-- Right Sidebar: Filters -->
+	<!-- Right Sidebar: Filters (bound to active conversation) -->
 	<FilterSidebar>
-		<CollectionFilter {collections} selected={selectedCollections} />
+		<CollectionFilter
+			{collections}
+			{selected}
+			onAdd={handleAdd}
+			onRemove={chat.removeActiveCollection}
+		/>
 	</FilterSidebar>
 </div>

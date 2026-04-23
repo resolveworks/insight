@@ -1,0 +1,337 @@
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
+
+use crate::core::{models, search, AppState, ModelType};
+use crate::error::{CommandError, CommandResult, ResultExt};
+
+/// Model info for frontend (unified across types)
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub size_gb: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<usize>,
+}
+
+impl From<models::LanguageModelInfo> for ModelInfo {
+    fn from(m: models::LanguageModelInfo) -> Self {
+        Self {
+            id: m.id,
+            name: m.name,
+            description: m.description,
+            size_gb: m.size_gb,
+            dimensions: None,
+        }
+    }
+}
+
+impl From<models::EmbeddingModelInfo> for ModelInfo {
+    fn from(m: models::EmbeddingModelInfo) -> Self {
+        Self {
+            id: m.id,
+            name: m.name,
+            description: m.description,
+            size_gb: m.size_gb,
+            dimensions: Some(m.dimensions),
+        }
+    }
+}
+
+/// Get list of available models for a type
+#[tauri::command]
+pub async fn get_available_models(model_type: ModelType) -> CommandResult<Vec<ModelInfo>> {
+    Ok(match model_type {
+        ModelType::Language => models::available_language_models()
+            .into_iter()
+            .map(ModelInfo::from)
+            .collect(),
+        ModelType::Embedding => models::available_embedding_models()
+            .into_iter()
+            .map(ModelInfo::from)
+            .collect(),
+    })
+}
+
+/// Model download status
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status")]
+pub enum DownloadStatus {
+    NotDownloaded,
+    Ready,
+}
+
+/// Get download status for a model
+#[tauri::command]
+pub async fn get_model_status(
+    model_type: ModelType,
+    model_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<DownloadStatus> {
+    let is_downloaded = match model_type {
+        ModelType::Language => {
+            let model = models::get_language_model(&model_id)
+                .ok_or(CommandError::model_not_found(&model_id))?;
+            state.model_manager.is_downloaded(&model)
+        }
+        ModelType::Embedding => {
+            let model = models::get_embedding_model(&model_id)
+                .ok_or(CommandError::model_not_found(&model_id))?;
+            state.model_manager.is_downloaded(&model)
+        }
+    };
+
+    Ok(if is_downloaded {
+        DownloadStatus::Ready
+    } else {
+        DownloadStatus::NotDownloaded
+    })
+}
+
+/// Download a model with progress events
+#[tauri::command]
+pub async fn download_model(
+    model_type: ModelType,
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    use crate::core::{ModelDownloadProgress, ModelStatus};
+
+    // Check if already downloaded and get model for download
+    let is_downloaded = match model_type {
+        ModelType::Language => {
+            let model = models::get_language_model(&model_id)
+                .ok_or(CommandError::model_not_found(&model_id))?;
+            state.model_manager.is_downloaded(&model)
+        }
+        ModelType::Embedding => {
+            let model = models::get_embedding_model(&model_id)
+                .ok_or(CommandError::model_not_found(&model_id))?;
+            state.model_manager.is_downloaded(&model)
+        }
+    };
+
+    if is_downloaded {
+        tracing::info!("Model {} is already downloaded", model_id);
+        return Ok(());
+    }
+
+    // Create channels for status and progress
+    let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<ModelStatus>(10);
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<ModelDownloadProgress>(100);
+
+    // Forward events to frontend
+    let app_status = app.clone();
+    tokio::spawn(async move {
+        while let Some(status) = status_rx.recv().await {
+            let _ = app_status.emit("model-status-changed", &status);
+        }
+    });
+
+    let app_progress = app.clone();
+    tokio::spawn(async move {
+        while let Some(progress) = progress_rx.recv().await {
+            let _ = app_progress.emit("model-download-progress", &progress);
+        }
+    });
+
+    // Download based on type
+    match model_type {
+        ModelType::Language => {
+            let model = models::get_language_model(&model_id).unwrap();
+            state
+                .model_manager
+                .download(&model, model_type, status_tx, progress_tx)
+                .await
+                .external_err()?;
+        }
+        ModelType::Embedding => {
+            let model = models::get_embedding_model(&model_id).unwrap();
+            state
+                .model_manager
+                .download(&model, model_type, status_tx, progress_tx)
+                .await
+                .external_err()?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Unified provider status for frontend sync
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderStatus {
+    /// Provider type: "local", "openai", "anthropic", or null if not configured
+    pub provider_type: Option<String>,
+    /// Model ID within the provider
+    pub model_id: Option<String>,
+    /// Whether the provider is ready to use
+    pub ready: bool,
+    /// Error message if failed (transient, not persisted)
+    pub error: Option<String>,
+}
+
+/// Get the current provider status for embedding or language
+///
+/// Used by the frontend to sync state on HMR reload or initial load.
+#[tauri::command]
+pub async fn get_provider_status(
+    model_type: ModelType,
+    state: State<'_, AppState>,
+) -> CommandResult<ProviderStatus> {
+    Ok(match model_type {
+        ModelType::Embedding => {
+            let embedder_guard = state.embedder.read().await;
+            let model_id_guard = state.embedding_model_id.read().await;
+
+            ProviderStatus {
+                provider_type: model_id_guard.as_ref().map(|_| "local".to_string()),
+                model_id: model_id_guard.clone(),
+                ready: embedder_guard.is_some(),
+                error: None,
+            }
+        }
+        ModelType::Language => {
+            let provider_guard = state.chat_provider.read().await;
+            let config_guard = state.provider_config.read().await;
+
+            ProviderStatus {
+                provider_type: config_guard.as_ref().map(|c| c.provider_type().to_string()),
+                model_id: config_guard.as_ref().map(|c| c.model_id().to_string()),
+                ready: provider_guard.is_some(),
+                error: None,
+            }
+        }
+    })
+}
+
+/// Get the currently configured model ID for a type
+#[tauri::command]
+pub async fn get_current_model(
+    model_type: ModelType,
+    state: State<'_, AppState>,
+) -> CommandResult<Option<String>> {
+    Ok(match model_type {
+        ModelType::Language => {
+            let provider_config = state.provider_config.read().await;
+            provider_config.as_ref().map(|c| c.model_id().to_string())
+        }
+        ModelType::Embedding => {
+            let model_id = state.embedding_model_id.read().await;
+            model_id.clone()
+        }
+    })
+}
+
+/// Configure and load a model
+#[tauri::command]
+pub async fn configure_model(
+    model_type: ModelType,
+    model_id: Option<String>,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    match model_type {
+        ModelType::Language => configure_language_model_impl(model_id, state).await,
+        ModelType::Embedding => configure_embedding_model_impl(model_id, state).await,
+    }
+}
+
+async fn configure_language_model_impl(
+    model_id: Option<String>,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    use crate::core::{LocalProvider, ProviderConfig, Settings};
+
+    if let Some(ref id) = model_id {
+        let model = models::get_language_model(id).ok_or(CommandError::model_not_found(id))?;
+
+        tracing::info!(
+            "Configuring local language model: {} ({})",
+            model.name,
+            model.id
+        );
+
+        let model_path = state
+            .model_manager
+            .get_path(&model)
+            .ok_or(CommandError::model_not_downloaded(id))?;
+
+        let provider = LocalProvider::load(&model_path, &model)
+            .await
+            .map_err(|e| CommandError::internal(format!("Failed to load model: {}", e)))?;
+
+        let provider_config = ProviderConfig::Local {
+            model_id: id.clone(),
+        };
+        *state.chat_provider.write().await = Some(Box::new(provider));
+        *state.provider_config.write().await = Some(provider_config.clone());
+
+        let mut settings = Settings::load(&state.config.settings_file);
+        settings.provider = Some(provider_config);
+        settings.save(&state.config.settings_file).storage_err()?;
+    } else {
+        tracing::info!("Unloading chat provider");
+        *state.chat_provider.write().await = None;
+        *state.provider_config.write().await = None;
+
+        let mut settings = Settings::load(&state.config.settings_file);
+        settings.provider = None;
+        settings.save(&state.config.settings_file).storage_err()?;
+    }
+
+    Ok(())
+}
+
+async fn configure_embedding_model_impl(
+    model_id: Option<String>,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    use crate::core::{Embedder, Settings};
+
+    if let Some(ref id) = model_id {
+        let model = models::get_embedding_model(id).ok_or(CommandError::model_not_found(id))?;
+
+        tracing::info!(
+            "Configuring embedding model: {} ({})",
+            model.name,
+            model.hf_repo_id
+        );
+
+        let embedder = Embedder::new(&model.hf_repo_id, model.dimensions)
+            .await
+            .map_err(|e| CommandError::internal(format!("Failed to load embedder: {}", e)))?;
+
+        {
+            let index = &*state.search;
+            let indexer_config = milli::update::IndexerConfig::default();
+            search::configure_embedder(index, &indexer_config, "default", model.dimensions)
+                .map_err(|e| {
+                    CommandError::internal(format!("Failed to configure embedder in index: {}", e))
+                })?;
+        }
+
+        *state.embedder.write().await = Some(embedder);
+        *state.embedding_model_id.write().await = Some(id.clone());
+    } else {
+        tracing::info!("Disabling embedding model");
+
+        {
+            let index = &*state.search;
+            let indexer_config = milli::update::IndexerConfig::default();
+            if let Err(e) = search::remove_embedder(index, &indexer_config) {
+                tracing::warn!("Failed to remove embedder from index: {}", e);
+            }
+        }
+
+        *state.embedder.write().await = None;
+        *state.embedding_model_id.write().await = None;
+    }
+
+    let mut settings = Settings::load(&state.config.settings_file);
+    settings.embedding_model_id = model_id;
+    settings.save(&state.config.settings_file).storage_err()?;
+
+    Ok(())
+}

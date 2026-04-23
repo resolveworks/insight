@@ -9,10 +9,10 @@
 </script>
 
 <aside
-	class="flex w-64 flex-col border-l border-primary-700 bg-primary-600 text-surface"
+	class="flex w-64 flex-col border-l border-neutral-900 bg-neutral-800 text-neutral-100"
 >
-	<div class="border-b border-primary-700 p-4">
-		<h2 class="text-xs font-medium uppercase tracking-wide text-primary-200">
+	<div class="border-b border-neutral-900 p-4">
+		<h2 class="text-xs font-medium uppercase tracking-wide text-neutral-400">
 			Filters
 		</h2>
 	</div>

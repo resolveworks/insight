@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::{ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent, ToolDefinition};
-use crate::agent::{ContentBlock, Message, MessageRole};
+use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 use crate::models::LanguageModelInfo;
 
 /// Local LLM provider using mistralrs
@@ -203,20 +203,17 @@ fn build_request(messages: &[Message], tools: &[Tool]) -> RequestBuilder {
         .enable_thinking(false);
 
     for msg in messages {
-        // Extract text content from blocks
-        let text: String = msg
-            .content
-            .iter()
-            .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
+        let text = msg.text();
 
         match msg.role {
             MessageRole::System => {
                 request = request.add_message(TextMessageRole::System, &text);
+            }
+            MessageRole::Context => {
+                // Chat templates vary in how mid-stream system messages are
+                // rendered; tagging as a user note is the most portable way
+                // to make sure the model actually sees the breadcrumb.
+                request = request.add_message(TextMessageRole::User, render_context_message(&text));
             }
             MessageRole::User => {
                 request = request.add_message(TextMessageRole::User, &text);

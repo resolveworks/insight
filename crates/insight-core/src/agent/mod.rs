@@ -40,7 +40,9 @@ impl AgentContext {
     }
 }
 
-/// Base system prompt for the agent
+/// Base system prompt for the agent. Stable across the life of the app — any
+/// per-chat state (e.g. active collection scope) is carried as `Context`
+/// messages in the transcript, not baked into the system prompt.
 const BASE_SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists investigate document collections.
 
 Be concise. Answer in 2-4 sentences unless the user asks for more detail. Cite document names so findings are verifiable.
@@ -51,39 +53,60 @@ When answering questions:
 3. Cite sources (document name)
 4. Note any gaps or contradictions worth pursuing"#;
 
-/// Build system prompt with optional collection context
-fn build_system_prompt(collections: Option<&[CollectionInfo]>) -> String {
-    let mut prompt = BASE_SYSTEM_PROMPT.to_string();
-
-    if let Some(cols) = collections {
-        if !cols.is_empty() {
-            prompt.push_str("\n\nYou are searching documents in:\n");
-            for col in cols {
-                // Format: "- Collection Name (X documents, Y pages)"
-                let stats = if col.document_count > 0 || col.total_pages > 0 {
-                    let doc_word = if col.document_count == 1 {
-                        "document"
-                    } else {
-                        "documents"
-                    };
-                    let page_word = if col.total_pages == 1 {
-                        "page"
-                    } else {
-                        "pages"
-                    };
-                    format!(
-                        " ({} {}, {} {})",
-                        col.document_count, doc_word, col.total_pages, page_word
-                    )
-                } else {
-                    String::new()
-                };
-                prompt.push_str(&format!("- {}{}\n", col.name, stats));
-            }
-        }
+/// Render a single collection line like "Climate Reports (10 documents, 250 pages)"
+/// — shared between breadcrumb formatting and any UI mirror.
+fn format_collection_entry(c: &CollectionInfo) -> String {
+    if c.document_count == 0 && c.total_pages == 0 {
+        return c.name.clone();
     }
+    let doc_word = if c.document_count == 1 {
+        "document"
+    } else {
+        "documents"
+    };
+    let page_word = if c.total_pages == 1 { "page" } else { "pages" };
+    format!(
+        "{} ({} {}, {} {})",
+        c.name, c.document_count, doc_word, c.total_pages, page_word
+    )
+}
 
-    prompt
+/// Format the human-readable text of a scope-change breadcrumb.
+fn format_scope_breadcrumb(collections: &[CollectionInfo], first_time: bool) -> String {
+    if collections.is_empty() {
+        return "Scope cleared. Earlier tool results reflect the previous scope.".to_string();
+    }
+    let list = collections
+        .iter()
+        .map(format_collection_entry)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if first_time {
+        format!("Scope set to: {}", list)
+    } else {
+        format!(
+            "Scope updated to: {}. Earlier tool results reflect the previous scope.",
+            list
+        )
+    }
+}
+
+/// Wrap a Context-role message's raw text for delivery to an LLM.
+///
+/// Providers generally only accept a single leading system message, so
+/// breadcrumb messages are shipped as user-role notes. The `[session]` tag
+/// makes it obvious to the model that the note is out-of-band metadata rather
+/// than something the user typed.
+pub(crate) fn render_context_message(text: &str) -> String {
+    format!("[session] {}", text)
+}
+
+fn collections_equivalent(a: &[CollectionInfo], b: &[CollectionInfo]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let a_ids: std::collections::HashSet<&str> = a.iter().map(|c| c.id.as_str()).collect();
+    b.iter().all(|c| a_ids.contains(c.id.as_str()))
 }
 
 /// Message role in a conversation
@@ -91,6 +114,10 @@ fn build_system_prompt(collections: Option<&[CollectionInfo]>) -> String {
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     System,
+    /// Session-scoped state note (e.g. collection scope change) inserted into
+    /// the transcript so both the model and the persisted conversation record
+    /// when context shifted. Providers render it inline as a tagged note.
+    Context,
     User,
     Assistant,
 }
@@ -121,6 +148,20 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
 }
 
+impl Message {
+    /// Concatenate all text blocks in this message. Used by provider adapters
+    /// to flatten system and context messages into a single payload string.
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        for block in &self.content {
+            if let ContentBlock::Text { text } = block {
+                out.push_str(text);
+            }
+        }
+        out
+    }
+}
+
 /// A conversation with message history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -129,6 +170,11 @@ pub struct Conversation {
     pub messages: Vec<Message>,
     pub created_at: String,
     pub updated_at: String,
+    /// Active collection scope for this conversation. Mutated via
+    /// [`Conversation::set_collections`], which also appends a breadcrumb
+    /// message to the transcript so the model can see the change.
+    #[serde(default)]
+    pub collections: Vec<CollectionInfo>,
 }
 
 impl Conversation {
@@ -150,13 +196,29 @@ impl Conversation {
             }],
             created_at: now.clone(),
             updated_at: now,
+            collections: Vec::new(),
         }
     }
 
-    /// Create a new conversation with collection context
-    pub fn with_collection_context(id: String, collections: Option<&[CollectionInfo]>) -> Self {
-        let system_prompt = build_system_prompt(collections);
-        Self::with_system_prompt(id, system_prompt)
+    /// Update the active collection scope. When the set actually changes,
+    /// appends a `Context`-role breadcrumb to the transcript so the model sees
+    /// that scope shifted (and that earlier tool results reflect the previous
+    /// scope). Returns `true` when something changed.
+    pub fn set_collections(&mut self, collections: Vec<CollectionInfo>) -> bool {
+        if collections_equivalent(&self.collections, &collections) {
+            return false;
+        }
+
+        let first_time = self.collections.is_empty();
+        self.collections = collections;
+
+        let text = format_scope_breadcrumb(&self.collections, first_time);
+        self.messages.push(Message {
+            role: MessageRole::Context,
+            content: vec![ContentBlock::Text { text }],
+        });
+        self.touch();
+        true
     }
 
     /// Generate title from first user message (truncated to 50 chars)
@@ -557,28 +619,10 @@ mod tests {
         );
     }
 
-    // ==================== build_system_prompt Tests ====================
+    // ==================== Scope breadcrumb Tests ====================
 
     #[test]
-    fn test_build_system_prompt_no_collections() {
-        let prompt = build_system_prompt(None);
-
-        assert!(prompt.contains("research assistant"));
-        assert!(prompt.contains("journalists"));
-        assert!(!prompt.contains("You are searching documents in:"));
-    }
-
-    #[test]
-    fn test_build_system_prompt_empty_collections() {
-        let collections: Vec<CollectionInfo> = vec![];
-        let prompt = build_system_prompt(Some(&collections));
-
-        assert!(prompt.contains("research assistant"));
-        assert!(!prompt.contains("You are searching documents in:"));
-    }
-
-    #[test]
-    fn test_build_system_prompt_with_collections() {
+    fn test_format_scope_breadcrumb_first_time_with_stats() {
         let collections = vec![
             CollectionInfo {
                 id: "col_1".to_string(),
@@ -595,50 +639,64 @@ mod tests {
                 created_at: None,
             },
         ];
-        let prompt = build_system_prompt(Some(&collections));
+        let text = format_scope_breadcrumb(&collections, true);
 
-        assert!(prompt.contains("You are searching documents in:"));
-        assert!(prompt.contains("Climate Reports"));
-        assert!(prompt.contains("10 documents"));
-        assert!(prompt.contains("250 pages"));
-        assert!(prompt.contains("Financial Data"));
-        assert!(prompt.contains("5 documents"));
-        assert!(prompt.contains("100 pages"));
+        assert!(text.starts_with("Scope set to:"));
+        assert!(text.contains("Climate Reports (10 documents, 250 pages)"));
+        assert!(text.contains("Financial Data (5 documents, 100 pages)"));
     }
 
     #[test]
-    fn test_build_system_prompt_singular_counts() {
+    fn test_format_scope_breadcrumb_update_warns_about_previous_scope() {
         let collections = vec![CollectionInfo {
             id: "col_1".to_string(),
-            name: "Single Doc".to_string(),
+            name: "Energy".to_string(),
+            document_count: 3,
+            total_pages: 40,
+            created_at: None,
+        }];
+        let text = format_scope_breadcrumb(&collections, false);
+
+        assert!(text.starts_with("Scope updated to:"));
+        assert!(text.contains("Earlier tool results reflect the previous scope."));
+    }
+
+    #[test]
+    fn test_format_scope_breadcrumb_singular_counts() {
+        let collections = vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "Solo".to_string(),
             document_count: 1,
             total_pages: 1,
             created_at: None,
         }];
-        let prompt = build_system_prompt(Some(&collections));
+        let text = format_scope_breadcrumb(&collections, true);
 
-        assert!(prompt.contains("1 document"));
-        assert!(prompt.contains("1 page"));
-        // Should not contain plural forms
-        assert!(!prompt.contains("1 documents"));
-        assert!(!prompt.contains("1 pages"));
+        assert!(text.contains("1 document,"));
+        assert!(text.contains("1 page"));
+        assert!(!text.contains("1 documents"));
+        assert!(!text.contains("1 pages"));
     }
 
     #[test]
-    fn test_build_system_prompt_zero_stats() {
+    fn test_format_scope_breadcrumb_drops_zero_stats() {
         let collections = vec![CollectionInfo {
             id: "col_1".to_string(),
-            name: "Empty Collection".to_string(),
+            name: "Empty".to_string(),
             document_count: 0,
             total_pages: 0,
             created_at: None,
         }];
-        let prompt = build_system_prompt(Some(&collections));
+        let text = format_scope_breadcrumb(&collections, true);
 
-        assert!(prompt.contains("Empty Collection"));
-        // Should not show stats when both are 0
-        assert!(!prompt.contains("0 documents"));
-        assert!(!prompt.contains("0 pages"));
+        assert!(text.contains("Empty"));
+        assert!(!text.contains("0 documents"));
+    }
+
+    #[test]
+    fn test_format_scope_breadcrumb_cleared_scope() {
+        let text = format_scope_breadcrumb(&[], false);
+        assert!(text.starts_with("Scope cleared."));
     }
 
     // ==================== MessageRole Tests ====================
@@ -648,6 +706,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&MessageRole::System).unwrap(),
             "\"system\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MessageRole::Context).unwrap(),
+            "\"context\""
         );
         assert_eq!(
             serde_json::to_string(&MessageRole::User).unwrap(),
@@ -664,6 +726,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<MessageRole>("\"system\"").unwrap(),
             MessageRole::System
+        );
+        assert_eq!(
+            serde_json::from_str::<MessageRole>("\"context\"").unwrap(),
+            MessageRole::Context
         );
         assert_eq!(
             serde_json::from_str::<MessageRole>("\"user\"").unwrap(),
@@ -823,24 +889,82 @@ mod tests {
     }
 
     #[test]
-    fn test_conversation_with_collection_context() {
-        let collections = vec![CollectionInfo {
+    fn test_conversation_set_collections_emits_initial_breadcrumb() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        let starting_len = conv.messages.len();
+
+        let changed = conv.set_collections(vec![CollectionInfo {
             id: "col_1".to_string(),
             name: "Test Collection".to_string(),
             document_count: 5,
             total_pages: 50,
             created_at: None,
-        }];
+        }]);
 
-        let conv = Conversation::with_collection_context("conv_1".to_string(), Some(&collections));
+        assert!(changed);
+        assert_eq!(conv.collections.len(), 1);
+        assert_eq!(conv.messages.len(), starting_len + 1);
 
-        match &conv.messages[0].content[0] {
+        let added = conv.messages.last().unwrap();
+        assert_eq!(added.role, MessageRole::Context);
+        match &added.content[0] {
             ContentBlock::Text { text } => {
+                assert!(text.starts_with("Scope set to:"));
                 assert!(text.contains("Test Collection"));
-                assert!(text.contains("5 documents"));
             }
             _ => panic!("Expected text block"),
         }
+    }
+
+    #[test]
+    fn test_conversation_set_collections_subsequent_change_warns() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "First".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+
+        let changed = conv.set_collections(vec![CollectionInfo {
+            id: "col_2".to_string(),
+            name: "Second".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+
+        assert!(changed);
+        let last = conv.messages.last().unwrap();
+        assert_eq!(last.role, MessageRole::Context);
+        match &last.content[0] {
+            ContentBlock::Text { text } => {
+                assert!(text.starts_with("Scope updated to:"));
+                assert!(text.contains("Second"));
+                assert!(text.contains("Earlier tool results reflect the previous scope."));
+            }
+            _ => panic!("Expected text block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_set_collections_noop_when_unchanged() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        let cols = vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "Same".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }];
+
+        assert!(conv.set_collections(cols.clone()));
+        let len_after_first = conv.messages.len();
+
+        // Re-setting with identical IDs should not emit a breadcrumb.
+        assert!(!conv.set_collections(cols));
+        assert_eq!(conv.messages.len(), len_after_first);
     }
 
     #[test]

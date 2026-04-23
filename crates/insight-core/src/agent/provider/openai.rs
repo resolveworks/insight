@@ -22,7 +22,7 @@ use super::{
     ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent, RemoteModelInfo,
     ToolDefinition,
 };
-use crate::agent::{ContentBlock, Message, MessageRole};
+use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 
 /// OpenAI API provider using the new Responses API
 pub struct OpenAIProvider {
@@ -273,17 +273,17 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
     for msg in messages {
         match msg.role {
             MessageRole::System => {
-                // Extract system message as instructions
-                let text: String = msg
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                instructions = Some(text);
+                instructions = Some(msg.text());
+            }
+            MessageRole::Context => {
+                // The Responses API exposes a single `instructions` field, so
+                // breadcrumbs ride along as tagged user-role notes at the point
+                // they occurred in the transcript.
+                items.push(InputItem::EasyMessage(EasyInputMessage {
+                    r#type: MessageType::Message,
+                    role: Role::User,
+                    content: EasyInputContent::Text(render_context_message(&msg.text())),
+                }));
             }
             MessageRole::User => {
                 // Convert user message blocks

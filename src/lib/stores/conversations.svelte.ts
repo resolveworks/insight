@@ -1,7 +1,7 @@
 /**
  * Conversations store. Owns the conversation list, the active conversation's
- * state, and the streaming chat pipeline. Everything chat-related that isn't
- * pure input/view state lives here.
+ * state (messages + active collection scope), and the streaming chat pipeline.
+ * Everything chat-related that isn't pure input/view state lives here.
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -21,8 +21,11 @@ export type ContentBlock =
 			is_error: boolean;
 	  };
 
+export type ChatMessageRole = 'user' | 'assistant' | 'context';
+type BackendMessageRole = ChatMessageRole | 'system';
+
 export interface ChatMessage {
-	role: 'user' | 'assistant';
+	role: ChatMessageRole;
 	block: ContentBlock;
 }
 
@@ -33,7 +36,7 @@ export interface ConversationSummary {
 }
 
 interface BackendMessage {
-	role: 'system' | 'user' | 'assistant';
+	role: BackendMessageRole;
 	content: ContentBlock[];
 }
 
@@ -43,6 +46,7 @@ interface Conversation {
 	messages: BackendMessage[];
 	created_at: string;
 	updated_at: string;
+	collections: Collection[];
 }
 
 type ContentDelta = { type: 'text'; text: string };
@@ -63,6 +67,7 @@ const STORAGE_KEY = 'insight:activeConversationId';
 let conversations = $state<ConversationSummary[]>([]);
 let activeId = $state<string | null>(null);
 let activeMessages = $state<ChatMessage[]>([]);
+let activeCollections = $state<Collection[]>([]);
 let streamingBlocks = $state<ContentBlock[]>([]);
 let isGenerating = $state(false);
 let isLoading = $state(false);
@@ -76,13 +81,6 @@ let initializing = false;
 // Internal helpers
 // =============================================================================
 
-function normalizeCollections(
-	cols: Collection[] | null | undefined,
-): Collection[] | null {
-	if (!cols || cols.length === 0) return null;
-	return cols;
-}
-
 function persistActiveId() {
 	if (typeof window === 'undefined') return;
 	if (activeId) {
@@ -90,6 +88,25 @@ function persistActiveId() {
 	} else {
 		localStorage.removeItem(STORAGE_KEY);
 	}
+}
+
+function isChatMessage(
+	m: BackendMessage,
+): m is BackendMessage & { role: ChatMessageRole } {
+	return m.role !== 'system';
+}
+
+function flattenMessages(messages: BackendMessage[]): ChatMessage[] {
+	return messages
+		.filter(isChatMessage)
+		.flatMap((m) => m.content.map((block) => ({ role: m.role, block })));
+}
+
+function adoptConversation(conv: Conversation) {
+	activeId = conv.id;
+	activeMessages = flattenMessages(conv.messages);
+	activeCollections = conv.collections ?? [];
+	streamingBlocks = [];
 }
 
 async function attachListener(convId: string) {
@@ -167,16 +184,7 @@ async function loadById(
 			conversationId: id,
 		});
 
-		activeId = conv.id;
-		activeMessages = conv.messages
-			.filter((m) => m.role === 'user' || m.role === 'assistant')
-			.flatMap((m) =>
-				m.content.map((block) => ({
-					role: m.role as 'user' | 'assistant',
-					block,
-				})),
-			);
-		streamingBlocks = [];
+		adoptConversation(conv);
 
 		await attachListener(conv.id);
 		persistActiveId();
@@ -192,18 +200,16 @@ async function loadById(
 	}
 }
 
-async function createNew(cols: Collection[] | null): Promise<boolean> {
+async function createNew(): Promise<boolean> {
 	try {
 		isLoading = true;
 		error = null;
 
-		const conv = await invoke<Conversation>('start_chat', {
-			collections: normalizeCollections(cols),
-		});
+		// Fresh conversations always start unscoped — the user picks a collection
+		// via the filter bar before they can chat.
+		const conv = await invoke<Conversation>('start_chat', {});
 
-		activeId = conv.id;
-		activeMessages = [];
-		streamingBlocks = [];
+		adoptConversation(conv);
 
 		await attachListener(conv.id);
 		persistActiveId();
@@ -226,9 +232,7 @@ async function createNew(cols: Collection[] | null): Promise<boolean> {
  * Resolve the initial active conversation. Idempotent — safe to call multiple
  * times. Order: stored ID → most recent → create new.
  */
-export async function ensureInitialized(
-	cols: Collection[] | null,
-): Promise<void> {
+export async function ensureInitialized(): Promise<void> {
 	if (initialized || initializing) return;
 	initializing = true;
 
@@ -250,7 +254,7 @@ export async function ensureInitialized(
 				return;
 			}
 		}
-		await createNew(cols);
+		await createNew();
 		initialized = true;
 	} finally {
 		initializing = false;
@@ -264,17 +268,49 @@ export async function selectConversation(id: string): Promise<void> {
 }
 
 /** Create a brand-new conversation (called by the "New Chat" button). */
-export async function newConversation(
-	cols: Collection[] | null,
-): Promise<void> {
-	await createNew(cols);
+export async function newConversation(): Promise<void> {
+	await createNew();
+}
+
+/**
+ * Replace the active conversation's collection scope. The backend appends a
+ * breadcrumb message to the transcript when the selection actually changes,
+ * so the model (and the user) can see when scope shifted.
+ */
+export async function setActiveCollections(cols: Collection[]): Promise<void> {
+	if (!activeId) return;
+
+	// Skip the round-trip when the id-set is already what we have locally.
+	const currentIds = activeCollections.map((c) => c.id);
+	if (
+		cols.length === currentIds.length &&
+		cols.every((c) => currentIds.includes(c.id))
+	) {
+		return;
+	}
+
+	try {
+		const conv = await invoke<Conversation>('set_conversation_collections', {
+			conversationId: activeId,
+			collections: cols,
+		});
+		adoptConversation(conv);
+	} catch (e) {
+		error = `Failed to update collections: ${e}`;
+		console.error('Failed to update collections:', e);
+	}
+}
+
+export async function addActiveCollection(col: Collection): Promise<void> {
+	await setActiveCollections([...activeCollections, col]);
+}
+
+export async function removeActiveCollection(id: string): Promise<void> {
+	await setActiveCollections(activeCollections.filter((c) => c.id !== id));
 }
 
 /** Send a user message to the active conversation. */
-export async function sendMessage(
-	text: string,
-	cols: Collection[] | null,
-): Promise<void> {
+export async function sendMessage(text: string): Promise<void> {
 	const trimmed = text.trim();
 	if (!activeId || !trimmed || isGenerating) return;
 
@@ -290,7 +326,6 @@ export async function sendMessage(
 		await invoke('send_message', {
 			conversationId: activeId,
 			message: trimmed,
-			collections: normalizeCollections(cols),
 		});
 	} catch (e) {
 		error = `Failed to send message: ${e}`;
@@ -351,6 +386,10 @@ export function getActiveId(): string | null {
 
 export function getActiveMessages(): ChatMessage[] {
 	return activeMessages;
+}
+
+export function getActiveCollections(): Collection[] {
+	return activeCollections;
 }
 
 export function getStreamingBlocks(): ContentBlock[] {

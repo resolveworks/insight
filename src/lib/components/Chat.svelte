@@ -5,16 +5,8 @@
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
-	import type { Collection } from '$lib/stores/collections.svelte';
 	import { getLanguageState } from '$lib/stores/provider-state.svelte';
 	import * as chat from '$lib/stores/conversations.svelte';
-
-	type Props = {
-		/** Collections to filter agent searches to */
-		collections?: Collection[];
-	};
-
-	let { collections }: Props = $props();
 
 	// Provider state
 	const languageState = $derived(getLanguageState());
@@ -23,10 +15,27 @@
 	// Reactive reads from the conversations store
 	const activeId = $derived(chat.getActiveId());
 	const messages = $derived(chat.getActiveMessages());
+	const collections = $derived(chat.getActiveCollections());
 	const streamingBlocks = $derived(chat.getStreamingBlocks());
 	const isGenerating = $derived(chat.getIsGenerating());
 	const isLoading = $derived(chat.getIsLoading());
 	const error = $derived(chat.getError());
+
+	const hasCollection = $derived(collections.length > 0);
+
+	type EmptyState =
+		| 'no-provider'
+		| 'loading'
+		| 'pick-collection'
+		| 'no-messages'
+		| null;
+
+	const emptyState = $derived.by<EmptyState>(() => {
+		if (!providerConfigured) return 'no-provider';
+		if (isLoading) return 'loading';
+		if (messages.length > 0) return null;
+		return hasCollection ? 'no-messages' : 'pick-collection';
+	});
 
 	// View-local state
 	let inputValue = $state('');
@@ -39,7 +48,7 @@
 	$effect(() => {
 		if (providerConfigured) {
 			untrack(() => {
-				chat.ensureInitialized(collections ?? null);
+				chat.ensureInitialized();
 			});
 		}
 	});
@@ -63,10 +72,10 @@
 	});
 
 	async function sendMessage() {
-		if (!inputValue.trim() || isGenerating) return;
+		if (!inputValue.trim() || isGenerating || !hasCollection) return;
 		const text = inputValue;
 		inputValue = '';
-		await chat.sendMessage(text, collections ?? null);
+		await chat.sendMessage(text);
 	}
 
 	async function cancelGeneration() {
@@ -124,7 +133,7 @@
 		bind:this={messagesContainer}
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
-		{#if !providerConfigured}
+		{#if emptyState === 'no-provider'}
 			<div class="mx-auto max-w-xl pt-8">
 				<h2 class="mb-4 text-lg font-medium text-neutral-800">
 					Configure a Language Model
@@ -137,14 +146,23 @@
 					<ProviderSelector />
 				</div>
 			</div>
-		{:else if isLoading}
+		{:else if emptyState === 'loading'}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-neutral-500">
 					<div class="mb-2 text-lg">Starting chat...</div>
 					<div class="text-sm">This may take a moment</div>
 				</div>
 			</div>
-		{:else if messages.length === 0}
+		{:else if emptyState === 'pick-collection'}
+			<div class="flex h-full items-center justify-center">
+				<div class="text-center text-neutral-500">
+					<div class="mb-2 text-lg">Pick a collection to begin</div>
+					<div class="text-sm">
+						Use the Collections filter on the right to scope your research.
+					</div>
+				</div>
+			</div>
+		{:else if emptyState === 'no-messages'}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-neutral-500">
 					<div class="mb-2 text-lg">Ask questions about your documents</div>
@@ -156,7 +174,15 @@
 		{:else}
 			{#each messages as message, i (i)}
 				{@const block = message.block}
-				{#if block.type === 'text'}
+				{#if message.role === 'context' && block.type === 'text'}
+					<div class="flex justify-center">
+						<div
+							class="max-w-[80%] rounded-full bg-neutral-100 px-3 py-1 text-center text-xs text-neutral-500"
+						>
+							{block.text}
+						</div>
+					</div>
+				{:else if block.type === 'text'}
 					<div
 						class="flex {message.role === 'user'
 							? 'justify-end'
@@ -257,15 +283,23 @@
 				ghostText={prediction}
 				onkeydown={handleKeydown}
 				onAcceptGhost={handleAcceptPrediction}
-				placeholder="Ask about your documents..."
-				disabled={isGenerating || isLoading || !providerConfigured}
+				placeholder={hasCollection
+					? 'Ask about your documents...'
+					: 'Pick a collection to begin'}
+				disabled={isGenerating ||
+					isLoading ||
+					!providerConfigured ||
+					!hasCollection}
 			/>
 			{#if isGenerating}
 				<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
 			{:else}
 				<Button
 					onclick={sendMessage}
-					disabled={!inputValue.trim() || isLoading || !providerConfigured}
+					disabled={!inputValue.trim() ||
+						isLoading ||
+						!providerConfigured ||
+						!hasCollection}
 				>
 					Send
 				</Button>

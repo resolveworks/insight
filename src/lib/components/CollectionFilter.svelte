@@ -1,96 +1,108 @@
 <script lang="ts">
-	import type { SvelteSet } from 'svelte/reactivity';
 	import type { Collection } from '$lib/stores/collections.svelte';
 
 	type Props = {
 		collections: Collection[];
-		selected: SvelteSet<string>;
+		selected: Collection[];
+		onAdd: (id: string) => void;
+		onRemove: (id: string) => void;
 	};
 
-	let { collections, selected }: Props = $props();
+	let { collections, selected, onAdd, onRemove }: Props = $props();
 
 	let search = $state('');
 
-	const filtered = $derived.by(() => {
+	const selectedIds = $derived(new Set(selected.map((c) => c.id)));
+
+	const suggestions = $derived.by(() => {
 		const q = search.trim().toLowerCase();
-		if (!q) return collections;
-		return collections.filter((c) => c.name.toLowerCase().includes(q));
+		return collections.filter((c) => {
+			if (selectedIds.has(c.id)) return false;
+			if (!q) return true;
+			return c.name.toLowerCase().includes(q);
+		});
 	});
 
-	function toggle(id: string) {
-		if (selected.has(id)) {
-			selected.delete(id);
-		} else {
-			selected.add(id);
-		}
+	function add(id: string) {
+		onAdd(id);
+		search = '';
 	}
 
-	function clear() {
-		selected.clear();
+	function handleKey(e: KeyboardEvent) {
+		if (e.key === 'Enter' && suggestions.length > 0) {
+			e.preventDefault();
+			add(suggestions[0].id);
+		} else if (e.key === 'Backspace' && search === '' && selected.length > 0) {
+			onRemove(selected[selected.length - 1].id);
+		}
 	}
 </script>
 
-<div class="border-b border-primary-700 p-4">
+<div class="border-b border-neutral-900 p-4">
 	<div class="mb-2 flex items-baseline justify-between gap-2">
-		<h3 class="text-xs font-medium uppercase tracking-wide text-primary-200">
+		<h3 class="text-xs font-medium uppercase tracking-wide text-neutral-400">
 			Collections
 		</h3>
-		<span class="text-xs text-primary-300">
-			{selected.size === 0
-				? `All ${collections.length}`
-				: `${selected.size} of ${collections.length}`}
+		<span class="text-xs text-neutral-500">
+			{selected.length} of {collections.length}
 		</span>
 	</div>
 
 	{#if collections.length === 0}
-		<p class="text-sm italic text-primary-300">No collections</p>
+		<p class="text-sm italic text-neutral-500">No collections</p>
 	{:else}
-		{#if collections.length > 5}
+		<div
+			class="rounded-md border border-neutral-700 bg-neutral-900 focus-within:border-secondary-400"
+		>
+			{#if selected.length > 0}
+				<div class="flex flex-wrap gap-1 p-1.5 pb-0">
+					{#each selected as c (c.id)}
+						<span
+							class="flex items-center gap-1 rounded bg-neutral-700 py-0.5 pl-2 pr-1 text-xs text-neutral-100"
+						>
+							<span class="max-w-[140px] truncate">{c.name}</span>
+							<button
+								type="button"
+								onclick={() => onRemove(c.id)}
+								aria-label="Remove {c.name}"
+								class="flex h-4 w-4 items-center justify-center rounded text-neutral-400 hover:bg-neutral-600 hover:text-neutral-100"
+							>
+								×
+							</button>
+						</span>
+					{/each}
+				</div>
+			{/if}
 			<input
 				type="text"
 				bind:value={search}
-				placeholder="Search..."
-				class="mb-2 w-full rounded-md border border-primary-700 bg-primary-700 px-2 py-1.5 text-sm text-surface placeholder-primary-300 focus:border-secondary-400 focus:outline-none"
+				onkeydown={handleKey}
+				placeholder={selected.length === 0
+					? 'Search collections...'
+					: 'Add more...'}
+				class="w-full bg-transparent px-2 py-1.5 text-sm text-neutral-100 placeholder-neutral-500 focus:outline-none"
 			/>
-		{/if}
+		</div>
 
-		<ul class="space-y-1">
-			{#each filtered as collection (collection.id)}
+		<ul class="mt-2 max-h-96 space-y-0.5 overflow-y-auto">
+			{#each suggestions as c (c.id)}
 				<li>
-					<label
-						class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-primary-500"
+					<button
+						type="button"
+						onclick={() => add(c.id)}
+						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-neutral-200 hover:bg-neutral-700"
 					>
-						<input
-							type="checkbox"
-							checked={selected.has(collection.id)}
-							onchange={() => toggle(collection.id)}
-							class="h-4 w-4 rounded border-primary-400 bg-primary-700 text-secondary-400 focus:ring-secondary-400"
-						/>
-						<span
-							class="truncate {selected.has(collection.id)
-								? 'text-surface'
-								: 'text-primary-100'}"
-						>
-							{collection.name}
+						<span class="truncate">{c.name}</span>
+						<span class="ml-auto text-xs text-neutral-500">
+							{c.document_count}
 						</span>
-						<span class="ml-auto text-xs text-primary-300">
-							{collection.document_count}
-						</span>
-					</label>
+					</button>
+				</li>
+			{:else}
+				<li class="px-2 py-2 text-sm italic text-neutral-500">
+					{search.trim() !== '' ? 'No matches' : 'Nothing left to add'}
 				</li>
 			{/each}
-			{#if filtered.length === 0}
-				<li class="px-2 py-2 text-sm italic text-primary-300">No matches</li>
-			{/if}
 		</ul>
-
-		{#if selected.size > 0}
-			<button
-				onclick={clear}
-				class="mt-2 text-xs text-primary-200 hover:text-surface"
-			>
-				Clear selection
-			</button>
-		{/if}
 	{/if}
 </div>

@@ -11,7 +11,6 @@ use serde::Serialize;
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum CommandError {
     // Validation errors
-    InvalidCollectionId { message: String },
     InvalidUtf8 { message: String },
 
     // Not found errors
@@ -25,6 +24,7 @@ pub enum CommandError {
     ModelNotDownloaded { message: String, model_id: String },
     EmbedderNotConfigured { message: String },
     ProviderNotConfigured { message: String },
+    NoCollectionScope { message: String },
 
     // Operation errors
     StorageError { message: String },
@@ -33,12 +33,6 @@ pub enum CommandError {
 }
 
 impl CommandError {
-    pub fn invalid_collection_id() -> Self {
-        Self::InvalidCollectionId {
-            message: "Invalid collection ID".to_string(),
-        }
-    }
-
     pub fn document_not_found() -> Self {
         Self::DocumentNotFound {
             message: "Document not found".to_string(),
@@ -92,6 +86,12 @@ impl CommandError {
         }
     }
 
+    pub fn no_collection_scope() -> Self {
+        Self::NoCollectionScope {
+            message: "Pick at least one collection before sending a message".to_string(),
+        }
+    }
+
     pub fn storage(message: impl Into<String>) -> Self {
         Self::StorageError {
             message: message.into(),
@@ -114,7 +114,6 @@ impl CommandError {
 impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidCollectionId { message } => write!(f, "{}", message),
             Self::InvalidUtf8 { message } => write!(f, "{}", message),
             Self::DocumentNotFound { message } => write!(f, "{}", message),
             Self::TextNotFound { message } => write!(f, "{}", message),
@@ -124,6 +123,7 @@ impl std::fmt::Display for CommandError {
             Self::ModelNotDownloaded { message, .. } => write!(f, "{}", message),
             Self::EmbedderNotConfigured { message } => write!(f, "{}", message),
             Self::ProviderNotConfigured { message } => write!(f, "{}", message),
+            Self::NoCollectionScope { message } => write!(f, "{}", message),
             Self::StorageError { message } => write!(f, "{}", message),
             Self::ExternalError { message } => write!(f, "{}", message),
             Self::InternalError { message } => write!(f, "{}", message),
