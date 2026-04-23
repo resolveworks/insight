@@ -71,6 +71,7 @@ let activeCollections = $state<Collection[]>([]);
 let streamingBlocks = $state<ContentBlock[]>([]);
 let isGenerating = $state(false);
 let isLoading = $state(false);
+let listLoaded = $state(false);
 let initialized = $state(false);
 let error = $state<string | null>(null);
 
@@ -181,6 +182,8 @@ async function refreshList() {
 		conversations = await invoke<ConversationSummary[]>('list_conversations');
 	} catch (e) {
 		console.error('Failed to list conversations:', e);
+	} finally {
+		listLoaded = true;
 	}
 }
 
@@ -239,6 +242,14 @@ async function createNew(): Promise<boolean> {
 // =============================================================================
 // Public API
 // =============================================================================
+
+/**
+ * Fetch the conversation list. Safe to call before a chat provider is
+ * configured — listing doesn't require one, only creating a new chat does.
+ */
+export async function loadList(): Promise<void> {
+	await refreshList();
+}
 
 /**
  * Resolve the initial active conversation. Idempotent — safe to call multiple
@@ -448,6 +459,10 @@ export function getIsLoading(): boolean {
 
 export function getIsInitialized(): boolean {
 	return initialized;
+}
+
+export function getIsListLoaded(): boolean {
+	return listLoaded;
 }
 
 export function getError(): string | null {

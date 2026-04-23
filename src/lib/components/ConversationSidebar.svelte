@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import * as chat from '$lib/stores/conversations.svelte';
 
 	type Props = {
@@ -10,7 +11,14 @@
 
 	const conversations = $derived(chat.getConversations());
 	const activeId = $derived(chat.getActiveId());
-	const initialized = $derived(chat.getIsInitialized());
+	const listLoaded = $derived(chat.getIsListLoaded());
+
+	// The list is independent of provider configuration; fetch it as soon as
+	// the sidebar mounts so users see their history even before picking a
+	// model (or while one is still downloading).
+	onMount(() => {
+		chat.loadList();
+	});
 
 	function handleDelete(event: MouseEvent, id: string) {
 		event.stopPropagation();
@@ -35,7 +43,7 @@
 			History
 		</h3>
 
-		{#if !initialized}
+		{#if !listLoaded}
 			<p class="px-2 py-4 text-sm text-primary-300">Loading...</p>
 		{:else if conversations.length === 0}
 			<p class="px-2 py-4 text-sm italic text-primary-300">

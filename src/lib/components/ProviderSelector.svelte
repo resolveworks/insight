@@ -212,7 +212,10 @@
 		error = null;
 
 		try {
-			await invoke('configure_model', { modelType: 'language', modelId: null });
+			await invoke('configure_model', {
+				modelType: 'language',
+				modelId: null,
+			});
 			setLanguageProvider(null, null);
 		} catch (e) {
 			error = `Failed to disable: ${e}`;

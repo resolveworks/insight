@@ -9,7 +9,8 @@
 
 	let { children } = $props();
 
-	let embeddingState = $derived(getEmbeddingState());
+	const embeddingState = $derived(getEmbeddingState());
+	const status = $derived(embeddingState.status);
 
 	type Tab = { id: string; label: string; href: string };
 	const tabs: Tab[] = [
@@ -21,7 +22,7 @@
 	const currentTab = $derived($page.url.pathname.split('/')[1] || 'research');
 </script>
 
-{#if embeddingState.ready}
+{#if status.kind === 'ready'}
 	<main class="flex h-screen flex-col bg-surface-dim text-neutral-800">
 		<nav class="flex bg-neutral-700">
 			{#each tabs as tab (tab.id)}
@@ -40,17 +41,17 @@
 			{@render children()}
 		</div>
 	</main>
-{:else if embeddingState.error}
+{:else if status.kind === 'error'}
 	<CenteredLayout width="sm">
 		<div class="text-center">
 			<h1 class="mb-2 text-xl text-error">Failed to load embedding model</h1>
-			<p class="mb-6 text-sm text-neutral-500">{embeddingState.error}</p>
+			<p class="mb-6 text-sm text-neutral-500">{status.message}</p>
 			<Button color="accent" size="lg" onclick={() => window.location.reload()}>
 				Retry
 			</Button>
 		</div>
 	</CenteredLayout>
-{:else if embeddingState.progress}
+{:else if status.kind === 'downloading'}
 	<CenteredLayout width="sm">
 		<DownloadProgress providerType="embedding" />
 		<p class="mt-6 text-center text-sm text-neutral-500">

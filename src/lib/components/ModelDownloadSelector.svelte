@@ -2,7 +2,10 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import type { ModelSelectorConfig } from '$lib/models/config';
-	import { getProviderState } from '$lib/stores/provider-state.svelte';
+	import {
+		getProviderState,
+		refreshProviderState,
+	} from '$lib/stores/provider-state.svelte';
 	import Button from './Button.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 	import DownloadProgress from './DownloadProgress.svelte';
@@ -15,8 +18,6 @@
 		dimensions?: number;
 	}
 
-	type Status = 'loading' | 'idle' | 'configuring';
-
 	type Props = {
 		config: ModelSelectorConfig;
 		onConfigured?: (modelId: string | null) => void;
@@ -28,34 +29,25 @@
 	let selectedId = $state<string | null>(null);
 	let activeId = $state<string | null>(null);
 	let isDownloaded = $state(false);
-	let status = $state<Status>('loading');
+	let listLoading = $state(true);
 	let error = $state<string | null>(null);
 
-	// Get provider state from global store
-	let providerState = $derived(getProviderState(config.providerType));
-	let isDownloading = $derived(
-		!providerState.ready && providerState.progress !== null,
-	);
+	const providerState = $derived(getProviderState(config.providerType));
+	const isDownloading = $derived(providerState.status.kind === 'downloading');
+	const isConfiguring = $derived(providerState.status.kind === 'loading');
+	const busy = $derived(isDownloading || isConfiguring);
 
-	// Derived state
-	let canDownload = $derived(
-		selectedId && !isDownloaded && status === 'idle' && !isDownloading,
+	const canDownload = $derived(!!selectedId && !isDownloaded && !busy);
+	const canConfigure = $derived(
+		isDownloaded && selectedId !== activeId && !busy,
 	);
-	let canConfigure = $derived(
-		isDownloaded &&
-			selectedId !== activeId &&
-			status === 'idle' &&
-			!isDownloading,
-	);
-	let isActive = $derived(selectedId === activeId);
+	const isActive = $derived(selectedId === activeId);
 
-	// Button color based on config accent
-	let buttonColor = $derived(
+	const buttonColor = $derived(
 		config.accentColor === 'emerald' ? 'accent' : 'primary',
 	) as 'primary' | 'accent';
 
-	// Color classes based on accent
-	let accentClasses = $derived({
+	const accentClasses = $derived({
 		border:
 			config.accentColor === 'slate'
 				? 'border-primary-500'
@@ -77,9 +69,8 @@
 	});
 
 	async function load() {
-		status = 'loading';
+		listLoading = true;
 		error = null;
-
 		try {
 			models = await invoke<ModelInfo[]>('get_available_models', {
 				modelType: config.providerType,
@@ -94,13 +85,12 @@
 		} catch (e) {
 			error = `Failed to load models: ${e}`;
 		} finally {
-			if (status === 'loading') status = 'idle';
+			listLoading = false;
 		}
 	}
 
 	async function checkStatus() {
 		if (!selectedId) return;
-
 		try {
 			const result = await invoke<{ status: string }>('get_model_status', {
 				modelType: config.providerType,
@@ -120,9 +110,7 @@
 
 	async function download() {
 		if (!selectedId) return;
-
 		error = null;
-
 		try {
 			await invoke('download_model', {
 				modelType: config.providerType,
@@ -131,15 +119,16 @@
 			isDownloaded = true;
 		} catch (e) {
 			error = `Download failed: ${e}`;
+		} finally {
+			// Download doesn't emit a terminal status event — re-sync so the
+			// UI leaves the progress view.
+			await refreshProviderState(config.providerType);
 		}
 	}
 
 	async function configure() {
 		if (!selectedId) return;
-
-		status = 'configuring';
 		error = null;
-
 		try {
 			await invoke('configure_model', {
 				modelType: config.providerType,
@@ -149,15 +138,11 @@
 			onConfigured?.(selectedId);
 		} catch (e) {
 			error = `Failed to configure: ${e}`;
-		} finally {
-			status = 'idle';
 		}
 	}
 
 	async function disable() {
-		status = 'configuring';
 		error = null;
-
 		try {
 			await invoke('configure_model', {
 				modelType: config.providerType,
@@ -165,10 +150,9 @@
 			});
 			activeId = null;
 			onConfigured?.(null);
+			await refreshProviderState(config.providerType);
 		} catch (e) {
 			error = `Failed to disable: ${e}`;
-		} finally {
-			status = 'idle';
 		}
 	}
 
@@ -176,7 +160,7 @@
 </script>
 
 <div>
-	{#if status === 'loading'}
+	{#if listLoading}
 		<p class="text-neutral-500 text-center py-4">Loading models...</p>
 	{:else if isDownloading}
 		<DownloadProgress
@@ -208,7 +192,7 @@
 				<button
 					class="ml-auto text-xs text-neutral-500 hover:text-neutral-700 cursor-pointer"
 					onclick={disable}
-					disabled={status === 'configuring'}
+					disabled={isConfiguring}
 				>
 					Disable
 				</button>
@@ -270,12 +254,12 @@
 					fullWidth
 					color={buttonColor}
 					onclick={configure}
-					disabled={status === 'configuring'}
-					loading={status === 'configuring'}
+					disabled={isConfiguring}
+					loading={isConfiguring}
 				>
-					{status === 'configuring' ? 'Loading...' : 'Activate Model'}
+					{isConfiguring ? 'Loading...' : 'Activate Model'}
 				</Button>
-				{#if status === 'configuring'}
+				{#if isConfiguring}
 					<p class="text-xs text-neutral-500 text-center">
 						This may take 20-30 seconds on first load
 					</p>

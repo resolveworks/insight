@@ -16,9 +16,12 @@
 		accentColor = 'accent',
 	}: Props = $props();
 
-	let state = $derived(getProviderState(providerType));
+	const state = $derived(getProviderState(providerType));
+	const progress = $derived(
+		state.status.kind === 'downloading' ? state.status.progress : null,
+	);
 
-	let progressBarClass = $derived(
+	const progressBarClass = $derived(
 		accentColor === 'primary' ? 'bg-primary-500' : 'bg-tertiary-500',
 	);
 
@@ -33,23 +36,21 @@
 
 <div class="text-center">
 	<h3 class="mb-4 text-lg text-neutral-700">{title}</h3>
-	{#if state.progress}
+	{#if progress}
 		<p class="mb-2 text-sm text-neutral-500">
-			File {state.progress.file_index} of {state.progress.total_files}: {state.progress.file
+			File {progress.file_index} of {progress.total_files}: {progress.file
 				.split('/')
 				.pop()}
 		</p>
 		<div class="mb-2 h-2 overflow-hidden rounded-full bg-neutral-200">
 			<div
 				class="h-full transition-[width] duration-300 {progressBarClass}"
-				style="width: {state.progress.overall_progress * 100}%"
+				style="width: {progress.overall_progress * 100}%"
 			></div>
 		</div>
 		<p class="text-xs text-neutral-500">
-			{formatBytes(state.progress.downloaded)} / {formatBytes(
-				state.progress.total,
-			)}
-			({Math.round(state.progress.overall_progress * 100)}%)
+			{formatBytes(progress.downloaded)} / {formatBytes(progress.total)}
+			({Math.round(progress.overall_progress * 100)}%)
 		</p>
 	{:else}
 		<p class="mb-2 text-sm text-neutral-500">Starting download...</p>

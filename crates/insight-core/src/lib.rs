@@ -207,7 +207,8 @@ impl AppState {
 
         // Load chat provider if configured
         if let Some(ref provider_config) = settings.provider {
-            self.load_provider_from_config(provider_config).await;
+            self.load_provider_from_config(provider_config, &status_tx)
+                .await;
         }
 
         // Auto-configure default embedding model if not set
@@ -302,33 +303,63 @@ impl AppState {
     }
 
     /// Load a chat provider from saved configuration.
-    async fn load_provider_from_config(&self, config: &ProviderConfig) {
+    ///
+    /// For local providers, emits `Loading`/`Ready`/`Failed` status events so
+    /// the frontend reflects the slow load. Remote providers are instant and
+    /// only emit `Ready` once set.
+    async fn load_provider_from_config(
+        &self,
+        config: &ProviderConfig,
+        status_tx: &tokio::sync::mpsc::Sender<ModelStatus>,
+    ) {
         use agent::provider::{
             anthropic::AnthropicProvider, local::LocalProvider, openai::OpenAIProvider,
         };
 
         match config {
             ProviderConfig::Local { model_id } => {
-                // For local models, we need to check if it's downloaded
-                if let Some(model) = models::get_language_model(model_id) {
-                    if self.model_manager.is_downloaded(&model) {
-                        if let Some(path) = self.model_manager.get_path(&model) {
-                            match LocalProvider::load(&path, &model).await {
-                                Ok(provider) => {
-                                    *self.chat_provider.write().await = Some(Box::new(provider));
-                                    *self.provider_config.write().await = Some(config.clone());
-                                    tracing::info!("Loaded local provider: {}", model_id);
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to load local provider: {}", e);
-                                }
-                            }
-                        }
-                    } else {
-                        tracing::info!("Local model '{}' not downloaded, skipping", model_id);
-                    }
-                } else {
+                let Some(model) = models::get_language_model(model_id) else {
                     tracing::warn!("Unknown local model: {}", model_id);
+                    return;
+                };
+                if !self.model_manager.is_downloaded(&model) {
+                    tracing::info!("Local model '{}' not downloaded, skipping", model_id);
+                    return;
+                }
+                let Some(path) = self.model_manager.get_path(&model) else {
+                    return;
+                };
+
+                let _ = status_tx
+                    .send(ModelStatus::Loading {
+                        model_type: ModelType::Language,
+                        model_id: model_id.clone(),
+                        model_name: model.name.clone(),
+                    })
+                    .await;
+
+                match LocalProvider::load(&path, &model).await {
+                    Ok(provider) => {
+                        *self.chat_provider.write().await = Some(Box::new(provider));
+                        *self.provider_config.write().await = Some(config.clone());
+                        tracing::info!("Loaded local provider: {}", model_id);
+                        let _ = status_tx
+                            .send(ModelStatus::Ready {
+                                model_type: ModelType::Language,
+                                model_id: model_id.clone(),
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load local provider: {}", e);
+                        let _ = status_tx
+                            .send(ModelStatus::Failed {
+                                model_type: ModelType::Language,
+                                model_id: model_id.clone(),
+                                error: e.to_string(),
+                            })
+                            .await;
+                    }
                 }
             }
             ProviderConfig::OpenAI { api_key, model } => {

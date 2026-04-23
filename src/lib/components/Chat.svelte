@@ -10,7 +10,7 @@
 
 	// Provider state
 	const languageState = $derived(getLanguageState());
-	const providerConfigured = $derived(languageState.ready);
+	const providerReady = $derived(languageState.status.kind === 'ready');
 
 	// Reactive reads from the conversations store
 	const activeId = $derived(chat.getActiveId());
@@ -26,7 +26,7 @@
 	type EmptyState = 'no-provider' | 'pick-collection' | 'no-messages' | null;
 
 	const emptyState = $derived.by<EmptyState>(() => {
-		if (!providerConfigured) return 'no-provider';
+		if (!providerReady) return 'no-provider';
 		if (messages.length > 0) return null;
 		return hasCollection ? 'no-messages' : 'pick-collection';
 	});
@@ -40,7 +40,7 @@
 
 	// Initialize the store once the language provider is ready.
 	$effect(() => {
-		if (providerConfigured) {
+		if (providerReady) {
 			untrack(() => {
 				chat.ensureInitialized();
 			});
@@ -274,20 +274,14 @@
 				placeholder={hasCollection
 					? 'Ask about your documents...'
 					: 'Pick a collection to begin'}
-				disabled={isGenerating ||
-					isLoading ||
-					!providerConfigured ||
-					!hasCollection}
+				disabled={isGenerating || !providerReady || !hasCollection}
 			/>
 			{#if isGenerating}
 				<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
 			{:else}
 				<Button
 					onclick={sendMessage}
-					disabled={!inputValue.trim() ||
-						isLoading ||
-						!providerConfigured ||
-						!hasCollection}
+					disabled={!inputValue.trim() || !providerReady || !hasCollection}
 				>
 					Send
 				</Button>
