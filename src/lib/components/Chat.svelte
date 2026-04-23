@@ -176,7 +176,8 @@
 							: 'justify-start'}"
 					>
 						<div
-							class="max-w-[80%] rounded-lg px-4 py-2 {message.role === 'user'
+							class="min-w-0 max-w-[80%] break-words rounded-lg px-4 py-2 {message.role ===
+							'user'
 								? 'bg-primary-600 text-white'
 								: 'bg-surface-bright text-neutral-800 border border-neutral-200'}"
 						>
@@ -222,7 +223,7 @@
 				{#if block.type === 'text'}
 					<div class="flex justify-start">
 						<div
-							class="max-w-[80%] rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
+							class="min-w-0 max-w-[80%] break-words rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
 						>
 							<Markdown content={block.text} /><span
 								class="animate-pulse text-primary-500">▊</span

@@ -22,6 +22,9 @@
 </div>
 
 <style>
+	.markdown {
+		overflow-wrap: anywhere;
+	}
 	.markdown :global(p) {
 		margin: 0.5em 0;
 	}
