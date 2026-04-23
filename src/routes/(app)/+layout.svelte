@@ -23,7 +23,7 @@
 
 {#if embeddingState.ready}
 	<main class="flex h-screen flex-col bg-surface-dim text-neutral-800">
-		<nav class="flex border-b border-neutral-300 bg-neutral-700">
+		<nav class="flex bg-neutral-700">
 			{#each tabs as tab (tab.id)}
 				<a
 					href={resolve(tab.href as '/')}

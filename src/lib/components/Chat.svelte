@@ -23,16 +23,10 @@
 
 	const hasCollection = $derived(collections.length > 0);
 
-	type EmptyState =
-		| 'no-provider'
-		| 'loading'
-		| 'pick-collection'
-		| 'no-messages'
-		| null;
+	type EmptyState = 'no-provider' | 'pick-collection' | 'no-messages' | null;
 
 	const emptyState = $derived.by<EmptyState>(() => {
 		if (!providerConfigured) return 'no-provider';
-		if (isLoading) return 'loading';
 		if (messages.length > 0) return null;
 		return hasCollection ? 'no-messages' : 'pick-collection';
 	});
@@ -144,13 +138,6 @@
 				</p>
 				<div class="rounded-lg border border-neutral-300 bg-surface-bright p-6">
 					<ProviderSelector />
-				</div>
-			</div>
-		{:else if emptyState === 'loading'}
-			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-neutral-500">
-					<div class="mb-2 text-lg">Starting chat...</div>
-					<div class="text-sm">This may take a moment</div>
 				</div>
 			</div>
 		{:else if emptyState === 'pick-collection'}

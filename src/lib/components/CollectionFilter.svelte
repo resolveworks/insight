@@ -38,34 +38,35 @@
 	}
 </script>
 
-<div class="border-b border-neutral-900 p-4">
+<div class="border-b border-neutral-200 p-4">
 	<div class="mb-2 flex items-baseline justify-between gap-2">
-		<h3 class="text-xs font-medium uppercase tracking-wide text-neutral-400">
+		<h3 class="text-xs font-medium uppercase tracking-wide text-neutral-500">
 			Collections
 		</h3>
-		<span class="text-xs text-neutral-500">
+		<span class="text-xs text-neutral-400">
 			{selected.length} of {collections.length}
 		</span>
 	</div>
 
 	{#if collections.length === 0}
-		<p class="text-sm italic text-neutral-500">No collections</p>
+		<p class="text-sm italic text-neutral-400">No collections</p>
 	{:else}
 		<div
-			class="rounded-md border border-neutral-700 bg-neutral-900 focus-within:border-secondary-400"
+			class="rounded-md border border-neutral-300 bg-surface-bright focus-within:border-secondary-400"
 		>
 			{#if selected.length > 0}
 				<div class="flex flex-wrap gap-1 p-1.5 pb-0">
 					{#each selected as c (c.id)}
 						<span
-							class="flex items-center gap-1 rounded bg-neutral-700 py-0.5 pl-2 pr-1 text-xs text-neutral-100"
+							class="flex items-center gap-1 rounded bg-neutral-200 py-0.5 pl-2 pr-1 text-xs text-neutral-700"
 						>
 							<span class="max-w-[140px] truncate">{c.name}</span>
+							<span class="text-neutral-400">{c.document_count}</span>
 							<button
 								type="button"
 								onclick={() => onRemove(c.id)}
 								aria-label="Remove {c.name}"
-								class="flex h-4 w-4 items-center justify-center rounded text-neutral-400 hover:bg-neutral-600 hover:text-neutral-100"
+								class="flex h-4 w-4 items-center justify-center rounded text-neutral-500 hover:bg-neutral-300 hover:text-neutral-800"
 							>
 								×
 							</button>
@@ -80,7 +81,7 @@
 				placeholder={selected.length === 0
 					? 'Search collections...'
 					: 'Add more...'}
-				class="w-full bg-transparent px-2 py-1.5 text-sm text-neutral-100 placeholder-neutral-500 focus:outline-none"
+				class="w-full bg-transparent px-2 py-1.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none"
 			/>
 		</div>
 
@@ -90,16 +91,16 @@
 					<button
 						type="button"
 						onclick={() => add(c.id)}
-						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-neutral-200 hover:bg-neutral-700"
+						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-neutral-700 hover:bg-neutral-200"
 					>
 						<span class="truncate">{c.name}</span>
-						<span class="ml-auto text-xs text-neutral-500">
+						<span class="ml-auto text-xs text-neutral-400">
 							{c.document_count}
 						</span>
 					</button>
 				</li>
 			{:else}
-				<li class="px-2 py-2 text-sm italic text-neutral-500">
+				<li class="px-2 py-2 text-sm italic text-neutral-400">
 					{search.trim() !== '' ? 'No matches' : 'Nothing left to add'}
 				</li>
 			{/each}

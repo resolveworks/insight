@@ -45,6 +45,8 @@ impl AgentContext {
 /// messages in the transcript, not baked into the system prompt.
 const BASE_SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists investigate document collections.
 
+Your search and list tools are filtered to a user-selected set of collections — the "active collections." Messages tagged `[session]` are out-of-band updates about session state, not user instructions. When the active collections change mid-conversation, prior tool results reflect the previous set.
+
 Be concise. Answer in 2-4 sentences unless the user asks for more detail. Cite document names so findings are verifiable.
 
 When answering questions:
@@ -71,10 +73,11 @@ fn format_collection_entry(c: &CollectionInfo) -> String {
     )
 }
 
-/// Format the human-readable text of a scope-change breadcrumb.
+/// Format the human-readable text of an active-collections breadcrumb.
 fn format_scope_breadcrumb(collections: &[CollectionInfo], first_time: bool) -> String {
     if collections.is_empty() {
-        return "Scope cleared. Earlier tool results reflect the previous scope.".to_string();
+        return "Active collections cleared — searches will return nothing until one is selected."
+            .to_string();
     }
     let list = collections
         .iter()
@@ -82,10 +85,10 @@ fn format_scope_breadcrumb(collections: &[CollectionInfo], first_time: bool) -> 
         .collect::<Vec<_>>()
         .join(", ");
     if first_time {
-        format!("Scope set to: {}", list)
+        format!("Active collections: {}", list)
     } else {
         format!(
-            "Scope updated to: {}. Earlier tool results reflect the previous scope.",
+            "Active collections changed to: {}. Earlier tool results used the previous set.",
             list
         )
     }
@@ -200,10 +203,18 @@ impl Conversation {
         }
     }
 
-    /// Update the active collection scope. When the set actually changes,
-    /// appends a `Context`-role breadcrumb to the transcript so the model sees
-    /// that scope shifted (and that earlier tool results reflect the previous
-    /// scope). Returns `true` when something changed.
+    /// Update the active collection scope. When the set actually changes AND
+    /// the conversation has already started (i.e. the user has sent at least
+    /// one message), records a `Context`-role breadcrumb so the model sees
+    /// that scope shifted.
+    ///
+    /// Breadcrumbs collapse: if the last message in the transcript is already
+    /// a session breadcrumb (a burst of filter changes with no user message
+    /// between them), its text is replaced rather than appending a new one.
+    ///
+    /// Before the first user message, scope mutations are silent —
+    /// [`Conversation::add_user_message`] attaches a one-shot prelude on the
+    /// first message instead. Returns `true` when something changed.
     pub fn set_collections(&mut self, collections: Vec<CollectionInfo>) -> bool {
         if collections_equivalent(&self.collections, &collections) {
             return false;
@@ -211,14 +222,30 @@ impl Conversation {
 
         let first_time = self.collections.is_empty();
         self.collections = collections;
+        self.touch();
+
+        if !self.has_user_message() {
+            return true;
+        }
 
         let text = format_scope_breadcrumb(&self.collections, first_time);
+
+        if let Some(last) = self.messages.last_mut() {
+            if last.role == MessageRole::Context {
+                last.content = vec![ContentBlock::Text { text }];
+                return true;
+            }
+        }
+
         self.messages.push(Message {
             role: MessageRole::Context,
             content: vec![ContentBlock::Text { text }],
         });
-        self.touch();
         true
+    }
+
+    fn has_user_message(&self) -> bool {
+        self.messages.iter().any(|m| m.role == MessageRole::User)
     }
 
     /// Generate title from first user message (truncated to 50 chars)
@@ -248,6 +275,16 @@ impl Conversation {
     }
 
     pub fn add_user_message(&mut self, text: String) {
+        // The first user message carries a one-shot scope prelude so the model
+        // sees the active collection scope without a transcript full of
+        // pre-conversation filter-fiddling breadcrumbs.
+        if !self.has_user_message() && !self.collections.is_empty() {
+            let scope_text = format_scope_breadcrumb(&self.collections, true);
+            self.messages.push(Message {
+                role: MessageRole::Context,
+                content: vec![ContentBlock::Text { text: scope_text }],
+            });
+        }
         self.messages.push(Message {
             role: MessageRole::User,
             content: vec![ContentBlock::Text { text }],
@@ -641,7 +678,7 @@ mod tests {
         ];
         let text = format_scope_breadcrumb(&collections, true);
 
-        assert!(text.starts_with("Scope set to:"));
+        assert!(text.starts_with("Active collections:"));
         assert!(text.contains("Climate Reports (10 documents, 250 pages)"));
         assert!(text.contains("Financial Data (5 documents, 100 pages)"));
     }
@@ -657,8 +694,8 @@ mod tests {
         }];
         let text = format_scope_breadcrumb(&collections, false);
 
-        assert!(text.starts_with("Scope updated to:"));
-        assert!(text.contains("Earlier tool results reflect the previous scope."));
+        assert!(text.starts_with("Active collections changed to:"));
+        assert!(text.contains("Earlier tool results used the previous set."));
     }
 
     #[test]
@@ -696,7 +733,7 @@ mod tests {
     #[test]
     fn test_format_scope_breadcrumb_cleared_scope() {
         let text = format_scope_breadcrumb(&[], false);
-        assert!(text.starts_with("Scope cleared."));
+        assert!(text.starts_with("Active collections cleared"));
     }
 
     // ==================== MessageRole Tests ====================
@@ -889,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn test_conversation_set_collections_emits_initial_breadcrumb() {
+    fn test_conversation_set_collections_before_first_message_is_silent() {
         let mut conv = Conversation::new("conv_1".to_string());
         let starting_len = conv.messages.len();
 
@@ -901,23 +938,100 @@ mod tests {
             created_at: None,
         }]);
 
+        // Scope was updated, but no breadcrumb yet — the first user message
+        // will carry an implicit "Active collections:" prelude.
         assert!(changed);
         assert_eq!(conv.collections.len(), 1);
-        assert_eq!(conv.messages.len(), starting_len + 1);
+        assert_eq!(conv.messages.len(), starting_len);
+    }
 
-        let added = conv.messages.last().unwrap();
-        assert_eq!(added.role, MessageRole::Context);
-        match &added.content[0] {
+    #[test]
+    fn test_conversation_first_user_message_injects_scope_prelude() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "Test Collection".to_string(),
+            document_count: 5,
+            total_pages: 50,
+            created_at: None,
+        }]);
+
+        let len_before = conv.messages.len();
+        conv.add_user_message("What's in these docs?".to_string());
+
+        // Prelude + user message
+        assert_eq!(conv.messages.len(), len_before + 2);
+
+        let prelude = &conv.messages[len_before];
+        assert_eq!(prelude.role, MessageRole::Context);
+        match &prelude.content[0] {
             ContentBlock::Text { text } => {
-                assert!(text.starts_with("Scope set to:"));
+                assert!(text.starts_with("Active collections:"));
                 assert!(text.contains("Test Collection"));
+            }
+            _ => panic!("Expected text block"),
+        }
+
+        let user_msg = conv.messages.last().unwrap();
+        assert_eq!(user_msg.role, MessageRole::User);
+    }
+
+    #[test]
+    fn test_conversation_multiple_scope_changes_before_first_message_leave_single_prelude() {
+        let mut conv = Conversation::new("conv_1".to_string());
+
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "First".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_2".to_string(),
+            name: "Second".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_3".to_string(),
+            name: "Third".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+
+        // No breadcrumbs should have been added yet.
+        let context_count = conv
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Context)
+            .count();
+        assert_eq!(context_count, 0);
+
+        conv.add_user_message("Hello".to_string());
+
+        // Exactly one prelude, naming only the final selection.
+        let context_msgs: Vec<_> = conv
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Context)
+            .collect();
+        assert_eq!(context_msgs.len(), 1);
+        match &context_msgs[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert!(text.starts_with("Active collections:"));
+                assert!(text.contains("Third"));
+                assert!(!text.contains("First"));
+                assert!(!text.contains("Second"));
             }
             _ => panic!("Expected text block"),
         }
     }
 
     #[test]
-    fn test_conversation_set_collections_subsequent_change_warns() {
+    fn test_conversation_set_collections_after_user_message_emits_breadcrumb() {
         let mut conv = Conversation::new("conv_1".to_string());
         conv.set_collections(vec![CollectionInfo {
             id: "col_1".to_string(),
@@ -926,6 +1040,7 @@ mod tests {
             total_pages: 0,
             created_at: None,
         }]);
+        conv.add_user_message("Hello".to_string());
 
         let changed = conv.set_collections(vec![CollectionInfo {
             id: "col_2".to_string(),
@@ -940,12 +1055,84 @@ mod tests {
         assert_eq!(last.role, MessageRole::Context);
         match &last.content[0] {
             ContentBlock::Text { text } => {
-                assert!(text.starts_with("Scope updated to:"));
+                assert!(text.starts_with("Active collections changed to:"));
                 assert!(text.contains("Second"));
-                assert!(text.contains("Earlier tool results reflect the previous scope."));
+                assert!(text.contains("Earlier tool results used the previous set."));
             }
             _ => panic!("Expected text block"),
         }
+    }
+
+    #[test]
+    fn test_conversation_consecutive_scope_changes_collapse_into_one_breadcrumb() {
+        let mut conv = Conversation::new("conv_1".to_string());
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_1".to_string(),
+            name: "Alpha".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+        conv.add_user_message("Hello".to_string());
+        conv.add_assistant_message(vec![ContentBlock::Text {
+            text: "Hi there".to_string(),
+        }]);
+
+        // Three scope changes with no intervening user message.
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_2".to_string(),
+            name: "Bravo".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_3".to_string(),
+            name: "Charlie".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_4".to_string(),
+            name: "Delta".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+
+        // Only one breadcrumb trails the assistant turn, naming Delta.
+        let tail_contexts: Vec<_> = conv
+            .messages
+            .iter()
+            .rev()
+            .take_while(|m| m.role == MessageRole::Context)
+            .collect();
+        assert_eq!(tail_contexts.len(), 1);
+        match &tail_contexts[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert!(text.contains("Delta"));
+                assert!(!text.contains("Bravo"));
+                assert!(!text.contains("Charlie"));
+            }
+            _ => panic!("Expected text block"),
+        }
+
+        // And a subsequent user message separates this breadcrumb from future
+        // ones, so the next scope change appends rather than collapsing.
+        conv.add_user_message("Another question".to_string());
+        conv.add_assistant_message(vec![ContentBlock::Text {
+            text: "Another answer".to_string(),
+        }]);
+        let len_before_next = conv.messages.len();
+        conv.set_collections(vec![CollectionInfo {
+            id: "col_5".to_string(),
+            name: "Echo".to_string(),
+            document_count: 0,
+            total_pages: 0,
+            created_at: None,
+        }]);
+        assert_eq!(conv.messages.len(), len_before_next + 1);
     }
 
     #[test]
@@ -960,6 +1147,7 @@ mod tests {
         }];
 
         assert!(conv.set_collections(cols.clone()));
+        conv.add_user_message("Hello".to_string());
         let len_after_first = conv.messages.len();
 
         // Re-setting with identical IDs should not emit a breadcrumb.
