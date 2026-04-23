@@ -109,6 +109,18 @@ function adoptConversation(conv: Conversation) {
 	streamingBlocks = [];
 }
 
+/** Drop the active conversation: detach listener and reset per-chat state. */
+function clearActive() {
+	unlistenAgent?.();
+	unlistenAgent = undefined;
+	activeId = null;
+	activeMessages = [];
+	activeCollections = [];
+	streamingBlocks = [];
+	isGenerating = false;
+	persistActiveId();
+}
+
 async function attachListener(convId: string) {
 	unlistenAgent?.();
 	unlistenAgent = await listen<AgentEvent>(
@@ -270,6 +282,36 @@ export async function selectConversation(id: string): Promise<void> {
 /** Create a brand-new conversation (called by the "New Chat" button). */
 export async function newConversation(): Promise<void> {
 	await createNew();
+}
+
+/**
+ * Delete a conversation. Optimistically removes it from the sidebar; on
+ * failure the list is restored. If the deleted chat was active, the next
+ * most-recent chat is opened, or a fresh one is created if none remain.
+ */
+export async function deleteConversation(id: string): Promise<boolean> {
+	const previous = conversations;
+	const wasActive = activeId === id;
+	conversations = conversations.filter((c) => c.id !== id);
+
+	try {
+		await invoke('delete_conversation', { conversationId: id });
+	} catch (e) {
+		error = `Failed to delete conversation: ${e}`;
+		console.error('Failed to delete conversation:', e);
+		conversations = previous;
+		return false;
+	}
+
+	if (wasActive) {
+		clearActive();
+		if (conversations.length > 0) {
+			await loadById(conversations[0].id, { silent: true });
+		} else {
+			await createNew();
+		}
+	}
+	return true;
 }
 
 /**

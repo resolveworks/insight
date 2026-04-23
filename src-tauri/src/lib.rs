@@ -98,6 +98,7 @@ pub fn run() {
             commands::conversations::send_message,
             commands::conversations::cancel_generation,
             commands::conversations::set_conversation_collections,
+            commands::conversations::delete_conversation,
             // Model commands (unified)
             commands::models::get_available_models,
             commands::models::get_model_status,

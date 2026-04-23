@@ -11,6 +11,11 @@
 	const conversations = $derived(chat.getConversations());
 	const activeId = $derived(chat.getActiveId());
 	const initialized = $derived(chat.getIsInitialized());
+
+	function handleDelete(event: MouseEvent, id: string) {
+		event.stopPropagation();
+		chat.deleteConversation(id);
+	}
 </script>
 
 <div class="flex flex-col">
@@ -39,15 +44,25 @@
 		{:else}
 			<ul class="space-y-1">
 				{#each conversations as conv (conv.id)}
-					<li>
+					<li
+						class="group flex items-center rounded transition
+							{activeId === conv.id
+							? 'bg-primary-500 text-surface'
+							: 'text-primary-100 hover:bg-primary-500'}"
+					>
 						<button
 							onclick={() => onSelect?.(conv.id)}
-							class="w-full truncate rounded px-2 py-1.5 text-left text-sm transition
-								{activeId === conv.id
-								? 'bg-primary-500 text-surface'
-								: 'text-primary-100 hover:bg-primary-500'}"
+							class="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
 						>
 							{conv.title}
+						</button>
+						<button
+							onclick={(e) => handleDelete(e, conv.id)}
+							class="hidden px-2 py-1.5 text-primary-200 hover:text-error group-hover:block"
+							title="Delete chat"
+							aria-label="Delete chat"
+						>
+							x
 						</button>
 					</li>
 				{/each}

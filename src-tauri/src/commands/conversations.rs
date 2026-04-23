@@ -150,6 +150,40 @@ pub async fn set_conversation_collections(
     Ok(conversation)
 }
 
+/// Delete a conversation. Cancels any in-flight generation or prediction,
+/// drops the in-memory entry, and removes the JSON file from disk.
+#[tauri::command]
+pub async fn delete_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    tracing::info!("Deleting conversation {}", conversation_id);
+
+    if let Some(token) = state
+        .active_generations
+        .write()
+        .await
+        .remove(&conversation_id)
+    {
+        token.cancel();
+    }
+    if let Some(token) = state
+        .active_predictions
+        .write()
+        .await
+        .remove(&conversation_id)
+    {
+        token.cancel();
+    }
+
+    state.conversations.write().await.remove(&conversation_id);
+
+    conversations::delete_conversation(&state.config.conversations_dir, &conversation_id)
+        .storage_err()?;
+
+    Ok(())
+}
+
 /// Send a message to a conversation and stream the response.
 ///
 /// The search tools are scoped to the conversation's stored collection set;
@@ -250,13 +284,27 @@ pub async fn send_message(
 
         if let Err(e) = conversations::save_conversation(&conversations_dir, &conversation) {
             tracing::error!("Failed to save conversation: {}", e);
+            return;
         }
 
-        state_clone
-            .conversations
-            .write()
-            .await
-            .insert(conv_id, conversation);
+        // Delete may race with the save: if the cache entry is gone, the JSON
+        // we just wrote would resurrect a deleted conversation. Remove the
+        // orphan so delete stays durable. The cache write is kept short so
+        // other conversation commands aren't blocked by disk I/O.
+        let orphaned = {
+            let mut map = state_clone.conversations.write().await;
+            if map.contains_key(&conv_id) {
+                map.insert(conv_id.clone(), conversation);
+                false
+            } else {
+                true
+            }
+        };
+        if orphaned {
+            if let Err(e) = conversations::delete_conversation(&conversations_dir, &conv_id) {
+                tracing::warn!("Failed to clean up orphaned conversation file: {}", e);
+            }
+        }
     });
 
     Ok(())

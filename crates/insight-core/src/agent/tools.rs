@@ -48,7 +48,7 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
         Some(embedder) => match embedder.embed(query).await {
             Ok(vec) => {
                 debug!(dimensions = vec.len(), "Query embedded for hybrid search");
-                (Some(vec), 0.6) // 60% semantic, 40% keyword
+                (Some(vec), 0.4)
             }
             Err(e) => {
                 warn!(error = %e, "Failed to embed query, using keyword-only search");

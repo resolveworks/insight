@@ -64,6 +64,17 @@ pub fn save_conversation(conversations_dir: &Path, conversation: &Conversation) 
     Ok(())
 }
 
+/// Delete a conversation file from disk. Missing files are treated as success
+/// so callers can retry safely.
+pub fn delete_conversation(conversations_dir: &Path, id: &str) -> Result<()> {
+    let path = conversation_path(conversations_dir, id);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("Failed to delete conversation file"),
+    }
+}
+
 /// Get the path for a specific conversation
 pub fn conversation_path(conversations_dir: &Path, id: &str) -> std::path::PathBuf {
     conversations_dir.join(format!("{}.json", id))
