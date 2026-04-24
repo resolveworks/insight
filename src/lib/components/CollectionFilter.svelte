@@ -91,7 +91,7 @@
 					<button
 						type="button"
 						onclick={() => add(c.id)}
-						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-neutral-700 hover:bg-neutral-200"
+						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-neutral-700 transition hover:bg-neutral-300"
 					>
 						<span class="truncate">{c.name}</span>
 						<span class="ml-auto text-xs text-neutral-400">

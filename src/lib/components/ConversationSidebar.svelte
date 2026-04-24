@@ -66,7 +66,7 @@
 						</button>
 						<button
 							onclick={(e) => handleDelete(e, conv.id)}
-							class="hidden px-2 py-1.5 text-primary-200 hover:text-error group-hover:block"
+							class="hidden px-2 py-1.5 text-sm text-primary-200 hover:text-error group-hover:block"
 							title="Delete chat"
 							aria-label="Delete chat"
 						>
