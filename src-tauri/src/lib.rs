@@ -42,19 +42,37 @@ pub fn run() {
                 }
             });
 
-            // Load models in background (slow, 20-30s)
+            // Subscribe the frontend to the manager's status broadcast so
+            // lazy-load transitions (loading → ready/failed on first use)
+            // surface as `model-status-changed` events.
             let state = app.state::<AppState>();
+            let mut status_rx = state.models.subscribe_status();
+            let status_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri::Emitter;
+                while let Ok(status) = status_rx.recv().await {
+                    let _ = status_handle.emit("model-status-changed", &status);
+                }
+            });
+
+            // Restore provider configs (no weights loaded yet) and start
+            // the idle reaper. Both need a Tokio runtime, so we do them
+            // from inside async_runtime::spawn.
             let state_clone = state.inner().clone();
             let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
                 use tauri::Emitter;
 
+                state_clone.models.spawn_idle_reaper();
+
                 let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<ModelStatus>(10);
                 let (progress_tx, mut progress_rx) =
                     tokio::sync::mpsc::channel::<ModelDownloadProgress>(100);
 
-                // Forward status events to frontend
+                // Forward download-sourced status events (distinct from the
+                // manager's broadcast channel — this covers the one-shot
+                // "downloading" transition during initial setup).
                 let status_handle = app_handle.clone();
                 tokio::spawn(async move {
                     while let Some(status) = status_rx.recv().await {
@@ -62,7 +80,6 @@ pub fn run() {
                     }
                 });
 
-                // Forward progress events to frontend
                 let progress_handle = app_handle.clone();
                 tokio::spawn(async move {
                     while let Some(progress) = progress_rx.recv().await {
@@ -71,7 +88,7 @@ pub fn run() {
                 });
 
                 state_clone
-                    .load_models_if_configured(status_tx, progress_tx)
+                    .restore_configs_from_settings(status_tx, progress_tx)
                     .await;
             });
 
@@ -114,6 +131,10 @@ pub fn run() {
             commands::providers::configure_openai_provider,
             commands::providers::configure_anthropic_provider,
             commands::providers::get_stored_api_keys,
+            commands::providers::get_lifecycle_config,
+            commands::providers::set_lifecycle_config,
+            commands::providers::research_focus_enter,
+            commands::providers::research_focus_leave,
             // Prediction commands (tab completion)
             commands::conversations::predict_next_message,
             commands::conversations::cancel_prediction,

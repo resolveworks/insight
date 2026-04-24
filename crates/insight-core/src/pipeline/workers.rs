@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, Mutex, RwLock};
 
-use crate::embeddings::{generate_embeddings_data, Embedder};
+use crate::manager::ModelManager;
 use crate::search::{ChunkToIndex, IndexWorkerHandle};
 use crate::storage::Storage;
 
+use super::embed::generate_embeddings_data;
 use super::progress::ProgressTracker;
 use super::types::{EmbedJob, ExtractJob, IndexJob, ProgressUpdate, Stage};
 
@@ -114,21 +115,24 @@ pub fn spawn_embed_workers(
     count: usize,
     rx: SharedReceiver<EmbedJob>,
     storage: Arc<RwLock<Storage>>,
-    embedder: Arc<RwLock<Option<Embedder>>>,
-    model_id: Arc<RwLock<Option<String>>>,
+    models: Arc<ModelManager>,
     progress: ProgressTracker,
 ) {
     for i in 0..count {
         let rx = rx.clone();
         let storage = storage.clone();
-        let embedder = embedder.clone();
-        let model_id = model_id.clone();
+        let models = models.clone();
         let progress = progress.clone();
 
+        let mut focus_guard = models.focus_guard();
         tokio::spawn(async move {
             tracing::debug!(worker = i, "Embed worker started");
 
             while let Some(job) = rx.recv().await {
+                // Yield to the foreground before picking up the next document.
+                // In-progress work is never preempted.
+                focus_guard.wait_until_released().await;
+
                 let collection_id = job.namespace_id.to_string();
 
                 // Mark as started
@@ -139,12 +143,12 @@ pub fn spawn_embed_workers(
                     })
                     .await;
 
-                // Get embedder and model ID
-                let embedder_guard = embedder.read().await;
-                let model_id_guard = model_id.read().await;
+                // Acquire embedding provider + current model id
+                let lease_result = models.acquire_embedding().await;
+                let model_id = models.embedding_model_id().await;
 
-                let result = match (&*embedder_guard, &*model_id_guard) {
-                    (Some(emb), Some(mid)) => {
+                let result = match (lease_result, model_id) {
+                    (Ok(Some(emb)), Some(mid)) => {
                         // Get document metadata
                         let storage_guard = storage.read().await;
                         let metadata_result = storage_guard
@@ -153,19 +157,18 @@ pub fn spawn_embed_workers(
 
                         match metadata_result {
                             Ok(Some(metadata)) => {
-                                // Generate embeddings
                                 let emb_result = generate_embeddings_data(
                                     &storage_guard,
-                                    emb,
-                                    mid,
+                                    &*emb,
+                                    &mid,
                                     job.namespace_id,
                                     &metadata,
+                                    &models,
                                 )
                                 .await;
 
                                 match emb_result {
                                     Ok(data) => {
-                                        // Store embeddings - triggers InsertLocal
                                         storage_guard
                                             .store_embeddings(job.namespace_id, &job.doc_id, data)
                                             .await
@@ -179,9 +182,6 @@ pub fn spawn_embed_workers(
                     }
                     _ => Err(anyhow::anyhow!("Embedder not configured")),
                 };
-
-                drop(embedder_guard);
-                drop(model_id_guard);
 
                 match result {
                     Ok(_) => {

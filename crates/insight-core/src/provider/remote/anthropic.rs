@@ -1,6 +1,4 @@
-//! Anthropic API provider
-//!
-//! Uses reqwest for streaming chat completions with tool calling via SSE.
+//! Anthropic chat provider via reqwest SSE streaming.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -11,25 +9,23 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::{
-    ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent, RemoteModelInfo,
+use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
+use crate::provider::{
+    ChatProvider, CompletedToolCall, CompletionResult, Provider, ProviderEvent, RemoteModelInfo,
     ToolDefinition,
 };
-use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// Anthropic API provider
-pub struct AnthropicProvider {
+pub struct AnthropicChatProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
 }
 
-impl AnthropicProvider {
-    /// Create a new Anthropic provider with the given API key and model
+impl AnthropicChatProvider {
     pub fn new(api_key: &str, model: &str) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -38,7 +34,7 @@ impl AnthropicProvider {
         }
     }
 
-    /// Fetch available models from Anthropic API
+    /// Fetch available models from Anthropic API.
     pub async fn fetch_models(api_key: &str) -> Result<Vec<RemoteModelInfo>> {
         let client = reqwest::Client::new();
 
@@ -81,14 +77,24 @@ impl AnthropicProvider {
         Ok(models)
     }
 
-    /// Verify API key by fetching models (alias for fetch_models for API consistency)
+    /// Verify an API key by fetching models (alias for [`Self::fetch_models`]).
     pub async fn verify_api_key(api_key: &str) -> Result<Vec<RemoteModelInfo>> {
         Self::fetch_models(api_key).await
     }
 }
 
+impl Provider for AnthropicChatProvider {
+    fn provider_name(&self) -> &'static str {
+        "anthropic"
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+}
+
 #[async_trait]
-impl ChatProvider for AnthropicProvider {
+impl ChatProvider for AnthropicChatProvider {
     async fn stream_completion(
         &self,
         messages: &[Message],
@@ -96,10 +102,8 @@ impl ChatProvider for AnthropicProvider {
         event_tx: mpsc::Sender<ProviderEvent>,
         cancel_token: CancellationToken,
     ) -> Result<CompletionResult> {
-        // Extract system message and convert other messages
         let (system, anthropic_messages) = convert_messages(messages);
 
-        // Convert tools
         let anthropic_tools: Option<Vec<AnthropicTool>> = if tools.is_empty() {
             None
         } else {
@@ -151,12 +155,11 @@ impl ChatProvider for AnthropicProvider {
             ));
         }
 
-        // Process SSE stream
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut text_content = String::new();
         let mut tool_calls: std::collections::HashMap<usize, (String, String, String)> =
-            std::collections::HashMap::new(); // index -> (id, name, arguments)
+            std::collections::HashMap::new();
 
         while let Some(chunk_result) = stream.next().await {
             if cancel_token.is_cancelled() {
@@ -166,12 +169,10 @@ impl ChatProvider for AnthropicProvider {
             let chunk = chunk_result?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            // Process complete SSE events
             while let Some(event_end) = buffer.find("\n\n") {
                 let event_data = buffer[..event_end].to_string();
                 buffer = buffer[event_end + 2..].to_string();
 
-                // Parse SSE event
                 for line in event_data.lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
                         if data == "[DONE]" {
@@ -238,7 +239,6 @@ impl ChatProvider for AnthropicProvider {
             }
         }
 
-        // Convert to completed tool calls
         let completed_tool_calls: Vec<CompletedToolCall> = tool_calls
             .into_values()
             .map(|(id, name, args)| {
@@ -259,17 +259,9 @@ impl ChatProvider for AnthropicProvider {
             tool_calls: completed_tool_calls,
         })
     }
-
-    fn provider_name(&self) -> &'static str {
-        "anthropic"
-    }
-
-    fn model_id(&self) -> &str {
-        &self.model
-    }
 }
 
-/// Convert messages to Anthropic format, extracting system message
+/// Convert messages to Anthropic format, extracting system message.
 ///
 /// Anthropic requires tool_result blocks to be in a separate user message
 /// after the assistant's tool_use message. This function handles splitting
@@ -300,21 +292,17 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessa
                 });
             }
             MessageRole::Assistant => {
-                // Check if this message contains tool_result blocks
-                // If so, we need to split into assistant (tool_use) + user (tool_result)
                 let has_tool_results = msg
                     .content
                     .iter()
                     .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
 
-                // Add assistant message with text + tool_use blocks
                 let assistant_content = convert_assistant_blocks(&msg.content);
                 result.push(AnthropicMessage {
                     role: "assistant".to_string(),
                     content: assistant_content,
                 });
 
-                // If there are tool results, add them in a separate user message
                 if has_tool_results {
                     let tool_result_content = extract_tool_results(&msg.content);
                     result.push(AnthropicMessage {
@@ -329,7 +317,6 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessa
     (system, result)
 }
 
-/// Convert content blocks to Anthropic format for assistant messages (text + tool_use)
 fn convert_assistant_blocks(blocks: &[ContentBlock]) -> AnthropicContent {
     let mut parts = Vec::new();
 
@@ -351,9 +338,7 @@ fn convert_assistant_blocks(blocks: &[ContentBlock]) -> AnthropicContent {
                     input: arguments.clone(),
                 });
             }
-            ContentBlock::ToolResult { .. } => {
-                // Tool results go in a separate user message
-            }
+            ContentBlock::ToolResult { .. } => {}
         }
     }
 
@@ -366,7 +351,6 @@ fn convert_assistant_blocks(blocks: &[ContentBlock]) -> AnthropicContent {
     AnthropicContent::Parts(parts)
 }
 
-/// Convert content blocks to Anthropic format for user messages (text + tool_result)
 fn convert_user_blocks(blocks: &[ContentBlock]) -> AnthropicContent {
     let mut parts = Vec::new();
 
@@ -377,9 +361,7 @@ fn convert_user_blocks(blocks: &[ContentBlock]) -> AnthropicContent {
                     parts.push(AnthropicContentPart::Text { text: text.clone() });
                 }
             }
-            ContentBlock::ToolUse { .. } => {
-                // Tool uses go in assistant messages
-            }
+            ContentBlock::ToolUse { .. } => {}
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,
@@ -403,7 +385,6 @@ fn convert_user_blocks(blocks: &[ContentBlock]) -> AnthropicContent {
     AnthropicContent::Parts(parts)
 }
 
-/// Extract only tool_result blocks for the separate user message after tool_use
 fn extract_tool_results(blocks: &[ContentBlock]) -> AnthropicContent {
     let parts: Vec<AnthropicContentPart> = blocks
         .iter()
@@ -490,7 +471,6 @@ struct AnthropicErrorDetail {
     message: String,
 }
 
-// Models API response types
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Vec<ModelInfo>,
@@ -502,10 +482,9 @@ struct ModelInfo {
     display_name: String,
 }
 
-// Stream event types
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)] // Fields required for deserialization but not all are read
+#[allow(dead_code)]
 enum StreamEvent {
     MessageStart {
         message: serde_json::Value,
@@ -533,7 +512,7 @@ enum StreamEvent {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)] // Fields required for deserialization but not all are read
+#[allow(dead_code)]
 enum ContentBlockStart {
     Text { text: String },
     ToolUse { id: String, name: String },

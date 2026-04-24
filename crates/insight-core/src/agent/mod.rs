@@ -1,4 +1,3 @@
-pub mod provider;
 pub mod tools;
 
 use anyhow::Result;
@@ -7,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-pub use provider::{
+pub use crate::provider::{
     get_tool_definitions, ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent,
     ToolDefinition,
 };
@@ -1327,6 +1326,16 @@ mod tests {
         }
     }
 
+    impl crate::provider::Provider for MockProvider {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+
+        fn model_id(&self) -> &str {
+            "mock-model"
+        }
+    }
+
     #[async_trait::async_trait]
     impl ChatProvider for MockProvider {
         async fn stream_completion(
@@ -1355,14 +1364,6 @@ mod tests {
             let _ = event_tx.send(ProviderEvent::Done).await;
 
             Ok(result)
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
-
-        fn model_id(&self) -> &str {
-            "mock-model"
         }
     }
 

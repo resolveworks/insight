@@ -29,11 +29,13 @@
 //!
 //! Each stage writes to iroh, which triggers the next stage via events.
 
+mod embed;
 mod progress;
 mod types;
 mod watcher;
 mod workers;
 
+pub use embed::generate_embeddings_data;
 pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
 pub use types::{EmbedJob, ExtractJob, IndexJob, ProgressUpdate, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
@@ -46,7 +48,7 @@ use iroh_docs::NamespaceId;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::embeddings::Embedder;
+use crate::manager::ModelManager;
 use crate::search::IndexWorkerHandle;
 use crate::storage::Storage;
 
@@ -62,7 +64,7 @@ const EMBED_WORKERS: usize = 2;
 /// Each collection gets a watcher that dispatches to shared worker pools.
 pub struct Pipeline {
     storage: Arc<RwLock<Storage>>,
-    model_id: Arc<RwLock<Option<String>>>,
+    models: Arc<ModelManager>,
 
     // Worker pool channels (unbounded to avoid blocking the event watcher)
     extract_tx: mpsc::UnboundedSender<ExtractJob>,
@@ -86,8 +88,7 @@ impl Pipeline {
     /// Returns the pipeline and a receiver for progress updates.
     pub fn new(
         storage: Arc<RwLock<Storage>>,
-        embedder: Arc<RwLock<Option<Embedder>>>,
-        model_id: Arc<RwLock<Option<String>>>,
+        models: Arc<ModelManager>,
         index_worker: IndexWorkerHandle,
     ) -> (Self, mpsc::Receiver<PipelineProgress>) {
         let (progress, progress_rx) = ProgressTracker::new();
@@ -115,8 +116,7 @@ impl Pipeline {
             EMBED_WORKERS,
             embed_rx,
             storage.clone(),
-            embedder.clone(),
-            model_id.clone(),
+            models.clone(),
             progress.clone(),
         );
 
@@ -136,7 +136,7 @@ impl Pipeline {
         (
             Self {
                 storage,
-                model_id,
+                models,
                 extract_tx,
                 embed_tx,
                 index_tx,
@@ -168,7 +168,7 @@ impl Pipeline {
         let watcher = CollectionWatcher::spawn(
             namespace_id,
             self.storage.clone(),
-            self.model_id.clone(),
+            self.models.clone(),
             senders,
             self.progress.clone(),
             self.cancel.child_token(),

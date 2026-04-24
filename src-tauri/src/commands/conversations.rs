@@ -72,7 +72,7 @@ pub async fn start_chat(
     collections: Option<Vec<agent::CollectionInfo>>,
     state: State<'_, AppState>,
 ) -> CommandResult<agent::Conversation> {
-    if state.chat_provider.read().await.is_none() {
+    if !state.models.chat_ready().await {
         return Err(CommandError::provider_not_configured());
     }
 
@@ -210,7 +210,7 @@ pub async fn send_message(
         .ok_or(CommandError::conversation_not_found())?
         .clone();
 
-    if state.chat_provider.read().await.is_none() {
+    if !state.models.chat_ready().await {
         return Err(CommandError::provider_not_configured());
     }
 
@@ -251,18 +251,27 @@ pub async fn send_message(
             collections: scope_collections,
         };
 
-        let provider_guard = state_clone.chat_provider.read().await;
-        let provider = match provider_guard.as_ref() {
-            Some(p) => p.as_ref(),
-            None => {
+        let lease = match state_clone.models.acquire_chat().await {
+            Ok(Some(l)) => l,
+            Ok(None) => {
                 tracing::error!("Provider not configured when running agent loop");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to load chat provider");
                 return;
             }
         };
 
-        if let Err(e) =
-            agent::run_agent_loop(provider, &mut conversation, message, &ctx, tx, cancel_token)
-                .await
+        if let Err(e) = agent::run_agent_loop(
+            lease.provider(),
+            &mut conversation,
+            message,
+            &ctx,
+            tx,
+            cancel_token,
+        )
+        .await
         {
             tracing::error!(
                 conversation_id = %conv_id,
@@ -271,7 +280,7 @@ pub async fn send_message(
                 "Agent loop error"
             );
         }
-        drop(provider_guard);
+        drop(lease);
 
         let user_count = conversation
             .messages
@@ -369,10 +378,13 @@ pub async fn predict_next_message(
         .await
         .insert(conversation_id.clone(), cancel_token.clone());
 
-    let provider_guard = state.chat_provider.read().await;
-    let provider = match provider_guard.as_ref() {
-        Some(p) => p.as_ref(),
-        None => return Ok(None),
+    let lease = match state.models.acquire_chat().await {
+        Ok(Some(l)) => l,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            tracing::debug!(error = %e, "Failed to load chat provider for prediction");
+            return Ok(None);
+        }
     };
 
     let mut prediction_messages = conversation.messages.clone();
@@ -397,7 +409,7 @@ pub async fn predict_next_message(
 
     let completion_result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        provider.stream_completion(&prediction_messages, &[], tx, cancel_token.clone()),
+        lease.stream_completion(&prediction_messages, &[], tx, cancel_token.clone()),
     )
     .await;
 

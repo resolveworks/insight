@@ -1,7 +1,7 @@
-//! Local model provider using mistralrs
+//! Local chat provider using mistralrs GGUF models.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -14,43 +14,97 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::{ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent, ToolDefinition};
 use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 use crate::models::LanguageModelInfo;
+use crate::provider::{
+    ChatProvider, CompletedToolCall, CompletionResult, MemoryKind, Provider, ProviderEvent,
+    ToolDefinition,
+};
 
-/// Local LLM provider using mistralrs
-pub struct LocalProvider {
-    model: Arc<Model>,
-    model_id: String,
+use super::LocalModelState;
+
+/// Local LLM provider backed by a mistralrs GGUF model.
+///
+/// Construction is cheap — it records what to load. Weights are brought
+/// into memory on [`Provider::ensure_loaded`]. `unload` drops the inner
+/// `Arc`; any in-flight inference keeps its own clone and finishes at the
+/// natural boundary.
+pub struct LocalChatProvider {
+    model_path: PathBuf,
+    gguf_file: String,
+    tokenizer_repo_id: String,
+    state: LocalModelState<Model>,
 }
 
-impl LocalProvider {
-    /// Load a GGUF model from local cache
-    pub async fn load(model_path: &Path, model_info: &LanguageModelInfo) -> Result<Self> {
-        let model = GgufModelBuilder::new(
-            model_path.to_string_lossy().to_string(),
-            vec![model_info.gguf_file.clone()],
-        )
-        .with_tok_model_id(&model_info.tokenizer_repo_id)
-        .with_logging()
-        .build()
-        .await
-        .context("Failed to load GGUF model")?;
-
-        Ok(Self {
-            model: Arc::new(model),
-            model_id: model_info.id.clone(),
-        })
-    }
-
-    /// Get a reference to the underlying model (for backwards compatibility)
-    pub fn model(&self) -> &Arc<Model> {
-        &self.model
+impl LocalChatProvider {
+    pub fn new(model_path: impl AsRef<Path>, model_info: &LanguageModelInfo) -> Self {
+        Self {
+            model_path: model_path.as_ref().to_path_buf(),
+            gguf_file: model_info.gguf_file.clone(),
+            tokenizer_repo_id: model_info.tokenizer_repo_id.clone(),
+            state: LocalModelState::new(model_info.id.clone()),
+        }
     }
 }
 
 #[async_trait]
-impl ChatProvider for LocalProvider {
+impl Provider for LocalChatProvider {
+    fn provider_name(&self) -> &'static str {
+        "local"
+    }
+
+    fn model_id(&self) -> &str {
+        self.state.model_id()
+    }
+
+    fn memory_kind(&self) -> MemoryKind {
+        MemoryKind::Local
+    }
+
+    fn coexist(&self) -> bool {
+        self.state.coexist()
+    }
+
+    fn set_coexist(&self, coexist: bool) {
+        self.state.set_coexist(coexist);
+    }
+
+    async fn is_loaded(&self) -> bool {
+        self.state.is_loaded().await
+    }
+
+    async fn ensure_loaded(&self) -> Result<()> {
+        let path = self.model_path.clone();
+        let gguf = self.gguf_file.clone();
+        let tok = self.tokenizer_repo_id.clone();
+        let model_id = self.state.model_id().to_string();
+
+        self.state
+            .get_or_load(|| async move {
+                tracing::info!("Loading local chat model '{}'...", model_id);
+                let model = GgufModelBuilder::new(path.to_string_lossy().to_string(), vec![gguf])
+                    .with_tok_model_id(&tok)
+                    .with_logging()
+                    .build()
+                    .await
+                    .context("Failed to load GGUF model")?;
+                tracing::info!("Local chat model '{}' loaded", model_id);
+                Ok(model)
+            })
+            .await
+            .map(|_| ())
+    }
+
+    async fn unload(&self) -> Result<()> {
+        if self.state.unload().await {
+            tracing::info!("Unloaded local chat model '{}'", self.state.model_id());
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ChatProvider for LocalChatProvider {
     async fn stream_completion(
         &self,
         messages: &[Message],
@@ -58,14 +112,17 @@ impl ChatProvider for LocalProvider {
         event_tx: mpsc::Sender<ProviderEvent>,
         cancel_token: CancellationToken,
     ) -> Result<CompletionResult> {
-        // Convert tools to mistralrs format
-        let mistral_tools = convert_tools(tools);
+        self.ensure_loaded().await?;
+        let model: Arc<Model> = self
+            .state
+            .current()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Local chat model not loaded"))?;
 
-        // Build request from messages
+        let mistral_tools = convert_tools(tools);
         let request = build_request(messages, &mistral_tools);
 
-        // Stream the response
-        let mut stream = self.model.stream_chat_request(request).await?;
+        let mut stream = model.stream_chat_request(request).await?;
 
         let mut text_content = String::new();
         let mut tool_calls: Vec<ToolCallResponse> = Vec::new();
@@ -84,7 +141,6 @@ impl ChatProvider for LocalProvider {
                             ..
                         } = &choice.delta;
 
-                        // Stream text content
                         if let Some(text) = delta_content {
                             if !text.is_empty() {
                                 let _ = event_tx.send(ProviderEvent::TextDelta(text.clone())).await;
@@ -92,13 +148,11 @@ impl ChatProvider for LocalProvider {
                             }
                         }
 
-                        // Accumulate tool calls
                         if let Some(calls) = delta_tool_calls {
                             for call in calls {
                                 if let Some(existing) =
                                     tool_calls.iter_mut().find(|tc| tc.index == call.index)
                                 {
-                                    // Accumulate arguments
                                     let args_delta = call.function.arguments.clone();
                                     existing.function.arguments.push_str(&args_delta);
                                     let _ = event_tx
@@ -108,7 +162,6 @@ impl ChatProvider for LocalProvider {
                                         })
                                         .await;
                                 } else {
-                                    // New tool call
                                     tool_calls.push(call.clone());
                                     let _ = event_tx
                                         .send(ProviderEvent::ToolCallStart {
@@ -133,7 +186,6 @@ impl ChatProvider for LocalProvider {
             }
         }
 
-        // Convert tool calls to completed format
         let completed_tool_calls: Vec<CompletedToolCall> = tool_calls
             .into_iter()
             .map(|tc| {
@@ -147,7 +199,6 @@ impl ChatProvider for LocalProvider {
             })
             .collect();
 
-        // Emit completion events for tool calls
         for tc in &completed_tool_calls {
             let _ = event_tx
                 .send(ProviderEvent::ToolCallComplete { id: tc.id.clone() })
@@ -161,17 +212,8 @@ impl ChatProvider for LocalProvider {
             tool_calls: completed_tool_calls,
         })
     }
-
-    fn provider_name(&self) -> &'static str {
-        "local"
-    }
-
-    fn model_id(&self) -> &str {
-        &self.model_id
-    }
 }
 
-/// Convert provider-agnostic tool definitions to mistralrs format
 fn convert_tools(tools: &[ToolDefinition]) -> Vec<Tool> {
     tools
         .iter()
@@ -186,7 +228,6 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<Tool> {
         .collect()
 }
 
-/// Convert serde_json::Value to HashMap for mistralrs
 fn json_to_hashmap(value: &serde_json::Value) -> HashMap<String, serde_json::Value> {
     match value {
         serde_json::Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -194,7 +235,6 @@ fn json_to_hashmap(value: &serde_json::Value) -> HashMap<String, serde_json::Val
     }
 }
 
-/// Build a RequestBuilder from messages
 fn build_request(messages: &[Message], tools: &[Tool]) -> RequestBuilder {
     let mut request = RequestBuilder::new()
         .set_tools(tools.to_vec())
@@ -218,7 +258,6 @@ fn build_request(messages: &[Message], tools: &[Tool]) -> RequestBuilder {
                 request = request.add_message(TextMessageRole::User, &text);
             }
             MessageRole::Assistant => {
-                // Extract tool uses from content blocks
                 let tool_uses: Vec<ToolCallResponse> = msg
                     .content
                     .iter()
@@ -248,7 +287,6 @@ fn build_request(messages: &[Message], tools: &[Tool]) -> RequestBuilder {
                         tool_uses,
                     );
 
-                    // Add tool result messages
                     for block in &msg.content {
                         if let ContentBlock::ToolResult {
                             tool_use_id,

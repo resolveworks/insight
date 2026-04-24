@@ -43,9 +43,8 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
     info!(query = %query, "Executing hybrid search");
 
     // Try to get query embedding for semantic component
-    let embedder_guard = ctx.state.embedder.read().await;
-    let (query_vector, semantic_ratio) = match embedder_guard.as_ref() {
-        Some(embedder) => match embedder.embed(query).await {
+    let (query_vector, semantic_ratio) = match ctx.state.models.acquire_embedding().await {
+        Ok(Some(embedder)) => match embedder.embed(query).await {
             Ok(vec) => {
                 debug!(dimensions = vec.len(), "Query embedded for hybrid search");
                 (Some(vec), 0.4)
@@ -55,12 +54,15 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
                 (None, 0.0)
             }
         },
-        None => {
+        Ok(None) => {
             debug!("No embedder configured, using keyword-only search");
             (None, 0.0)
         }
+        Err(e) => {
+            warn!(error = %e, "Failed to load embedder, using keyword-only search");
+            (None, 0.0)
+        }
     };
-    drop(embedder_guard);
 
     let index = &*ctx.state.search;
     let collection_ids = ctx.collection_ids();

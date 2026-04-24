@@ -50,13 +50,10 @@ pub async fn start_import<R: tauri::Runtime>(
     );
 
     // Warn if embedder not ready
-    {
-        let embedder_guard = state.embedder.read().await;
-        if embedder_guard.is_none() {
-            tracing::warn!(
-                "Embedder not yet configured - documents will be stored but embedding will fail"
-            );
-        }
+    if !state.models.embedding_ready().await {
+        tracing::warn!(
+            "Embedder not yet configured - documents will be stored but embedding will fail"
+        );
     }
 
     // Convert paths to PathBuf
@@ -202,15 +199,16 @@ pub async fn get_document_chunks(
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<String>> {
     // Get current embedding model ID
-    let model_id_guard = state.embedding_model_id.read().await;
-    let model_id = model_id_guard
-        .as_ref()
+    let model_id = state
+        .models
+        .embedding_model_id()
+        .await
         .ok_or(CommandError::embedder_not_configured())?;
 
     // Fetch stored embeddings
     let storage = state.storage.read().await;
     let embeddings = storage
-        .get_embeddings(collection_id.namespace(), &document_id, model_id)
+        .get_embeddings(collection_id.namespace(), &document_id, &model_id)
         .await
         .storage_err()?;
 

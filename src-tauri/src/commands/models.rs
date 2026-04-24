@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -51,6 +53,7 @@ pub async fn get_available_models(model_type: ModelType) -> CommandResult<Vec<Mo
             .into_iter()
             .map(ModelInfo::from)
             .collect(),
+        ModelType::Ocr => Vec::new(),
     })
 }
 
@@ -73,13 +76,14 @@ pub async fn get_model_status(
         ModelType::Language => {
             let model = models::get_language_model(&model_id)
                 .ok_or(CommandError::model_not_found(&model_id))?;
-            state.model_manager.is_downloaded(&model)
+            state.model_downloader.is_downloaded(&model)
         }
         ModelType::Embedding => {
             let model = models::get_embedding_model(&model_id)
                 .ok_or(CommandError::model_not_found(&model_id))?;
-            state.model_manager.is_downloaded(&model)
+            state.model_downloader.is_downloaded(&model)
         }
+        ModelType::Ocr => return Err(CommandError::model_not_found(&model_id)),
     };
 
     Ok(if is_downloaded {
@@ -104,13 +108,14 @@ pub async fn download_model(
         ModelType::Language => {
             let model = models::get_language_model(&model_id)
                 .ok_or(CommandError::model_not_found(&model_id))?;
-            state.model_manager.is_downloaded(&model)
+            state.model_downloader.is_downloaded(&model)
         }
         ModelType::Embedding => {
             let model = models::get_embedding_model(&model_id)
                 .ok_or(CommandError::model_not_found(&model_id))?;
-            state.model_manager.is_downloaded(&model)
+            state.model_downloader.is_downloaded(&model)
         }
+        ModelType::Ocr => return Err(CommandError::model_not_found(&model_id)),
     };
 
     if is_downloaded {
@@ -142,7 +147,7 @@ pub async fn download_model(
         ModelType::Language => {
             let model = models::get_language_model(&model_id).unwrap();
             state
-                .model_manager
+                .model_downloader
                 .download(&model, model_type, status_tx, progress_tx)
                 .await
                 .external_err()?;
@@ -150,11 +155,12 @@ pub async fn download_model(
         ModelType::Embedding => {
             let model = models::get_embedding_model(&model_id).unwrap();
             state
-                .model_manager
+                .model_downloader
                 .download(&model, model_type, status_tx, progress_tx)
                 .await
                 .external_err()?;
         }
+        ModelType::Ocr => {}
     }
 
     Ok(())
@@ -178,25 +184,28 @@ pub async fn get_provider_status(
 ) -> CommandResult<ProviderStatus> {
     Ok(match model_type {
         ModelType::Embedding => {
-            let embedder_guard = state.embedder.read().await;
-            let model_id_guard = state.embedding_model_id.read().await;
-
+            let model_id = state.models.embedding_model_id().await;
+            let ready = state.models.embedding_ready().await;
             ProviderStatus {
-                provider_type: model_id_guard.as_ref().map(|_| "local".to_string()),
-                model_id: model_id_guard.clone(),
-                ready: embedder_guard.is_some(),
+                provider_type: model_id.as_ref().map(|_| "local".to_string()),
+                model_id,
+                ready,
             }
         }
         ModelType::Language => {
-            let provider_guard = state.chat_provider.read().await;
-            let config_guard = state.provider_config.read().await;
-
+            let config = state.models.chat_config().await;
+            let ready = state.models.chat_ready().await;
             ProviderStatus {
-                provider_type: config_guard.as_ref().map(|c| c.provider_type().to_string()),
-                model_id: config_guard.as_ref().map(|c| c.model_id().to_string()),
-                ready: provider_guard.is_some(),
+                provider_type: config.as_ref().map(|c| c.provider_type().to_string()),
+                model_id: config.as_ref().map(|c| c.model_id().to_string()),
+                ready,
             }
         }
+        ModelType::Ocr => ProviderStatus {
+            provider_type: None,
+            model_id: None,
+            ready: false,
+        },
     })
 }
 
@@ -207,14 +216,13 @@ pub async fn get_current_model(
     state: State<'_, AppState>,
 ) -> CommandResult<Option<String>> {
     Ok(match model_type {
-        ModelType::Language => {
-            let provider_config = state.provider_config.read().await;
-            provider_config.as_ref().map(|c| c.model_id().to_string())
-        }
-        ModelType::Embedding => {
-            let model_id = state.embedding_model_id.read().await;
-            model_id.clone()
-        }
+        ModelType::Language => state
+            .models
+            .chat_config()
+            .await
+            .map(|c| c.model_id().to_string()),
+        ModelType::Embedding => state.models.embedding_model_id().await,
+        ModelType::Ocr => None,
     })
 }
 
@@ -232,19 +240,8 @@ pub async fn configure_model(
     match model_type {
         ModelType::Language => configure_language_model_impl(model_id, app, state).await,
         ModelType::Embedding => configure_embedding_model_impl(model_id, app, state).await,
+        ModelType::Ocr => Err(CommandError::internal("OCR not yet supported")),
     }
-}
-
-fn emit_loading(app: &AppHandle, model_type: ModelType, id: &str, name: &str) {
-    use crate::core::ModelStatus;
-    let _ = app.emit(
-        "model-status-changed",
-        &ModelStatus::Loading {
-            model_type,
-            model_id: id.to_string(),
-            model_name: name.to_string(),
-        },
-    );
 }
 
 fn emit_ready(app: &AppHandle, model_type: ModelType, id: &str) {
@@ -275,7 +272,7 @@ async fn configure_language_model_impl(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
-    use crate::core::{LocalProvider, ProviderConfig, Settings};
+    use crate::core::{LocalChatProvider, ProviderConfig, Settings};
 
     if let Some(ref id) = model_id {
         let model = models::get_language_model(id).ok_or(CommandError::model_not_found(id))?;
@@ -287,26 +284,24 @@ async fn configure_language_model_impl(
         );
 
         let model_path = state
-            .model_manager
+            .model_downloader
             .get_path(&model)
             .ok_or(CommandError::model_not_downloaded(id))?;
 
-        emit_loading(&app, ModelType::Language, id, &model.name);
-
-        let provider = match LocalProvider::load(&model_path, &model).await {
-            Ok(p) => p,
-            Err(e) => {
-                let msg = format!("Failed to load model: {}", e);
-                emit_failed(&app, ModelType::Language, id, &msg);
-                return Err(CommandError::internal(msg));
-            }
-        };
+        let provider = LocalChatProvider::new(&model_path, &model);
 
         let provider_config = ProviderConfig::Local {
             model_id: id.clone(),
         };
-        *state.chat_provider.write().await = Some(Box::new(provider));
-        *state.provider_config.write().await = Some(provider_config.clone());
+        if let Err(e) = state
+            .models
+            .set_chat(Arc::new(provider), provider_config.clone())
+            .await
+        {
+            let msg = format!("Failed to install provider: {}", e);
+            emit_failed(&app, ModelType::Language, id, &msg);
+            return Err(CommandError::internal(msg));
+        }
 
         let mut settings = Settings::load(&state.config.settings_file);
         settings.provider = Some(provider_config);
@@ -315,8 +310,7 @@ async fn configure_language_model_impl(
         emit_ready(&app, ModelType::Language, id);
     } else {
         tracing::info!("Unloading chat provider");
-        *state.chat_provider.write().await = None;
-        *state.provider_config.write().await = None;
+        state.models.clear_chat().await;
 
         let mut settings = Settings::load(&state.config.settings_file);
         settings.provider = None;
@@ -331,7 +325,7 @@ async fn configure_embedding_model_impl(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
-    use crate::core::{Embedder, Settings};
+    use crate::core::{LocalEmbeddingProvider, Settings};
 
     if let Some(ref id) = model_id {
         let model = models::get_embedding_model(id).ok_or(CommandError::model_not_found(id))?;
@@ -342,16 +336,7 @@ async fn configure_embedding_model_impl(
             model.hf_repo_id
         );
 
-        emit_loading(&app, ModelType::Embedding, id, &model.name);
-
-        let embedder = match Embedder::new(&model.hf_repo_id, model.dimensions).await {
-            Ok(e) => e,
-            Err(e) => {
-                let msg = format!("Failed to load embedder: {}", e);
-                emit_failed(&app, ModelType::Embedding, id, &msg);
-                return Err(CommandError::internal(msg));
-            }
-        };
+        let provider = LocalEmbeddingProvider::new(id, &model.hf_repo_id, model.dimensions);
 
         {
             let index = &*state.search;
@@ -362,8 +347,15 @@ async fn configure_embedding_model_impl(
                 })?;
         }
 
-        *state.embedder.write().await = Some(embedder);
-        *state.embedding_model_id.write().await = Some(id.clone());
+        if let Err(e) = state
+            .models
+            .set_embedding(Arc::new(provider), id.clone())
+            .await
+        {
+            let msg = format!("Failed to install embedder: {}", e);
+            emit_failed(&app, ModelType::Embedding, id, &msg);
+            return Err(CommandError::internal(msg));
+        }
 
         let mut settings = Settings::load(&state.config.settings_file);
         settings.embedding_model_id = Some(id.clone());
@@ -381,8 +373,7 @@ async fn configure_embedding_model_impl(
             }
         }
 
-        *state.embedder.write().await = None;
-        *state.embedding_model_id.write().await = None;
+        state.models.clear_embedding().await;
 
         let mut settings = Settings::load(&state.config.settings_file);
         settings.embedding_model_id = None;

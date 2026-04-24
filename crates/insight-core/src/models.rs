@@ -334,17 +334,20 @@ impl ProgressTracker {
 }
 
 // ============================================================================
-// Model Manager
+// Model Downloader
 // ============================================================================
 
-/// Model manager handles downloading and caching models
-pub struct ModelManager {
+/// Downloads and caches HuggingFace models on disk.
+///
+/// Orthogonal to `crate::manager::ModelManager`: this cares about bytes on
+/// disk, while `ModelManager` cares about in-memory inference state.
+pub struct ModelDownloader {
     cache: Cache,
     api: Api,
 }
 
-impl ModelManager {
-    /// Create a new model manager using the HuggingFace cache
+impl ModelDownloader {
+    /// Create a new downloader using the HuggingFace cache
     ///
     /// Respects the `HF_HOME` environment variable if set, otherwise uses
     /// the default cache location (`~/.cache/huggingface/hub`).

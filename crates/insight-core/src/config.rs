@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::provider::ProviderConfig;
+use crate::provider::ProviderConfig;
 
 /// Application configuration (paths, computed at runtime)
 #[derive(Debug, Clone)]
@@ -45,6 +45,21 @@ impl Config {
     }
 }
 
+/// Per-role lifecycle settings.
+///
+/// Defaults are `false`: local models do **not** stay resident alongside
+/// other local models. Remote providers ignore these flags (they're
+/// hard-coded to `coexist = true`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LifecycleConfig {
+    /// Keep the local chat model loaded while other local models load.
+    #[serde(default)]
+    pub chat_coexist: bool,
+    /// Keep the local embedding model loaded while other local models load.
+    #[serde(default)]
+    pub embedding_coexist: bool,
+}
+
 /// User settings (persisted to disk)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
@@ -60,6 +75,9 @@ pub struct Settings {
     /// Stored Anthropic API key (persisted separately from active provider)
     #[serde(default)]
     pub anthropic_api_key: Option<String>,
+    /// Per-role lifecycle controls (coexist flags, idle TTL, etc.).
+    #[serde(default)]
+    pub lifecycle: LifecycleConfig,
 }
 
 impl Settings {
@@ -83,5 +101,46 @@ impl Settings {
         let contents = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         std::fs::write(path, contents)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_config_defaults_when_missing() {
+        // Existing installs whose settings.json pre-dates the `lifecycle`
+        // field should deserialize cleanly with defaults.
+        let json = r#"{"embedding_model_id":"qwen3-embedding"}"#;
+        let parsed: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.lifecycle, LifecycleConfig::default());
+        assert!(!parsed.lifecycle.chat_coexist);
+        assert!(!parsed.lifecycle.embedding_coexist);
+    }
+
+    #[test]
+    fn lifecycle_config_roundtrip() {
+        let original = Settings {
+            embedding_model_id: Some("m".into()),
+            provider: None,
+            openai_api_key: None,
+            anthropic_api_key: None,
+            lifecycle: LifecycleConfig {
+                chat_coexist: true,
+                embedding_coexist: false,
+            },
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.lifecycle, original.lifecycle);
+    }
+
+    #[test]
+    fn settings_all_defaults_when_empty_object() {
+        let parsed: Settings = serde_json::from_str("{}").unwrap();
+        assert!(parsed.embedding_model_id.is_none());
+        assert!(parsed.provider.is_none());
+        assert_eq!(parsed.lifecycle, LifecycleConfig::default());
     }
 }

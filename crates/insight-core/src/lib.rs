@@ -4,17 +4,18 @@
 //! - Document storage (iroh P2P)
 //! - Full-text and semantic search (milli)
 //! - PDF text extraction (lopdf)
-//! - Embedding generation (mistralrs)
+//! - Inference providers (local + remote) via [`provider`] + [`manager::ModelManager`]
 //! - Agent/conversation handling
 //! - Event-driven pipeline for document import
 
 pub mod agent;
 pub mod config;
 pub mod conversations;
-pub mod embeddings;
+pub mod manager;
 pub mod models;
 pub mod pdf;
 pub mod pipeline;
+pub mod provider;
 pub mod search;
 pub mod storage;
 
@@ -27,14 +28,13 @@ use milli::update::IndexerConfig;
 use milli::Index;
 use serde::{Deserialize, Serialize};
 
-pub use embeddings::Embedder;
-
-/// Model type identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Model role identifier used for status events and downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelType {
     Embedding,
     Language,
+    Ocr,
 }
 
 /// Collection info - canonical definition used across API responses and agent context
@@ -69,8 +69,14 @@ pub enum ModelStatus {
         model_id: String,
         model_name: String,
     },
-    /// Model is ready for use
+    /// Model is ready for use (configured; weights may or may not be resident)
     Ready {
+        model_type: ModelType,
+        model_id: String,
+    },
+    /// Model weights were unloaded from memory (idle reaper, eviction).
+    /// The provider stays configured; the next request reloads.
+    Unloaded {
         model_type: ModelType,
         model_id: String,
     },
@@ -90,16 +96,16 @@ pub struct ModelDownloadProgress {
     pub progress: models::DownloadProgress,
 }
 
-pub use agent::provider::anthropic::AnthropicProvider;
-pub use agent::provider::local::LocalProvider;
-pub use agent::provider::openai::OpenAIProvider;
-pub use agent::provider::{
-    get_provider_families, get_tool_definitions, ChatProvider, CompletedToolCall, CompletionResult,
-    ProviderConfig, ProviderEvent, ProviderFamily, RemoteModelInfo, ToolDefinition,
-};
 pub use agent::{AgentContext, AgentEvent, Conversation};
-pub use config::{Config, Settings};
+pub use config::{Config, LifecycleConfig, Settings};
+pub use manager::{ChatLease, EmbeddingLease, ModelManager};
 pub use pipeline::{Pipeline, PipelineProgress, StageProgress};
+pub use provider::{
+    get_provider_families, get_tool_definitions, AnthropicChatProvider, ChatProvider,
+    CompletedToolCall, CompletionResult, EmbeddingProvider, LocalChatProvider,
+    LocalEmbeddingProvider, OpenAIChatProvider, ProviderConfig, ProviderEvent, ProviderFamily,
+    RemoteModelInfo, ToolDefinition,
+};
 pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 
@@ -107,8 +113,10 @@ pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
-    /// Model manager for downloading and checking model status
-    pub model_manager: Arc<models::ModelManager>,
+    /// Downloads and caches HuggingFace model files on disk.
+    pub model_downloader: Arc<models::ModelDownloader>,
+    /// Central manager for in-memory inference providers (chat, embed, OCR).
+    pub models: Arc<ModelManager>,
     /// Storage - initialized in setup(), always available to commands
     pub storage: Arc<RwLock<Storage>>,
     /// Search index - shared for reads, writes go through index worker
@@ -116,14 +124,6 @@ pub struct AppState {
     pub search: Arc<Index>,
     /// Index worker handle for search write operations (indexing, deletion)
     pub index_worker: IndexWorkerHandle,
-    /// Custom embedder for semantic search (None = full-text only, loaded async)
-    pub embedder: Arc<RwLock<Option<Embedder>>>,
-    /// Currently configured embedding model ID
-    pub embedding_model_id: Arc<RwLock<Option<String>>>,
-    /// Active chat provider (local, OpenAI, or Anthropic)
-    pub chat_provider: Arc<RwLock<Option<Box<dyn ChatProvider>>>>,
-    /// Current provider configuration (for persistence and display)
-    pub provider_config: Arc<RwLock<Option<ProviderConfig>>>,
     /// Active conversations
     pub conversations: Arc<RwLock<HashMap<String, Conversation>>>,
     /// Cancellation tokens for active generations
@@ -143,8 +143,8 @@ impl AppState {
     pub async fn new(
         config: Config,
     ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<PipelineProgress>)> {
-        // Initialize model manager (HuggingFace cache + API client)
-        let model_manager = Arc::new(models::ModelManager::new().await?);
+        let model_downloader = Arc::new(models::ModelDownloader::new().await?);
+        let models = Arc::new(ModelManager::new());
 
         // Fast async init - just opens files
         let storage = Storage::open(&config.iroh_dir).await?;
@@ -153,34 +153,24 @@ impl AppState {
         let index = search::open_index(&config.search_dir)?;
         let indexer_config = IndexerConfig::default();
 
-        // Wrap in Arc for sharing
         let storage = Arc::new(RwLock::new(storage));
         let search = Arc::new(index);
-        let embedder = Arc::new(RwLock::new(None));
-        let embedding_model_id = Arc::new(RwLock::new(None));
 
         // Spawn index worker - handles all milli write operations in a dedicated thread
         let index_worker = spawn_index_worker(search.clone(), indexer_config);
 
         // Create event-driven pipeline for document processing
-        let (pipeline, progress_rx) = Pipeline::new(
-            storage.clone(),
-            embedder.clone(),
-            embedding_model_id.clone(),
-            index_worker.clone(),
-        );
+        let (pipeline, progress_rx) =
+            Pipeline::new(storage.clone(), models.clone(), index_worker.clone());
 
         Ok((
             Self {
                 config,
-                model_manager,
+                model_downloader,
+                models,
                 storage,
                 search,
                 index_worker,
-                embedder,
-                embedding_model_id,
-                chat_provider: Arc::new(RwLock::new(None)),
-                provider_config: Arc::new(RwLock::new(None)),
                 conversations: Arc::new(RwLock::new(HashMap::new())),
                 active_generations: Arc::new(RwLock::new(HashMap::new())),
                 active_predictions: Arc::new(RwLock::new(HashMap::new())),
@@ -190,28 +180,35 @@ impl AppState {
         ))
     }
 
-    /// Load configured models on startup.
-    /// Called in background after setup() completes.
+    /// Restore provider configurations from settings. Called once at startup.
     ///
-    /// Auto-downloads the default embedding model if not configured.
-    /// Sends status changes to `status_tx` and download progress to `progress_tx`.
-    pub async fn load_models_if_configured(
+    /// Constructs providers without loading weights — that happens on first
+    /// inference request. Auto-downloads the default embedding model if
+    /// settings don't name one. The only blocking work done here is the
+    /// potential download; everything else is cheap.
+    pub async fn restore_configs_from_settings(
         &self,
         status_tx: tokio::sync::mpsc::Sender<ModelStatus>,
         progress_tx: tokio::sync::mpsc::Sender<ModelDownloadProgress>,
     ) {
         let mut settings = Settings::load(&self.config.settings_file);
 
-        // Start watching existing collections for indexing events
+        // Prime the manager with the current lifecycle settings so provider
+        // installs pick up the right coexist flags.
+        self.models
+            .set_lifecycle_config(settings.lifecycle.clone())
+            .await;
+
+        // Start watching existing collections for indexing events.
         self.watch_existing_collections().await;
 
-        // Load chat provider if configured
+        // Install chat provider (no load) if configured.
         if let Some(ref provider_config) = settings.provider {
-            self.load_provider_from_config(provider_config, &status_tx)
+            self.install_chat_provider_from_config(provider_config, &status_tx)
                 .await;
         }
 
-        // Auto-configure default embedding model if not set
+        // Auto-configure default embedding model if not set.
         let model_id = match settings.embedding_model_id.clone() {
             Some(id) => id,
             None => {
@@ -228,7 +225,6 @@ impl AppState {
             }
         };
 
-        // Get model info
         let model = match models::get_embedding_model(&model_id) {
             Some(m) => m,
             None => {
@@ -244,10 +240,10 @@ impl AppState {
             }
         };
 
-        // Download if not cached
-        if !self.model_manager.is_downloaded(&model) {
+        // Download if missing. Loading is deferred to first inference.
+        if !self.model_downloader.is_downloaded(&model) {
             if let Err(e) = self
-                .model_manager
+                .model_downloader
                 .download(&model, ModelType::Embedding, status_tx.clone(), progress_tx)
                 .await
             {
@@ -256,122 +252,109 @@ impl AppState {
             }
         }
 
-        // Load model into memory
+        // Configure milli's embedder entry up front so vector search paths
+        // don't fail while the actual embedding model is still unloaded.
+        if let Err(e) = self
+            .index_worker
+            .configure_embedder("default".to_string(), model.dimensions)
+            .await
+        {
+            tracing::warn!("Failed to configure embedder in index: {}", e);
+        }
+
+        let provider = LocalEmbeddingProvider::new(&model_id, &model.hf_repo_id, model.dimensions);
+        if let Err(e) = self
+            .models
+            .set_embedding(Arc::new(provider), model_id.clone())
+            .await
+        {
+            tracing::error!("Failed to install embedding provider: {}", e);
+            let _ = status_tx
+                .send(ModelStatus::Failed {
+                    model_type: ModelType::Embedding,
+                    model_id: model_id.clone(),
+                    error: e.to_string(),
+                })
+                .await;
+            return;
+        }
+
+        tracing::info!("Embedding provider '{}' installed (lazy)", model_id);
         let _ = status_tx
-            .send(ModelStatus::Loading {
+            .send(ModelStatus::Ready {
                 model_type: ModelType::Embedding,
                 model_id: model_id.clone(),
-                model_name: model.name.clone(),
             })
             .await;
-
-        tracing::info!("Loading embedding model '{}'...", model_id);
-        match Embedder::new(&model.hf_repo_id, model.dimensions).await {
-            Ok(emb) => {
-                *self.embedder.write().await = Some(emb);
-                *self.embedding_model_id.write().await = Some(model_id.clone());
-
-                // Configure embedder in search index for vector search
-                // This must happen before any documents with vectors can be indexed
-                if let Err(e) = self
-                    .index_worker
-                    .configure_embedder("default".to_string(), model.dimensions)
-                    .await
-                {
-                    tracing::warn!("Failed to configure embedder in index: {}", e);
-                }
-
-                tracing::info!("Embedding model '{}' loaded", model_id);
-                let _ = status_tx
-                    .send(ModelStatus::Ready {
-                        model_type: ModelType::Embedding,
-                        model_id: model_id.clone(),
-                    })
-                    .await;
-            }
-            Err(e) => {
-                tracing::error!("Failed to load embedder: {}", e);
-                let _ = status_tx
-                    .send(ModelStatus::Failed {
-                        model_type: ModelType::Embedding,
-                        model_id: model_id.clone(),
-                        error: e.to_string(),
-                    })
-                    .await;
-            }
-        }
     }
 
-    /// Load a chat provider from saved configuration.
-    ///
-    /// For local providers, emits `Loading`/`Ready`/`Failed` status events so
-    /// the frontend reflects the slow load. Remote providers are instant and
-    /// only emit `Ready` once set.
-    async fn load_provider_from_config(
+    /// Install a chat provider from saved configuration without loading
+    /// weights. The first inference request pays the load cost.
+    async fn install_chat_provider_from_config(
         &self,
         config: &ProviderConfig,
         status_tx: &tokio::sync::mpsc::Sender<ModelStatus>,
     ) {
-        use agent::provider::{
-            anthropic::AnthropicProvider, local::LocalProvider, openai::OpenAIProvider,
-        };
-
         match config {
             ProviderConfig::Local { model_id } => {
                 let Some(model) = models::get_language_model(model_id) else {
                     tracing::warn!("Unknown local model: {}", model_id);
                     return;
                 };
-                if !self.model_manager.is_downloaded(&model) {
+                if !self.model_downloader.is_downloaded(&model) {
                     tracing::info!("Local model '{}' not downloaded, skipping", model_id);
                     return;
                 }
-                let Some(path) = self.model_manager.get_path(&model) else {
+                let Some(path) = self.model_downloader.get_path(&model) else {
                     return;
                 };
 
+                let provider = LocalChatProvider::new(&path, &model);
+                if let Err(e) = self
+                    .models
+                    .set_chat(Arc::new(provider), config.clone())
+                    .await
+                {
+                    tracing::error!("Failed to install chat provider: {}", e);
+                    let _ = status_tx
+                        .send(ModelStatus::Failed {
+                            model_type: ModelType::Language,
+                            model_id: model_id.clone(),
+                            error: e.to_string(),
+                        })
+                        .await;
+                    return;
+                }
+                tracing::info!("Local chat provider '{}' installed (lazy)", model_id);
                 let _ = status_tx
-                    .send(ModelStatus::Loading {
+                    .send(ModelStatus::Ready {
                         model_type: ModelType::Language,
                         model_id: model_id.clone(),
-                        model_name: model.name.clone(),
                     })
                     .await;
-
-                match LocalProvider::load(&path, &model).await {
-                    Ok(provider) => {
-                        *self.chat_provider.write().await = Some(Box::new(provider));
-                        *self.provider_config.write().await = Some(config.clone());
-                        tracing::info!("Loaded local provider: {}", model_id);
-                        let _ = status_tx
-                            .send(ModelStatus::Ready {
-                                model_type: ModelType::Language,
-                                model_id: model_id.clone(),
-                            })
-                            .await;
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to load local provider: {}", e);
-                        let _ = status_tx
-                            .send(ModelStatus::Failed {
-                                model_type: ModelType::Language,
-                                model_id: model_id.clone(),
-                                error: e.to_string(),
-                            })
-                            .await;
-                    }
-                }
             }
             ProviderConfig::OpenAI { api_key, model } => {
-                let provider = OpenAIProvider::new(api_key, model);
-                *self.chat_provider.write().await = Some(Box::new(provider));
-                *self.provider_config.write().await = Some(config.clone());
+                let provider = OpenAIChatProvider::new(api_key, model);
+                if let Err(e) = self
+                    .models
+                    .set_chat(Arc::new(provider), config.clone())
+                    .await
+                {
+                    tracing::error!("Failed to install OpenAI provider: {}", e);
+                    return;
+                }
                 tracing::info!("Loaded OpenAI provider: {}", model);
             }
             ProviderConfig::Anthropic { api_key, model } => {
-                let provider = AnthropicProvider::new(api_key, model);
-                *self.chat_provider.write().await = Some(Box::new(provider));
-                *self.provider_config.write().await = Some(config.clone());
+                let provider = AnthropicChatProvider::new(api_key, model);
+                if let Err(e) = self
+                    .models
+                    .set_chat(Arc::new(provider), config.clone())
+                    .await
+                {
+                    tracing::error!("Failed to install Anthropic provider: {}", e);
+                    return;
+                }
                 tracing::info!("Loaded Anthropic provider: {}", model);
             }
         }

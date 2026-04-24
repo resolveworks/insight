@@ -1,6 +1,4 @@
-//! OpenAI API provider
-//!
-//! Uses the new Responses API via async-openai for streaming with tool calling.
+//! OpenAI chat provider via the Responses API.
 
 use anyhow::{Context, Result};
 use async_openai::{
@@ -18,20 +16,18 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::{
-    ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent, RemoteModelInfo,
+use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
+use crate::provider::{
+    ChatProvider, CompletedToolCall, CompletionResult, Provider, ProviderEvent, RemoteModelInfo,
     ToolDefinition,
 };
-use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 
-/// OpenAI API provider using the new Responses API
-pub struct OpenAIProvider {
+pub struct OpenAIChatProvider {
     client: Client<OpenAIConfig>,
     model: String,
 }
 
-impl OpenAIProvider {
-    /// Create a new OpenAI provider with the given API key and model
+impl OpenAIChatProvider {
     pub fn new(api_key: &str, model: &str) -> Self {
         let config = OpenAIConfig::new().with_api_key(api_key);
         Self {
@@ -40,7 +36,6 @@ impl OpenAIProvider {
         }
     }
 
-    /// Fetch available models from OpenAI API
     pub async fn fetch_models(api_key: &str) -> Result<Vec<RemoteModelInfo>> {
         let config = OpenAIConfig::new().with_api_key(api_key);
         let client = Client::with_config(config);
@@ -73,7 +68,6 @@ impl OpenAIProvider {
     }
 }
 
-/// Format model ID into a human-readable name
 fn format_model_name(id: &str) -> String {
     match id {
         "gpt-5" => "GPT-5".to_string(),
@@ -95,8 +89,18 @@ fn format_model_name(id: &str) -> String {
     }
 }
 
+impl Provider for OpenAIChatProvider {
+    fn provider_name(&self) -> &'static str {
+        "openai"
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+}
+
 #[async_trait]
-impl ChatProvider for OpenAIProvider {
+impl ChatProvider for OpenAIChatProvider {
     async fn stream_completion(
         &self,
         messages: &[Message],
@@ -104,10 +108,8 @@ impl ChatProvider for OpenAIProvider {
         event_tx: mpsc::Sender<ProviderEvent>,
         cancel_token: CancellationToken,
     ) -> Result<CompletionResult> {
-        // Extract system message (instructions) and convert messages to input items
         let (instructions, input_items) = convert_messages(messages);
 
-        // Convert tools to OpenAI Responses API format
         // OpenAI strict mode requires additionalProperties: false in schemas
         let openai_tools: Option<Vec<Tool>> = if tools.is_empty() {
             None
@@ -134,7 +136,6 @@ impl ChatProvider for OpenAIProvider {
             )
         };
 
-        // Build the request
         let request = CreateResponse {
             model: Some(self.model.clone()),
             input: InputParam::Items(input_items),
@@ -144,7 +145,6 @@ impl ChatProvider for OpenAIProvider {
             ..Default::default()
         };
 
-        // Create streaming response
         let mut stream = self
             .client
             .responses()
@@ -154,7 +154,7 @@ impl ChatProvider for OpenAIProvider {
 
         let mut text_content = String::new();
         let mut tool_calls: std::collections::HashMap<u32, (String, String, String)> =
-            std::collections::HashMap::new(); // output_index -> (call_id, name, arguments)
+            std::collections::HashMap::new();
 
         while let Some(event_result) = stream.next().await {
             if cancel_token.is_cancelled() {
@@ -174,7 +174,6 @@ impl ChatProvider for OpenAIProvider {
                 }
 
                 ResponseStreamEvent::ResponseOutputItemAdded(item_added) => {
-                    // Check if this is a function call
                     if let OutputItem::FunctionCall(fc) = &item_added.item {
                         tool_calls.insert(
                             item_added.output_index,
@@ -203,7 +202,6 @@ impl ChatProvider for OpenAIProvider {
 
                 ResponseStreamEvent::ResponseFunctionCallArgumentsDone(done) => {
                     if let Some(tc) = tool_calls.get_mut(&done.output_index) {
-                        // Update with final arguments
                         tc.2 = done.arguments;
                         let _ = event_tx
                             .send(ProviderEvent::ToolCallComplete { id: tc.0.clone() })
@@ -228,13 +226,10 @@ impl ChatProvider for OpenAIProvider {
                     return Err(anyhow::anyhow!("OpenAI error: {}", err.message));
                 }
 
-                _ => {
-                    // Other events we don't need to handle
-                }
+                _ => {}
             }
         }
 
-        // Convert to completed tool calls
         let completed_tool_calls: Vec<CompletedToolCall> = tool_calls
             .into_values()
             .map(|(id, name, args)| {
@@ -255,17 +250,8 @@ impl ChatProvider for OpenAIProvider {
             tool_calls: completed_tool_calls,
         })
     }
-
-    fn provider_name(&self) -> &'static str {
-        "openai"
-    }
-
-    fn model_id(&self) -> &str {
-        &self.model
-    }
 }
 
-/// Convert our Message format to OpenAI Responses API InputItems
 fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
     let mut instructions = None;
     let mut items = Vec::new();
@@ -286,7 +272,6 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                 }));
             }
             MessageRole::User => {
-                // Convert user message blocks
                 for block in &msg.content {
                     match block {
                         ContentBlock::Text { text } => {
@@ -301,7 +286,6 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                             content,
                             ..
                         } => {
-                            // Function call output from previous turn
                             items.push(InputItem::Item(Item::FunctionCallOutput(
                                 FunctionCallOutputItemParam {
                                     call_id: tool_use_id.clone(),
@@ -316,7 +300,6 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                 }
             }
             MessageRole::Assistant => {
-                // Convert assistant messages
                 for block in &msg.content {
                     match block {
                         ContentBlock::Text { text } => {
@@ -331,7 +314,6 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                             name,
                             arguments,
                         } => {
-                            // Function call from previous turn
                             items.push(InputItem::Item(Item::FunctionCall(FunctionToolCall {
                                 call_id: id.clone(),
                                 name: name.clone(),
@@ -345,7 +327,6 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                             content,
                             ..
                         } => {
-                            // Function call output (shouldn't be in assistant message but handle anyway)
                             items.push(InputItem::Item(Item::FunctionCallOutput(
                                 FunctionCallOutputItemParam {
                                     call_id: tool_use_id.clone(),

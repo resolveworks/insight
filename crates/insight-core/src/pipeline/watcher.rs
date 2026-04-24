@@ -9,6 +9,7 @@ use iroh_docs::NamespaceId;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
+use crate::manager::ModelManager;
 use crate::storage::{LiveEvent, Storage};
 
 use super::progress::ProgressTracker;
@@ -69,7 +70,7 @@ impl CollectionWatcher {
     pub fn spawn(
         namespace_id: NamespaceId,
         storage: Arc<RwLock<Storage>>,
-        model_id: Arc<RwLock<Option<String>>>,
+        models: Arc<ModelManager>,
         senders: JobSenders,
         progress: ProgressTracker,
         cancel: CancellationToken,
@@ -80,7 +81,7 @@ impl CollectionWatcher {
             if let Err(e) = run_watcher(
                 namespace_id,
                 storage,
-                model_id,
+                models,
                 senders,
                 progress,
                 cancel_clone.clone(),
@@ -109,7 +110,7 @@ impl CollectionWatcher {
 async fn run_watcher(
     namespace_id: NamespaceId,
     storage: Arc<RwLock<Storage>>,
-    model_id: Arc<RwLock<Option<String>>>,
+    models: Arc<ModelManager>,
     senders: JobSenders,
     progress: ProgressTracker,
     cancel: CancellationToken,
@@ -139,8 +140,8 @@ async fn run_watcher(
             event = stream.next() => {
                 match event {
                     Some(Ok(live_event)) => {
-                        // Read model_id once per event (fast, no I/O)
-                        let current_model_id = model_id.read().await.clone();
+                        // Read configured embedding model once per event
+                        let current_model_id = models.embedding_model_id().await;
                         handle_event(
                             &live_event,
                             namespace_id,
