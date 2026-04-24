@@ -17,7 +17,7 @@ use tracing::debug;
 use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 use crate::models::LanguageModelInfo;
 use crate::provider::{
-    ChatProvider, CompletedToolCall, CompletionResult, MemoryKind, Provider, ProviderEvent,
+    finalize_tool_calls, ChatProvider, CompletionResult, MemoryKind, Provider, ProviderEvent,
     ToolDefinition,
 };
 
@@ -186,18 +186,11 @@ impl ChatProvider for LocalChatProvider {
             }
         }
 
-        let completed_tool_calls: Vec<CompletedToolCall> = tool_calls
-            .into_iter()
-            .map(|tc| {
-                let arguments: serde_json::Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::json!({}));
-                CompletedToolCall {
-                    id: tc.id,
-                    name: tc.function.name,
-                    arguments,
-                }
-            })
-            .collect();
+        let completed_tool_calls = finalize_tool_calls(
+            tool_calls
+                .into_iter()
+                .map(|tc| (tc.id, tc.function.name, tc.function.arguments)),
+        );
 
         for tc in &completed_tool_calls {
             let _ = event_tx

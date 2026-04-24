@@ -18,7 +18,7 @@ use tracing::debug;
 
 use crate::agent::{render_context_message, ContentBlock, Message, MessageRole};
 use crate::provider::{
-    ChatProvider, CompletedToolCall, CompletionResult, Provider, ProviderEvent, RemoteModelInfo,
+    finalize_tool_calls, ChatProvider, CompletionResult, Provider, ProviderEvent, RemoteModelInfo,
     ToolDefinition,
 };
 
@@ -230,18 +230,7 @@ impl ChatProvider for OpenAIChatProvider {
             }
         }
 
-        let completed_tool_calls: Vec<CompletedToolCall> = tool_calls
-            .into_values()
-            .map(|(id, name, args)| {
-                let arguments: serde_json::Value =
-                    serde_json::from_str(&args).unwrap_or(serde_json::json!({}));
-                CompletedToolCall {
-                    id,
-                    name,
-                    arguments,
-                }
-            })
-            .collect();
+        let completed_tool_calls = finalize_tool_calls(tool_calls.into_values());
 
         let _ = event_tx.send(ProviderEvent::Done).await;
 

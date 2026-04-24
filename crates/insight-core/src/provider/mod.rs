@@ -16,8 +16,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 pub use chat::{
-    get_tool_definitions, ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent,
-    ToolDefinition,
+    finalize_tool_calls, get_tool_definitions, ChatProvider, CompletedToolCall, CompletionResult,
+    ProviderEvent, ToolDefinition,
 };
 pub use config::{get_provider_families, ProviderConfig, ProviderFamily, RemoteModelInfo};
 pub use embedding::EmbeddingProvider;

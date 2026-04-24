@@ -108,6 +108,25 @@ pub struct CompletedToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// Build [`CompletedToolCall`]s from raw `(id, name, arguments_json)` tuples.
+///
+/// Shared between chat providers: they accumulate tool calls differently
+/// during streaming (local keeps a `Vec`, remotes keep index-keyed
+/// `HashMap`s) but land on the same final shape. Malformed argument JSON
+/// degrades to an empty object rather than failing the completion.
+pub fn finalize_tool_calls<I>(raw: I) -> Vec<CompletedToolCall>
+where
+    I: IntoIterator<Item = (String, String, String)>,
+{
+    raw.into_iter()
+        .map(|(id, name, args)| CompletedToolCall {
+            id,
+            name,
+            arguments: serde_json::from_str(&args).unwrap_or_else(|_| serde_json::json!({})),
+        })
+        .collect()
+}
+
 /// Chat role trait. Extends [`Provider`] with a streaming completion method.
 #[async_trait]
 pub trait ChatProvider: Provider {

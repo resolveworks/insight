@@ -2,7 +2,7 @@ use iroh_docs::NamespaceId;
 use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::{agent, conversations, AppState};
+use crate::core::{agent, conversations, AppState, ProviderEvent};
 use crate::error::{CommandError, CommandResult, ResultExt};
 
 /// List all saved conversations
@@ -395,12 +395,12 @@ pub async fn predict_next_message(
         }],
     });
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<agent::ProviderEvent>(50);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ProviderEvent>(50);
 
     let collect_task = tokio::spawn(async move {
         let mut result = String::new();
         while let Some(event) = rx.recv().await {
-            if let agent::ProviderEvent::TextDelta(text) = event {
+            if let ProviderEvent::TextDelta(text) = event {
                 result.push_str(&text);
             }
         }

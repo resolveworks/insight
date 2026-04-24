@@ -103,31 +103,9 @@ pub async fn download_model(
 ) -> CommandResult<()> {
     use crate::core::{ModelDownloadProgress, ModelStatus};
 
-    // Check if already downloaded and get model for download
-    let is_downloaded = match model_type {
-        ModelType::Language => {
-            let model = models::get_language_model(&model_id)
-                .ok_or(CommandError::model_not_found(&model_id))?;
-            state.model_downloader.is_downloaded(&model)
-        }
-        ModelType::Embedding => {
-            let model = models::get_embedding_model(&model_id)
-                .ok_or(CommandError::model_not_found(&model_id))?;
-            state.model_downloader.is_downloaded(&model)
-        }
-        ModelType::Ocr => return Err(CommandError::model_not_found(&model_id)),
-    };
-
-    if is_downloaded {
-        tracing::info!("Model {} is already downloaded", model_id);
-        return Ok(());
-    }
-
-    // Create channels for status and progress
     let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<ModelStatus>(10);
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<ModelDownloadProgress>(100);
 
-    // Forward events to frontend
     let app_status = app.clone();
     tokio::spawn(async move {
         while let Some(status) = status_rx.recv().await {
@@ -142,10 +120,14 @@ pub async fn download_model(
         }
     });
 
-    // Download based on type
     match model_type {
         ModelType::Language => {
-            let model = models::get_language_model(&model_id).unwrap();
+            let model = models::get_language_model(&model_id)
+                .ok_or(CommandError::model_not_found(&model_id))?;
+            if state.model_downloader.is_downloaded(&model) {
+                tracing::info!("Model {} is already downloaded", model_id);
+                return Ok(());
+            }
             state
                 .model_downloader
                 .download(&model, model_type, status_tx, progress_tx)
@@ -153,14 +135,19 @@ pub async fn download_model(
                 .external_err()?;
         }
         ModelType::Embedding => {
-            let model = models::get_embedding_model(&model_id).unwrap();
+            let model = models::get_embedding_model(&model_id)
+                .ok_or(CommandError::model_not_found(&model_id))?;
+            if state.model_downloader.is_downloaded(&model) {
+                tracing::info!("Model {} is already downloaded", model_id);
+                return Ok(());
+            }
             state
                 .model_downloader
                 .download(&model, model_type, status_tx, progress_tx)
                 .await
                 .external_err()?;
         }
-        ModelType::Ocr => {}
+        ModelType::Ocr => return Err(CommandError::model_not_found(&model_id)),
     }
 
     Ok(())

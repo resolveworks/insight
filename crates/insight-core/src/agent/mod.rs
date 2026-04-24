@@ -6,10 +6,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-pub use crate::provider::{
-    get_tool_definitions, ChatProvider, CompletedToolCall, CompletionResult, ProviderEvent,
-    ToolDefinition,
-};
+use crate::provider::{get_tool_definitions, ChatProvider, ProviderEvent};
 pub use tools::{execute_tool, ToolCall, ToolResult};
 
 // Re-export CollectionInfo from crate root for convenience
@@ -554,6 +551,7 @@ pub async fn run_agent_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{CompletedToolCall, CompletionResult, ToolDefinition};
 
     // ==================== CollectionInfo Tests ====================
 

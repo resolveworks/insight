@@ -35,7 +35,6 @@ mod types;
 mod watcher;
 mod workers;
 
-pub use embed::generate_embeddings_data;
 pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
 pub use types::{EmbedJob, ExtractJob, IndexJob, ProgressUpdate, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
