@@ -366,9 +366,9 @@ impl ModelManager {
         if provider.memory_kind() != MemoryKind::Local {
             return;
         }
-        // `acquire_*` refreshes last_activity every call, so the time-based
-        // check in `reap_idle` already captures recent work. We let `unload`
-        // be the single authority on "was there anything to drop."
+        if !provider.is_loaded().await {
+            return;
+        }
         tracing::info!(model = %provider.model_id(), "Idle reaper: unloading model");
         let _ = provider.unload().await;
         self.emit(ModelStatus::Unloaded {
@@ -697,6 +697,33 @@ mod tests {
         manager.set_research_focused(false);
         manager.reap_idle().await;
         assert_eq!(chat.unload_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn reaper_does_not_re_reap_already_unloaded_provider() {
+        let manager = Arc::new(ModelManager::new());
+        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
+        manager
+            .set_chat(chat.clone(), remote_config())
+            .await
+            .unwrap();
+        let _ = manager.acquire_chat().await.unwrap().unwrap();
+
+        manager.chat_last_activity.store(1, Ordering::Relaxed);
+
+        let mut events = manager.subscribe_status();
+        manager.reap_idle().await;
+        assert_eq!(chat.unload_calls(), 1);
+        assert!(matches!(
+            events.try_recv(),
+            Ok(ModelStatus::Unloaded { .. })
+        ));
+
+        // Second tick with the same stale timestamp must not unload again
+        // or emit another Unloaded — the provider is already unloaded.
+        manager.reap_idle().await;
+        assert_eq!(chat.unload_calls(), 1);
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
