@@ -98,13 +98,13 @@ pub struct ModelDownloadProgress {
 
 pub use agent::{AgentContext, AgentEvent, Conversation};
 pub use config::{Config, LifecycleConfig, Settings};
-pub use manager::{ChatLease, EmbeddingLease, ModelManager};
+pub use manager::{ChatLease, EmbeddingLease, ModelManager, OcrLease};
 pub use pipeline::{Pipeline, PipelineProgress, StageProgress};
 pub use provider::{
     get_provider_families, get_tool_definitions, AnthropicChatProvider, ChatProvider,
     CompletedToolCall, CompletionResult, EmbeddingProvider, LocalChatProvider,
-    LocalEmbeddingProvider, OpenAIChatProvider, ProviderConfig, ProviderEvent, ProviderFamily,
-    RemoteModelInfo, ToolDefinition,
+    LocalEmbeddingProvider, LocalOcrProvider, OcrProvider, OpenAIChatProvider, ProviderConfig,
+    ProviderEvent, ProviderFamily, RemoteModelInfo, ToolDefinition,
 };
 pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::{EmbeddingChunk, EmbeddingData, Storage};
@@ -201,6 +201,11 @@ impl AppState {
 
         // Start watching existing collections for indexing events.
         self.watch_existing_collections().await;
+
+        // Drain any orphan OCR tasks (interrupted process, or imports
+        // that landed before an OCR model was configured). Idempotent —
+        // tasks with a matching text entry are skipped.
+        self.pipeline.requeue_pending_ocr().await;
 
         // Install chat provider (no load) if configured.
         if let Some(ref provider_config) = settings.provider {

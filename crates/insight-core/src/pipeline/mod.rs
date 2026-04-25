@@ -30,13 +30,14 @@
 //! Each stage writes to iroh, which triggers the next stage via events.
 
 mod embed;
+mod ocr;
 mod progress;
 mod types;
 mod watcher;
 mod workers;
 
 pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
-pub use types::{EmbedJob, ExtractJob, IndexJob, ProgressUpdate, Stage};
+pub use types::{EmbedJob, ExtractJob, IndexJob, OcrJob, ProgressUpdate, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
 
 use std::collections::HashMap;
@@ -55,6 +56,7 @@ use workers::{spawn_embed_workers, spawn_extract_workers, SharedReceiver};
 
 /// Number of workers per stage.
 const EXTRACT_WORKERS: usize = 4;
+const OCR_WORKERS: usize = 1;
 const EMBED_WORKERS: usize = 2;
 
 /// Event-driven document processing pipeline.
@@ -67,6 +69,7 @@ pub struct Pipeline {
 
     // Worker pool channels (unbounded to avoid blocking the event watcher)
     extract_tx: mpsc::UnboundedSender<ExtractJob>,
+    ocr_tx: mpsc::UnboundedSender<OcrJob>,
     embed_tx: mpsc::UnboundedSender<EmbedJob>,
     index_tx: mpsc::UnboundedSender<IndexJob>,
 
@@ -95,11 +98,13 @@ impl Pipeline {
 
         // Create unbounded channels (avoids blocking the event watcher)
         let (extract_tx, extract_rx) = mpsc::unbounded_channel();
+        let (ocr_tx, ocr_rx) = mpsc::unbounded_channel();
         let (embed_tx, embed_rx) = mpsc::unbounded_channel();
         let (index_tx, index_rx) = mpsc::unbounded_channel();
 
         // Shared receivers for multi-worker stages
         let extract_rx = SharedReceiver::new_unbounded(extract_rx);
+        let ocr_rx = SharedReceiver::new_unbounded(ocr_rx);
         let embed_rx = SharedReceiver::new_unbounded(embed_rx);
         let index_rx = SharedReceiver::new_unbounded(index_rx);
 
@@ -108,6 +113,14 @@ impl Pipeline {
             EXTRACT_WORKERS,
             extract_rx,
             storage.clone(),
+            progress.clone(),
+        );
+
+        ocr::spawn_ocr_workers(
+            OCR_WORKERS,
+            ocr_rx,
+            storage.clone(),
+            models.clone(),
             progress.clone(),
         );
 
@@ -128,6 +141,7 @@ impl Pipeline {
 
         tracing::info!(
             extract_workers = EXTRACT_WORKERS,
+            ocr_workers = OCR_WORKERS,
             embed_workers = EMBED_WORKERS,
             "Pipeline started"
         );
@@ -137,6 +151,7 @@ impl Pipeline {
                 storage,
                 models,
                 extract_tx,
+                ocr_tx,
                 embed_tx,
                 index_tx,
                 watchers: Arc::new(RwLock::new(HashMap::new())),
@@ -160,6 +175,7 @@ impl Pipeline {
 
         let senders = JobSenders {
             extract: self.extract_tx.clone(),
+            ocr: self.ocr_tx.clone(),
             embed: self.embed_tx.clone(),
             index: self.index_tx.clone(),
         };
@@ -251,6 +267,43 @@ impl Pipeline {
         }
 
         (success, errors)
+    }
+
+    /// Re-queue any orphan `ocr_task` entries — documents whose extract
+    /// phase parked them while OCR was unconfigured (or whose previous
+    /// OCR job was interrupted). Idempotent: a task is only re-queued
+    /// when no matching `text` entry exists.
+    pub async fn requeue_pending_ocr(&self) {
+        let storage = self.storage.read().await;
+        let collections = match storage.list_collections().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "requeue_pending_ocr: list_collections failed");
+                return;
+            }
+        };
+        for (namespace_id, _) in collections {
+            let pending = match storage.find_pending_ocr_tasks(namespace_id).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        namespace = %namespace_id,
+                        error = %e,
+                        "find_pending_ocr_tasks failed"
+                    );
+                    continue;
+                }
+            };
+            for doc_id in pending {
+                self.progress
+                    .queue(&namespace_id.to_string(), Stage::Ocr)
+                    .await;
+                let _ = self.ocr_tx.send(OcrJob {
+                    namespace_id,
+                    doc_id,
+                });
+            }
+        }
     }
 
     /// Get progress for a collection.

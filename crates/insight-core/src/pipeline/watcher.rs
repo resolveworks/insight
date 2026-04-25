@@ -13,11 +13,12 @@ use crate::manager::ModelManager;
 use crate::storage::{LiveEvent, Storage};
 
 use super::progress::ProgressTracker;
-use super::types::{EmbedJob, ExtractJob, IndexJob, Stage};
+use super::types::{EmbedJob, ExtractJob, IndexJob, OcrJob, Stage};
 
 /// Grouped job dispatch channels for pipeline stages.
 pub struct JobSenders {
     pub extract: mpsc::UnboundedSender<ExtractJob>,
+    pub ocr: mpsc::UnboundedSender<OcrJob>,
     pub embed: mpsc::UnboundedSender<EmbedJob>,
     pub index: mpsc::UnboundedSender<IndexJob>,
 }
@@ -30,6 +31,11 @@ fn is_source_key(key: &str) -> bool {
 /// Check if key is a text entry: files/{doc_id}/text
 fn is_text_key(key: &str) -> bool {
     key.starts_with("files/") && key.ends_with("/text")
+}
+
+/// Check if key is an OCR task entry: files/{doc_id}/ocr_task
+fn is_ocr_task_key(key: &str) -> bool {
+    key.starts_with("files/") && key.ends_with("/ocr_task")
 }
 
 /// Check if key is an embedding entry: files/{doc_id}/embeddings/{model_id}
@@ -65,6 +71,7 @@ impl CollectionWatcher {
     /// The watcher subscribes to iroh-docs events and dispatches jobs
     /// to the appropriate worker pools based on key patterns:
     /// - files/*/source (InsertLocal only) → Extract
+    /// - files/*/ocr_task (InsertLocal only) → OCR
     /// - files/*/text → Embed
     /// - files/*/embeddings/* → Index
     pub fn spawn(
@@ -200,6 +207,15 @@ async fn handle_event(
             namespace_id,
             doc_id,
         });
+    } else if is_ocr_task_key(&key) && is_local {
+        // OCR task written by extract → queue OCR. Local-only — peers
+        // don't OCR for documents they didn't import.
+        tracing::debug!(doc_id = %doc_id, "OCR task queued");
+        progress.queue(collection_id, Stage::Ocr).await;
+        let _ = senders.ocr.send(OcrJob {
+            namespace_id,
+            doc_id,
+        });
     } else if is_text_key(&key) {
         // Text ready → queue embed
         tracing::debug!(doc_id = %doc_id, is_local, "Text ready, queuing embed");
@@ -242,6 +258,10 @@ mod tests {
 
         assert!(is_embedding_key("files/doc-123/embeddings/qwen3"));
         assert!(!is_embedding_key("files/doc-123/text"));
+
+        assert!(is_ocr_task_key("files/doc-123/ocr_task"));
+        assert!(!is_ocr_task_key("files/doc-123/text"));
+        assert!(!is_ocr_task_key("files/doc-123/source"));
     }
 
     #[test]

@@ -48,9 +48,8 @@ pub struct ModelManager {
     embedding_model_id: RwLock<Option<String>>,
     embedding_last_activity: AtomicU64,
 
-    #[allow(dead_code)]
     ocr: RwLock<Option<Arc<dyn OcrProvider>>>,
-    #[allow(dead_code)]
+    ocr_model_id: RwLock<Option<String>>,
     ocr_last_activity: AtomicU64,
 
     lifecycle: RwLock<LifecycleConfig>,
@@ -70,6 +69,7 @@ impl ModelManager {
             embedding_model_id: RwLock::new(None),
             embedding_last_activity: AtomicU64::new(0),
             ocr: RwLock::new(None),
+            ocr_model_id: RwLock::new(None),
             ocr_last_activity: AtomicU64::new(0),
             lifecycle: RwLock::new(LifecycleConfig::default()),
             status_tx,
@@ -142,6 +142,9 @@ impl ModelManager {
         }
         if let Some(p) = self.embedding.read().await.as_ref() {
             p.set_coexist(cfg.embedding_coexist);
+        }
+        if let Some(p) = self.ocr.read().await.as_ref() {
+            p.set_coexist(cfg.ocr_coexist);
         }
     }
 
@@ -245,6 +248,53 @@ impl ModelManager {
 
     pub async fn embedding_ready(&self) -> bool {
         self.embedding.read().await.is_some()
+    }
+
+    // ------------------------------------------------------------------
+    // OCR
+    // ------------------------------------------------------------------
+
+    pub async fn set_ocr(&self, provider: Arc<dyn OcrProvider>, model_id: String) -> Result<()> {
+        provider.set_coexist(self.lifecycle.read().await.ocr_coexist);
+        if let Some(old) = self.ocr.write().await.replace(provider) {
+            let _ = old.unload().await;
+        }
+        *self.ocr_model_id.write().await = Some(model_id);
+        Ok(())
+    }
+
+    pub async fn clear_ocr(&self) {
+        if let Some(old) = self.ocr.write().await.take() {
+            let _ = old.unload().await;
+        }
+        *self.ocr_model_id.write().await = None;
+    }
+
+    pub async fn acquire_ocr(&self) -> Result<Option<OcrLease>> {
+        let provider = match self.ocr.read().await.as_ref().cloned() {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        self.touch(ModelType::Ocr);
+        self.evict_conflicting(ModelType::Ocr, provider.as_ref() as &dyn Provider)
+            .await;
+        self.ensure_loaded(provider.as_ref() as &dyn Provider, ModelType::Ocr)
+            .await?;
+        Ok(Some(Lease { provider }))
+    }
+
+    /// Refresh the OCR activity timestamp. Call from long-running OCR
+    /// jobs so the reaper doesn't unload mid-document.
+    pub fn touch_ocr(&self) {
+        self.touch(ModelType::Ocr);
+    }
+
+    pub async fn ocr_model_id(&self) -> Option<String> {
+        self.ocr_model_id.read().await.clone()
+    }
+
+    pub async fn ocr_ready(&self) -> bool {
+        self.ocr.read().await.is_some()
     }
 
     // ------------------------------------------------------------------
@@ -450,6 +500,7 @@ impl<T: ?Sized> std::ops::Deref for Lease<T> {
 
 pub type ChatLease = Lease<dyn ChatProvider>;
 pub type EmbeddingLease = Lease<dyn EmbeddingProvider>;
+pub type OcrLease = Lease<dyn OcrProvider>;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -612,6 +663,7 @@ mod tests {
             .set_lifecycle_config(LifecycleConfig {
                 chat_coexist: true,
                 embedding_coexist: false,
+                ocr_coexist: false,
             })
             .await;
         let chat = TestChatProvider::new("chat", MemoryKind::Local, true);
@@ -658,6 +710,7 @@ mod tests {
             .set_lifecycle_config(LifecycleConfig {
                 chat_coexist: true,
                 embedding_coexist: false,
+                ocr_coexist: false,
             })
             .await;
         assert!(chat.coexist());
@@ -782,5 +835,145 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(500), guard.wait_until_released())
             .await
             .expect("guard should release after focus flips to false");
+    }
+
+    // ---- OCR slot tests ----
+
+    use crate::provider::OcrProvider;
+
+    struct TestOcrProvider {
+        id: String,
+        kind: MemoryKind,
+        coexist: AtomicBool,
+        loaded: AtomicBool,
+        unload_calls: AtomicUsize,
+    }
+
+    impl TestOcrProvider {
+        fn new(id: &str, kind: MemoryKind, coexist: bool) -> Arc<Self> {
+            Arc::new(Self {
+                id: id.to_string(),
+                kind,
+                coexist: AtomicBool::new(coexist),
+                loaded: AtomicBool::new(kind == MemoryKind::Remote),
+                unload_calls: AtomicUsize::new(0),
+            })
+        }
+
+        fn unload_calls(&self) -> usize {
+            self.unload_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for TestOcrProvider {
+        fn provider_name(&self) -> &'static str {
+            "test-ocr"
+        }
+        fn model_id(&self) -> &str {
+            &self.id
+        }
+        fn memory_kind(&self) -> MemoryKind {
+            self.kind
+        }
+        fn coexist(&self) -> bool {
+            self.coexist.load(Ordering::Relaxed)
+        }
+        fn set_coexist(&self, v: bool) {
+            self.coexist.store(v, Ordering::Relaxed);
+        }
+        async fn is_loaded(&self) -> bool {
+            self.loaded.load(Ordering::Relaxed)
+        }
+        async fn ensure_loaded(&self) -> Result<()> {
+            self.loaded.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+        async fn unload(&self) -> Result<()> {
+            self.unload_calls.fetch_add(1, Ordering::Relaxed);
+            self.loaded.store(false, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl OcrProvider for TestOcrProvider {
+        async fn ocr_pages(&self, pages: Vec<image::DynamicImage>) -> Result<Vec<String>> {
+            Ok(vec![String::new(); pages.len()])
+        }
+    }
+
+    #[tokio::test]
+    async fn acquire_ocr_returns_none_when_unconfigured() {
+        let manager = ModelManager::new();
+        assert!(manager.acquire_ocr().await.unwrap().is_none());
+        assert!(!manager.ocr_ready().await);
+    }
+
+    #[tokio::test]
+    async fn set_ocr_replaces_and_unloads_old_provider() {
+        let manager = ModelManager::new();
+        let first = TestOcrProvider::new("first", MemoryKind::Local, false);
+        let second = TestOcrProvider::new("second", MemoryKind::Local, false);
+
+        manager
+            .set_ocr(first.clone(), "first".into())
+            .await
+            .unwrap();
+        assert_eq!(manager.ocr_model_id().await.as_deref(), Some("first"));
+
+        manager
+            .set_ocr(second.clone(), "second".into())
+            .await
+            .unwrap();
+        assert_eq!(first.unload_calls(), 1);
+        assert_eq!(second.unload_calls(), 0);
+        assert_eq!(manager.ocr_model_id().await.as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn clear_ocr_unloads_and_clears_model_id() {
+        let manager = ModelManager::new();
+        let p = TestOcrProvider::new("p", MemoryKind::Local, false);
+        manager.set_ocr(p.clone(), "p".into()).await.unwrap();
+        manager.clear_ocr().await;
+        assert_eq!(p.unload_calls(), 1);
+        assert!(manager.ocr_model_id().await.is_none());
+        assert!(!manager.ocr_ready().await);
+    }
+
+    #[tokio::test]
+    async fn ocr_propagates_lifecycle_coexist() {
+        let manager = ModelManager::new();
+        manager
+            .set_lifecycle_config(LifecycleConfig {
+                chat_coexist: false,
+                embedding_coexist: false,
+                ocr_coexist: true,
+            })
+            .await;
+        let p = TestOcrProvider::new("p", MemoryKind::Local, false);
+        manager.set_ocr(p.clone(), "p".into()).await.unwrap();
+        // After set, the provider's coexist flag matches the lifecycle.
+        assert!(p.coexist());
+    }
+
+    #[tokio::test]
+    async fn acquire_ocr_evicts_chat_when_coexist_false() {
+        let manager = ModelManager::new();
+        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
+        manager
+            .set_chat(chat.clone(), remote_config())
+            .await
+            .unwrap();
+        let _ = manager.acquire_chat().await.unwrap().unwrap();
+        assert!(chat.is_loaded().await);
+
+        let ocr = TestOcrProvider::new("ocr", MemoryKind::Local, false);
+        manager.set_ocr(ocr.clone(), "ocr".into()).await.unwrap();
+        let _ = manager.acquire_ocr().await.unwrap().unwrap();
+
+        assert_eq!(chat.unload_calls(), 1);
+        assert!(!chat.is_loaded().await);
     }
 }

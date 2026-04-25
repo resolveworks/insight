@@ -58,6 +58,9 @@ pub struct LifecycleConfig {
     /// Keep the local embedding model loaded while other local models load.
     #[serde(default)]
     pub embedding_coexist: bool,
+    /// Keep the local OCR model loaded while other local models load.
+    #[serde(default)]
+    pub ocr_coexist: bool,
 }
 
 /// User settings (persisted to disk)
@@ -66,6 +69,10 @@ pub struct Settings {
     /// Configured embedding model ID (None = disabled)
     #[serde(default)]
     pub embedding_model_id: Option<String>,
+    /// Configured OCR model ID (None = disabled; scanned PDFs park as
+    /// `ocr_task` entries until a model is configured).
+    #[serde(default)]
+    pub ocr_model_id: Option<String>,
     /// Active chat provider configuration (local, OpenAI, or Anthropic)
     #[serde(default)]
     pub provider: Option<ProviderConfig>,
@@ -123,23 +130,27 @@ mod tests {
     fn lifecycle_config_roundtrip() {
         let original = Settings {
             embedding_model_id: Some("m".into()),
+            ocr_model_id: Some("ocr-m".into()),
             provider: None,
             openai_api_key: None,
             anthropic_api_key: None,
             lifecycle: LifecycleConfig {
                 chat_coexist: true,
                 embedding_coexist: false,
+                ocr_coexist: true,
             },
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.lifecycle, original.lifecycle);
+        assert_eq!(parsed.ocr_model_id, original.ocr_model_id);
     }
 
     #[test]
     fn settings_all_defaults_when_empty_object() {
         let parsed: Settings = serde_json::from_str("{}").unwrap();
         assert!(parsed.embedding_model_id.is_none());
+        assert!(parsed.ocr_model_id.is_none());
         assert!(parsed.provider.is_none());
         assert_eq!(parsed.lifecycle, LifecycleConfig::default());
     }

@@ -1,23 +1,32 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
-	import { getLanguageState } from '$lib/stores/provider-state.svelte';
+	import {
+		getLanguageState,
+		getOcrState,
+	} from '$lib/stores/provider-state.svelte';
 
 	interface LifecycleConfig {
 		chat_coexist: boolean;
 		embedding_coexist: boolean;
+		ocr_coexist: boolean;
 	}
 
 	let config = $state<LifecycleConfig>({
 		chat_coexist: false,
 		embedding_coexist: false,
+		ocr_coexist: false,
 	});
 
 	const languageState = getLanguageState();
+	const ocrState = getOcrState();
 
 	// Hide the chat checkbox when a remote provider is configured: remote
 	// providers don't consume local memory so the flag is meaningless.
 	let chatIsLocal = $derived(languageState.providerType === 'local');
+	// Hide the OCR checkbox until an OCR model is configured — until then
+	// there's nothing to coexist with.
+	let ocrConfigured = $derived(ocrState.modelId !== null);
 
 	async function load() {
 		try {
@@ -35,7 +44,7 @@
 		}
 	}
 
-	function toggle(key: 'chat_coexist' | 'embedding_coexist') {
+	function toggle(key: 'chat_coexist' | 'embedding_coexist' | 'ocr_coexist') {
 		config[key] = !config[key];
 		save();
 	}
@@ -81,4 +90,24 @@
 			</span>
 		</span>
 	</label>
+
+	{#if ocrConfigured}
+		<label class="flex items-start gap-3 cursor-pointer">
+			<input
+				type="checkbox"
+				class="mt-0.5 cursor-pointer"
+				checked={config.ocr_coexist}
+				onchange={() => toggle('ocr_coexist')}
+			/>
+			<span class="text-sm">
+				<span class="block text-neutral-700">
+					Keep OCR model loaded alongside other models
+				</span>
+				<span class="block text-xs text-neutral-500 mt-0.5">
+					Requires more VRAM. OCR models are heavy (3B–9B parameters); leaving
+					this off lets the chat model stay resident while ingestion runs.
+				</span>
+			</span>
+		</label>
+	{/if}
 </div>

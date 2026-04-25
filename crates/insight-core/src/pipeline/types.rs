@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub enum Stage {
     Store,
     Extract,
+    Ocr,
     Embed,
     Index,
 }
@@ -18,6 +19,7 @@ impl std::fmt::Display for Stage {
         match self {
             Stage::Store => write!(f, "store"),
             Stage::Extract => write!(f, "extract"),
+            Stage::Ocr => write!(f, "ocr"),
             Stage::Embed => write!(f, "embed"),
             Stage::Index => write!(f, "index"),
         }
@@ -27,6 +29,13 @@ impl std::fmt::Display for Stage {
 /// Job for the extract worker pool.
 #[derive(Debug, Clone)]
 pub struct ExtractJob {
+    pub namespace_id: NamespaceId,
+    pub doc_id: String,
+}
+
+/// Job for the OCR worker pool.
+#[derive(Debug, Clone)]
+pub struct OcrJob {
     pub namespace_id: NamespaceId,
     pub doc_id: String,
 }

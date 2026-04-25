@@ -53,6 +53,15 @@ async-openai = { version = "0.32", features = ["responses", "model"] }
 text-splitter = { version = "0.28", features = ["tokenizers"] }
 tokenizers = "0.22"
 
+# Image handling for OCR (matches mistralrs's transitive version)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# PDF rasterization + per-page image detection for OCR.
+# AGPL-3.0; compatible with our AGPL-3.0-only license.
+# First build vendors and compiles MuPDF C source (~5 min); subsequent
+# builds are cached.
+mupdf = { version = "0.6", default-features = false, features = ["all-fonts"] }
+
 # Utilities
 anyhow = "1"
 thiserror = "2"

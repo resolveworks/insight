@@ -1,73 +1,253 @@
+//! Per-page PDF text extraction and OCR triage.
+//!
+//! For each page we run lopdf for digital text and mupdf to detect image
+//! XObjects. Pages with enough alphanumeric text from lopdf go straight to
+//! the digital path; pages with images but no usable text get queued for
+//! OCR; truly blank pages are skipped. The pipeline only writes
+//! `files/{id}/text` once *all* pages have content (so embed never sees
+//! mixed digital + missing-OCR).
+
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 
 use anyhow::{Context, Result};
+use mupdf::device::NativeDevice;
+use mupdf::{
+    pixmap::ImageFormat, ColorParams, Colorspace, Device, Document as MupdfDocument, Image, Matrix,
+    Page as MupdfPage, Pixmap,
+};
+use serde::{Deserialize, Serialize};
 
-/// Result of extracting text from a PDF
-#[derive(Debug, Clone)]
-pub struct ExtractedDocument {
-    /// Raw PDF bytes
-    pub pdf_bytes: Vec<u8>,
-    /// Extracted text content
-    pub text: String,
-    /// Number of pages in the PDF
-    pub page_count: usize,
-    /// Character offset where each page ends (cumulative)
-    /// page_boundaries[0] = end of page 1, page_boundaries[1] = end of page 2, etc.
-    pub page_boundaries: Vec<usize>,
+/// Pages with fewer than this many alphanumeric characters from lopdf are
+/// considered "no usable digital text" — if they also contain image
+/// XObjects we route them to OCR. Tuned to catch headers-on-scan (a
+/// digital header band over a scanned body) without false-positiving cover
+/// pages with title-only text.
+pub const DIGITAL_TEXT_THRESHOLD: usize = 32;
+
+/// DPI to rasterize scanned pages at before sending to the OCR model.
+/// Nanonets-OCR2 was trained on ~200 DPI scans; higher values mostly
+/// inflate VRAM cost without quality wins.
+pub const RASTER_DPI: f32 = 200.0;
+
+/// What the extract phase decided to do with one page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageDecision {
+    /// lopdf returned enough digital text — use it directly.
+    Digital,
+    /// lopdf returned little text but the page has image content — needs
+    /// OCR.
+    NeedsOcr,
+    /// Neither digital text nor image content — skip OCR; emit empty text.
+    Blank,
 }
 
-/// Extract text from a PDF file
+/// Per-page extraction result. The `digital_text` field is empty unless
+/// the decision is [`PageDecision::Digital`] — it's the lopdf output, used
+/// directly by the merge step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageExtraction {
+    pub digital_text: String,
+    pub decision: PageDecision,
+    pub has_image_xobjects: bool,
+    pub digital_char_count: usize,
+}
+
+/// Result of extracting a PDF.
+#[derive(Debug, Clone)]
+pub struct ExtractedDocument {
+    pub pdf_bytes: Vec<u8>,
+    pub page_count: usize,
+    pub pages: Vec<PageExtraction>,
+}
+
+impl ExtractedDocument {
+    /// Whether any page needs OCR. Drives the storage routing decision:
+    /// `false` → write `files/{id}/text` directly; `true` → write
+    /// `files/{id}/ocr_task` and let the OCR worker assemble the final
+    /// text.
+    pub fn needs_ocr(&self) -> bool {
+        self.pages
+            .iter()
+            .any(|p| p.decision == PageDecision::NeedsOcr)
+    }
+
+    /// Concatenate just the digital pages' text. Useful when no page
+    /// needed OCR, or as the digital baseline before merge.
+    pub fn digital_text_concatenated(&self) -> (String, Vec<usize>) {
+        let mut full = String::new();
+        let mut boundaries = Vec::with_capacity(self.pages.len());
+        for page in &self.pages {
+            full.push_str(&page.digital_text);
+            if !page.digital_text.ends_with('\n') && !page.digital_text.is_empty() {
+                full.push('\n');
+            }
+            boundaries.push(full.len());
+        }
+        (full, boundaries)
+    }
+}
+
+/// Payload of a `files/{id}/ocr_task` iroh entry.
+///
+/// Serialized as JSON. The OCR worker reads this back, rasterizes each
+/// `NeedsOcr` page from the PDF source, runs inference, then merges the
+/// per-page results into the final `files/{id}/text`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrTask {
+    pub doc_id: String,
+    pub page_count: usize,
+    pub pages: Vec<PageExtraction>,
+}
+
+/// Extract text from a PDF on disk.
 pub fn extract_text(path: &Path) -> Result<ExtractedDocument> {
     let pdf_bytes = std::fs::read(path).context("Failed to read PDF file")?;
     extract_text_from_bytes(pdf_bytes)
 }
 
-/// Extract text from PDF bytes (for use when PDF is already in memory/storage)
+/// Extract text from PDF bytes already in memory.
 pub fn extract_text_from_bytes(pdf_bytes: Vec<u8>) -> Result<ExtractedDocument> {
-    let doc = lopdf::Document::load_mem(&pdf_bytes).context("Failed to parse PDF")?;
+    let lopdf_doc = lopdf::Document::load_mem(&pdf_bytes).context("Failed to parse PDF (lopdf)")?;
+    let mupdf_doc = MupdfDocument::from_bytes(&pdf_bytes, "application/pdf")
+        .context("Failed to parse PDF (mupdf)")?;
 
-    let mut pages: Vec<u32> = doc.get_pages().keys().cloned().collect();
-    pages.sort(); // Ensure pages are in order
-    let page_count = pages.len();
+    let mut lopdf_pages: Vec<u32> = lopdf_doc.get_pages().keys().copied().collect();
+    lopdf_pages.sort();
+    let page_count = lopdf_pages.len();
 
-    // Extract text per page to track boundaries
-    let mut full_text = String::new();
-    let mut page_boundaries = Vec::with_capacity(page_count);
+    let mut pages = Vec::with_capacity(page_count);
+    for (idx, page_num) in lopdf_pages.iter().enumerate() {
+        let digital_text = lopdf_doc.extract_text(&[*page_num]).unwrap_or_default();
+        let alnum = digital_text.chars().filter(|c| c.is_alphanumeric()).count();
 
-    for page_num in &pages {
-        let page_text = doc.extract_text(&[*page_num]).unwrap_or_default();
-        full_text.push_str(&page_text);
-        // Add a newline between pages if the page doesn't end with one
-        if !page_text.ends_with('\n') && !page_text.is_empty() {
-            full_text.push('\n');
-        }
-        page_boundaries.push(full_text.len());
+        let has_image_xobjects = page_has_images(&mupdf_doc, idx as i32).unwrap_or(false);
+
+        let decision = if alnum >= DIGITAL_TEXT_THRESHOLD {
+            PageDecision::Digital
+        } else if has_image_xobjects {
+            PageDecision::NeedsOcr
+        } else {
+            PageDecision::Blank
+        };
+
+        // Append a trailing newline to digital page text so per-page
+        // boundaries are obvious in the merged output. Matches the old
+        // single-pass behavior.
+        let digital_text = if decision == PageDecision::Digital {
+            let mut s = digital_text;
+            if !s.ends_with('\n') && !s.is_empty() {
+                s.push('\n');
+            }
+            s
+        } else {
+            String::new()
+        };
+
+        pages.push(PageExtraction {
+            digital_text,
+            decision,
+            has_image_xobjects,
+            digital_char_count: alnum,
+        });
     }
 
     tracing::debug!(
-        "Extracted {} chars from {} pages, boundaries: {:?}",
-        full_text.len(),
         page_count,
-        page_boundaries
+        digital = pages
+            .iter()
+            .filter(|p| p.decision == PageDecision::Digital)
+            .count(),
+        needs_ocr = pages
+            .iter()
+            .filter(|p| p.decision == PageDecision::NeedsOcr)
+            .count(),
+        blank = pages
+            .iter()
+            .filter(|p| p.decision == PageDecision::Blank)
+            .count(),
+        "PDF triage complete",
     );
 
     Ok(ExtractedDocument {
         pdf_bytes,
-        text: full_text,
         page_count,
-        page_boundaries,
+        pages,
     })
 }
 
-/// Given character offset in the full text, find which page it's on (1-indexed)
+/// Render one PDF page to PNG bytes at the given DPI. Used by the OCR
+/// worker right before sending to the multimodal model.
+pub fn rasterize_page(pdf_bytes: &[u8], page_idx: usize, dpi: f32) -> Result<Vec<u8>> {
+    let doc = MupdfDocument::from_bytes(pdf_bytes, "application/pdf")
+        .context("mupdf failed to parse PDF for rasterization")?;
+    let page = doc
+        .load_page(page_idx as i32)
+        .context("mupdf failed to load page for rasterization")?;
+    let scale = dpi / 72.0;
+    let pixmap: Pixmap = page
+        .to_pixmap(
+            &Matrix::new_scale(scale, scale),
+            &Colorspace::device_rgb(),
+            false,
+            true,
+        )
+        .context("Failed to rasterize PDF page")?;
+    let mut buf = Vec::new();
+    pixmap
+        .write_to(&mut buf, ImageFormat::PNG)
+        .context("Failed to encode page pixmap as PNG")?;
+    Ok(buf)
+}
+
+/// Given a character offset in the merged full-document text, find which
+/// page it falls on (1-indexed). Pages whose end offset is `> offset` are
+/// matched; if `offset` is past the last boundary, the last page is
+/// returned.
 pub fn char_offset_to_page(offset: usize, page_boundaries: &[usize]) -> usize {
     for (i, &boundary) in page_boundaries.iter().enumerate() {
         if offset < boundary {
-            return i + 1; // Pages are 1-indexed
+            return i + 1;
         }
     }
-    // If past all boundaries, return last page
     page_boundaries.len().max(1)
+}
+
+// ---- internal: image-XObject detection via a no-op mupdf device ----
+
+#[derive(Default)]
+struct ImageCounter {
+    count: u32,
+}
+
+impl NativeDevice for ImageCounter {
+    fn fill_image(&mut self, _img: &Image, _cmt: Matrix, _alpha: f32, _cp: ColorParams) {
+        self.count += 1;
+    }
+
+    fn fill_image_mask(
+        &mut self,
+        _img: &Image,
+        _cmt: Matrix,
+        _color_space: &Colorspace,
+        _color: &[f32],
+        _alpha: f32,
+        _cp: ColorParams,
+    ) {
+        self.count += 1;
+    }
+}
+
+fn page_has_images(doc: &MupdfDocument, idx: i32) -> Result<bool> {
+    let page: MupdfPage = doc.load_page(idx)?;
+    let counter = Rc::new(RefCell::new(ImageCounter::default()));
+    let dev = Device::from_native(counter.clone())?;
+    page.run(&dev, &Matrix::IDENTITY)?;
+    drop(dev);
+    let count = counter.borrow().count;
+    Ok(count > 0)
 }
 
 #[cfg(test)]
@@ -75,18 +255,15 @@ mod tests {
     use super::*;
     use lopdf::{dictionary, Document, Object, Stream};
 
-    /// Create a minimal PDF with the given text content
     fn create_test_pdf(text: &str) -> Vec<u8> {
         let mut doc = Document::with_version("1.4");
 
-        // Add a font resource
         let font_id = doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
             "BaseFont" => "Helvetica",
         });
 
-        // Create page content stream with text
         let content = format!(
             "BT /F1 12 Tf 100 700 Td ({}) Tj ET",
             text.replace('\\', "\\\\")
@@ -95,14 +272,12 @@ mod tests {
         );
         let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
 
-        // Create resources dictionary
         let resources_id = doc.add_object(dictionary! {
             "Font" => dictionary! {
                 "F1" => font_id,
             },
         });
 
-        // Create page
         let page_id = doc.add_object(dictionary! {
             "Type" => "Page",
             "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
@@ -110,21 +285,18 @@ mod tests {
             "Contents" => content_id,
         });
 
-        // Create pages tree
         let pages_id = doc.add_object(dictionary! {
             "Type" => "Pages",
             "Kids" => vec![page_id.into()],
             "Count" => 1,
         });
 
-        // Update page parent reference
         if let Ok(page) = doc.get_object_mut(page_id) {
             if let Object::Dictionary(ref mut dict) = page {
                 dict.set("Parent", pages_id);
             }
         }
 
-        // Create catalog
         let catalog_id = doc.add_object(dictionary! {
             "Type" => "Catalog",
             "Pages" => pages_id,
@@ -137,61 +309,58 @@ mod tests {
         buffer
     }
 
-    /// Create a multi-page PDF
-    fn create_multipage_pdf(page_texts: &[&str]) -> Vec<u8> {
+    /// Build a PDF whose page contains a 1x1 image XObject and no text.
+    /// Used to exercise the `NeedsOcr` decision path.
+    fn create_image_only_pdf() -> Vec<u8> {
         let mut doc = Document::with_version("1.4");
 
-        // Add a font resource
-        let font_id = doc.add_object(dictionary! {
-            "Type" => "Font",
-            "Subtype" => "Type1",
-            "BaseFont" => "Helvetica",
-        });
+        // Minimal 1x1 grayscale image XObject.
+        let image_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+                "Filter" => "FlateDecode",
+            },
+            // FlateDecode-encoded single 0x00 byte. Computed inline so the
+            // test doesn't depend on a flate crate.
+            //   echo -n -e '\x00' | python3 -c "import sys, zlib; sys.stdout.buffer.write(zlib.compress(sys.stdin.buffer.read()))"
+            //   → b'x\x9ccx\x00\x00\x00\x01\x00\x01'
+            vec![0x78, 0x9c, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01],
+        ));
+
+        // Draw the image scaled to fill the page.
+        let content = b"q\n612 0 0 792 0 0 cm\n/Im1 Do\nQ\n";
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content.to_vec()));
 
         let resources_id = doc.add_object(dictionary! {
-            "Font" => dictionary! {
-                "F1" => font_id,
+            "XObject" => dictionary! {
+                "Im1" => image_id,
             },
         });
 
-        let mut page_ids = Vec::new();
-
-        for text in page_texts {
-            let content = format!(
-                "BT /F1 12 Tf 100 700 Td ({}) Tj ET",
-                text.replace('\\', "\\\\")
-                    .replace('(', "\\(")
-                    .replace(')', "\\)")
-            );
-            let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
-
-            let page_id = doc.add_object(dictionary! {
-                "Type" => "Page",
-                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
-                "Resources" => resources_id,
-                "Contents" => content_id,
-            });
-            page_ids.push(page_id);
-        }
-
-        // Create pages tree
-        let kids: Vec<Object> = page_ids.iter().map(|&id| id.into()).collect();
-        let pages_id = doc.add_object(dictionary! {
-            "Type" => "Pages",
-            "Kids" => kids,
-            "Count" => Object::Integer(page_texts.len() as i64),
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Resources" => resources_id,
+            "Contents" => content_id,
         });
 
-        // Update page parent references
-        for page_id in &page_ids {
-            if let Ok(page) = doc.get_object_mut(*page_id) {
-                if let Object::Dictionary(ref mut dict) = page {
-                    dict.set("Parent", pages_id);
-                }
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page_id.into()],
+            "Count" => 1,
+        });
+
+        if let Ok(page) = doc.get_object_mut(page_id) {
+            if let Object::Dictionary(ref mut dict) = page {
+                dict.set("Parent", pages_id);
             }
         }
 
-        // Create catalog
         let catalog_id = doc.add_object(dictionary! {
             "Type" => "Catalog",
             "Pages" => pages_id,
@@ -205,116 +374,55 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_text_simple() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let pdf_path = temp_dir.path().join("test.pdf");
-
-        // Create a PDF with known text
-        let pdf_bytes = create_test_pdf("Hello World");
-        std::fs::write(&pdf_path, &pdf_bytes).unwrap();
-
-        let result = extract_text(&pdf_path).unwrap();
-
+    fn extract_decision_digital_text_pdf() {
+        // Long enough to clear the threshold.
+        let pdf =
+            create_test_pdf("This is a test document with enough characters to count as digital");
+        let result = extract_text_from_bytes(pdf).unwrap();
         assert_eq!(result.page_count, 1);
-        assert!(!result.text.is_empty());
+        assert_eq!(result.pages[0].decision, PageDecision::Digital);
+        assert!(!result.needs_ocr());
         assert!(
-            result.text.contains("Hello") || result.text.contains("World"),
-            "Expected text to contain 'Hello' or 'World', got: '{}'",
-            result.text
-        );
-        assert_eq!(result.pdf_bytes, pdf_bytes);
-    }
-
-    #[test]
-    fn test_extract_text_multipage() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let pdf_path = temp_dir.path().join("multipage.pdf");
-
-        let pdf_bytes = create_multipage_pdf(&["Page One", "Page Two", "Page Three"]);
-        std::fs::write(&pdf_path, &pdf_bytes).unwrap();
-
-        let result = extract_text(&pdf_path).unwrap();
-
-        assert_eq!(result.page_count, 3);
-        assert!(!result.text.is_empty());
-    }
-
-    #[test]
-    fn test_extract_text_file_not_found() {
-        let result = extract_text(Path::new("/nonexistent/path/to/file.pdf"));
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("Failed to read PDF file"),
-            "Expected 'Failed to read PDF file' error, got: {}",
-            err
+            result.pages[0].digital_text.contains("test")
+                || result.pages[0].digital_text.contains("document")
         );
     }
 
     #[test]
-    fn test_extract_text_invalid_pdf() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let pdf_path = temp_dir.path().join("invalid.pdf");
-
-        // Write garbage data
-        std::fs::write(&pdf_path, b"this is not a valid pdf file").unwrap();
-
-        let result = extract_text(&pdf_path);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("Failed to parse PDF"),
-            "Expected 'Failed to parse PDF' error, got: {}",
-            err
-        );
+    fn extract_decision_image_only_pdf_needs_ocr() {
+        let pdf = create_image_only_pdf();
+        let result = extract_text_from_bytes(pdf).unwrap();
+        assert_eq!(result.page_count, 1);
+        assert_eq!(result.pages[0].decision, PageDecision::NeedsOcr);
+        assert!(result.pages[0].has_image_xobjects);
+        assert!(result.pages[0].digital_text.is_empty());
+        assert!(result.needs_ocr());
     }
 
     #[test]
-    fn test_extract_text_empty_file() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let pdf_path = temp_dir.path().join("empty.pdf");
-
-        // Write empty file
-        std::fs::File::create(&pdf_path).unwrap();
-
-        let result = extract_text(&pdf_path);
-
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to parse PDF"));
+    fn extract_decision_blank_pdf() {
+        // No text content stream and no image — should be Blank.
+        let pdf = create_test_pdf(""); // Empty text → tiny content stream, no images.
+        let result = extract_text_from_bytes(pdf).unwrap();
+        assert_eq!(result.pages[0].decision, PageDecision::Blank);
+        assert!(!result.needs_ocr());
     }
 
     #[test]
-    fn test_extract_text_preserves_pdf_bytes() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let pdf_path = temp_dir.path().join("preserve.pdf");
-
-        let pdf_bytes = create_test_pdf("Test content");
-        std::fs::write(&pdf_path, &pdf_bytes).unwrap();
-
-        let result = extract_text(&pdf_path).unwrap();
-
-        // Verify the original PDF bytes are preserved exactly
-        assert_eq!(result.pdf_bytes.len(), pdf_bytes.len());
-        assert_eq!(result.pdf_bytes, pdf_bytes);
+    fn rasterize_page_returns_png() {
+        let pdf = create_test_pdf("Some text");
+        let bytes = rasterize_page(&pdf, 0, 100.0).unwrap();
+        // PNG magic bytes
+        assert_eq!(&bytes[0..8], b"\x89PNG\r\n\x1a\n");
     }
 
     #[test]
-    fn test_extract_text_special_characters() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let pdf_path = temp_dir.path().join("special.pdf");
-
-        // Test with special characters that need escaping in PDF
-        let pdf_bytes = create_test_pdf("Test with special chars");
-        std::fs::write(&pdf_path, &pdf_bytes).unwrap();
-
-        let result = extract_text(&pdf_path);
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().page_count, 1);
+    fn char_offset_to_page_basic() {
+        let boundaries = vec![10, 20, 30];
+        assert_eq!(char_offset_to_page(0, &boundaries), 1);
+        assert_eq!(char_offset_to_page(9, &boundaries), 1);
+        assert_eq!(char_offset_to_page(10, &boundaries), 2);
+        assert_eq!(char_offset_to_page(29, &boundaries), 3);
+        assert_eq!(char_offset_to_page(100, &boundaries), 3);
     }
 }

@@ -41,6 +41,18 @@ impl From<models::EmbeddingModelInfo> for ModelInfo {
     }
 }
 
+impl From<models::OcrModelInfo> for ModelInfo {
+    fn from(m: models::OcrModelInfo) -> Self {
+        Self {
+            id: m.id,
+            name: m.name,
+            description: m.description,
+            size_gb: m.size_gb,
+            dimensions: None,
+        }
+    }
+}
+
 /// Get list of available models for a type
 #[tauri::command]
 pub async fn get_available_models(model_type: ModelType) -> CommandResult<Vec<ModelInfo>> {
@@ -53,7 +65,10 @@ pub async fn get_available_models(model_type: ModelType) -> CommandResult<Vec<Mo
             .into_iter()
             .map(ModelInfo::from)
             .collect(),
-        ModelType::Ocr => Vec::new(),
+        ModelType::Ocr => models::available_ocr_models()
+            .into_iter()
+            .map(ModelInfo::from)
+            .collect(),
     })
 }
 
@@ -83,7 +98,11 @@ pub async fn get_model_status(
                 .ok_or(CommandError::model_not_found(&model_id))?;
             state.model_downloader.is_downloaded(&model)
         }
-        ModelType::Ocr => return Err(CommandError::model_not_found(&model_id)),
+        ModelType::Ocr => {
+            let model =
+                models::get_ocr_model(&model_id).ok_or(CommandError::model_not_found(&model_id))?;
+            state.model_downloader.is_downloaded(&model)
+        }
     };
 
     Ok(if is_downloaded {
@@ -147,7 +166,19 @@ pub async fn download_model(
                 .await
                 .external_err()?;
         }
-        ModelType::Ocr => return Err(CommandError::model_not_found(&model_id)),
+        ModelType::Ocr => {
+            let model =
+                models::get_ocr_model(&model_id).ok_or(CommandError::model_not_found(&model_id))?;
+            if state.model_downloader.is_downloaded(&model) {
+                tracing::info!("Model {} is already downloaded", model_id);
+                return Ok(());
+            }
+            state
+                .model_downloader
+                .download(&model, model_type, status_tx, progress_tx)
+                .await
+                .external_err()?;
+        }
     }
 
     Ok(())
@@ -188,11 +219,15 @@ pub async fn get_provider_status(
                 ready,
             }
         }
-        ModelType::Ocr => ProviderStatus {
-            provider_type: None,
-            model_id: None,
-            ready: false,
-        },
+        ModelType::Ocr => {
+            let model_id = state.models.ocr_model_id().await;
+            let ready = state.models.ocr_ready().await;
+            ProviderStatus {
+                provider_type: model_id.as_ref().map(|_| "local".to_string()),
+                model_id,
+                ready,
+            }
+        }
     })
 }
 
@@ -209,7 +244,7 @@ pub async fn get_current_model(
             .await
             .map(|c| c.model_id().to_string()),
         ModelType::Embedding => state.models.embedding_model_id().await,
-        ModelType::Ocr => None,
+        ModelType::Ocr => state.models.ocr_model_id().await,
     })
 }
 
@@ -227,7 +262,7 @@ pub async fn configure_model(
     match model_type {
         ModelType::Language => configure_language_model_impl(model_id, app, state).await,
         ModelType::Embedding => configure_embedding_model_impl(model_id, app, state).await,
-        ModelType::Ocr => Err(CommandError::internal("OCR not yet supported")),
+        ModelType::Ocr => configure_ocr_model_impl(model_id, app, state).await,
     }
 }
 
@@ -364,6 +399,51 @@ async fn configure_embedding_model_impl(
 
         let mut settings = Settings::load(&state.config.settings_file);
         settings.embedding_model_id = None;
+        settings.save(&state.config.settings_file).storage_err()?;
+    }
+
+    Ok(())
+}
+
+async fn configure_ocr_model_impl(
+    model_id: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    use crate::core::{LocalOcrProvider, Settings};
+
+    if let Some(ref id) = model_id {
+        let model = models::get_ocr_model(id).ok_or(CommandError::model_not_found(id))?;
+
+        tracing::info!(
+            "Configuring OCR model: {} ({})",
+            model.name,
+            model.hf_repo_id
+        );
+
+        let provider = LocalOcrProvider::new(id, &model.hf_repo_id, &model.prompt);
+
+        if let Err(e) = state.models.set_ocr(Arc::new(provider), id.clone()).await {
+            let msg = format!("Failed to install OCR provider: {}", e);
+            emit_failed(&app, ModelType::Ocr, id, &msg);
+            return Err(CommandError::internal(msg));
+        }
+
+        let mut settings = Settings::load(&state.config.settings_file);
+        settings.ocr_model_id = Some(id.clone());
+        settings.save(&state.config.settings_file).storage_err()?;
+
+        emit_ready(&app, ModelType::Ocr, id);
+
+        // Drain any documents whose extract phase parked an `ocr_task`
+        // entry while OCR was unconfigured. Phase 4 wires this method.
+        state.pipeline.requeue_pending_ocr().await;
+    } else {
+        tracing::info!("Disabling OCR model");
+        state.models.clear_ocr().await;
+
+        let mut settings = Settings::load(&state.config.settings_file);
+        settings.ocr_model_id = None;
         settings.save(&state.config.settings_file).storage_err()?;
     }
 

@@ -42,6 +42,9 @@ const TEXT_SUFFIX: &str = "/text";
 /// Suffix for document source file entries
 const SOURCE_SUFFIX: &str = "/source";
 
+/// Suffix for OCR task entries (pages awaiting the OCR worker)
+const OCR_TASK_SUFFIX: &str = "/ocr_task";
+
 /// Prefix for hash index (duplicate detection)
 const HASH_INDEX_PREFIX: &str = "_hash_index/";
 
@@ -64,6 +67,16 @@ pub fn doc_text_key(doc_id: &str) -> String {
 #[inline]
 pub fn doc_source_key(doc_id: &str) -> String {
     format!("{}{}{}", FILES_PREFIX, doc_id, SOURCE_SUFFIX)
+}
+
+/// Build the key for a document's OCR task entry.
+///
+/// Written by the extract phase when one or more pages need OCR; consumed
+/// by the OCR worker, which then writes `files/{id}/text` and deletes
+/// the `ocr_task` entry.
+#[inline]
+pub fn doc_ocr_task_key(doc_id: &str) -> String {
+    format!("{}{}{}", FILES_PREFIX, doc_id, OCR_TASK_SUFFIX)
 }
 
 /// Build the key for a hash index entry
@@ -530,6 +543,49 @@ impl Storage {
 
         doc.close().await?;
         Ok(documents)
+    }
+
+    /// Return doc IDs whose extract phase parked an `ocr_task` entry
+    /// without a corresponding `text` entry. These are the documents the
+    /// OCR worker should pick up: either the previous OCR job was
+    /// interrupted (crash) or OCR was unconfigured at the time of
+    /// extract.
+    ///
+    /// A single pass over the `files/` prefix collects both sets and
+    /// returns the difference.
+    pub async fn find_pending_ocr_tasks(&self, namespace_id: NamespaceId) -> Result<Vec<String>> {
+        use futures::StreamExt;
+        use std::collections::HashSet;
+
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(d) => d,
+            None => return Ok(Vec::new()),
+        };
+
+        let stream = doc.get_many(Query::key_prefix(b"files/")).await?;
+        tokio::pin!(stream);
+
+        let mut has_ocr_task: HashSet<String> = HashSet::new();
+        let mut has_text: HashSet<String> = HashSet::new();
+        while let Some(result) = stream.next().await {
+            let entry = result?;
+            let key = String::from_utf8_lossy(entry.key()).into_owned();
+            if let Some(rest) = key.strip_prefix(FILES_PREFIX) {
+                if let Some((doc_id, suffix)) = rest.split_once('/') {
+                    match suffix {
+                        "ocr_task" => {
+                            has_ocr_task.insert(doc_id.to_string());
+                        }
+                        "text" => {
+                            has_text.insert(doc_id.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        doc.close().await?;
+        Ok(has_ocr_task.difference(&has_text).cloned().collect())
     }
 
     /// Get a single document's metadata from a collection by ID
@@ -1003,7 +1059,7 @@ impl Storage {
     ///
     /// Returns `(doc_id, source_hash)` for the next phase.
     ///
-    /// Note: Metadata is incomplete until `extract_and_store_text()` is called.
+    /// Note: Metadata is incomplete until `extract_and_dispatch()` is called.
     pub async fn store_pdf_source(
         &self,
         path: &std::path::Path,
@@ -1091,39 +1147,42 @@ impl Storage {
         Ok((doc_id, source_hash))
     }
 
-    /// Phase 2: Extract text from stored PDF and save to iroh.
+    /// Phase 2: Extract per-page text from the stored PDF and dispatch.
     ///
-    /// This is the second phase of the pipeline - extracts text from
-    /// the PDF source bytes already in storage, then:
-    /// - Updates `files/{id}/meta` with page_count and page_boundaries
-    /// - Creates `files/{id}/text` with extracted text
+    /// Per-page triage in [`crate::pdf::extract_text_from_bytes`] decides
+    /// each page is `Digital`, `NeedsOcr`, or `Blank`. From there:
     ///
-    /// Returns the complete document metadata.
-    pub async fn extract_and_store_text(
+    /// - **All-digital-or-blank**: assemble text + `page_boundaries` from
+    ///   the digital pages, write `files/{id}/text` (which fires the
+    ///   embed stage via the watcher), and update `files/{id}/meta` with
+    ///   the final page info.
+    /// - **Any-needs-OCR**: serialize an [`crate::pdf::OcrTask`] payload
+    ///   and write to `files/{id}/ocr_task`. Do **not** write `text` —
+    ///   the OCR worker assembles the merged text once it has scan
+    ///   results, and only then is `meta` updated with real boundaries.
+    ///   `meta.page_count` is set immediately so the UI can show the
+    ///   document right away.
+    pub async fn extract_and_dispatch(
         &self,
         namespace_id: NamespaceId,
         doc_id: &str,
     ) -> Result<DocumentMetadata> {
-        // Get the stored source bytes
         let source_bytes = self
             .get_document_source(namespace_id, doc_id)
             .await?
             .context("Source not found - was store_pdf_source() called?")?;
 
-        // Extract text (CPU-bound) - run on blocking thread pool
         let extracted =
             tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source_bytes))
                 .await
                 .context("Extract task panicked")??;
 
-        // Get current metadata and update it
         let mut metadata = self
             .get_document(namespace_id, doc_id)
             .await?
             .context("Metadata not found")?;
 
         metadata.page_count = extracted.page_count;
-        metadata.page_boundaries = extracted.page_boundaries;
 
         let doc = self
             .docs
@@ -1132,20 +1191,149 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        // Update metadata entry with page info
-        let metadata_bytes = serde_json::to_vec(&metadata)?;
-        let meta_hash = self.store_blob(&metadata_bytes).await?;
-        let meta_key = doc_meta_key(doc_id);
-        doc.set_hash(
-            self.author_id,
-            meta_key.into_bytes(),
-            meta_hash,
-            metadata_bytes.len() as u64,
-        )
-        .await?;
+        if extracted.needs_ocr() {
+            // Park the per-page decisions for the OCR worker. Don't write
+            // text yet — that happens once OCR has filled in scanned
+            // pages. Leave page_boundaries empty so consumers don't read
+            // stale offsets.
+            metadata.page_boundaries = Vec::new();
+            self.store_meta_inner(&doc, doc_id, &metadata).await?;
 
-        // Store text entry at files/{id}/text
-        let text_bytes = extracted.text.as_bytes();
+            let task = crate::pdf::OcrTask {
+                doc_id: doc_id.to_string(),
+                page_count: extracted.page_count,
+                pages: extracted.pages.clone(),
+            };
+            let task_bytes = serde_json::to_vec(&task)?;
+            let task_hash = self.store_blob(&task_bytes).await?;
+            let task_key = doc_ocr_task_key(doc_id);
+            doc.set_hash(
+                self.author_id,
+                task_key.into_bytes(),
+                task_hash,
+                task_bytes.len() as u64,
+            )
+            .await?;
+
+            doc.close().await?;
+
+            let ocr_pages = extracted
+                .pages
+                .iter()
+                .filter(|p| p.decision == crate::pdf::PageDecision::NeedsOcr)
+                .count();
+            tracing::info!(
+                doc_id = %doc_id,
+                page_count = extracted.page_count,
+                ocr_pages,
+                "Queued document for OCR ({})",
+                metadata.name
+            );
+        } else {
+            // Pure-digital path — no OCR needed. Write text + final
+            // page_boundaries directly.
+            let (text, boundaries) = extracted.digital_text_concatenated();
+            metadata.page_boundaries = boundaries;
+            self.store_meta_inner(&doc, doc_id, &metadata).await?;
+
+            let text_bytes = text.as_bytes();
+            let text_hash = self.store_blob(text_bytes).await?;
+            let text_key = doc_text_key(doc_id);
+            doc.set_hash(
+                self.author_id,
+                text_key.into_bytes(),
+                text_hash,
+                text_bytes.len() as u64,
+            )
+            .await?;
+
+            doc.close().await?;
+
+            tracing::info!(
+                doc_id = %doc_id,
+                page_count = extracted.page_count,
+                text_len = text.len(),
+                "Extracted digital text for {}",
+                metadata.name
+            );
+        }
+
+        Ok(metadata)
+    }
+
+    /// Read the OCR task payload for a document, if one was written.
+    pub async fn get_ocr_task(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+    ) -> Result<Option<crate::pdf::OcrTask>> {
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        let key = doc_ocr_task_key(doc_id);
+        let entry = doc
+            .get_exact(self.author_id, key.into_bytes(), false)
+            .await?;
+        doc.close().await?;
+
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+
+        let bytes = self
+            .get_blob(&entry.content_hash())
+            .await?
+            .context("OCR task blob missing")?;
+        let task: crate::pdf::OcrTask = serde_json::from_slice(&bytes)?;
+        Ok(Some(task))
+    }
+
+    /// Delete the OCR task entry. Called by the OCR worker once it has
+    /// successfully written the merged text.
+    pub async fn delete_ocr_task(&self, namespace_id: NamespaceId, doc_id: &str) -> Result<()> {
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+        let key = doc_ocr_task_key(doc_id);
+        doc.del(self.author_id, key.into_bytes()).await?;
+        doc.close().await?;
+        Ok(())
+    }
+
+    /// Write merged text + updated meta in a single document handle. Used
+    /// by the OCR worker to commit its output atomically (from the
+    /// caller's POV — iroh entries land independently but the worker
+    /// only deletes `ocr_task` after both writes succeed).
+    pub async fn write_text_and_meta(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        text: &str,
+        page_boundaries: &[usize],
+    ) -> Result<()> {
+        let mut metadata = self
+            .get_document(namespace_id, doc_id)
+            .await?
+            .context("Metadata not found")?;
+        metadata.page_boundaries = page_boundaries.to_vec();
+
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        self.store_meta_inner(&doc, doc_id, &metadata).await?;
+
+        let text_bytes = text.as_bytes();
         let text_hash = self.store_blob(text_bytes).await?;
         let text_key = doc_text_key(doc_id);
         doc.set_hash(
@@ -1157,16 +1345,28 @@ impl Storage {
         .await?;
 
         doc.close().await?;
+        Ok(())
+    }
 
-        tracing::info!(
-            doc_id = %doc_id,
-            page_count = extracted.page_count,
-            text_len = extracted.text.len(),
-            "Extracted and stored text for {}",
-            metadata.name
-        );
-
-        Ok(metadata)
+    /// Internal helper: serialize + store the metadata entry on an open
+    /// doc handle.
+    async fn store_meta_inner(
+        &self,
+        doc: &iroh_docs::api::Doc,
+        doc_id: &str,
+        metadata: &DocumentMetadata,
+    ) -> Result<()> {
+        let metadata_bytes = serde_json::to_vec(metadata)?;
+        let meta_hash = self.store_blob(&metadata_bytes).await?;
+        let meta_key = doc_meta_key(doc_id);
+        doc.set_hash(
+            self.author_id,
+            meta_key.into_bytes(),
+            meta_hash,
+            metadata_bytes.len() as u64,
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -1519,9 +1719,12 @@ mod tests {
         let storage = Storage::open(temp_dir.path()).await.unwrap();
         let (collection_id, _) = storage.create_collection("Two Phase Test").await.unwrap();
 
-        // Create a test PDF file
+        // Create a test PDF file. Needs enough alphanumerics to clear
+        // pdf::DIGITAL_TEXT_THRESHOLD so it's routed as a digital page
+        // rather than parked as an OCR task.
         let pdf_path = temp_dir.path().join("test.pdf");
-        let pdf_bytes = create_test_pdf("Hello World");
+        let pdf_bytes =
+            create_test_pdf("Hello World this PDF has plenty of digital text for the threshold");
         std::fs::write(&pdf_path, &pdf_bytes).unwrap();
 
         // Phase 1: Store source
@@ -1556,7 +1759,7 @@ mod tests {
 
         // Phase 2: Extract and store text
         let metadata = storage
-            .extract_and_store_text(collection_id, &doc_id)
+            .extract_and_dispatch(collection_id, &doc_id)
             .await
             .unwrap();
 
@@ -1579,5 +1782,73 @@ mod tests {
             .has_source_hash(collection_id, &source_hash)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_find_pending_ocr_tasks() {
+        use crate::pdf::{OcrTask, PageDecision, PageExtraction};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("OCR Pending").await.unwrap();
+
+        // Empty collection → no orphans.
+        let pending = storage.find_pending_ocr_tasks(collection_id).await.unwrap();
+        assert!(pending.is_empty());
+
+        // Open the doc and inject a synthetic ocr_task entry directly.
+        let doc = storage
+            .docs
+            .api()
+            .open(collection_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let task = OcrTask {
+            doc_id: "orphan-1".into(),
+            page_count: 1,
+            pages: vec![PageExtraction {
+                digital_text: String::new(),
+                decision: PageDecision::NeedsOcr,
+                has_image_xobjects: true,
+                digital_char_count: 0,
+            }],
+        };
+        let task_bytes = serde_json::to_vec(&task).unwrap();
+        let task_hash = storage.store_blob(&task_bytes).await.unwrap();
+        doc.set_hash(
+            storage.author_id,
+            doc_ocr_task_key("orphan-1").into_bytes(),
+            task_hash,
+            task_bytes.len() as u64,
+        )
+        .await
+        .unwrap();
+
+        // A second doc gets both ocr_task AND text — it should NOT show
+        // up as pending (the worker already finished).
+        let task2_bytes = serde_json::to_vec(&task).unwrap();
+        let task2_hash = storage.store_blob(&task2_bytes).await.unwrap();
+        doc.set_hash(
+            storage.author_id,
+            doc_ocr_task_key("done-1").into_bytes(),
+            task2_hash,
+            task2_bytes.len() as u64,
+        )
+        .await
+        .unwrap();
+        let text_hash = storage.store_blob(b"completed text").await.unwrap();
+        doc.set_hash(
+            storage.author_id,
+            doc_text_key("done-1").into_bytes(),
+            text_hash,
+            "completed text".len() as u64,
+        )
+        .await
+        .unwrap();
+        doc.close().await.unwrap();
+
+        let pending = storage.find_pending_ocr_tasks(collection_id).await.unwrap();
+        assert_eq!(pending, vec!["orphan-1".to_string()]);
     }
 }

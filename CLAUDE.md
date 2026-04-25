@@ -13,14 +13,15 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 | App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                  |
 | UI              | Svelte 5    | Frontend                                                  |
 | Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles)        |
-| LLM inference   | mistralrs   | Local model loading and inference (GGUF format)           |
+| LLM inference   | mistralrs   | Local model loading + inference (GGUF + multimodal)       |
 | Model download  | hf-hub      | Fetch models from HuggingFace                             |
 | P2P / Sync      | iroh        | Connections, NAT traversal, sync                          |
 | Content storage | iroh-blobs  | Content-addressed file storage                            |
 | Metadata sync   | iroh-docs   | CRDT key-value store for metadata                         |
 | Real-time       | iroh-gossip | Pub/sub for live updates                                  |
 | Search          | milli       | Full-text + vector hybrid search (uses candle internally) |
-| PDF processing  | lopdf       | Text extraction                                           |
+| PDF text        | lopdf       | Digital text extraction                                   |
+| PDF rendering   | mupdf-rs    | Image-XObject detection + rasterization for OCR (AGPL-3)  |
 
 ## Architecture
 
@@ -44,11 +45,29 @@ Insight is batteries-included: local models are downloaded from HuggingFace and 
 
 ### Local Models
 
+Three roles, each independently configured via Settings:
+
+**Chat (Language)**
+
 | Model           | Size   | Notes                  |
 | --------------- | ------ | ---------------------- |
 | Qwen3 8B Q4_K_M | 5 GB   | Default, good balance  |
 | Qwen3 4B Q4_K_M | 2.5 GB | Lightweight, faster    |
 | Qwen3 8B Q8_0   | 8.5 GB | Higher quality, slower |
+
+**Embedding** (auto-configured to default on first launch)
+
+| Model                | Size   | Notes             |
+| -------------------- | ------ | ----------------- |
+| Qwen3 Embedding 0.6B | 1.2 GB | Default, 1024-dim |
+
+**OCR** (opt-in; needed only for scanned PDFs)
+
+| Model              | Size  | Notes                              |
+| ------------------ | ----- | ---------------------------------- |
+| Nanonets-OCR2 3B   | 6 GB  | Recommended. Qwen2.5-VL fine-tune  |
+| olmOCR-2 7B (1025) | 15 GB | Higher accuracy, Qwen2.5-VL 7B     |
+| Chandra-OCR        | 18 GB | SOTA, Qwen3-VL 9B; needs more VRAM |
 
 GPU acceleration available via feature flags:
 
@@ -72,6 +91,7 @@ Namespace: 7f3a8b2c... ("Climate Research")
 ├── files/abc123/meta                → document metadata (JSON)
 ├── files/abc123/text                → extracted text content
 ├── files/abc123/source              → original file bytes (PDF, etc.)
+├── files/abc123/ocr_task            → per-page OCR plan (transient: deleted once text is written)
 ├── files/abc123/embeddings/qwen3    → chunked text + vectors for model
 ├── files/def456/meta                → document metadata (JSON)
 ├── files/def456/text                → extracted text content
@@ -80,6 +100,11 @@ Namespace: 7f3a8b2c... ("Climate Research")
 ├── _hash_index/{hash}               → duplicate detection index
 └── _collection                      → collection settings
 ```
+
+`ocr_task` entries are written by the extract phase when one or more
+pages need OCR. They're consumed by the OCR worker, which then writes
+the merged `text` and deletes the task. OCR is local-only — each peer
+processes its own imports, so `ocr_task` is never replicated.
 
 All document data (content, source, embeddings) is grouped under `files/{doc_id}/`. This is the idiomatic iroh pattern: each entry's content IS the blob data. When iroh-docs syncs entries, it automatically syncs their content blobs, enabling seamless P2P document sharing.
 
@@ -144,13 +169,24 @@ When a peer receives a document, it checks for existing embeddings matching its 
 ### Local Import
 
 1. User adds PDF to collection
-2. Extract text via lopdf
+2. Per-page triage via lopdf (digital text) + mupdf (image XObjects):
+   - Pages with enough digital text → use lopdf output directly
+   - Pages with images but little text → mark `NeedsOcr`
+   - Blank pages → skip
 3. Store three entries in iroh-docs:
    - `files/{id}/meta` — metadata JSON
-   - `files/{id}/text` — extracted text
    - `files/{id}/source` — original PDF bytes
-4. Chunk text, generate embeddings, store at `files/{id}/embeddings/{model_id}`
-5. Index chunks in milli for search
+   - **Either** `files/{id}/text` (all-digital path) **or**
+     `files/{id}/ocr_task` (any-page-needs-OCR path)
+4. If an OCR task was written, the OCR worker rasterizes scanned pages
+   via mupdf, runs them through the configured vision-language model,
+   merges with digital text, writes `files/{id}/text`, deletes the task.
+5. Chunk text, generate embeddings at `files/{id}/embeddings/{model_id}`.
+6. Index chunks in milli for search.
+
+OCR is **opt-in** via Settings. While unconfigured, scanned imports park
+as `ocr_task` entries; once a model is configured (or after a crash
+mid-OCR), the startup orphan scan resumes them.
 
 ### On Sync
 
@@ -203,6 +239,16 @@ cd src-tauri && cargo test
 ```
 
 Focus on core modules, Tauri commands, and critical paths.
+
+**First build note**: mupdf-rs vendors and compiles the MuPDF C source
+on its first build (~5 min). Subsequent builds are cached.
+
+The OCR provider has a gated smoke test that downloads ~6 GB and runs a
+real model. Skipped by default; run manually with:
+
+```bash
+cargo test --release -p insight-core ocr_smoke -- --ignored --nocapture --test-threads=1
+```
 
 ### Frontend (Svelte)
 

@@ -8,9 +8,11 @@
 
 pub mod chat;
 pub mod embedding;
+pub mod ocr;
 mod state;
 
 pub(crate) use state::LocalModelState;
 
 pub use chat::LocalChatProvider;
 pub use embedding::LocalEmbeddingProvider;
+pub use ocr::LocalOcrProvider;

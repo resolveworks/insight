@@ -2,7 +2,7 @@
 	import LifecycleSettings from './LifecycleSettings.svelte';
 	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
-	import { embeddingModelConfig } from '$lib/models/config';
+	import { embeddingModelConfig, ocrModelConfig } from '$lib/models/config';
 </script>
 
 <div class="flex h-full flex-col bg-surface">
@@ -33,6 +33,17 @@
 				</p>
 				<div class="rounded-lg border border-neutral-200 bg-surface-bright p-6">
 					<ModelDownloadSelector config={embeddingModelConfig} />
+				</div>
+			</section>
+
+			<section class="mb-8">
+				<h2 class="mb-4 text-lg font-medium text-neutral-700">OCR Model</h2>
+				<p class="mb-6 text-sm text-neutral-500">
+					Required to extract text from scanned PDFs. Without an OCR model,
+					scanned documents are stored but not searchable.
+				</p>
+				<div class="rounded-lg border border-neutral-200 bg-surface-bright p-6">
+					<ModelDownloadSelector config={ocrModelConfig} />
 				</div>
 			</section>
 

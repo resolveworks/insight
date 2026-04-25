@@ -35,6 +35,7 @@ pub struct PipelineProgress {
     pub collection_id: String,
     pub store: StageProgress,
     pub extract: StageProgress,
+    pub ocr: StageProgress,
     pub embed: StageProgress,
     pub index: StageProgress,
 }
@@ -52,6 +53,7 @@ impl PipelineProgress {
         match stage {
             Stage::Store => &mut self.store,
             Stage::Extract => &mut self.extract,
+            Stage::Ocr => &mut self.ocr,
             Stage::Embed => &mut self.embed,
             Stage::Index => &mut self.index,
         }
@@ -61,6 +63,7 @@ impl PipelineProgress {
     pub fn is_active(&self) -> bool {
         self.store.is_active()
             || self.extract.is_active()
+            || self.ocr.is_active()
             || self.embed.is_active()
             || self.index.is_active()
     }

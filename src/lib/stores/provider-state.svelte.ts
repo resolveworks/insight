@@ -13,7 +13,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-export type ProviderType = 'embedding' | 'language';
+export type ProviderType = 'embedding' | 'language' | 'ocr';
 
 export interface DownloadProgress {
 	file: string;
@@ -65,12 +65,20 @@ function initialState(): ProviderState {
 
 const embeddingState = $state<ProviderState>(initialState());
 const languageState = $state<ProviderState>(initialState());
+const ocrState = $state<ProviderState>(initialState());
 
 let unlistenStatus: UnlistenFn | null = null;
 let unlistenProgress: UnlistenFn | null = null;
 
 function stateFor(type: ProviderType): ProviderState {
-	return type === 'embedding' ? embeddingState : languageState;
+	switch (type) {
+		case 'embedding':
+			return embeddingState;
+		case 'language':
+			return languageState;
+		case 'ocr':
+			return ocrState;
+	}
 }
 
 async function queryInitialStatus(type: ProviderType) {
@@ -135,6 +143,7 @@ async function setupEventListeners() {
 if (typeof window !== 'undefined') {
 	queryInitialStatus('embedding');
 	queryInitialStatus('language');
+	queryInitialStatus('ocr');
 	setupEventListeners();
 }
 
@@ -165,6 +174,10 @@ export function getEmbeddingState(): ProviderState {
 
 export function getLanguageState(): ProviderState {
 	return languageState;
+}
+
+export function getOcrState(): ProviderState {
+	return ocrState;
 }
 
 /**

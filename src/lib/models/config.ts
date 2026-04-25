@@ -7,7 +7,7 @@ export interface ModelSelectorConfig {
 	/** Display title */
 	title: string;
 	/** Accent color */
-	accentColor: 'slate' | 'emerald';
+	accentColor: 'slate' | 'emerald' | 'amber';
 }
 
 export const languageModelConfig: ModelSelectorConfig = {
@@ -20,4 +20,10 @@ export const embeddingModelConfig: ModelSelectorConfig = {
 	providerType: 'embedding',
 	title: 'Embedding Model',
 	accentColor: 'emerald',
+};
+
+export const ocrModelConfig: ModelSelectorConfig = {
+	providerType: 'ocr',
+	title: 'OCR Model',
+	accentColor: 'amber',
 };

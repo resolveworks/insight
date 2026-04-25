@@ -232,6 +232,140 @@ pub fn available_embedding_models() -> Vec<EmbeddingModelInfo> {
 }
 
 // ============================================================================
+// OCR Models
+// ============================================================================
+
+/// Information about a vision-language OCR model.
+///
+/// All current OCR models are sharded multimodal HF repos (Qwen2.5-VL or
+/// Qwen3-VL fine-tunes) — `weight_shards` captures the shard count so we
+/// can list each `model-{i:05}-of-{N:05}.safetensors` shard explicitly.
+/// Without listing them, `is_downloaded()` would return true as soon as
+/// the small config files land, while mistralrs would still need to fetch
+/// multi-GB of weights on first load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrModelInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub size_gb: f32,
+    pub hf_repo_id: String,
+    /// Per-model OCR prompt. Each fine-tune has a recommended prompt; we
+    /// don't auto-augment with anchor-text harnesses (deferred — see #23).
+    pub prompt: String,
+    /// Number of safetensors shards in the HF repo (e.g. `2` for the
+    /// `model-00001-of-00002.safetensors` / `model-00002-of-00002.safetensors`
+    /// pair). Used to build the `required_files` list.
+    pub weight_shards: u32,
+}
+
+impl ModelSpec for OcrModelInfo {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn size_gb(&self) -> f32 {
+        self.size_gb
+    }
+
+    fn required_files(&self) -> Vec<(String, String)> {
+        let repo = self.hf_repo_id.clone();
+        let mut files = vec![
+            (repo.clone(), "config.json".to_string()),
+            (repo.clone(), "tokenizer.json".to_string()),
+            (repo.clone(), "tokenizer_config.json".to_string()),
+            (repo.clone(), "preprocessor_config.json".to_string()),
+            (repo.clone(), "generation_config.json".to_string()),
+            (repo.clone(), "special_tokens_map.json".to_string()),
+            (repo.clone(), "added_tokens.json".to_string()),
+            (repo.clone(), "vocab.json".to_string()),
+            (repo.clone(), "merges.txt".to_string()),
+            (repo.clone(), "chat_template.jinja".to_string()),
+            (repo.clone(), "model.safetensors.index.json".to_string()),
+        ];
+        let n = self.weight_shards;
+        for i in 1..=n {
+            files.push((
+                repo.clone(),
+                format!("model-{:05}-of-{:05}.safetensors", i, n),
+            ));
+        }
+        files
+    }
+
+    fn primary_repo(&self) -> &str {
+        &self.hf_repo_id
+    }
+
+    fn primary_file(&self) -> &str {
+        "config.json"
+    }
+}
+
+/// Default OCR model. None is configured on startup — OCR is opt-in
+/// via Settings; this is just the "Recommended" entry shown to the user.
+pub fn default_ocr_model() -> OcrModelInfo {
+    available_ocr_models().into_iter().next().unwrap()
+}
+
+pub fn get_ocr_model(id: &str) -> Option<OcrModelInfo> {
+    available_ocr_models().into_iter().find(|m| m.id == id)
+}
+
+/// Available OCR models registry.
+///
+/// All run on mistralrs's existing Qwen2.5-VL / Qwen3-VL pipelines.
+pub fn available_ocr_models() -> Vec<OcrModelInfo> {
+    vec![
+        OcrModelInfo {
+            id: "nanonets-ocr2-3b".to_string(),
+            name: "Nanonets-OCR2 3B".to_string(),
+            description: "Recommended. Qwen2.5-VL fine-tune for document OCR. ~6GB download."
+                .to_string(),
+            size_gb: 6.0,
+            hf_repo_id: "nanonets/Nanonets-OCR2-3B".to_string(),
+            prompt: "Extract the text from the above document as if you were reading \
+                     it naturally. Return tables in markdown. Return equations in \
+                     LaTeX. Watermarks should be wrapped in <watermark></watermark>. \
+                     Page numbers should be wrapped in <page_number></page_number>. \
+                     Prefer using ☐ and ☑ for check boxes."
+                .to_string(),
+            weight_shards: 2,
+        },
+        OcrModelInfo {
+            id: "olmocr2-7b".to_string(),
+            name: "olmOCR-2 7B (1025)".to_string(),
+            description: "Higher accuracy. Qwen2.5-VL 7B fine-tune. ~15GB download.".to_string(),
+            size_gb: 15.0,
+            hf_repo_id: "allenai/olmOCR-2-7B-1025".to_string(),
+            prompt: "Attempt to read the document and convert it to markdown. \
+                     Return tables in markdown. Skip headers, footers, and page numbers."
+                .to_string(),
+            weight_shards: 4,
+        },
+        OcrModelInfo {
+            id: "chandra".to_string(),
+            name: "Chandra-OCR".to_string(),
+            description: "SOTA accuracy. Qwen3-VL 9B. ~18GB download. \
+                          High VRAM required."
+                .to_string(),
+            size_gb: 18.0,
+            hf_repo_id: "datalab-to/chandra".to_string(),
+            prompt: "Convert this document to markdown.".to_string(),
+            weight_shards: 4,
+        },
+    ]
+}
+
+// ============================================================================
 // Download Progress
 // ============================================================================
 
@@ -544,5 +678,52 @@ mod tests {
         assert_eq!(model.required_files().len(), 4);
         assert_eq!(model.primary_repo(), "Qwen/Qwen3-Embedding-0.6B");
         assert_eq!(model.primary_file(), "config.json");
+    }
+
+    #[test]
+    fn test_available_ocr_models() {
+        let models = available_ocr_models();
+        assert!(!models.is_empty());
+        assert_eq!(models[0].id, "nanonets-ocr2-3b");
+        assert_eq!(models.len(), 3);
+    }
+
+    #[test]
+    fn test_get_ocr_model() {
+        let model = get_ocr_model("nanonets-ocr2-3b");
+        assert!(model.is_some());
+        assert_eq!(model.unwrap().hf_repo_id, "nanonets/Nanonets-OCR2-3B");
+
+        assert!(get_ocr_model("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_default_ocr_model() {
+        let model = default_ocr_model();
+        assert_eq!(model.id, "nanonets-ocr2-3b");
+        assert!(!model.prompt.is_empty());
+    }
+
+    #[test]
+    fn test_ocr_model_required_files() {
+        let m = get_ocr_model("nanonets-ocr2-3b").unwrap();
+        let files = m.required_files();
+        let names: Vec<&String> = files.iter().map(|(_, f)| f).collect();
+        // Two-shard model: index + both shards listed.
+        assert!(names
+            .iter()
+            .any(|n| n.as_str() == "model.safetensors.index.json"));
+        assert!(names
+            .iter()
+            .any(|n| n.as_str() == "model-00001-of-00002.safetensors"));
+        assert!(names
+            .iter()
+            .any(|n| n.as_str() == "model-00002-of-00002.safetensors"));
+
+        let m4 = get_ocr_model("olmocr2-7b").unwrap();
+        let names4: Vec<String> = m4.required_files().into_iter().map(|(_, f)| f).collect();
+        assert!(names4
+            .iter()
+            .any(|n| n.as_str() == "model-00004-of-00004.safetensors"));
     }
 }

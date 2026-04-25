@@ -21,7 +21,7 @@ pub use chat::{
 };
 pub use config::{get_provider_families, ProviderConfig, ProviderFamily, RemoteModelInfo};
 pub use embedding::EmbeddingProvider;
-pub use local::{LocalChatProvider, LocalEmbeddingProvider};
+pub use local::{LocalChatProvider, LocalEmbeddingProvider, LocalOcrProvider};
 pub use ocr::OcrProvider;
 pub use remote::{AnthropicChatProvider, OpenAIChatProvider};
 

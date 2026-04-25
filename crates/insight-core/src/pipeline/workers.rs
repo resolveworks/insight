@@ -70,7 +70,7 @@ pub fn spawn_extract_workers(
                 let result = {
                     let storage = storage.read().await;
                     storage
-                        .extract_and_store_text(job.namespace_id, &job.doc_id)
+                        .extract_and_dispatch(job.namespace_id, &job.doc_id)
                         .await
                 };
 
