@@ -241,7 +241,7 @@ impl Pipeline {
             drop(storage);
 
             match result {
-                Ok((doc_id, _hash)) => {
+                Ok(doc_id) => {
                     tracing::info!(doc_id = %doc_id, path = %path.display(), "Stored PDF source");
                     self.progress
                         .apply(ProgressUpdate::Completed {

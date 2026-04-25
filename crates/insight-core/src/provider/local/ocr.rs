@@ -3,10 +3,12 @@
 //! Construction is cheap: the HuggingFace repo id and per-model prompt are
 //! recorded. Weights load on [`Provider::ensure_loaded`].
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use hf_hub::Cache;
 use image::DynamicImage;
 use mistralrs::{
     ChatCompletionChunkResponse, Delta, Model, MultimodalMessages, MultimodalModelBuilder,
@@ -79,11 +81,30 @@ impl Provider for LocalOcrProvider {
         self.state
             .get_or_load(|| async move {
                 tracing::info!("Loading OCR model '{}' ({})", model_id, hf_repo_id);
+
+                // mistralrs v0.8's Qwen2_5VLConfig requires `tie_word_embeddings`
+                // at the top level. Newer transformers nest it under
+                // `text_config`. Patch the cached config.json before the
+                // builder reads it. Idempotent: no-op if the field is already
+                // present at the root.
+                if let Err(e) = patch_multimodal_config(&hf_repo_id) {
+                    tracing::warn!(
+                        repo = %hf_repo_id,
+                        error = ?e,
+                        "Failed to pre-patch config.json; load may fail",
+                    );
+                }
+
                 let model = MultimodalModelBuilder::new(&hf_repo_id)
                     .with_logging()
                     .build()
                     .await
-                    .context("Failed to load multimodal model")?;
+                    .with_context(|| {
+                        format!(
+                            "Failed to load multimodal model {} ({})",
+                            model_id, hf_repo_id
+                        )
+                    })?;
                 tracing::info!("OCR model '{}' loaded", model_id);
                 Ok(model)
             })
@@ -91,11 +112,12 @@ impl Provider for LocalOcrProvider {
             .map(|_| ())
     }
 
-    async fn unload(&self) -> Result<()> {
-        if self.state.unload().await {
+    async fn unload(&self) -> Result<bool> {
+        let did = self.state.unload().await;
+        if did {
             tracing::info!("Unloaded OCR model '{}'", self.state.model_id());
         }
-        Ok(())
+        Ok(did)
     }
 }
 
@@ -121,6 +143,53 @@ impl OcrProvider for LocalOcrProvider {
         }
         Ok(out)
     }
+}
+
+/// Bridge the schema gap between modern HF Qwen2.5-VL configs (which nest
+/// `tie_word_embeddings` under `text_config`) and mistralrs v0.8's
+/// `Qwen2_5VLConfig` (which expects it at the root and has no serde
+/// default). Walks the HF cache to find the snapshot's `config.json`,
+/// adds the missing top-level field if needed, and writes back in place.
+///
+/// Safe to call repeatedly: the second invocation finds the field
+/// already present and returns without touching the file.
+///
+/// Once mistralrs is bumped to a version that follows the new schema
+/// this entire function can go away.
+fn patch_multimodal_config(hf_repo_id: &str) -> Result<()> {
+    let cache = Cache::from_env();
+    let path: PathBuf = cache
+        .model(hf_repo_id.to_string())
+        .get("config.json")
+        .ok_or_else(|| anyhow::anyhow!("config.json not found in HF cache"))?;
+
+    let raw = std::fs::read_to_string(&path).context("read config.json")?;
+    let mut cfg: serde_json::Value = serde_json::from_str(&raw).context("parse config.json")?;
+
+    let obj = cfg
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.json root is not an object"))?;
+
+    if obj.contains_key("tie_word_embeddings") {
+        return Ok(());
+    }
+
+    let nested = obj
+        .get("text_config")
+        .and_then(|tc| tc.get("tie_word_embeddings"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Bool(false));
+
+    obj.insert("tie_word_embeddings".to_string(), nested);
+
+    let patched = serde_json::to_string_pretty(&cfg).context("serialize patched config")?;
+    std::fs::write(&path, patched).context("write patched config.json")?;
+
+    tracing::info!(
+        path = %path.display(),
+        "Patched config.json: hoisted tie_word_embeddings to top level"
+    );
+    Ok(())
 }
 
 async fn run_one_page(model: &Model, prompt: &str, image: DynamicImage) -> Result<String> {

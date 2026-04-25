@@ -2,8 +2,9 @@
 //!
 //! Every inference capability (chat, embedding, OCR) is behind a role-specific
 //! trait that extends a base [`Provider`]. Remote providers use the defaults
-//! (`coexist = true`, `MemoryKind::Remote`, no-op `ensure_loaded` / `unload`);
-//! local providers override to report VRAM kind and the user's coexist choice.
+//! (`coexist = true`, `MemoryKind::Remote`, no-op `ensure_loaded`, and an
+//! `unload` that reports no transition); local providers override to report
+//! VRAM kind, the user's coexist choice, and a real load/unload cycle.
 
 pub mod chat;
 pub mod config;
@@ -78,8 +79,11 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
-    /// Release any in-memory resources. Idempotent.
-    async fn unload(&self) -> Result<()> {
-        Ok(())
+    /// Release any in-memory resources. Idempotent. Returns `true` iff this
+    /// call transitioned the provider from loaded to unloaded — callers use
+    /// the bool to decide whether to log or emit a status event. Remote
+    /// providers never hold local memory, so the default returns `false`.
+    async fn unload(&self) -> Result<bool> {
+        Ok(false)
     }
 }

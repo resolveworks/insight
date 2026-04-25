@@ -5084,7 +5084,6 @@ dependencies = [
  "anyhow",
  "async-openai",
  "async-trait",
- "blake3",
  "bumpalo",
  "bytes",
  "chrono",

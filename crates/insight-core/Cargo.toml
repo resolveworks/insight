@@ -68,7 +68,6 @@ thiserror = "2"
 tracing = "0.1"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
-blake3 = "1"
 
 [features]
 default = []

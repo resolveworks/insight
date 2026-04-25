@@ -119,11 +119,12 @@ impl Provider for LocalEmbeddingProvider {
             .map(|_| ())
     }
 
-    async fn unload(&self) -> Result<()> {
-        if self.state.unload().await {
+    async fn unload(&self) -> Result<bool> {
+        let did = self.state.unload().await;
+        if did {
             tracing::info!("Unloaded embedding model '{}'", self.state.model_id());
         }
-        Ok(())
+        Ok(did)
     }
 }
 

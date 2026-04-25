@@ -16,6 +16,11 @@
 //!   ("reactive eviction"). Remote providers never participate.
 //! - An idle reaper (`spawn_idle_reaper`) unloads residents with no
 //!   activity in the last `IDLE_TTL`, emitting `Unloaded` on each.
+//! - Whenever the manager calls `Provider::unload`, it emits `Unloaded`
+//!   iff the call returned `true` (i.e. it actually transitioned a
+//!   loaded provider to unloaded). The provider is the single authority
+//!   on whether a transition happened, which keeps replace/clear, evict,
+//!   and reap announcements consistent and prevents spurious events.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -165,7 +170,8 @@ impl ModelManager {
         // settings without a separate call.
         provider.set_coexist(self.lifecycle.read().await.chat_coexist);
         if let Some(old) = self.chat.write().await.replace(provider) {
-            let _ = old.unload().await;
+            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Language)
+                .await;
         }
         *self.chat_config.write().await = Some(config);
         Ok(())
@@ -173,7 +179,8 @@ impl ModelManager {
 
     pub async fn clear_chat(&self) {
         if let Some(old) = self.chat.write().await.take() {
-            let _ = old.unload().await;
+            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Language)
+                .await;
         }
         *self.chat_config.write().await = None;
     }
@@ -210,7 +217,8 @@ impl ModelManager {
     ) -> Result<()> {
         provider.set_coexist(self.lifecycle.read().await.embedding_coexist);
         if let Some(old) = self.embedding.write().await.replace(provider) {
-            let _ = old.unload().await;
+            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Embedding)
+                .await;
         }
         *self.embedding_model_id.write().await = Some(model_id);
         Ok(())
@@ -218,7 +226,8 @@ impl ModelManager {
 
     pub async fn clear_embedding(&self) {
         if let Some(old) = self.embedding.write().await.take() {
-            let _ = old.unload().await;
+            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Embedding)
+                .await;
         }
         *self.embedding_model_id.write().await = None;
     }
@@ -257,7 +266,8 @@ impl ModelManager {
     pub async fn set_ocr(&self, provider: Arc<dyn OcrProvider>, model_id: String) -> Result<()> {
         provider.set_coexist(self.lifecycle.read().await.ocr_coexist);
         if let Some(old) = self.ocr.write().await.replace(provider) {
-            let _ = old.unload().await;
+            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Ocr)
+                .await;
         }
         *self.ocr_model_id.write().await = Some(model_id);
         Ok(())
@@ -265,7 +275,8 @@ impl ModelManager {
 
     pub async fn clear_ocr(&self) {
         if let Some(old) = self.ocr.write().await.take() {
-            let _ = old.unload().await;
+            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Ocr)
+                .await;
         }
         *self.ocr_model_id.write().await = None;
     }
@@ -366,18 +377,12 @@ impl ModelManager {
         if provider.memory_kind() != MemoryKind::Local || provider.coexist() {
             return;
         }
-        if !provider.is_loaded().await {
-            return;
+        if self.announce_unload(provider, model_type).await {
+            tracing::info!(
+                target = provider.model_id(),
+                "Reactive eviction: unloaded coexist=false local resident"
+            );
         }
-        tracing::info!(
-            target = provider.model_id(),
-            "Reactive eviction: unloading coexist=false local resident"
-        );
-        let _ = provider.unload().await;
-        self.emit(ModelStatus::Unloaded {
-            model_type,
-            model_id: provider.model_id().to_string(),
-        });
     }
 
     async fn reap_idle(&self) {
@@ -416,15 +421,36 @@ impl ModelManager {
         if provider.memory_kind() != MemoryKind::Local {
             return;
         }
-        if !provider.is_loaded().await {
-            return;
+        if self.announce_unload(provider, model_type).await {
+            tracing::info!(model = %provider.model_id(), "Idle reaper: unloaded model");
         }
-        tracing::info!(model = %provider.model_id(), "Idle reaper: unloading model");
-        let _ = provider.unload().await;
-        self.emit(ModelStatus::Unloaded {
-            model_type,
-            model_id: provider.model_id().to_string(),
-        });
+        // Mark the slot dormant either way: if we just reaped it, or if it
+        // was already unloaded out-of-band. Subsequent acquires re-touch.
+        self.reset_activity(model_type);
+    }
+
+    /// Call `unload` on `provider` and emit `Unloaded` iff it actually
+    /// transitioned (loaded → unloaded). The provider's own `unload` impl is
+    /// the single authority on whether a transition happened.
+    async fn announce_unload(&self, provider: &dyn Provider, model_type: ModelType) -> bool {
+        match provider.unload().await {
+            Ok(true) => {
+                self.emit(ModelStatus::Unloaded {
+                    model_type,
+                    model_id: provider.model_id().to_string(),
+                });
+                true
+            }
+            Ok(false) => false,
+            Err(e) => {
+                tracing::warn!(
+                    model = %provider.model_id(),
+                    error = %e,
+                    "unload failed",
+                );
+                false
+            }
+        }
     }
 
     fn touch(&self, model_type: ModelType) {
@@ -433,6 +459,14 @@ impl ModelManager {
             ModelType::Language => self.chat_last_activity.store(now, Ordering::Relaxed),
             ModelType::Embedding => self.embedding_last_activity.store(now, Ordering::Relaxed),
             ModelType::Ocr => self.ocr_last_activity.store(now, Ordering::Relaxed),
+        }
+    }
+
+    fn reset_activity(&self, model_type: ModelType) {
+        match model_type {
+            ModelType::Language => self.chat_last_activity.store(0, Ordering::Relaxed),
+            ModelType::Embedding => self.embedding_last_activity.store(0, Ordering::Relaxed),
+            ModelType::Ocr => self.ocr_last_activity.store(0, Ordering::Relaxed),
         }
     }
 }
@@ -575,10 +609,9 @@ mod tests {
             self.loaded.store(true, Ordering::Relaxed);
             Ok(())
         }
-        async fn unload(&self) -> Result<()> {
+        async fn unload(&self) -> Result<bool> {
             self.unload_calls.fetch_add(1, Ordering::Relaxed);
-            self.loaded.store(false, Ordering::Relaxed);
-            Ok(())
+            Ok(self.loaded.swap(false, Ordering::Relaxed))
         }
     }
 
@@ -728,6 +761,97 @@ mod tests {
         assert_eq!(chat.unload_calls(), 1);
         assert!(manager.chat_config().await.is_none());
         assert!(!manager.chat_ready().await);
+    }
+
+    #[tokio::test]
+    async fn set_chat_emits_unloaded_for_loaded_displaced_provider() {
+        let manager = ModelManager::new();
+        let first = TestChatProvider::new("first", MemoryKind::Local, false);
+        manager
+            .set_chat(first.clone(), remote_config())
+            .await
+            .unwrap();
+        let _ = manager.acquire_chat().await.unwrap().unwrap();
+        assert!(first.is_loaded().await);
+
+        let mut events = manager.subscribe_status();
+        let second = TestChatProvider::new("second", MemoryKind::Local, false);
+        manager
+            .set_chat(second.clone(), remote_config())
+            .await
+            .unwrap();
+
+        // First was loaded → displacement must announce Unloaded for it.
+        match events.try_recv() {
+            Ok(ModelStatus::Unloaded {
+                model_type: ModelType::Language,
+                model_id,
+            }) => assert_eq!(model_id, "first"),
+            other => panic!("expected Unloaded for first, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_chat_silent_for_unloaded_displaced_provider() {
+        let manager = ModelManager::new();
+        let first = TestChatProvider::new("first", MemoryKind::Local, false);
+        // Install but never acquire — first stays unloaded.
+        manager
+            .set_chat(first.clone(), remote_config())
+            .await
+            .unwrap();
+        assert!(!first.is_loaded().await);
+
+        let mut events = manager.subscribe_status();
+        let second = TestChatProvider::new("second", MemoryKind::Local, false);
+        manager
+            .set_chat(second.clone(), remote_config())
+            .await
+            .unwrap();
+
+        // No transition happened — no Unloaded should fire.
+        assert!(events.try_recv().is_err());
+        // unload was still called (idempotent), but reported false.
+        assert_eq!(first.unload_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn clear_chat_emits_unloaded_when_loaded() {
+        let manager = ModelManager::new();
+        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
+        manager
+            .set_chat(chat.clone(), remote_config())
+            .await
+            .unwrap();
+        let _ = manager.acquire_chat().await.unwrap().unwrap();
+
+        let mut events = manager.subscribe_status();
+        manager.clear_chat().await;
+
+        match events.try_recv() {
+            Ok(ModelStatus::Unloaded {
+                model_type: ModelType::Language,
+                model_id,
+            }) => assert_eq!(model_id, "chat"),
+            other => panic!("expected Unloaded for chat, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reaper_resets_activity_after_unload() {
+        let manager = Arc::new(ModelManager::new());
+        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
+        manager
+            .set_chat(chat.clone(), remote_config())
+            .await
+            .unwrap();
+        let _ = manager.acquire_chat().await.unwrap().unwrap();
+
+        manager.chat_last_activity.store(1, Ordering::Relaxed);
+        manager.reap_idle().await;
+        // After a reap, the slot is dormant: last_activity is reset to 0
+        // so the trigger condition no longer fires until a new acquire.
+        assert_eq!(manager.chat_last_activity.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -889,10 +1013,9 @@ mod tests {
             self.loaded.store(true, Ordering::Relaxed);
             Ok(())
         }
-        async fn unload(&self) -> Result<()> {
+        async fn unload(&self) -> Result<bool> {
             self.unload_calls.fetch_add(1, Ordering::Relaxed);
-            self.loaded.store(false, Ordering::Relaxed);
-            Ok(())
+            Ok(self.loaded.swap(false, Ordering::Relaxed))
         }
     }
 

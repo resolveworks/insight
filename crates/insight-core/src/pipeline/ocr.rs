@@ -70,7 +70,7 @@ pub fn spawn_ocr_workers(
                     Err(e) => {
                         tracing::error!(
                             doc_id = %job.doc_id,
-                            error = %e,
+                            error = ?e,
                             "OCR failed; leaving ocr_task in place for retry",
                         );
                         progress
@@ -95,17 +95,29 @@ async fn run_ocr_job(
 ) -> anyhow::Result<()> {
     // Snapshot what we need from storage. Releasing the read lock before
     // the slow inference call keeps other pipeline stages responsive.
+    //
+    // A missing task or source means the doc was deleted (or never
+    // arrived) while the job was queued — drop the orphan task entry so
+    // we don't keep retrying an impossible job.
     let (task, source_bytes) = {
         let s = storage.read().await;
-        let task = s
-            .get_ocr_task(job.namespace_id, &job.doc_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("OCR task entry not found"))?;
-        let source = s
-            .get_document_source(job.namespace_id, &job.doc_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("PDF source not found"))?;
-        (task, source)
+        let task = s.get_ocr_task(job.namespace_id, &job.doc_id).await?;
+        let source = s.get_document_source(job.namespace_id, &job.doc_id).await?;
+        match (task, source) {
+            (Some(task), Some(source)) => (task, source),
+            (task, source) => {
+                tracing::warn!(
+                    doc_id = %job.doc_id,
+                    has_task = task.is_some(),
+                    has_source = source.is_some(),
+                    "OCR job for missing document; clearing orphan task",
+                );
+                if task.is_some() {
+                    s.delete_ocr_task(job.namespace_id, &job.doc_id).await?;
+                }
+                return Ok(());
+            }
+        }
     };
 
     let lease = models

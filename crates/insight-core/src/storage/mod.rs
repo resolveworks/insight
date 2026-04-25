@@ -81,15 +81,8 @@ pub fn doc_ocr_task_key(doc_id: &str) -> String {
 
 /// Build the key for a hash index entry
 #[inline]
-fn hash_index_key(hash: &str) -> String {
+fn hash_index_key(hash: &Hash) -> String {
     format!("{}{}", HASH_INDEX_PREFIX, hash)
-}
-
-/// Build the key prefix for a document's embeddings
-/// Pattern: files/{doc_id}/embeddings/
-#[inline]
-fn embeddings_prefix(doc_id: &str) -> String {
-    format!("{}{}{}", FILES_PREFIX, doc_id, EMBEDDINGS_PART)
 }
 
 /// Build the key for a specific embedding
@@ -430,14 +423,14 @@ impl Storage {
     /// - `files/{id}/text` - extracted text content
     /// - `files/{id}/source` - original file bytes
     ///
-    /// Also creates a hash index entry for duplicate detection.
+    /// Also creates a hash index entry for duplicate detection, keyed by the
+    /// BLAKE3 hash that iroh-blobs computed for the source blob.
     pub async fn add_document(
         &self,
         namespace_id: NamespaceId,
         metadata: DocumentMetadata,
         text_content: &[u8],
         source_content: &[u8],
-        source_hash: &str,
     ) -> Result<()> {
         let doc = self
             .docs
@@ -481,7 +474,7 @@ impl Storage {
         .await?;
 
         // Create hash index entry for O(1) duplicate detection
-        let index_key = hash_index_key(source_hash);
+        let index_key = hash_index_key(&source_blob_hash);
         let doc_id_bytes = metadata.id.as_bytes();
         let doc_id_hash = self.store_blob(doc_id_bytes).await?;
         doc.set_hash(
@@ -681,7 +674,7 @@ impl Storage {
     pub async fn has_source_hash(
         &self,
         namespace_id: NamespaceId,
-        source_hash: &str,
+        source_hash: &Hash,
     ) -> Result<bool> {
         let doc = match self.docs.api().open(namespace_id).await? {
             Some(doc) => doc,
@@ -766,45 +759,11 @@ impl Storage {
         Ok(result)
     }
 
-    /// Delete all embeddings for a document (all models)
-    pub async fn delete_embeddings(&self, namespace_id: NamespaceId, doc_id: &str) -> Result<()> {
-        use futures::StreamExt;
-
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(()),
-        };
-
-        let prefix = embeddings_prefix(doc_id);
-        let query = Query::key_prefix(prefix.as_bytes());
-        let stream = doc.get_many(query).await?;
-        tokio::pin!(stream);
-
-        let mut keys_to_delete = Vec::new();
-        while let Some(result) = stream.next().await {
-            let entry = result?;
-            keys_to_delete.push(entry.key().to_vec());
-        }
-
-        for key in keys_to_delete {
-            doc.del(self.author_id, key).await?;
-        }
-
-        doc.close().await?;
-
-        tracing::debug!(doc_id = %doc_id, "Deleted embeddings");
-
-        Ok(())
-    }
-
     /// Delete a document from a collection
     ///
-    /// Removes all entries for this document:
-    /// - `files/{id}/meta`
-    /// - `files/{id}/text`
-    /// - `files/{id}/source`
-    /// - `_hash_index/{source_hash}` (for duplicate detection)
-    /// - All embeddings
+    /// Sweeps every entry under `files/{id}/` (meta, text, source,
+    /// ocr_task, embeddings, and anything added later) plus the
+    /// `_hash_index/{source_hash}` entry used for duplicate detection.
     pub async fn delete_document(
         &self,
         namespace_id: NamespaceId,
@@ -817,28 +776,36 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        // Get the source content hash for index cleanup
-        let source_key = doc_source_key(document_id);
-        let query = Query::key_exact(source_key.as_bytes());
-        if let Some(entry) = doc.get_one(query).await? {
-            // The content_hash is the hash of the source file - use it to delete the index
-            let source_hash = entry.content_hash().to_string();
-            let index_key = hash_index_key(&source_hash);
+        // Single sweep over `files/{id}/` collects every part of the doc
+        // along with the source's content_hash for hash_index cleanup.
+        let prefix = format!("{}{}/", FILES_PREFIX, document_id);
+        let stream = doc.get_many(Query::key_prefix(prefix.as_bytes())).await?;
+        tokio::pin!(stream);
+
+        let source_suffix = format!("{}/source", document_id);
+        let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+        let mut source_hash: Option<Hash> = None;
+        while let Some(result) = stream.next().await {
+            let entry = result?;
+            let key = entry.key().to_vec();
+            if let Ok(s) = std::str::from_utf8(&key) {
+                if s.strip_prefix(FILES_PREFIX) == Some(source_suffix.as_str()) {
+                    source_hash = Some(entry.content_hash());
+                }
+            }
+            keys_to_delete.push(key);
+        }
+
+        for key in keys_to_delete {
+            doc.del(self.author_id, key).await?;
+        }
+
+        if let Some(hash) = source_hash {
+            let index_key = hash_index_key(&hash);
             doc.del(self.author_id, index_key.into_bytes()).await?;
         }
 
-        // Delete all document entries
-        let meta_key = doc_meta_key(document_id);
-        let text_key = doc_text_key(document_id);
-
-        doc.del(self.author_id, meta_key.into_bytes()).await?;
-        doc.del(self.author_id, text_key.into_bytes()).await?;
-        doc.del(self.author_id, source_key.into_bytes()).await?;
-
         doc.close().await?;
-
-        // Delete associated embeddings (all models)
-        self.delete_embeddings(namespace_id, document_id).await?;
 
         tracing::info!(
             "Deleted document '{}' from collection {}",
@@ -1057,29 +1024,46 @@ impl Storage {
     /// - `files/{id}/source` - original PDF bytes
     /// - `_hash_index/{hash}` - duplicate detection index
     ///
-    /// Returns `(doc_id, source_hash)` for the next phase.
+    /// Returns the new `doc_id` for the next phase.
     ///
     /// Note: Metadata is incomplete until `extract_and_dispatch()` is called.
     pub async fn store_pdf_source(
         &self,
         path: &std::path::Path,
         namespace_id: NamespaceId,
-    ) -> Result<(String, String)> {
+    ) -> Result<String> {
         let file_name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown.pdf".to_string());
 
-        // Read PDF bytes
         let pdf_bytes = std::fs::read(path).context("Failed to read PDF file")?;
 
-        // Compute hash for duplicate detection
-        let source_hash = blake3::hash(&pdf_bytes).to_string();
+        // Hand bytes to iroh-blobs once. add_slice returns a TempTag holding
+        // the BLAKE3 hash; iroh-blobs is content-addressed, so re-adding bytes
+        // that are already stored is a no-op at the storage layer.
+        let source_temp_tag = self.blobs.add_slice(&pdf_bytes).await?;
+        let source_blob_hash = source_temp_tag.hash;
 
-        // Check for duplicate
-        if self.has_source_hash(namespace_id, &source_hash).await? {
+        // Check for duplicate using the hash iroh just computed. Dropping
+        // the TempTag releases our temp reference; if the blob already
+        // existed, the prior document's permanent tag keeps it alive.
+        if self
+            .has_source_hash(namespace_id, &source_blob_hash)
+            .await?
+        {
             anyhow::bail!("Duplicate document: {}", file_name);
         }
+
+        // Promote to a permanent tag so the blob isn't garbage collected.
+        self.blobs
+            .tags()
+            .set(
+                source_blob_hash.to_string(),
+                source_temp_tag.hash_and_format(),
+            )
+            .await?;
+        drop(source_temp_tag);
 
         let doc_id = uuid::Uuid::new_v4().to_string();
 
@@ -1114,7 +1098,6 @@ impl Storage {
         .await?;
 
         // Store source entry at files/{id}/source
-        let source_blob_hash = self.store_blob(&pdf_bytes).await?;
         let source_key = doc_source_key(&doc_id);
         doc.set_hash(
             self.author_id,
@@ -1125,7 +1108,7 @@ impl Storage {
         .await?;
 
         // Create hash index entry for O(1) duplicate detection
-        let index_key = hash_index_key(&source_hash);
+        let index_key = hash_index_key(&source_blob_hash);
         let doc_id_bytes = doc_id.as_bytes();
         let doc_id_hash = self.store_blob(doc_id_bytes).await?;
         doc.set_hash(
@@ -1144,7 +1127,7 @@ impl Storage {
             metadata.name
         );
 
-        Ok((doc_id, source_hash))
+        Ok(doc_id)
     }
 
     /// Phase 2: Extract per-page text from the stored PDF and dispatch.
@@ -1457,15 +1440,8 @@ mod tests {
         };
         let text_content = b"This is the extracted text";
         let source_content = b"PDF bytes here";
-        let source_hash = blake3::hash(source_content).to_string();
         storage
-            .add_document(
-                collection_id,
-                doc,
-                text_content,
-                source_content,
-                &source_hash,
-            )
+            .add_document(collection_id, doc, text_content, source_content)
             .await
             .unwrap();
 
@@ -1512,7 +1488,6 @@ mod tests {
             page_boundaries: vec![],
         };
         let source1 = b"source1";
-        let hash1 = blake3::hash(source1).to_string();
 
         let doc2 = DocumentMetadata {
             id: "doc-2".to_string(),
@@ -1524,14 +1499,13 @@ mod tests {
             page_boundaries: vec![],
         };
         let source2 = b"source2";
-        let hash2 = blake3::hash(source2).to_string();
 
         storage
-            .add_document(collection_id, doc1, b"text1", source1, &hash1)
+            .add_document(collection_id, doc1, b"text1", source1)
             .await
             .unwrap();
         storage
-            .add_document(collection_id, doc2, b"text2", source2, &hash2)
+            .add_document(collection_id, doc2, b"text2", source2)
             .await
             .unwrap();
 
@@ -1549,6 +1523,76 @@ mod tests {
         let docs = storage.list_documents(collection_id).await.unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].id, "doc-2");
+    }
+
+    /// `delete_document` must sweep `ocr_task` along with the rest of
+    /// the doc's entries. Leaving an orphan task behind means a deleted
+    /// PDF will fail OCR with "PDF source not found" once the worker
+    /// gets to it.
+    #[tokio::test]
+    async fn test_delete_document_clears_ocr_task() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+
+        let (collection_id, _) = storage.create_collection("OCR cleanup").await.unwrap();
+
+        let doc = DocumentMetadata {
+            id: "doc-ocr".to_string(),
+            name: "scan.pdf".to_string(),
+            file_type: "application/pdf".to_string(),
+            page_count: 1,
+            tags: vec![],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            page_boundaries: vec![],
+        };
+        storage
+            .add_document(collection_id, doc, b"text", b"source")
+            .await
+            .unwrap();
+
+        // Park an ocr_task entry the same way the extract phase does.
+        let task = crate::pdf::OcrTask {
+            doc_id: "doc-ocr".to_string(),
+            page_count: 1,
+            pages: vec![],
+        };
+        let task_bytes = serde_json::to_vec(&task).unwrap();
+        let task_hash = storage.store_blob(&task_bytes).await.unwrap();
+        let task_key = doc_ocr_task_key("doc-ocr");
+        let docs_doc = storage
+            .docs
+            .api()
+            .open(collection_id)
+            .await
+            .unwrap()
+            .unwrap();
+        docs_doc
+            .set_hash(
+                storage.author_id,
+                task_key.into_bytes(),
+                task_hash,
+                task_bytes.len() as u64,
+            )
+            .await
+            .unwrap();
+        docs_doc.close().await.unwrap();
+
+        assert!(storage
+            .get_ocr_task(collection_id, "doc-ocr")
+            .await
+            .unwrap()
+            .is_some());
+
+        storage
+            .delete_document(collection_id, "doc-ocr")
+            .await
+            .unwrap();
+
+        assert!(storage
+            .get_ocr_task(collection_id, "doc-ocr")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -1594,9 +1638,8 @@ mod tests {
             page_boundaries: vec![],
         };
         let source = b"source";
-        let hash = blake3::hash(source).to_string();
         storage
-            .add_document(collection_id, doc, b"text", source, &hash)
+            .add_document(collection_id, doc, b"text", source)
             .await
             .unwrap();
 
@@ -1624,7 +1667,8 @@ mod tests {
         let (collection_id, _) = storage.create_collection("Duplicates Test").await.unwrap();
 
         let source_content = b"unique source content";
-        let source_hash = blake3::hash(source_content).to_string();
+        let source_hash = Hash::new(source_content);
+        let other_hash = Hash::new(b"different content");
 
         // Initially, no document with this hash exists
         assert!(!storage
@@ -1643,7 +1687,7 @@ mod tests {
             page_boundaries: vec![],
         };
         storage
-            .add_document(collection_id, doc, b"text", source_content, &source_hash)
+            .add_document(collection_id, doc, b"text", source_content)
             .await
             .unwrap();
 
@@ -1655,7 +1699,7 @@ mod tests {
 
         // Different hash should not be detected
         assert!(!storage
-            .has_source_hash(collection_id, "different-hash")
+            .has_source_hash(collection_id, &other_hash)
             .await
             .unwrap());
 
@@ -1728,12 +1772,12 @@ mod tests {
         std::fs::write(&pdf_path, &pdf_bytes).unwrap();
 
         // Phase 1: Store source
-        let (doc_id, source_hash) = storage
+        let doc_id = storage
             .store_pdf_source(&pdf_path, collection_id)
             .await
             .unwrap();
         assert!(!doc_id.is_empty());
-        assert!(!source_hash.is_empty());
+        let source_hash = Hash::new(&pdf_bytes);
 
         // After phase 1: metadata exists but page_count is 0
         let meta1 = storage.get_document(collection_id, &doc_id).await.unwrap();

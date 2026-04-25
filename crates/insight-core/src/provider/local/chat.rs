@@ -95,11 +95,12 @@ impl Provider for LocalChatProvider {
             .map(|_| ())
     }
 
-    async fn unload(&self) -> Result<()> {
-        if self.state.unload().await {
+    async fn unload(&self) -> Result<bool> {
+        let did = self.state.unload().await;
+        if did {
             tracing::info!("Unloaded local chat model '{}'", self.state.model_id());
         }
-        Ok(())
+        Ok(did)
     }
 }
 
