@@ -4658,7 +4658,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -6492,8 +6492,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "candle-core 0.10.2",
@@ -6519,8 +6518,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs-audio"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "apodize",
@@ -6530,8 +6528,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs-core"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "ahash",
  "akin",
@@ -6629,8 +6626,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs-macros"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -6640,8 +6636,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs-mcp"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6660,8 +6655,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs-paged-attn"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "candle-core 0.10.2",
@@ -6677,8 +6671,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs-quant"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "byteorder",
  "candle-core 0.10.2",
@@ -6707,8 +6700,7 @@ dependencies = [
 
 [[package]]
 name = "mistralrs-vision"
-version = "0.8.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs?tag=v0.8.0#962112d18ea5729fe7acaae5085ce54c2fb66dab"
+version = "0.8.1"
 dependencies = [
  "candle-core 0.10.2",
  "image",
@@ -8552,7 +8544,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.2",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8590,7 +8582,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -9807,7 +9799,7 @@ checksum = "4db5a4a562bcc0017c34cd0efbabf447be783f00576a2a516947f884e6a7ed57"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.21.7",
  "encoding_rs_io",
  "nohash-hasher",
  "num-traits",
@@ -10240,7 +10232,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
