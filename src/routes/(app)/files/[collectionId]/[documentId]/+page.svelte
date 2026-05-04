@@ -16,6 +16,7 @@
 	let chunksExpanded = $state(false);
 	let chunksError = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	let contentError = $state<string | null>(null);
 
 	const collectionId = $derived($page.params.collectionId);
 	const documentId = $derived($page.params.documentId);
@@ -31,6 +32,22 @@
 		},
 		{ label: document?.name || 'Document' },
 	]);
+
+	/** Robustly convert any thrown value (including Tauri v2 errors) to a string. */
+	function errorMessage(e: unknown): string {
+		if (typeof e === 'string') return e;
+		if (e instanceof Error) return e.message;
+		// Tauri v2 errors may be plain objects with a `message` property
+		if (
+			e &&
+			typeof e === 'object' &&
+			'message' in e &&
+			typeof (e as Record<string, unknown>).message === 'string'
+		) {
+			return (e as Record<string, unknown>).message as string;
+		}
+		return String(e);
+	}
 
 	function formatDate(dateString: string): string {
 		try {
@@ -59,7 +76,7 @@
 				documentId,
 			});
 		} catch (e) {
-			chunksError = e instanceof Error ? e.message : String(e);
+			chunksError = errorMessage(e);
 		} finally {
 			loadingChunks = false;
 		}
@@ -74,24 +91,30 @@
 
 	onMount(async () => {
 		try {
-			// Load document metadata
 			document = await invoke<Document>('get_document', {
 				collectionId,
 				documentId,
 			});
+		} catch (e) {
+			error = errorMessage(e);
+			loading = false;
+			return;
+		}
 
-			// Load document content
-			loadingContent = true;
+		// Load document content — failure here is non-critical;
+		// the document was just imported and may be pending OCR.
+		loadingContent = true;
+		try {
 			content = await invoke<string>('get_document_text', {
 				collectionId,
 				documentId,
 			});
 		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		} finally {
-			loading = false;
-			loadingContent = false;
+			contentError = errorMessage(e);
 		}
+
+		loading = false;
+		loadingContent = false;
 	});
 </script>
 
@@ -187,6 +210,10 @@
 				</h2>
 				{#if loadingContent}
 					<p class="text-neutral-500">Loading content...</p>
+				{:else if contentError}
+					<div class="rounded-lg border border-warning/50 bg-warning/10 p-3">
+						<p class="text-sm text-neutral-600">{contentError}</p>
+					</div>
 				{:else if content}
 					<div
 						class="max-h-[500px] overflow-y-auto rounded-lg border border-neutral-200 bg-surface-bright p-4"

@@ -462,6 +462,20 @@ impl ModelManager {
         }
     }
 
+    /// Gracefully unload all local providers. Call before process exit to
+    /// give CUDA threads a chance to clean up before the driver is
+    /// deinitialized.
+    pub async fn shutdown(&self) {
+        tracing::info!("ModelManager: shutting down all providers");
+        self.clear_chat().await;
+        self.clear_embedding().await;
+        self.clear_ocr().await;
+        // Give background threads (e.g. mistralrs engine) a moment to
+        // notice the unload and wind down before the runtime drops.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tracing::info!("ModelManager: shutdown complete");
+    }
+
     fn reset_activity(&self, model_type: ModelType) {
         match model_type {
             ModelType::Language => self.chat_last_activity.store(0, Ordering::Relaxed),
@@ -1021,8 +1035,8 @@ mod tests {
 
     #[async_trait]
     impl OcrProvider for TestOcrProvider {
-        async fn ocr_pages(&self, pages: Vec<image::DynamicImage>) -> Result<Vec<String>> {
-            Ok(vec![String::new(); pages.len()])
+        async fn ocr_page(&self, _image: image::DynamicImage) -> Result<String> {
+            Ok(String::new())
         }
     }
 

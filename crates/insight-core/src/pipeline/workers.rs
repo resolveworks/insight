@@ -75,7 +75,7 @@ pub fn spawn_extract_workers(
                 };
 
                 match result {
-                    Ok(metadata) => {
+                    Ok(Some(metadata)) => {
                         tracing::debug!(
                             doc_id = %job.doc_id,
                             pages = metadata.page_count,
@@ -88,6 +88,12 @@ pub fn spawn_extract_workers(
                             })
                             .await;
                         // InsertLocal(files/*/text) will trigger embed via watcher
+                    }
+                    Ok(None) => {
+                        tracing::debug!(
+                            doc_id = %job.doc_id,
+                            "Document deleted before extract; skipping"
+                        );
                     }
                     Err(e) => {
                         tracing::error!(doc_id = %job.doc_id, error = %e, "Extract failed");

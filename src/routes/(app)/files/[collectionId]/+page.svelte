@@ -30,10 +30,14 @@
 			? [
 					{ name: 'Store', data: pipelineProgress.store },
 					{ name: 'Extract', data: pipelineProgress.extract },
+					{ name: 'OCR', data: pipelineProgress.ocr },
 					{ name: 'Embed', data: pipelineProgress.embed },
 					{ name: 'Index', data: pipelineProgress.index },
 				]
 			: [],
+	);
+	const activeDocSummary = $derived(
+		collectionId ? collections.getActiveDocSummary(collectionId) : null,
 	);
 
 	const breadcrumbs = $derived([
@@ -118,7 +122,7 @@
 		</div>
 
 		{#if processing && stages.length > 0}
-			<div class="mt-4 grid grid-cols-4 gap-4">
+			<div class="mt-4 grid grid-cols-5 gap-4">
 				{#each stages as stage (stage.name)}
 					{@const total =
 						stage.data.pending +
@@ -141,6 +145,9 @@
 					</div>
 				{/each}
 			</div>
+			{#if activeDocSummary}
+				<div class="mt-2 text-xs text-neutral-500">{activeDocSummary}</div>
+			{/if}
 		{/if}
 	</header>
 

@@ -2,7 +2,7 @@ pub mod commands;
 pub mod core;
 pub mod error;
 
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 use crate::core::{AppState, Config, ModelDownloadProgress, ModelStatus};
 
@@ -139,6 +139,22 @@ pub fn run() {
             commands::conversations::predict_next_message,
             commands::conversations::cancel_prediction,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let RunEvent::Exit = event {
+                // Gracefully unload models before the runtime drops.
+                // This gives CUDA threads a chance to clean up before
+                // the driver is deinitialized.
+                tauri::async_runtime::block_on(async {
+                    let state = app_handle.state::<AppState>();
+                    let models = state.models.clone();
+                    // Run in a separate task with a deadline so we don't
+                    // block exit indefinitely.
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_secs(3), models.shutdown())
+                            .await;
+                });
+            }
+        });
 }

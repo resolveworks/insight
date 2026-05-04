@@ -36,7 +36,7 @@ mod types;
 mod watcher;
 mod workers;
 
-pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
+pub use progress::{DocProgress, PipelineProgress, ProgressTracker, StageProgress};
 pub use types::{EmbedJob, ExtractJob, IndexJob, OcrJob, ProgressUpdate, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
 

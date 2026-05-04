@@ -70,4 +70,12 @@ pub enum ProgressUpdate {
     },
     /// Job queued for processing (-> pending).
     Queued { collection_id: String, stage: Stage },
+    /// Per-item progress within an active job (e.g. OCR page 5/20).
+    PageProgress {
+        collection_id: String,
+        doc_id: String,
+        stage: Stage,
+        current: usize,
+        total: usize,
+    },
 }

@@ -1,10 +1,9 @@
 //! OCR provider role trait.
 //!
 //! OCR providers turn images of document pages into text. The pipeline's
-//! OCR worker calls [`OcrProvider::ocr_pages`] with one whole document's
-//! scanned pages at a time; the provider returns one string per input
-//! image, in order. Per-page failures must surface as an empty string —
-//! the worker still needs to merge the result with digital pages.
+//! OCR worker calls [`OcrProvider::ocr_page`] one page at a time so it can
+//! report per-page progress and keep the model-activity timestamp fresh
+//! during long documents.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -15,9 +14,27 @@ use super::Provider;
 /// OCR role trait.
 #[async_trait]
 pub trait OcrProvider: Provider {
-    /// Run OCR over the given page images and return one string per image,
-    /// in the same order. Implementations may batch internally; callers
-    /// pass one document's scanned pages per call. A per-page failure must
-    /// be reported as `String::new()` rather than aborting the whole call.
-    async fn ocr_pages(&self, pages: Vec<DynamicImage>) -> Result<Vec<String>>;
+    /// Run OCR over a single page image.
+    ///
+    /// Errors are per-page by design: the OCR worker substitutes an empty
+    /// string so a single bad scan doesn't kill the whole document.
+    async fn ocr_page(&self, image: DynamicImage) -> Result<String>;
+
+    /// Run OCR over all given page images.
+    ///
+    /// Default implementation calls [`ocr_page`](Self::ocr_page) in a
+    /// loop. Providers with native batch support may override.
+    async fn ocr_pages(&self, pages: Vec<DynamicImage>) -> Result<Vec<String>> {
+        let mut out = Vec::with_capacity(pages.len());
+        for image in pages {
+            match self.ocr_page(image).await {
+                Ok(text) => out.push(text),
+                Err(e) => {
+                    tracing::warn!(error = %e, "OCR page failed; substituting empty");
+                    out.push(String::new());
+                }
+            }
+        }
+        Ok(out)
+    }
 }

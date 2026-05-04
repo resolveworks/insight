@@ -31,13 +31,26 @@ export interface StageProgress {
 	failed: number;
 }
 
+/** Per-document progress within a stage */
+export interface DocProgress {
+	doc_id: string;
+	current: number;
+	total: number;
+}
+
 /** Pipeline progress for a collection across all stages */
 export interface PipelineProgress {
 	collection_id: string;
 	store: StageProgress;
 	extract: StageProgress;
+	ocr: StageProgress;
 	embed: StageProgress;
 	index: StageProgress;
+	store_doc: DocProgress | null;
+	extract_doc: DocProgress | null;
+	ocr_doc: DocProgress | null;
+	embed_doc: DocProgress | null;
+	index_doc: DocProgress | null;
 }
 
 interface DocumentAddedEvent {
@@ -73,6 +86,7 @@ function pipelineIsActive(progress: PipelineProgress): boolean {
 	return (
 		stageIsActive(progress.store) ||
 		stageIsActive(progress.extract) ||
+		stageIsActive(progress.ocr) ||
 		stageIsActive(progress.embed) ||
 		stageIsActive(progress.index)
 	);
@@ -330,4 +344,29 @@ export function getAllPipelineProgress(): PipelineProgress[] {
  */
 export function hasActivePipeline(): boolean {
 	return Object.keys(pipelineProgress).length > 0;
+}
+
+/**
+ * Get a human-readable summary of what the pipeline is currently doing
+ * (e.g. "OCR page 5 / 20"). Returns null when nothing is active.
+ */
+export function getActiveDocSummary(collectionId: string): string | null {
+	const progress = pipelineProgress[collectionId];
+	if (!progress) return null;
+
+	const stages: [string, DocProgress | null][] = [
+		['OCR', progress.ocr_doc],
+		['Embed', progress.embed_doc],
+		['Extract', progress.extract_doc],
+		['Index', progress.index_doc],
+	];
+
+	for (const [name, doc] of stages) {
+		if (doc) {
+			const shortId =
+				doc.doc_id.length > 8 ? doc.doc_id.slice(0, 8) : doc.doc_id;
+			return `${name} ${shortId}… ${doc.current} / ${doc.total}`;
+		}
+	}
+	return null;
 }

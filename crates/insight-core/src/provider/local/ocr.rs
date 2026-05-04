@@ -123,25 +123,10 @@ impl Provider for LocalOcrProvider {
 
 #[async_trait]
 impl OcrProvider for LocalOcrProvider {
-    async fn ocr_pages(&self, pages: Vec<DynamicImage>) -> Result<Vec<String>> {
-        if pages.is_empty() {
-            return Ok(Vec::new());
-        }
-
+    async fn ocr_page(&self, image: DynamicImage) -> Result<String> {
         self.ensure_loaded().await?;
         let model = self.loaded().await?;
-
-        let mut out = Vec::with_capacity(pages.len());
-        for (idx, image) in pages.into_iter().enumerate() {
-            match run_one_page(&model, &self.prompt, image).await {
-                Ok(text) => out.push(text),
-                Err(e) => {
-                    tracing::warn!(page = idx, error = %e, "OCR page failed; substituting empty");
-                    out.push(String::new());
-                }
-            }
-        }
-        Ok(out)
+        run_one_page(&model, &self.prompt, image).await
     }
 }
 
@@ -192,12 +177,25 @@ fn patch_multimodal_config(hf_repo_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Per-page OCR timeout. A single page shouldn't need more than 5 minutes;
+/// if it exceeds this the model is likely in a hallucination loop and we
+/// cut it short so the rest of the document can proceed.
+pub(crate) const OCR_PAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 async fn run_one_page(model: &Model, prompt: &str, image: DynamicImage) -> Result<String> {
+    let (w, h) = (image.width(), image.height());
+    tracing::info!(
+        image_dims = %format!("{}x{}", w, h),
+        "OCR: starting page inference"
+    );
+
     let messages =
         MultimodalMessages::new().add_image_message(TextMessageRole::User, prompt, vec![image]);
 
+    let t0 = std::time::Instant::now();
     let mut stream = model.stream_chat_request(messages).await?;
     let mut text = String::new();
+    let mut token_count: usize = 0;
 
     while let Some(chunk) = stream.next().await {
         match chunk {
@@ -209,6 +207,14 @@ async fn run_one_page(model: &Model, prompt: &str, image: DynamicImage) -> Resul
                     } = &choice.delta;
                     if let Some(t) = delta_content {
                         text.push_str(t);
+                        token_count += 1;
+                        if token_count.is_multiple_of(500) {
+                            tracing::debug!(
+                                tokens = token_count,
+                                elapsed_secs = t0.elapsed().as_secs_f32(),
+                                "OCR: still generating…"
+                            );
+                        }
                     }
                 }
             }
@@ -220,5 +226,11 @@ async fn run_one_page(model: &Model, prompt: &str, image: DynamicImage) -> Resul
         }
     }
 
+    tracing::info!(
+        tokens = token_count,
+        elapsed_secs = t0.elapsed().as_secs_f32(),
+        output_len = text.len(),
+        "OCR: page completed"
+    );
     Ok(text)
 }

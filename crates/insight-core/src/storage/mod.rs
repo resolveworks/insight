@@ -1145,25 +1145,44 @@ impl Storage {
     ///   results, and only then is `meta` updated with real boundaries.
     ///   `meta.page_count` is set immediately so the UI can show the
     ///   document right away.
+    ///
+    /// Extract text from a stored PDF, dispatching to the OCR worker if
+    /// needed.
+    ///
+    /// Returns `Ok(Some(metadata))` on success, `Ok(None)` when the
+    /// document has been deleted (job queued before deletion), and
+    /// `Err(...)` for actual failures.
     pub async fn extract_and_dispatch(
         &self,
         namespace_id: NamespaceId,
         doc_id: &str,
-    ) -> Result<DocumentMetadata> {
-        let source_bytes = self
-            .get_document_source(namespace_id, doc_id)
-            .await?
-            .context("Source not found - was store_pdf_source() called?")?;
+    ) -> Result<Option<DocumentMetadata>> {
+        let source_bytes = match self.get_document_source(namespace_id, doc_id).await? {
+            Some(b) => b,
+            None => {
+                tracing::warn!(
+                    doc_id = %doc_id,
+                    "Source not found; document was likely deleted — skipping extract"
+                );
+                return Ok(None);
+            }
+        };
 
         let extracted =
             tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source_bytes))
                 .await
                 .context("Extract task panicked")??;
 
-        let mut metadata = self
-            .get_document(namespace_id, doc_id)
-            .await?
-            .context("Metadata not found")?;
+        let mut metadata = match self.get_document(namespace_id, doc_id).await? {
+            Some(m) => m,
+            None => {
+                tracing::warn!(
+                    doc_id = %doc_id,
+                    "Metadata not found after extraction; document was likely deleted — skipping"
+                );
+                return Ok(None);
+            }
+        };
 
         metadata.page_count = extracted.page_count;
 
@@ -1241,7 +1260,7 @@ impl Storage {
             );
         }
 
-        Ok(metadata)
+        Ok(Some(metadata))
     }
 
     /// Read the OCR task payload for a document, if one was written.
@@ -1294,6 +1313,10 @@ impl Storage {
     /// by the OCR worker to commit its output atomically (from the
     /// caller's POV — iroh entries land independently but the worker
     /// only deletes `ocr_task` after both writes succeed).
+    ///
+    /// Returns `Ok(())` if the document was already deleted (metadata
+    /// not found) — the OCR worker treats this as a clean skip, not an
+    /// error.
     pub async fn write_text_and_meta(
         &self,
         namespace_id: NamespaceId,
@@ -1301,10 +1324,16 @@ impl Storage {
         text: &str,
         page_boundaries: &[usize],
     ) -> Result<()> {
-        let mut metadata = self
-            .get_document(namespace_id, doc_id)
-            .await?
-            .context("Metadata not found")?;
+        let mut metadata = match self.get_document(namespace_id, doc_id).await? {
+            Some(m) => m,
+            None => {
+                tracing::warn!(
+                    doc_id = %doc_id,
+                    "Metadata not found; document was likely deleted — skipping write"
+                );
+                return Ok(());
+            }
+        };
         metadata.page_boundaries = page_boundaries.to_vec();
 
         let doc = self
@@ -1805,7 +1834,8 @@ mod tests {
         let metadata = storage
             .extract_and_dispatch(collection_id, &doc_id)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("document should exist");
 
         // Now page_count should be populated
         assert_eq!(metadata.page_count, 1);

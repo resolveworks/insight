@@ -6,9 +6,13 @@
 //! 3. Acquire the OCR provider lease — fails fast if no model is
 //!    configured, leaving the task entry in place for retry.
 //! 4. Rasterize each `NeedsOcr` page on the blocking pool.
-//! 5. Run inference, then merge per-page results with the digital text
-//!    we already had into the final `(text, page_boundaries)` pair.
-//! 6. Write `text` + updated meta, then delete the `ocr_task` entry.
+//! 5. Run inference one page at a time, touching the model-activity
+//!    timestamp and reporting per-page progress after each page so the
+//!    idle reaper doesn't unload during long documents and the user can
+//!    see what's happening.
+//! 6. Merge per-page results with the digital text we already had into
+//!    the final `(text, page_boundaries)` pair.
+//! 7. Write `text` + updated meta, then delete the `ocr_task` entry.
 //!
 //! Per-doc failures emit `ProgressUpdate::Failed` and leave `ocr_task` in
 //! place — the next startup orphan scan retries.
@@ -19,6 +23,7 @@ use tokio::sync::RwLock;
 
 use crate::manager::ModelManager;
 use crate::pdf::{rasterize_page, OcrTask, PageDecision, RASTER_DPI};
+use crate::provider::local::ocr::OCR_PAGE_TIMEOUT;
 use crate::storage::Storage;
 
 use super::progress::ProgressTracker;
@@ -58,7 +63,7 @@ pub fn spawn_ocr_workers(
                     })
                     .await;
 
-                match run_ocr_job(&job, &storage, &models).await {
+                match run_ocr_job(&job, &storage, &models, &progress).await {
                     Ok(()) => {
                         progress
                             .apply(ProgressUpdate::Completed {
@@ -92,6 +97,7 @@ async fn run_ocr_job(
     job: &OcrJob,
     storage: &Arc<RwLock<Storage>>,
     models: &Arc<ModelManager>,
+    progress: &ProgressTracker,
 ) -> anyhow::Result<()> {
     // Snapshot what we need from storage. Releasing the read lock before
     // the slow inference call keeps other pipeline stages responsive.
@@ -147,8 +153,41 @@ async fn run_ocr_job(
     })
     .await??;
 
-    models.touch_ocr();
-    let ocr_texts = lease.ocr_pages(images).await?;
+    let total_pages = images.len();
+    let mut ocr_texts = Vec::with_capacity(total_pages);
+    let collection_id = job.namespace_id.to_string();
+
+    // One page at a time so we can keep the activity timestamp fresh
+    // and report progress to the user.
+    for (idx, image) in images.into_iter().enumerate() {
+        models.touch_ocr();
+        progress
+            .apply(ProgressUpdate::PageProgress {
+                collection_id: collection_id.clone(),
+                doc_id: job.doc_id.clone(),
+                stage: Stage::Ocr,
+                current: idx + 1,
+                total: total_pages,
+            })
+            .await;
+
+        let page_result = tokio::time::timeout(OCR_PAGE_TIMEOUT, lease.ocr_page(image)).await;
+        match page_result {
+            Ok(Ok(text)) => ocr_texts.push(text),
+            Ok(Err(e)) => {
+                tracing::warn!(page = idx, error = %e, "OCR page failed; substituting empty");
+                ocr_texts.push(String::new());
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    page = idx,
+                    timeout_secs = OCR_PAGE_TIMEOUT.as_secs(),
+                    "OCR page timed out — model likely in hallucination loop; substituting empty"
+                );
+                ocr_texts.push(String::new());
+            }
+        }
+    }
     models.touch_ocr();
 
     if ocr_texts.len() != scanned_indices.len() {
@@ -161,8 +200,20 @@ async fn run_ocr_job(
 
     let (full_text, page_boundaries) = merge_pages(&task, ocr_texts);
 
+    // Re-check document existence after the expensive GPU work.
+    // If the user deleted the document while OCR was running, the
+    // write_text_and_meta will be a no-op; delete_ocr_task is also
+    // harmless (already swept by the deletion).
     {
         let s = storage.read().await;
+        let meta = s.get_document(job.namespace_id, &job.doc_id).await?;
+        if meta.is_none() {
+            tracing::warn!(
+                doc_id = %job.doc_id,
+                "Document deleted during OCR; discarding results"
+            );
+            return Ok(());
+        }
         s.write_text_and_meta(job.namespace_id, &job.doc_id, &full_text, &page_boundaries)
             .await?;
         s.delete_ocr_task(job.namespace_id, &job.doc_id).await?;

@@ -70,9 +70,28 @@ impl<T: Send + Sync> LocalModelState<T> {
         Ok(arc)
     }
 
-    /// Drop the loaded weights. Returns whether anything was unloaded — the
-    /// caller uses it to decide whether to log / emit an event.
+    /// Drop the loaded weights.
+    ///
+    /// Returns `true` if the weights were actually dropped. If another
+    /// caller (e.g. an active inference loop) holds a clone of the
+    /// [`Arc`], the unload is skipped and `false` is returned — the
+    /// reaper will retry on the next tick once the inference is done.
     pub async fn unload(&self) -> bool {
-        self.loaded.write().await.take().is_some()
+        let mut guard = self.loaded.write().await;
+        match guard.as_ref() {
+            Some(arc) if Arc::strong_count(arc) > 1 => {
+                tracing::debug!(
+                    model = %self.model_id,
+                    refs = Arc::strong_count(arc),
+                    "Skipping unload: model is still in use",
+                );
+                false
+            }
+            Some(_) => {
+                guard.take();
+                true
+            }
+            None => false,
+        }
     }
 }
