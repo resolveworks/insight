@@ -504,8 +504,6 @@ mod tests {
         ra.unwrap();
         rb.unwrap();
 
-        // Final state must be one of the two interleavings' complete writes:
-        // with the per-id lock, either all 10 first then all 20, or 20 then 10.
         // Final state must be one of the two complete writes: with the
         // per-id lock, either all 10 first then all 20, or all 20 then all 10.
         let texts = user_texts(&store.load(&"c5".into()).await.unwrap());
