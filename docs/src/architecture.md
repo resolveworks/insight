@@ -9,7 +9,7 @@ Insight is built as a Tauri 2.0 desktop application with a Rust backend and Svel
 | App framework   | Tauri 2.0               | Desktop app (Rust backend, web frontend)     |
 | UI              | Svelte 5                | Frontend                                     |
 | Styling         | Tailwind 4              | Utility-first CSS                            |
-| Chat inference  | OpenAI / Anthropic APIs | Remote LLM providers, configured in Settings |
+| Chat inference  | [rig]                 | LLM framework: 25+ provider families, agent runtime, tools, memory |
 | P2P / Sync      | iroh                    | Connections, NAT traversal, sync             |
 | Content storage | iroh-blobs              | Content-addressed file storage               |
 | Metadata sync   | iroh-docs               | CRDT key-value store for metadata            |
@@ -17,21 +17,27 @@ Insight is built as a Tauri 2.0 desktop application with a Rust backend and Svel
 | Search          | milli                   | Full-text keyword search (BM25)              |
 | PDF text        | lopdf                   | Digital text extraction                      |
 
+[rig]: https://github.com/0xPlaygrounds/rig
+
 ## Agent Architecture
 
 ```
 User Query
     ↓
-Remote LLM (OpenAI / Anthropic)
+rig Agent (per request: preamble + tools + memory + max turns)
     ↓
-Tool Calling Loop
+Registry-built Model (any supported rig provider family)
+    ↓
+Tool Calling Loop (multi-turn)
     ↓
 Synthesized Answer (with citations)
 ```
 
-Inference is remote-only: the chat provider (OpenAI or Anthropic) is configured in Settings with an API key and model. Only the conversation—queries and retrieved excerpts—goes to the provider. Documents are stored, searched, and synced entirely on your machine.
+Inference is remote-only: the chat provider is configured in Settings (family + model + optional API key / base URL). Insight supports every chat-completion provider family offered by [rig](https://github.com/0xPlaygrounds/rig) — OpenAI, Anthropic, Gemini, Groq, OpenRouter, and local servers like Ollama and llama.cpp — through a data-driven registry. Only the conversation—queries and retrieved excerpts—goes to the provider. Documents are stored, searched, and synced entirely on your machine.
 
-The agent has tools for searching (keyword, BM25 via milli) and reading documents. It iteratively gathers evidence to answer questions, citing sources along the way. There is no direct user-facing search—all document retrieval happens through the agent.
+The runtime (`crates/insight-core/src/runtime.rs`) builds a fresh rig agent per request: a stable preamble, the document tools, file-backed conversation memory, and a scope hook that injects the conversation's active collections as context on every turn. `generate_title` and `predict_next_message` are bare-model completions over the same provider settings. Conversation history persists as rig messages plus a metadata sidecar under `conversations/{id}/`. Agent progress streams to the frontend as rig `MultiTurnStreamItem` JSON events.
+
+The agent has four typed tools (search, read_chunk, list_documents, get_collection_terms) built on milli search and iroh storage. It iteratively gathers evidence to answer questions, citing sources along the way. There is no direct user-facing search—all document retrieval happens through the agent.
 
 ## Data Model
 
@@ -114,4 +120,4 @@ Search is local keyword indexing over synced text: each peer builds its own mill
 └── conversations/      # chat history
 ```
 
-Chat provider configuration (provider, API keys) lives in `~/.local/share/insight/settings.json`. On Windows, app data is under `%LOCALAPPDATA%\insight\`.
+Chat provider configuration (settings v2: active `provider` plus per-family `api_keys`) lives in `~/.local/share/insight/settings.json`. Conversations are stored under `conversations/{id}/` as `messages.json` (rig message history) and `meta.json` (title, linked collections). On Windows, app data is under `%LOCALAPPDATA%\insight\`.

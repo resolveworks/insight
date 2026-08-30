@@ -1,8 +1,9 @@
 //! Rig-based agent runtime.
 //!
 //! [`send_message`] drives a rig agent over the document tools
-//! ([`crate::tools`]) with [`FileConversationMemory`] persistence, streaming
-//! every [`MultiTurnStreamItem`] to the caller as JSON. The conversation's
+//! ([`crate::tools`]) with [`crate::memory::FileConversationMemory`] persistence,
+//! streaming every [`MultiTurnStreamItem`](rig::agent::MultiTurnStreamItem)
+//! to the caller as JSON. The conversation's
 //! collection scope is injected per turn as an `extra_context` document via
 //! an [`AgentHook`] — non-sticky, so a mid-conversation scope change takes
 //! effect on the very next model call without touching stored history.
@@ -150,7 +151,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// Send a user message to a conversation and stream the agent's response.
 ///
 /// Every stream item is forwarded to `on_event` as the serialized
-/// [`MultiTurnStreamItem`]; a stream error is surfaced as
+/// [`MultiTurnStreamItem`](rig::agent::MultiTurnStreamItem); a stream error is surfaced as
 /// `{"type":"streamError","message":...}` through the same channel and ends
 /// the run. Cancelling `cancel` aborts the run (dropping the stream) and
 /// returns `Ok(())`.
