@@ -4,25 +4,21 @@
 //! - Document storage (iroh P2P)
 //! - Full-text search (milli)
 //! - PDF text extraction (lopdf)
-//! - Remote inference providers (OpenAI, Anthropic) via [`provider`] +
-//!   [`manager::ModelManager`]
-//! - Agent/conversation handling
+//! - Remote inference providers via the [`rig`] framework: the provider
+//!   registry ([`providers`]), typed document tools ([`tools`]), file-backed
+//!   conversation memory ([`memory`]), and the agent [`runtime`]
 //! - Event-driven pipeline for document import
 
-pub mod agent;
 pub mod config;
-pub mod conversations;
-pub mod manager;
 pub mod memory;
 pub mod pdf;
 pub mod pipeline;
-pub mod provider;
 pub mod providers;
+pub mod runtime;
 pub mod search;
 pub mod storage;
 pub mod tools;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -30,13 +26,6 @@ use tokio_util::sync::CancellationToken;
 use milli::update::IndexerConfig;
 use milli::Index;
 use serde::{Deserialize, Serialize};
-
-/// Model role identifier used for status events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ModelType {
-    Language,
-}
 
 /// Collection info - canonical definition used across API responses and agent context
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,44 +43,11 @@ pub struct CollectionInfo {
     pub created_at: Option<String>,
 }
 
-/// Model status for frontend synchronization
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "status", rename_all = "lowercase")]
-pub enum ModelStatus {
-    /// Model is being loaded into memory
-    Loading {
-        model_type: ModelType,
-        model_id: String,
-        model_name: String,
-    },
-    /// Model is ready for use
-    Ready {
-        model_type: ModelType,
-        model_id: String,
-    },
-    /// Model was unloaded from memory. The provider stays configured;
-    /// the next request reloads.
-    Unloaded {
-        model_type: ModelType,
-        model_id: String,
-    },
-    /// Model failed to load
-    Failed {
-        model_type: ModelType,
-        model_id: String,
-        error: String,
-    },
-}
-
-pub use agent::{AgentContext, AgentEvent, Conversation};
 pub use config::{Config, Settings};
-pub use manager::{ChatLease, ModelManager};
+pub use memory::{ConversationMeta, ConversationSummary, FileConversationMemory};
 pub use pipeline::{Pipeline, PipelineProgress, StageProgress};
-pub use provider::{
-    get_provider_families, get_tool_definitions, AnthropicChatProvider, ChatProvider,
-    CompletedToolCall, CompletionResult, OpenAIChatProvider, ProviderConfig, ProviderEvent,
-    ProviderFamily, RemoteModelInfo, ToolDefinition,
-};
+pub use providers::{ProviderFamily, ProviderModel, ProviderSettings};
+pub use runtime::{generate_title, predict_next_message, send_message, BASE_SYSTEM_PROMPT};
 pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::Storage;
 
@@ -99,8 +55,6 @@ pub use storage::Storage;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
-    /// Central manager for the chat provider slot.
-    pub models: Arc<ModelManager>,
     /// Storage - initialized in setup(), always available to commands
     pub storage: Arc<RwLock<Storage>>,
     /// Search index - shared for reads, writes go through index worker
@@ -108,12 +62,12 @@ pub struct AppState {
     pub search: Arc<Index>,
     /// Index worker handle for search write operations (indexing, deletion)
     pub index_worker: IndexWorkerHandle,
-    /// Active conversations
-    pub conversations: Arc<RwLock<HashMap<String, Conversation>>>,
+    /// File-backed conversation memory (messages + metadata sidecars)
+    pub memory: Arc<FileConversationMemory>,
     /// Cancellation tokens for active generations
-    pub active_generations: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    pub active_generations: Arc<RwLock<std::collections::HashMap<String, CancellationToken>>>,
     /// Cancellation tokens for active predictions (tab completion)
-    pub active_predictions: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    pub active_predictions: Arc<RwLock<std::collections::HashMap<String, CancellationToken>>>,
     /// Event-driven document processing pipeline
     pub pipeline: Arc<Pipeline>,
 }
@@ -127,8 +81,6 @@ impl AppState {
     pub async fn new(
         config: Config,
     ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<PipelineProgress>)> {
-        let models = Arc::new(ModelManager::new());
-
         // Fast async init - just opens files
         let storage = Storage::open(&config.iroh_dir).await?;
 
@@ -142,69 +94,51 @@ impl AppState {
         // Spawn index worker - handles all milli write operations in a dedicated thread
         let index_worker = spawn_index_worker(search.clone(), indexer_config);
 
+        let memory = Arc::new(FileConversationMemory::new(
+            config.conversations_dir.clone(),
+        ));
+
         // Create event-driven pipeline for document processing
         let (pipeline, progress_rx) = Pipeline::new(storage.clone(), index_worker.clone());
 
         Ok((
             Self {
                 config,
-                models,
                 storage,
                 search,
                 index_worker,
-                conversations: Arc::new(RwLock::new(HashMap::new())),
-                active_generations: Arc::new(RwLock::new(HashMap::new())),
-                active_predictions: Arc::new(RwLock::new(HashMap::new())),
+                memory,
+                active_generations: Arc::new(RwLock::new(Default::default())),
+                active_predictions: Arc::new(RwLock::new(Default::default())),
                 pipeline: Arc::new(pipeline),
             },
             progress_rx,
         ))
     }
 
-    /// Restore provider configurations from settings. Called once at startup.
+    /// Restore provider configuration from settings. Called once at startup.
     ///
-    /// Installs the configured chat provider (if any) without any blocking
-    /// work — remote providers are ready immediately.
+    /// Starts watching existing collections for indexing events and — when a
+    /// chat provider is configured — validates that it still constructs
+    /// (logging a warning instead of failing startup otherwise). Provider
+    /// models are built per request; nothing long-lived is installed here.
     pub async fn restore_configs_from_settings(&self) {
-        let settings = Settings::load(&self.config.settings_file);
-
         // Start watching existing collections for indexing events.
         self.watch_existing_collections().await;
 
-        // Install chat provider if configured.
-        if let Some(ref provider_config) = settings.provider {
-            self.install_chat_provider_from_config(provider_config)
-                .await;
-        }
-    }
-
-    /// Install a chat provider from saved configuration without loading
-    /// weights. The first inference request pays the load cost.
-    async fn install_chat_provider_from_config(&self, config: &ProviderConfig) {
-        match config {
-            ProviderConfig::OpenAI { api_key, model } => {
-                let provider = OpenAIChatProvider::new(api_key, model);
-                if let Err(e) = self
-                    .models
-                    .set_chat(Arc::new(provider), config.clone())
-                    .await
-                {
-                    tracing::error!("Failed to install OpenAI provider: {}", e);
-                    return;
-                }
-                tracing::info!("Loaded OpenAI provider: {}", model);
-            }
-            ProviderConfig::Anthropic { api_key, model } => {
-                let provider = AnthropicChatProvider::new(api_key, model);
-                if let Err(e) = self
-                    .models
-                    .set_chat(Arc::new(provider), config.clone())
-                    .await
-                {
-                    tracing::error!("Failed to install Anthropic provider: {}", e);
-                    return;
-                }
-                tracing::info!("Loaded Anthropic provider: {}", model);
+        let settings = Settings::load(&self.config.settings_file);
+        if let Some(ref provider) = settings.provider {
+            match providers::build_model(provider) {
+                Ok(_) => tracing::info!(
+                    family = %provider.family,
+                    model = %provider.model,
+                    "Chat provider configured"
+                ),
+                Err(e) => tracing::warn!(
+                    family = %provider.family,
+                    error = %e,
+                    "Configured chat provider failed validation; chat will be unavailable until it is reconfigured"
+                ),
             }
         }
     }

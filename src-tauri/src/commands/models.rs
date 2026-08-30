@@ -1,50 +1,38 @@
 //! Chat provider status commands.
 //!
-//! Local inference (model downloads, embeddings, OCR) has been removed;
-//! the only model surface is the remote chat provider configured via the
-//! provider commands (see `providers.rs`).
+//! The provider is read from persisted settings and validated live by
+//! constructing the model handle (`build_model`); there is no long-lived
+//! model state in the app anymore.
 
 use serde::Serialize;
 use tauri::State;
 
-use crate::core::{AppState, Settings};
-use crate::error::{CommandResult, ResultExt};
+use crate::core::{providers, AppState, Settings};
+use crate::error::CommandResult;
 
-/// Snapshot of the chat provider's persistent state (unconfigured or ready).
-///
-/// Transient states (loading, failed) are carried by `model-status-changed`
-/// events, not by this query.
+/// Snapshot of the chat provider's state for the UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderStatus {
-    pub provider_type: Option<String>,
-    pub model_id: Option<String>,
+    pub family: Option<String>,
+    pub model: Option<String>,
     pub ready: bool,
 }
 
-/// Get the current chat provider status.
+/// Get the current chat provider status. `ready` means a provider is
+/// configured AND its settings pass `build_model` validation.
 #[tauri::command]
 pub async fn get_provider_status(state: State<'_, AppState>) -> CommandResult<ProviderStatus> {
-    let config = state.models.chat_config().await;
-    let ready = state.models.chat_ready().await;
+    let settings = Settings::load(&state.config.settings_file);
+    let (family, model, ready) = match settings.provider {
+        Some(provider) => {
+            let ready = providers::build_model(&provider).is_ok();
+            (Some(provider.family), Some(provider.model), ready)
+        }
+        None => (None, None, false),
+    };
     Ok(ProviderStatus {
-        provider_type: config.as_ref().map(|c| c.provider_type().to_string()),
-        model_id: config.map(|c| c.model_id().to_string()),
+        family,
+        model,
         ready,
     })
-}
-
-/// Disable the chat provider: clear it from the manager and persist
-/// `provider = None` in settings.
-///
-/// Emits no event; the frontend updates its own state after invoking.
-#[tauri::command]
-pub async fn disable_chat_provider(state: State<'_, AppState>) -> CommandResult<()> {
-    tracing::info!("Disabling chat provider");
-    state.models.clear_chat().await;
-
-    let mut settings = Settings::load(&state.config.settings_file);
-    settings.provider = None;
-    settings.save(&state.config.settings_file).storage_err()?;
-
-    Ok(())
 }

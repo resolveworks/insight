@@ -32,6 +32,7 @@ pub fn run() {
             let (state, mut pipeline_progress_rx) =
                 tauri::async_runtime::block_on(AppState::new(config))?;
             app.manage(state);
+            let state = app.state::<AppState>();
 
             // Forward pipeline progress events to frontend
             let pipeline_handle = app.handle().clone();
@@ -39,19 +40,6 @@ pub fn run() {
                 use tauri::Emitter;
                 while let Some(progress) = pipeline_progress_rx.recv().await {
                     let _ = pipeline_handle.emit("pipeline-progress", &progress);
-                }
-            });
-
-            // Subscribe the frontend to the manager's status broadcast so
-            // lazy-load transitions (loading → ready/failed on first use)
-            // surface as `model-status-changed` events.
-            let state = app.state::<AppState>();
-            let mut status_rx = state.models.subscribe_status();
-            let status_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                use tauri::Emitter;
-                while let Ok(status) = status_rx.recv().await {
-                    let _ = status_handle.emit("model-status-changed", &status);
                 }
             });
 
@@ -89,14 +77,12 @@ pub fn run() {
             commands::conversations::delete_conversation,
             // Chat provider status
             commands::models::get_provider_status,
-            commands::models::disable_chat_provider,
             // Provider management
-            commands::providers::get_provider_families,
+            commands::providers::list_provider_families,
+            commands::providers::list_provider_models,
+            commands::providers::configure_provider,
+            commands::providers::disable_provider,
             commands::providers::get_current_provider,
-            commands::providers::fetch_openai_models,
-            commands::providers::fetch_anthropic_models,
-            commands::providers::configure_openai_provider,
-            commands::providers::configure_anthropic_provider,
             commands::providers::get_stored_api_keys,
             // Prediction commands (tab completion)
             commands::conversations::predict_next_message,
