@@ -9,7 +9,6 @@
 	import { resolve } from '$app/paths';
 	import * as collectionsStore from '$lib/stores/collections.svelte';
 	import * as chat from '$lib/stores/conversations.svelte';
-	import type { AssistantContentBlock, UserContentBlock } from '$lib/types/rig';
 
 	// Provider state
 	const providerReady = $derived(isProviderReady());
@@ -18,7 +17,7 @@
 	const activeId = $derived(chat.getActiveId());
 	const messages = $derived(chat.getActiveMessages());
 	const collections = $derived(chat.getActiveCollections());
-	const live = $derived(chat.getLiveState());
+	const transcript = $derived(chat.getTranscript());
 	const isGenerating = $derived(chat.getIsGenerating());
 	const isLoading = $derived(chat.getIsLoading());
 	const error = $derived(chat.getError());
@@ -45,6 +44,7 @@
 	// Conversations already auto-scoped this session. Deliberately
 	// non-reactive and module-scoped: it survives remounts and only
 	// dedupes, so a user removing scope is never re-added.
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- deliberately non-reactive
 	const autoScoped = new Set<string>();
 	let autoScopedDraft = false;
 	let prevChatKey = 'init';
@@ -102,21 +102,17 @@
 		});
 	});
 
-	// Auto-scroll to bottom whenever chat content changes. Reading message /
-	// live-stream lengths + the live tail text is what tells $effect to re-run.
+	// Auto-scroll to bottom whenever chat content changes. Reading the
+	// transcript length plus the last item's text/args sizes is what tells
+	// $effect to re-run — growing text AND growing tool-call args scroll.
 	$effect(() => {
-		const tailChars = live.text.length;
-		const toolChars = live.toolCalls.reduce(
-			(n, c) => n + c.name.length + c.args.length,
-			0,
-		);
-		const hasContent =
-			messages.length > 0 ||
-			live.toolResults.length > 0 ||
-			tailChars > 0 ||
-			toolChars > 0;
-
-		if (!hasContent) return;
+		const last = transcript[transcript.length - 1];
+		if (
+			transcript.length === 0 ||
+			(last.text.length === 0 && last.args.length === 0)
+		) {
+			return;
+		}
 
 		tick().then(() => {
 			if (messagesContainer) {
@@ -184,33 +180,6 @@
 			sendMessage();
 		}
 	}
-
-	/** Human-readable rendering of a rig reasoning content list. */
-	function reasoningText(
-		block: Extract<AssistantContentBlock, { type: 'reasoning' }>,
-	): string {
-		return block.content
-			.map((part) => {
-				if (part.type === 'text') return part.content.text;
-				if (part.type === 'summary') return part.content;
-				return '';
-			})
-			.filter(Boolean)
-			.join('\n');
-	}
-
-	/** Flatten tool-result content to displayable text. */
-	function toolResultText(
-		block: Extract<UserContentBlock, { type: 'tool_result' }>,
-	): string {
-		return block.content
-			.map((part) => {
-				if (part.type === 'text') return part.text;
-				if (part.type === 'json') return JSON.stringify(part.value, null, 2);
-				return `[${part.type}]`;
-			})
-			.join('\n');
-	}
 </script>
 
 <div class="flex h-full flex-col bg-surface">
@@ -267,143 +236,77 @@
 				</div>
 			</div>
 		{:else}
-			{#each messages as message, i (i)}
-				{#if message.role === 'user'}
-					{#each message.content as block, j (j)}
-						{#if block.type === 'text'}
-							<div class="flex justify-end">
-								<div
-									class="max-w-[80%] min-w-0 break-words rounded-lg bg-primary-600 px-4 py-2 text-white"
-								>
-									<Markdown content={block.text} />
-								</div>
-							</div>
-						{:else if block.type === 'tool_result'}
-							<div
-								class="mx-4 rounded border border-neutral-300 bg-surface-dim p-2 text-xs"
+			<!-- One renderer over the unified transcript: stored history and the
+			     live run are the same view model, so a run committing only
+			     flips provisional/executing flags — blocks stay in place. -->
+			{#each transcript as item (item.key)}
+				{#if item.kind === 'userText'}
+					<div class="flex justify-end">
+						<div
+							class="max-w-[80%] min-w-0 break-words rounded-lg bg-primary-600 px-4 py-2 text-white"
+						>
+							<Markdown content={item.text} />
+						</div>
+					</div>
+				{:else if item.kind === 'assistantText'}
+					<div class="flex justify-start">
+						<div
+							class="max-w-[80%] min-w-0 break-words rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
+						>
+							<Markdown content={item.text} /><span
+								class="animate-pulse text-primary-500">▊</span
 							>
-								<div class="mb-1 font-medium text-neutral-500">
-									Tool result: {block.name}
-								</div>
-								<pre
-									class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-neutral-700">{toolResultText(
-										block,
-									)}</pre>
-							</div>
+						</div>
+					</div>
+				{:else if item.kind === 'reasoning'}
+					<!-- open={item.provisional}: live blocks are expanded while you
+					     watch them execute and fold to their summary line when the
+					     run commits — flags flipping, not a different code path. -->
+					<details
+						class="mx-4 rounded border border-neutral-300 bg-surface-bright"
+						open={item.provisional}
+					>
+						<summary
+							class="cursor-pointer px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"
+						>
+							Reasoning
+						</summary>
+						<pre
+							class="max-h-48 overflow-auto whitespace-pre-wrap break-words p-2 text-xs text-neutral-600">{item.text}</pre>
+					</details>
+				{:else if item.kind === 'toolCall'}
+					<details
+						class="mx-4 rounded border border-neutral-300 bg-surface-bright"
+						open={item.provisional}
+					>
+						<summary
+							class="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs font-medium text-neutral-500 hover:text-neutral-700"
+						>
+							<span>Tool: {item.name || '…'}</span>
+							{#if item.executing}
+								<span class="animate-pulse text-primary-500">...</span>
+							{/if}
+						</summary>
+						{#if item.args}
+							<pre
+								class="max-h-24 overflow-auto whitespace-pre-wrap break-words p-2 text-xs text-neutral-600">{item.args}</pre>
 						{/if}
-					{/each}
-				{:else}
-					{#each message.content as block, j (j)}
-						{#if block.type === 'text'}
-							<div class="flex justify-start">
-								<div
-									class="max-w-[80%] min-w-0 break-words rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
-								>
-									<Markdown content={block.text} />
-								</div>
-							</div>
-						{:else if block.type === 'reasoning'}
-							<details
-								class="mx-4 rounded border border-neutral-300 bg-surface-bright"
-							>
-								<summary
-									class="cursor-pointer px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"
-								>
-									Reasoning
-								</summary>
-								<pre
-									class="max-h-48 overflow-auto whitespace-pre-wrap break-words p-2 text-xs text-neutral-600">{reasoningText(
-										block,
-									)}</pre>
-							</details>
-						{:else if block.type === 'tool_call'}
-							<details
-								class="mx-4 rounded border border-neutral-300 bg-surface-bright"
-							>
-								<summary
-									class="cursor-pointer px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"
-								>
-									Tool: {block.function.name}
-								</summary>
-								<div class="p-2">
-									<pre
-										class="max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{JSON.stringify(
-											block.function.arguments,
-											null,
-											2,
-										)}</pre>
-								</div>
-							</details>
-						{/if}
-					{/each}
+					</details>
+				{:else if item.kind === 'toolResult'}
+					<div
+						class="mx-4 rounded border border-neutral-300 bg-surface-dim p-2 text-xs"
+					>
+						<div class="mb-1 font-medium text-neutral-500">
+							Tool result: {item.name}
+						</div>
+						<pre
+							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-neutral-700">{item.text}</pre>
+					</div>
 				{/if}
 			{/each}
-		{/if}
 
-		<!-- Live assistant turn -->
-		{#if isGenerating}
-			{#if live.reasoning.length > 0}
-				<details
-					class="mx-4 rounded border border-neutral-300 bg-surface-bright"
-					open
-				>
-					<summary
-						class="cursor-pointer px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"
-					>
-						Reasoning
-					</summary>
-					<pre
-						class="max-h-48 overflow-auto whitespace-pre-wrap break-words p-2 text-xs text-neutral-600">{live.reasoning
-							.map((r) => r.text)
-							.join('\n')}</pre>
-				</details>
-			{/if}
-
-			{#if live.text}
-				<div class="flex justify-start">
-					<div
-						class="max-w-[80%] min-w-0 break-words rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
-					>
-						<Markdown content={live.text} /><span
-							class="animate-pulse text-primary-500">▊</span
-						>
-					</div>
-				</div>
-			{/if}
-
-			{#each live.toolCalls as call (call.internal_call_id)}
-				<div
-					class="mx-4 rounded border border-neutral-300 bg-surface-bright p-2 text-xs"
-				>
-					<div class="flex items-center gap-2 font-medium text-neutral-500">
-						<span>Tool: {call.name || '…'}</span>
-						{#if !call.executed}
-							<span class="animate-pulse text-primary-500">...</span>
-						{/if}
-					</div>
-					{#if call.args}
-						<pre
-							class="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words text-neutral-600">{call.args}</pre>
-					{/if}
-				</div>
-			{/each}
-
-			{#each live.toolResults as result (result.internal_call_id)}
-				<div
-					class="mx-4 rounded border border-neutral-300 bg-surface-dim p-2 text-xs"
-				>
-					<div class="mb-1 font-medium text-neutral-500">
-						Tool result: {result.name}
-					</div>
-					<pre
-						class="max-h-32 overflow-auto whitespace-pre-wrap break-words text-neutral-700">{result.text.slice(
-							0,
-							300,
-						)}{result.text.length > 300 ? '...' : ''}</pre>
-				</div>
-			{/each}
-
-			{#if live.toolCalls.length === 0 && live.toolResults.length === 0 && !live.text && live.reasoning.length === 0}
+			<!-- Placeholder for the gap between send and the first delta. -->
+			{#if isGenerating && !transcript.some((item) => item.provisional)}
 				<div class="flex justify-start">
 					<div
 						class="rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-500"
