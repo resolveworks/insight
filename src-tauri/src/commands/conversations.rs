@@ -32,10 +32,9 @@ async fn conversation_view(
 ) -> Result<ConversationView, CommandError> {
     use rig::memory::ConversationMemory;
 
-    let id: rig::id::ConversationId = meta.id.clone().into();
     let messages = state
         .memory
-        .load(&id)
+        .load(&meta.id)
         .await
         .map_err(|e| CommandError::internal(format!("failed to load messages: {e}")))?;
     Ok(ConversationView {
@@ -74,11 +73,13 @@ pub async fn load_conversation(
 /// Enrich bare [`CollectionInfo`] values (which the frontend only knows a
 /// subset of) with storage-derived counts. Collections whose IDs don't parse
 /// as valid namespaces are passed through untouched so the call never
-/// silently drops the user's selection.
+/// silently drops the user's selection. A storage failure is surfaced as an
+/// error: wrong counts would silently misstate the conversation's scope in
+/// both the UI and the agent's per-turn context.
 async fn enrich_collections(
     state: &AppState,
     collections: Vec<CollectionInfo>,
-) -> Vec<CollectionInfo> {
+) -> Result<Vec<CollectionInfo>, CommandError> {
     let storage = state.storage.read().await;
     let mut enriched = Vec::with_capacity(collections.len());
     for col in collections {
@@ -86,10 +87,12 @@ async fn enrich_collections(
             enriched.push(col);
             continue;
         };
-        let documents = storage
-            .list_documents(namespace_id)
-            .await
-            .unwrap_or_default();
+        let documents = storage.list_documents(namespace_id).await.map_err(|e| {
+            CommandError::internal(format!(
+                "failed to list documents for collection {}: {e}",
+                col.id
+            ))
+        })?;
         enriched.push(CollectionInfo {
             id: col.id,
             name: col.name,
@@ -98,7 +101,7 @@ async fn enrich_collections(
             created_at: None,
         });
     }
-    enriched
+    Ok(enriched)
 }
 
 /// Whether the configured chat provider passes validation.
@@ -123,7 +126,7 @@ pub async fn start_chat(
     }
 
     let collections = match collections {
-        Some(cols) if !cols.is_empty() => enrich_collections(&state, cols).await,
+        Some(cols) if !cols.is_empty() => enrich_collections(&state, cols).await?,
         _ => return Err(CommandError::no_collection_scope()),
     };
 
@@ -164,7 +167,7 @@ pub async fn set_conversation_collections(
             .iter()
             .all(|c| existing_ids.contains(c.id.as_str()));
     if !unchanged {
-        meta.collections = enrich_collections(&state, collections).await;
+        meta.collections = enrich_collections(&state, collections).await?;
         state
             .memory
             .update_meta(&conversation_id, meta)

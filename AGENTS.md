@@ -8,22 +8,22 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 
 ## Core Stack
 
-| Component       | Library            | Purpose                                                       |
-| --------------- | ------------------ | ------------------------------------------------------------- |
-| App framework   | Tauri 2.0          | Desktop app (Rust backend, web frontend)                      |
-| UI              | Svelte 5           | Frontend                                                      |
-| Styling         | Tailwind 4         | Utility-first CSS (no theme() in component styles)            |
-| Chat inference  | [rig]              | LLM framework: 25 provider families via a registry, agent runtime, tools, memory |
-| P2P / Sync      | iroh               | Connections, NAT traversal, sync                              |
-| Content storage | iroh-blobs         | Content-addressed file storage                                |
-| Metadata sync   | iroh-docs          | CRDT key-value store for metadata                             |
-| Real-time       | iroh-gossip        | Pub/sub for live updates                                      |
-| Search          | milli              | Full-text keyword search (BM25)                               |
-| PDF text        | lopdf              | Digital text extraction                                       |
+| Component       | Library     | Purpose                                                                          |
+| --------------- | ----------- | -------------------------------------------------------------------------------- |
+| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                                         |
+| UI              | Svelte 5    | Frontend                                                                         |
+| Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles)                               |
+| Chat inference  | [rig]       | LLM framework: 25 provider families via a registry, agent runtime, tools, memory |
+| P2P / Sync      | iroh        | Connections, NAT traversal, sync                                                 |
+| Content storage | iroh-blobs  | Content-addressed file storage                                                   |
+| Metadata sync   | iroh-docs   | CRDT key-value store for metadata                                                |
+| Real-time       | iroh-gossip | Pub/sub for live updates                                                         |
+| Search          | milli       | Full-text keyword search (BM25)                                                  |
+| PDF text        | lopdf       | Digital text extraction                                                          |
 
 [rig]: https://github.com/0xPlaygrounds/rig
 
-The rig dependency is pinned to git rev `475cfddc` (v0.42.0 + 30 commits). A local reference checkout lives at `../rig` — use it as the API reference for all rig types; see `../rig/AGENTS.md` and its examples for style.
+The rig dependency tracks released crates.io versions (currently v0.42.0). A local reference checkout lives at `../rig`, checked out at the matching tag (`v0.42.0`) — use it as the API reference for all rig types; see `../rig/AGENTS.md` and its examples for style.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ Synthesized Answer (with citations)
 
 Key pieces, all in `crates/insight-core/`:
 
-- **`providers/`** — a data-driven registry over all rig chat-completion provider families: `list_families()` (UI descriptors; local-server families like ollama/llamacpp need no API key), `build_model()` (validates settings and returns a rig `ModelHandle`), and `list_models()` (rig's `ModelListingClient` capability for families that support remote model listing).
+- **`providers/`** — a data-driven registry over all rig chat-completion provider families: `list_families()` (UI descriptors; local-server families like ollama/llamafile need no API key), `build_model()` (validates settings and returns a rig `ModelHandle`), and `list_models()` (rig's `ModelListingClient` capability for families that support remote model listing).
 - **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools + `FileConversationMemory` + `default_max_turns(100)`. A scope hook (`AgentHook`) injects the conversation's active collections as an `extra_context` document (`RequestPatch`) on every turn — non-sticky, so mid-conversation scope changes take effect on the next model call without touching stored history. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. `generate_title` and `predict_next_message` are bare-model completions (no tools, no agent loop) over the same provider settings.
 - **`memory.rs`** — `FileConversationMemory` implements rig's `ConversationMemory` trait on a directory tree; a `ConversationMeta` sidecar holds app-facing data (title, linked collections, timestamps).
 - **`tools/`** — typed rig `Tool` implementations over milli search + iroh storage.
@@ -141,12 +141,17 @@ Settings v2 (`~/.local/share/insight/settings.json`):
 
 ```json
 {
-  "provider": { "family": "openai", "model": "gpt-4o-mini", "api_key": "...", "base_url": "..." },
-  "api_keys": { "openai": "sk-...", "anthropic": "sk-ant-..." }
+	"provider": {
+		"family": "openai",
+		"model": "gpt-4o-mini",
+		"api_key": "...",
+		"base_url": "..."
+	},
+	"api_keys": { "openai": "sk-...", "anthropic": "sk-ant-..." }
 }
 ```
 
-`provider` is `null` when chat is unconfigured. `api_keys` stores per-family keys separately from the active provider so switching families keeps previously entered keys. `api_key`/`base_url` are optional per family (local-server families like ollama/llamacpp need neither). There is intentionally no legacy migration — no users yet.
+`provider` is `null` when chat is unconfigured. `api_keys` stores per-family keys separately from the active provider so switching families keeps previously entered keys. `api_key`/`base_url` are optional per family (local-server families like ollama/llamafile need neither). There is intentionally no legacy migration — no users yet.
 
 ## Development
 
@@ -163,7 +168,7 @@ Prefer local tools over web searches for understanding Rust dependencies:
 - `cargo doc --open` - Generate and browse docs for exact dependency versions
 - `cargo tree` - View dependency graph and enabled features
 - Source at `~/.cargo/registry/src/` or `~/.cargo/git/checkouts/`
-- For rig specifically: the pinned checkout at `../rig` (rev `475cfddc`) is the reference — read `../rig/AGENTS.md` and the examples under `../rig/rig-core/examples/` before writing code that touches rig APIs
+- For rig specifically: the local checkout at `../rig` (tag `v0.42.0`, matching the crates.io dependency) is the reference — read `../rig/AGENTS.md` and the examples under `../rig/rig-core/examples/` before writing code that touches rig APIs
 
 This ensures version accuracy and works offline.
 

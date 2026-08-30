@@ -41,9 +41,9 @@ time = "0.3"
 rand = "0.9"
 
 # Remote LLM providers — rig (LLM framework: providers, agent runtime, tools, memory)
-# Pinned to the exact rev documented in ../rig (v0.42.0 + 30 commits). The local
-# ../rig checkout is the API reference for this dependency.
-rig = { git = "https://github.com/0xPlaygrounds/rig.git", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b" }
+# Tracks released crates.io versions. The local ../rig checkout (at the
+# matching tag) is the API reference for this dependency.
+rig = "0.42"
 
 # Text chunking for search indexing
 text-splitter = "0.32"
@@ -59,4 +59,4 @@ tokio-util = "0.7"
 [dev-dependencies]
 tempfile = "3"
 # Test-only rig features (mock completion models for runtime tests).
-rig = { git = "https://github.com/0xPlaygrounds/rig.git", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b", features = ["test-utils"] }
+rig = { version = "0.42", features = ["test-utils"] }

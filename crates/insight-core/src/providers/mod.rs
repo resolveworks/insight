@@ -17,14 +17,16 @@
 //! are intentionally absent. Construction is uniform: every family uses
 //! rig's builder pattern (`Client::builder().api_key(..).base_url(..)`)
 //! except Azure, whose OpenAI resource endpoint is set through
-//! [`azure_endpoint`](rig::providers::azure::ClientBuilder::azure_endpoint).
+//! [`azure_endpoint`](rig::providers::azure::ClientBuilder::azure_endpoint),
+//! and llamafile, whose builder takes no API key at all (it passes rig's
+//! `Nothing` auth marker).
 //!
-//! Local-server families (`ollama`, `llamacpp`) need no API key — rig treats
-//! an empty key as "no auth" for them, and their clients default to the
-//! usual localhost endpoints.
+//! Local-server families (`ollama`, `llamafile`) need no API key — rig treats
+//! an empty key as "no auth" for ollama, and the llamafile builder has no key
+//! slot; their clients default to the usual localhost endpoints.
 
-use rig::client::{CompletionClient, DefaultTransportBuilder, ModelListingClient};
-use rig::completion::ModelHandle;
+use rig::agent::ModelHandle;
+use rig::client::{CompletionClient, ModelListingClient};
 use serde::{Deserialize, Serialize};
 
 /// A provider configuration as persisted to `settings.json`.
@@ -139,7 +141,7 @@ const FAMILIES: &[FamilySpec] = &[
     spec("groq", "Groq", true, false, true),
     spec("huggingface", "Hugging Face", true, false, false),
     spec("hyperbolic", "Hyperbolic", true, false, false),
-    spec("llamacpp", "llama.cpp", false, true, true),
+    spec("llamafile", "Llamafile", false, true, false),
     spec("minimax", "MiniMax", true, false, true),
     spec("mira", "Mira", true, false, true),
     spec("mistral", "Mistral", true, false, true),
@@ -213,7 +215,9 @@ macro_rules! with_client {
                     .api_key(rig::providers::azure::AzureOpenAIAuth::ApiKey(
                         $key.to_string(),
                     ))
-                    .azure_endpoint($url.unwrap_or_default().to_string())
+                    // `validate` rejects an azure family without a base URL,
+                    // so this cannot fire for settings that passed it.
+                    .azure_endpoint($url.expect("azure requires a base URL").to_string())
                     .build()
                     .map_err(|source| ProviderRegistryError::ClientConstruction {
                         family: $family.to_string(),
@@ -230,7 +234,9 @@ macro_rules! with_client {
             "groq" => with_client!(@arm groq, $key, $url, $family, $client, $body),
             "huggingface" => with_client!(@arm huggingface, $key, $url, $family, $client, $body),
             "hyperbolic" => with_client!(@arm hyperbolic, $key, $url, $family, $client, $body),
-            "llamacpp" => with_client!(@arm llamacpp, $key, $url, $family, $client, $body),
+            // llamafile has no auth: its builder's key slot takes rig's
+            // `Nothing` marker instead of a credential.
+            "llamafile" => with_client!(@arm llamafile, rig::client::Nothing, $url, $family, $client, $body),
             "minimax" => with_client!(@arm minimax, $key, $url, $family, $client, $body),
             "mira" => with_client!(@arm mira, $key, $url, $family, $client, $body),
             "mistral" => with_client!(@arm mistral, $key, $url, $family, $client, $body),
@@ -274,7 +280,6 @@ macro_rules! with_listing_client {
             "deepseek" => with_client!(@arm deepseek, $key, $url, $family, $client, $body),
             "gemini" => with_client!(@arm gemini, $key, $url, $family, $client, $body),
             "groq" => with_client!(@arm groq, $key, $url, $family, $client, $body),
-            "llamacpp" => with_client!(@arm llamacpp, $key, $url, $family, $client, $body),
             "minimax" => with_client!(@arm minimax, $key, $url, $family, $client, $body),
             "mira" => with_client!(@arm mira, $key, $url, $family, $client, $body),
             "mistral" => with_client!(@arm mistral, $key, $url, $family, $client, $body),
@@ -292,8 +297,9 @@ macro_rules! with_listing_client {
 /// Validate shared inputs and normalize them for client construction.
 ///
 /// Returns the family descriptor plus the (possibly empty) key string rig
-/// should receive. Local-server families (ollama, llamacpp) treat an empty
-/// key as "no auth", so they never fail validation here.
+/// should receive. Local-server families (ollama, llamafile) never fail key
+/// validation here: ollama treats an empty key as "no auth", and llamafile
+/// has no key at all.
 fn validate<'a>(
     settings_family: &str,
     api_key: Option<&'a str>,
@@ -487,7 +493,7 @@ mod tests {
         let _ = handle; // opaque ModelHandle
 
         let settings = ProviderSettings {
-            family: "llamacpp".into(),
+            family: "llamafile".into(),
             model: "gemma-2".into(),
             api_key: None,
             base_url: Some("http://127.0.0.1:8080".into()),

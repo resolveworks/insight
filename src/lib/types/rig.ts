@@ -2,7 +2,7 @@
  * TypeScript mirrors of the rig serde payloads the backend forwards to the
  * frontend (conversations and the `agent-event-{id}` stream).
  *
- * Sources (rig pinned rev):
+ * Sources (rig v0.42.0, from crates.io):
  * - rig-core `completion/message.rs` — `Message`, `AssistantContent`,
  *   `UserContent`, `ToolCall`, `ToolResult`, `Reasoning`
  * - rig-core `streaming/mod.rs` — `StreamedAssistantContent`,
@@ -11,7 +11,8 @@
  *   `MultiTurnStreamItem` map)
  * - rig-agent `agent/prompt_request/streaming.rs` — `MultiTurnStreamItem`
  *   (`#[serde(tag = "type", rename_all = "camelCase")]`)
- * - rig-run `response.rs` — `PromptResponse` (snake_case keys)
+ * - rig-agent `agent/prompt_request` — `PromptResponse`, `CompletionCall`
+ *   (snake_case keys)
  *
  * Key serde facts encoded here:
  * - `Message` is tagged on `role` (lowercase); assistant messages also carry
@@ -128,7 +129,7 @@ export interface RigUsage {
 	reasoning_tokens: number;
 }
 
-/** rig-run `CompletionCall` (snake_case struct fields). */
+/** rig `CompletionCall` (snake_case struct fields). */
 export interface RigCompletionCall {
 	call_index: number;
 	usage: RigUsage;
@@ -143,7 +144,7 @@ export interface RigCompletionCall {
 // PromptResponse (terminal payload of `finalResponse`)
 // =============================================================================
 
-/** rig-run `PromptResponse` — snake_case keys. */
+/** rig `PromptResponse` — snake_case keys. */
 export interface PromptResponse {
 	output: string;
 	usage: RigUsage;

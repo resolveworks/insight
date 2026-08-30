@@ -15,9 +15,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures::StreamExt;
-use rig::agent::{AgentBuilder, AgentHook, CompletionCallAction, HookContext, RequestPatch};
-use rig::completion::{CompletionModel, Document, Message, ModelHandle};
-use rig::id::ConversationId;
+use rig::agent::{
+    AgentBuilder, AgentHook, CompletionCallAction, HookContext, ModelHandle, RequestPatch,
+};
+use rig::completion::{CompletionModel, Document, Message};
 use rig::memory::ConversationMemory;
 use rig::streaming::StreamingPrompt;
 use tokio_util::sync::CancellationToken;
@@ -280,10 +281,9 @@ async fn run_agent(
 
 /// Load the message history for a conversation from memory.
 async fn load_history(state: &AppState, conversation_id: &str) -> Result<Vec<Message>> {
-    let id: ConversationId = conversation_id.to_string().into();
     state
         .memory
-        .load(&id)
+        .load(conversation_id)
         .await
         .map_err(|e| anyhow!("failed to load conversation history: {e}"))
 }
@@ -687,7 +687,7 @@ mod tests {
         // Only a user message: no prediction.
         state
             .memory
-            .append(&id.to_string().into(), vec![Message::user("hello")])
+            .append(id, vec![Message::user("hello")])
             .await
             .unwrap();
         assert_eq!(

@@ -26,7 +26,6 @@ use std::{
 
 use rig::{
     completion::Message,
-    id::ConversationId,
     memory::{ConversationMemory, MemoryError},
 };
 use serde::{Deserialize, Serialize};
@@ -267,10 +266,10 @@ impl FileConversationMemory {
 impl ConversationMemory for FileConversationMemory {
     fn load<'a>(
         &'a self,
-        conversation_id: &'a ConversationId,
+        conversation_id: &'a str,
     ) -> rig::wasm_compat::WasmBoxedFuture<'a, Result<Vec<Message>, MemoryError>> {
         Box::pin(async move {
-            self.read_messages(conversation_id.as_str())
+            self.read_messages(conversation_id)
                 .await
                 .map_err(MemoryError::from)
         })
@@ -278,30 +277,29 @@ impl ConversationMemory for FileConversationMemory {
 
     fn append<'a>(
         &'a self,
-        conversation_id: &'a ConversationId,
+        conversation_id: &'a str,
         messages: Vec<Message>,
     ) -> rig::wasm_compat::WasmBoxedFuture<'a, Result<(), MemoryError>> {
         Box::pin(async move {
-            let id = conversation_id.as_str();
-            let lock = self.lock_for(id);
+            let lock = self.lock_for(conversation_id);
             // Hold the per-conversation lock across the whole read-modify-write
             // so concurrent appends serialize instead of interleaving.
             let _guard = lock.lock().await;
-            let mut history = self.read_messages(id).await?;
+            let mut history = self.read_messages(conversation_id).await?;
             history.extend(messages);
-            self.write_messages(id, &history).await?;
+            self.write_messages(conversation_id, &history).await?;
             Ok(())
         })
     }
 
     fn clear<'a>(
         &'a self,
-        conversation_id: &'a ConversationId,
+        conversation_id: &'a str,
     ) -> rig::wasm_compat::WasmBoxedFuture<'a, Result<(), MemoryError>> {
         Box::pin(async move {
             // Remove only the stored messages; the directory and metadata
             // sidecar are kept so a cleared conversation stays listed.
-            let path = self.messages_path(conversation_id.as_str());
+            let path = self.messages_path(conversation_id);
             match fs::remove_file(&path).await {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -357,19 +355,17 @@ mod tests {
     #[tokio::test]
     async fn unknown_id_loads_empty() {
         let (_dir, store) = temp_store();
-        let id: ConversationId = "nope".into();
-        assert!(store.load(&id).await.unwrap().is_empty());
+        assert!(store.load("nope").await.unwrap().is_empty());
         assert!(store.load_meta("nope").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn message_round_trip_with_tool_blocks() {
         let (_dir, store) = temp_store();
-        let id: ConversationId = "c1".into();
         let expected = messages_with_tools();
-        store.append(&id, expected.clone()).await.unwrap();
+        store.append("c1", expected.clone()).await.unwrap();
 
-        let loaded = store.load(&id).await.unwrap();
+        let loaded = store.load("c1").await.unwrap();
         assert_eq!(loaded, expected);
 
         // The tool-result message keeps its role and block kind.
@@ -382,27 +378,28 @@ mod tests {
     #[tokio::test]
     async fn append_accumulates_across_calls() {
         let (_dir, store) = temp_store();
-        let id: ConversationId = "c2".into();
-        store.append(&id, vec![Message::user("one")]).await.unwrap();
         store
-            .append(&id, vec![Message::assistant("two")])
+            .append("c2", vec![Message::user("one")])
             .await
             .unwrap();
-        assert_eq!(store.load(&id).await.unwrap().len(), 2);
+        store
+            .append("c2", vec![Message::assistant("two")])
+            .await
+            .unwrap();
+        assert_eq!(store.load("c2").await.unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn clear_empties_history_but_keeps_meta() {
         let (_dir, store) = temp_store();
-        let id: ConversationId = "c3".into();
         store.create(sample_meta("c3", "T")).await.unwrap();
-        store.append(&id, vec![Message::user("hi")]).await.unwrap();
-        store.clear(&id).await.unwrap();
+        store.append("c3", vec![Message::user("hi")]).await.unwrap();
+        store.clear("c3").await.unwrap();
 
-        assert!(store.load(&id).await.unwrap().is_empty());
+        assert!(store.load("c3").await.unwrap().is_empty());
         assert!(store.load_meta("c3").await.unwrap().is_some());
         // Clearing again is fine (trait contract: idempotent).
-        store.clear(&id).await.unwrap();
+        store.clear("c3").await.unwrap();
     }
 
     #[tokio::test]
@@ -455,8 +452,7 @@ mod tests {
     #[tokio::test]
     async fn atomic_write_leaves_no_temp_litter() {
         let (_dir, store) = temp_store();
-        let id: ConversationId = "c4".into();
-        store.append(&id, vec![Message::user("hi")]).await.unwrap();
+        store.append("c4", vec![Message::user("hi")]).await.unwrap();
         store.create(sample_meta("c4", "T")).await.unwrap();
 
         for entry in std::fs::read_dir(store.dir("c4")).unwrap() {
@@ -485,7 +481,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_appends_do_not_corrupt() {
         let (_dir, store) = temp_store();
-        let id: ConversationId = "c5".into();
 
         let batch = |n: usize| {
             (0..n)
@@ -497,16 +492,15 @@ mod tests {
 
         let s1 = &store;
         let s2 = &store;
-        let id2 = id.clone();
-        let (ra, rb) = tokio::join!(async move { s1.append(&id, a).await }, async move {
-            s2.append(&id2, b).await
+        let (ra, rb) = tokio::join!(async move { s1.append("c5", a).await }, async move {
+            s2.append("c5", b).await
         },);
         ra.unwrap();
         rb.unwrap();
 
         // Final state must be one of the two complete writes: with the
         // per-id lock, either all 10 first then all 20, or all 20 then all 10.
-        let texts = user_texts(&store.load(&"c5".into()).await.unwrap());
+        let texts = user_texts(&store.load("c5").await.unwrap());
         assert!(
             texts.len() == 30 || texts.len() == 10 || texts.len() == 20,
             "unexpected length {}",

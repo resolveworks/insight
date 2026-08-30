@@ -461,13 +461,7 @@ impl Tool for ListDocumentsTool {
                 continue;
             };
 
-            let documents = match storage.list_documents(namespace_id).await {
-                Ok(docs) => docs,
-                Err(e) => {
-                    warn!(collection_id = %collection.id, error = %e, "Failed to list documents");
-                    Vec::new()
-                }
-            };
+            let documents = storage.list_documents(namespace_id).await?;
             for doc in documents {
                 all_documents.push((collection.id.clone(), doc));
             }
