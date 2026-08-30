@@ -6,6 +6,7 @@
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 	import { isProviderReady } from '$lib/stores/provider-state.svelte';
+	import { resolve } from '$app/paths';
 	import * as collectionsStore from '$lib/stores/collections.svelte';
 	import * as chat from '$lib/stores/conversations.svelte';
 	import type { AssistantContentBlock, UserContentBlock } from '$lib/types/rig';
@@ -193,6 +194,24 @@
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
 		{#if emptyState === 'pick-collection'}
+			{#if allCollections.length === 0}
+				<div class="flex h-full items-center justify-center">
+					<div class="w-full max-w-md text-center">
+						<h2 class="mb-1 text-lg font-medium text-neutral-800">
+							Choose collections to search
+						</h2>
+						<p class="mb-4 text-sm text-neutral-500">
+							Collections hold the documents your agent searches.
+						</p>
+						<a
+							href={resolve('/files')}
+							class="inline-flex items-center justify-center rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
+						>
+							Go to Files
+						</a>
+					</div>
+				</div>
+			{:else}
 			<div class="flex h-full items-center justify-center">
 				<div class="w-full max-w-md rounded-lg border border-neutral-200 bg-surface-bright p-6">
 					<h2 class="mb-1 text-lg font-medium text-neutral-800">
@@ -209,6 +228,7 @@
 					/>
 				</div>
 			</div>
+			{/if}
 		{:else if emptyState === 'no-messages'}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-neutral-500">
