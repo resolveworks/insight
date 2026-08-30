@@ -41,7 +41,12 @@ time = "0.3"
 # Random
 rand = "0.9"
 
-# Remote LLM providers
+# Remote LLM providers — rig (LLM framework: providers, agent runtime, tools, memory)
+# Pinned to the exact rev documented in ../rig (v0.42.0 + 30 commits). The local
+# ../rig checkout is the API reference for this dependency.
+rig = { git = "https://github.com/0xPlaygrounds/rig.git", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b" }
+
+# Legacy chat providers (async-openai) — removed when the rig runtime lands
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 async-openai = { version = "0.41", features = ["responses", "model"] }
