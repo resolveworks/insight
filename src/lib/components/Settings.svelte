@@ -12,8 +12,8 @@
 					Language Model
 				</h2>
 				<p class="mb-6 text-sm text-neutral-500">
-					Choose a remote provider for chat. Connect to the OpenAI or Anthropic
-					API.
+					Choose a chat provider from the registry. Only the conversation is
+					sent to the provider — documents never leave your machine.
 				</p>
 				<div class="rounded-lg border border-neutral-200 bg-surface-bright p-6">
 					<ProviderSelector />

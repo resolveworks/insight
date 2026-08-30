@@ -1,32 +1,45 @@
 /**
  * Conversations store. Owns the conversation list, the active conversation's
- * state (messages + active collection scope), and the streaming chat pipeline.
- * Everything chat-related that isn't pure input/view state lives here.
+ * state (messages + active collection scope), and the streaming chat
+ * pipeline.
+ *
+ * The backend streams serialized rig `MultiTurnStreamItem`s on
+ * `agent-event-{conversationId}`; the live assistant state (text deltas,
+ * streamed tool-call arguments, reasoning, tool results) is assembled here
+ * from those events. After `finalResponse` (or `streamError`) the
+ * authoritative history is re-fetched via `load_conversation`.
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { Collection } from './collections.svelte';
+import type { MultiTurnStreamItem, RigMessage } from '$lib/types/rig';
+import {
+	isCompleteReasoning,
+	isCompleteToolCall,
+	isReasoningDelta,
+	isStreamFinal,
+	isTextDelta,
+	isToolCallDelta,
+} from '$lib/types/rig';
 
 // =============================================================================
-// Types
+// Types (backend contract)
 // =============================================================================
 
-export type ContentBlock =
-	| { type: 'text'; text: string }
-	| { type: 'tool_use'; id: string; name: string; arguments: object }
-	| {
-			type: 'tool_result';
-			tool_use_id: string;
-			content: string;
-			is_error: boolean;
-	  };
+export interface CollectionInfo {
+	id: string;
+	name: string;
+	document_count: number;
+	total_pages: number;
+	created_at?: string | null;
+}
 
-export type ChatMessageRole = 'user' | 'assistant' | 'context';
-type BackendMessageRole = ChatMessageRole | 'system';
-
-export interface ChatMessage {
-	role: ChatMessageRole;
-	block: ContentBlock;
+export interface ConversationView {
+	id: string;
+	title: string;
+	created_at: string;
+	updated_at: string;
+	collections: CollectionInfo[];
+	messages: RigMessage[];
 }
 
 export interface ConversationSummary {
@@ -35,28 +48,39 @@ export interface ConversationSummary {
 	updated_at: string;
 }
 
-interface BackendMessage {
-	role: BackendMessageRole;
-	content: ContentBlock[];
+/** One tool call being assembled from stream deltas. */
+export interface LiveToolCall {
+	internal_call_id: string;
+	name: string;
+	args: string;
+	committed: boolean;
+	executed: boolean;
 }
 
-interface Conversation {
+/** One streamed reasoning part (accumulated from deltas). */
+export interface LiveReasoning {
 	id: string;
-	title: string;
-	messages: BackendMessage[];
-	created_at: string;
-	updated_at: string;
-	collections: Collection[];
+	text: string;
 }
 
-type ContentDelta = { type: 'text'; text: string };
+/** One completed tool result surfaced during the stream. */
+export interface LiveToolResult {
+	internal_call_id: string;
+	name: string;
+	text: string;
+}
 
-type AgentEvent =
-	| { type: 'content_block_start'; data: { block: ContentBlock } }
-	| { type: 'content_block_delta'; data: { delta: ContentDelta } }
-	| { type: 'content_block_stop' }
-	| { type: 'done' }
-	| { type: 'error'; data: { message: string } };
+/** The live assistant turn, assembled from `MultiTurnStreamItem`s. */
+export interface LiveAssistantState {
+	text: string;
+	reasoning: LiveReasoning[];
+	toolCalls: LiveToolCall[];
+	toolResults: LiveToolResult[];
+}
+
+function emptyLiveState(): LiveAssistantState {
+	return { text: '', reasoning: [], toolCalls: [], toolResults: [] };
+}
 
 // =============================================================================
 // State
@@ -64,11 +88,20 @@ type AgentEvent =
 
 const STORAGE_KEY = 'insight:activeConversationId';
 
+function readStoredId(): string | null {
+	if (typeof window === 'undefined') return null;
+	try {
+		return localStorage.getItem(STORAGE_KEY);
+	} catch {
+		return null;
+	}
+}
+
 let conversations = $state<ConversationSummary[]>([]);
 let activeId = $state<string | null>(null);
-let activeMessages = $state<ChatMessage[]>([]);
-let activeCollections = $state<Collection[]>([]);
-let streamingBlocks = $state<ContentBlock[]>([]);
+let activeMessages = $state<RigMessage[]>([]);
+let activeCollections = $state<CollectionInfo[]>([]);
+let live = $state<LiveAssistantState>(emptyLiveState());
 let isGenerating = $state(false);
 let isLoading = $state(false);
 let listLoaded = $state(false);
@@ -84,30 +117,22 @@ let initializing = false;
 
 function persistActiveId() {
 	if (typeof window === 'undefined') return;
-	if (activeId) {
-		localStorage.setItem(STORAGE_KEY, activeId);
-	} else {
-		localStorage.removeItem(STORAGE_KEY);
+	try {
+		if (activeId) {
+			localStorage.setItem(STORAGE_KEY, activeId);
+		} else {
+			localStorage.removeItem(STORAGE_KEY);
+		}
+	} catch {
+		// Storage unavailable (private mode / test environments): skip.
 	}
 }
 
-function isChatMessage(
-	m: BackendMessage,
-): m is BackendMessage & { role: ChatMessageRole } {
-	return m.role !== 'system';
-}
-
-function flattenMessages(messages: BackendMessage[]): ChatMessage[] {
-	return messages
-		.filter(isChatMessage)
-		.flatMap((m) => m.content.map((block) => ({ role: m.role, block })));
-}
-
-function adoptConversation(conv: Conversation) {
+function adoptConversation(conv: ConversationView) {
 	activeId = conv.id;
-	activeMessages = flattenMessages(conv.messages);
+	activeMessages = conv.messages ?? [];
 	activeCollections = conv.collections ?? [];
-	streamingBlocks = [];
+	live = emptyLiveState();
 }
 
 /** Drop the active conversation: detach listener and reset per-chat state. */
@@ -117,62 +142,192 @@ function clearActive() {
 	activeId = null;
 	activeMessages = [];
 	activeCollections = [];
-	streamingBlocks = [];
+	live = emptyLiveState();
 	isGenerating = false;
 	persistActiveId();
 }
 
 async function attachListener(convId: string) {
 	unlistenAgent?.();
-	unlistenAgent = await listen<AgentEvent>(
+	unlistenAgent = await listen<MultiTurnStreamItem>(
 		`agent-event-${convId}`,
-		handleAgentEvent,
+		(e) => handleAgentEvent(convId, e.payload),
 	);
 }
 
-function handleAgentEvent(event: { payload: AgentEvent }) {
-	const payload = event.payload;
+function toolResultText(
+	content: { type: string; [key: string]: unknown }[],
+): string {
+	return content
+		.map((part) => {
+			if (part.type === 'text') return part.text as string;
+			if (part.type === 'json') return JSON.stringify(part.value, null, 2);
+			return `[${part.type}]`;
+		})
+		.join('\n');
+}
 
-	switch (payload.type) {
-		case 'content_block_start':
-			streamingBlocks = [...streamingBlocks, payload.data.block];
-			break;
+function reasoningCompleteText(reasoning: {
+	content: { type: string; [key: string]: unknown }[];
+}): string {
+	return reasoning.content
+		.map((part) => {
+			if (part.type === 'text') {
+				const inner = part.content as { text: string };
+				return inner.text;
+			}
+			if (part.type === 'summary') return part.content as string;
+			return '';
+		})
+		.filter(Boolean)
+		.join('\n');
+}
 
-		case 'content_block_delta': {
-			const lastIdx = streamingBlocks.length - 1;
-			if (lastIdx >= 0) {
-				const block = streamingBlocks[lastIdx];
-				const delta = payload.data.delta;
-				if (delta.type === 'text' && block.type === 'text') {
-					streamingBlocks = [
-						...streamingBlocks.slice(0, lastIdx),
-						{ type: 'text', text: block.text + delta.text },
+function upsertToolCall(
+	internalCallId: string,
+	mutate: (call: LiveToolCall) => LiveToolCall,
+) {
+	const idx = live.toolCalls.findIndex(
+		(c) => c.internal_call_id === internalCallId,
+	);
+	if (idx === -1) {
+		live.toolCalls = [
+			...live.toolCalls,
+			mutate({
+				internal_call_id: internalCallId,
+				name: '',
+				args: '',
+				committed: false,
+				executed: false,
+			}),
+		];
+	} else {
+		const next = live.toolCalls.slice();
+		next[idx] = mutate(next[idx]);
+		live.toolCalls = next;
+	}
+}
+
+/**
+ * Apply one streamed item to the live assistant state.
+ *
+ * Unknown payloads (provider-native items rig preserves verbatim) and usage
+ * records are ignored: they carry nothing the transcript view needs.
+ */
+export function applyStreamItem(item: MultiTurnStreamItem): void {
+	switch (item.type) {
+		case 'streamAssistantItem': {
+			if (isTextDelta(item)) {
+				live.text += item.text;
+			} else if (isToolCallDelta(item)) {
+				upsertToolCall(item.internal_call_id, (call) => {
+					if (item.content.Name !== undefined) call.name += item.content.Name;
+					if (item.content.Delta !== undefined) call.args += item.content.Delta;
+					return call;
+				});
+			} else if (isCompleteToolCall(item)) {
+				const args =
+					typeof item.tool_call.function.arguments === 'string'
+						? item.tool_call.function.arguments
+						: JSON.stringify(item.tool_call.function.arguments, null, 2);
+				upsertToolCall(item.internal_call_id, (call) => ({
+					...call,
+					name: item.tool_call.function.name,
+					args,
+					committed: true,
+				}));
+			} else if (isReasoningDelta(item)) {
+				const idx = live.reasoning.findIndex((r) => r.id === item.id);
+				if (idx === -1) {
+					live.reasoning = [
+						...live.reasoning,
+						{ id: item.id, text: item.reasoning },
 					];
+				} else {
+					const next = live.reasoning.slice();
+					next[idx] = { ...next[idx], text: next[idx].text + item.reasoning };
+					live.reasoning = next;
 				}
+			} else if (isCompleteReasoning(item)) {
+				// A complete block supersedes the accumulated deltas for its id.
+				const text = reasoningCompleteText(item.reasoning);
+				const idx = live.reasoning.findIndex((r) => r.id === item.id);
+				if (idx === -1) {
+					live.reasoning = [...live.reasoning, { id: item.id, text }];
+				} else {
+					const next = live.reasoning.slice();
+					next[idx] = { ...next[idx], text };
+					live.reasoning = next;
+				}
+			} else if (isStreamFinal(item)) {
+				// Provider terminal record (usage etc.): nothing to render.
 			}
 			break;
 		}
 
-		case 'content_block_stop':
+		case 'toolExecutionCommitted': {
+			upsertToolCall(item.internal_call_id, (call) => ({
+				...call,
+				executed: true,
+			}));
+			break;
+		}
+
+		case 'streamUserItem': {
+			live.toolResults = [
+				...live.toolResults,
+				{
+					internal_call_id: item.internal_call_id,
+					name: item.tool_result.name,
+					text: toolResultText(item.tool_result.content),
+				},
+			];
+			break;
+		}
+
+		case 'completionCall':
+			// Per-call usage accounting: not rendered.
 			break;
 
-		case 'done': {
-			const newMessages: ChatMessage[] = streamingBlocks.map((block) => ({
-				role: 'assistant',
-				block,
-			}));
-			activeMessages = [...activeMessages, ...newMessages];
-			streamingBlocks = [];
+		case 'modelTurnRetried':
+			// The model turn that produced the live output was rejected and is
+			// retried: discard the provisional output.
+			live = emptyLiveState();
+			break;
+
+		case 'finalResponse':
+		case 'streamError':
+			// Handled by handleAgentEvent (they also drive refreshes).
+			break;
+	}
+}
+
+async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
+	// Events may arrive for a stale listener right after switching chats.
+	if (convId !== activeId) return;
+
+	switch (payload.type) {
+		case 'finalResponse': {
+			// The server state is authoritative: refresh from it.
 			isGenerating = false;
-			// Refresh list so titles/timestamps update in the sidebar.
+			live = emptyLiveState();
+			await loadById(convId, { silent: true });
 			refreshList();
 			break;
 		}
 
-		case 'error':
-			error = payload.data?.message || 'Unknown error';
-			console.error('Agent error:', payload.data?.message);
+		case 'streamError': {
+			error = payload.message || 'Unknown error';
+			console.error('Agent stream error:', payload.message);
 			isGenerating = false;
+			live = emptyLiveState();
+			await loadById(convId, { silent: true });
+			refreshList();
+			break;
+		}
+
+		default:
+			applyStreamItem(payload);
 			break;
 	}
 }
@@ -195,7 +350,7 @@ async function loadById(
 		isLoading = true;
 		if (!opts.silent) error = null;
 
-		const conv = await invoke<Conversation>('load_conversation', {
+		const conv = await invoke<ConversationView>('load_conversation', {
 			conversationId: id,
 		});
 
@@ -215,14 +370,16 @@ async function loadById(
 	}
 }
 
-async function createNew(): Promise<boolean> {
+async function createNew(
+	collections: CollectionInfo[] | null = null,
+): Promise<boolean> {
 	try {
 		isLoading = true;
 		error = null;
 
-		// Fresh conversations always start unscoped — the user picks a collection
-		// via the filter bar before they can chat.
-		const conv = await invoke<Conversation>('start_chat', {});
+		// Fresh conversations start unscoped — the user picks a collection via
+		// the filter bar before they can chat.
+		const conv = await invoke<ConversationView>('start_chat', { collections });
 
 		adoptConversation(conv);
 
@@ -260,8 +417,7 @@ export async function ensureInitialized(): Promise<void> {
 	initializing = true;
 
 	try {
-		const stored =
-			typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
+		const stored = readStoredId();
 
 		await refreshList();
 
@@ -326,11 +482,12 @@ export async function deleteConversation(id: string): Promise<boolean> {
 }
 
 /**
- * Replace the active conversation's collection scope. The backend appends a
- * breadcrumb message to the transcript when the selection actually changes,
- * so the model (and the user) can see when scope shifted.
+ * Replace the active conversation's collection scope. The server enriches
+ * the collection info (document counts) in the returned view.
  */
-export async function setActiveCollections(cols: Collection[]): Promise<void> {
+export async function setActiveCollections(
+	cols: CollectionInfo[],
+): Promise<void> {
 	if (!activeId) return;
 
 	// Skip the round-trip when the id-set is already what we have locally.
@@ -343,10 +500,13 @@ export async function setActiveCollections(cols: Collection[]): Promise<void> {
 	}
 
 	try {
-		const conv = await invoke<Conversation>('set_conversation_collections', {
-			conversationId: activeId,
-			collections: cols,
-		});
+		const conv = await invoke<ConversationView>(
+			'set_conversation_collections',
+			{
+				conversationId: activeId,
+				collections: cols,
+			},
+		);
 		adoptConversation(conv);
 	} catch (e) {
 		error = `Failed to update collections: ${e}`;
@@ -354,7 +514,7 @@ export async function setActiveCollections(cols: Collection[]): Promise<void> {
 	}
 }
 
-export async function addActiveCollection(col: Collection): Promise<void> {
+export async function addActiveCollection(col: CollectionInfo): Promise<void> {
 	await setActiveCollections([...activeCollections, col]);
 }
 
@@ -370,10 +530,10 @@ export async function sendMessage(text: string): Promise<void> {
 	error = null;
 	activeMessages = [
 		...activeMessages,
-		{ role: 'user', block: { type: 'text', text: trimmed } },
+		{ role: 'user', content: [{ type: 'text', text: trimmed }] },
 	];
 	isGenerating = true;
-	streamingBlocks = [];
+	live = emptyLiveState();
 
 	try {
 		await invoke('send_message', {
@@ -437,16 +597,16 @@ export function getActiveId(): string | null {
 	return activeId;
 }
 
-export function getActiveMessages(): ChatMessage[] {
+export function getActiveMessages(): RigMessage[] {
 	return activeMessages;
 }
 
-export function getActiveCollections(): Collection[] {
+export function getActiveCollections(): CollectionInfo[] {
 	return activeCollections;
 }
 
-export function getStreamingBlocks(): ContentBlock[] {
-	return streamingBlocks;
+export function getLiveState(): LiveAssistantState {
+	return live;
 }
 
 export function getIsGenerating(): boolean {

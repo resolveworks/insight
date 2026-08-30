@@ -1,137 +1,211 @@
 /**
  * Chat provider state store.
  *
- * Mirrors the backend's chat provider lifecycle as a tagged union so every
- * consumer can match on `status.kind` instead of reconstructing the machine
- * from independent booleans.
- *
- * - Persistent state (configured/ready vs unconfigured) comes from
- *   `get_provider_status` at boot.
- * - Transient state (loading, error) arrives via `model-status-changed`
- *   events.
+ * Wraps the backend's provider registry commands: the family list, the
+ * currently configured provider, its runtime status, and stored API keys.
+ * Chat is gated on `status.ready`.
  */
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-export type ProviderStatus =
-	| { kind: 'unconfigured' }
-	| { kind: 'loading' }
-	| { kind: 'ready' }
-	| { kind: 'error'; message: string };
+// =============================================================================
+// Types (backend contract)
+// =============================================================================
 
-export interface ProviderState {
-	providerType: string | null;
-	modelId: string | null;
-	status: ProviderStatus;
+export interface ProviderFamily {
+	id: string;
+	name: string;
+	requires_api_key: boolean;
+	supports_base_url: boolean;
+	supports_model_listing: boolean;
 }
 
-interface ProviderStatusResponse {
-	provider_type: string | null;
-	model_id: string | null;
+export interface ProviderModel {
+	id: string;
+	display_name: string;
+}
+
+export interface CurrentProvider {
+	family: string;
+	model: string;
+	api_key: string | null;
+	base_url: string | null;
+}
+
+export interface ProviderStatus {
+	family: string | null;
+	model: string | null;
 	ready: boolean;
 }
 
-interface ModelStatusEvent {
-	status: 'loading' | 'ready' | 'failed';
-	model_type: 'language';
-	model_id: string;
-	error?: string;
-}
+// =============================================================================
+// State
+// =============================================================================
 
-const languageState = $state<ProviderState>({
-	providerType: null,
-	modelId: null,
-	status: { kind: 'unconfigured' },
+let families = $state<ProviderFamily[]>([]);
+let currentProvider = $state<CurrentProvider | null>(null);
+let status = $state<ProviderStatus>({
+	family: null,
+	model: null,
+	ready: false,
 });
+let storedKeys = $state<Record<string, string>>({});
+let loaded = $state(false);
+let initializing = false;
 
-let unlistenStatus: UnlistenFn | null = null;
+// =============================================================================
+// Internal helpers
+// =============================================================================
 
-async function queryInitialStatus() {
-	try {
-		const res = await invoke<ProviderStatusResponse>('get_provider_status');
-		languageState.providerType = res.provider_type;
-		languageState.modelId = res.model_id;
-		languageState.status = res.ready
-			? { kind: 'ready' }
-			: { kind: 'unconfigured' };
-	} catch (e) {
-		console.error('Failed to get chat provider status:', e);
-	}
+/**
+ * Query provider state from the backend. Safe to call repeatedly; call sites
+ * that only need the current snapshot read the reactive getters instead.
+ */
+async function queryProviderState(): Promise<void> {
+	const [current, statusRes, keys] = await Promise.all([
+		invoke<CurrentProvider | null>('get_current_provider'),
+		invoke<ProviderStatus>('get_provider_status'),
+		invoke<Record<string, string>>('get_stored_api_keys'),
+	]);
+	currentProvider = current;
+	status = statusRes;
+	storedKeys = keys ?? {};
 }
 
-async function setupEventListeners() {
-	unlistenStatus = await listen<ModelStatusEvent>(
-		'model-status-changed',
-		(e) => {
-			const { status, model_id, error } = e.payload;
-			languageState.modelId = model_id;
-
-			switch (status) {
-				case 'loading':
-					languageState.status = { kind: 'loading' };
-					break;
-				case 'ready':
-					languageState.status = { kind: 'ready' };
-					break;
-				case 'failed':
-					languageState.status = {
-						kind: 'error',
-						message: error ?? 'Unknown error',
-					};
-					break;
-			}
-		},
-	);
-}
-
+// Initialize on module load (browser only — the Tauri IPC bridge).
 if (typeof window !== 'undefined') {
-	queryInitialStatus();
-	setupEventListeners();
+	queryProviderState()
+		.catch((e) => {
+			console.error('Failed to load provider state:', e);
+		})
+		.finally(() => {
+			loaded = true;
+		});
 }
 
-export function cleanup() {
-	unlistenStatus?.();
-	unlistenStatus = null;
-}
-
-/**
- * Re-sync from the backend's persistent state. Useful after actions that
- * don't emit a terminal status event.
- */
-export async function refreshProviderState(): Promise<void> {
-	await queryInitialStatus();
-}
-
-export function getLanguageState(): ProviderState {
-	return languageState;
-}
-
-export function getProviderState(): ProviderState {
-	return languageState;
-}
+// =============================================================================
+// Public API
+// =============================================================================
 
 /**
- * Mark the language provider as configured (remote providers) or cleared.
- * Remote providers are instant: no backend events, just set the final state.
+ * Resolve the initial provider state. Idempotent — safe to call from the app
+ * layout boot flow. Resolves once the registry/status snapshot has loaded.
  */
-export function setLanguageProvider(
-	providerType: string | null,
-	modelId: string | null,
-) {
-	languageState.providerType = providerType;
-	languageState.modelId = modelId;
-	languageState.status = providerType
-		? { kind: 'ready' }
-		: { kind: 'unconfigured' };
-}
-
-export function getProviderDisplayName(providerType: string | null): string {
-	switch (providerType) {
-		case 'openai':
-			return 'OpenAI';
-		case 'anthropic':
-			return 'Anthropic';
-		default:
-			return 'Not configured';
+export async function ensureProviderStateLoaded(): Promise<void> {
+	if (loaded || initializing) return;
+	initializing = true;
+	try {
+		if (!loaded) await queryProviderState().catch(() => {});
+	} finally {
+		loaded = true;
+		initializing = false;
 	}
+}
+
+/** Load (or reload) the provider family registry. */
+export async function loadFamilies(): Promise<ProviderFamily[]> {
+	try {
+		families = await invoke<ProviderFamily[]>('list_provider_families');
+	} catch (e) {
+		console.error('Failed to list provider families:', e);
+	}
+	return families;
+}
+
+/**
+ * Configure a provider. On success the store is refreshed from the backend
+ * (the backend's status is authoritative).
+ */
+export async function configureProvider(opts: {
+	family: string;
+	apiKey?: string | null;
+	baseUrl?: string | null;
+	model: string;
+}): Promise<void> {
+	await invoke('configure_provider', {
+		family: opts.family,
+		apiKey: opts.apiKey ?? null,
+		baseUrl: opts.baseUrl ?? null,
+		model: opts.model,
+	});
+	await queryProviderState();
+	// The key the backend stored is now available for re-selection.
+	try {
+		storedKeys = await invoke<Record<string, string>>('get_stored_api_keys');
+	} catch {
+		// Non-fatal: keys are a convenience for the settings UI.
+	}
+}
+
+/** Disable the configured provider. */
+export async function disableProvider(): Promise<void> {
+	await invoke('disable_provider');
+	await queryProviderState();
+}
+
+/**
+ * Fetch the models a family offers. The caller supplies the candidate key /
+ * base URL so listing can run before the provider is configured.
+ */
+export async function listProviderModels(opts: {
+	family: string;
+	apiKey?: string | null;
+	baseUrl?: string | null;
+}): Promise<ProviderModel[]> {
+	return invoke<ProviderModel[]>('list_provider_models', {
+		family: opts.family,
+		apiKey: opts.apiKey ?? null,
+		baseUrl: opts.baseUrl ?? null,
+	});
+}
+
+// =============================================================================
+// Reactive getters
+// =============================================================================
+
+export function getFamilies(): ProviderFamily[] {
+	return families;
+}
+
+export function getCurrentProvider(): CurrentProvider | null {
+	return currentProvider;
+}
+
+export function getStatus(): ProviderStatus {
+	return status;
+}
+
+export function getStoredApiKeys(): Record<string, string> {
+	return storedKeys;
+}
+
+export function getStoredApiKey(family: string): string | null {
+	return storedKeys[family] ?? null;
+}
+
+/** Whether chat is enabled (a configured, ready provider exists). */
+export function isProviderReady(): boolean {
+	return status.ready;
+}
+
+/** Whether the initial state snapshot has been fetched. */
+export function isLoaded(): boolean {
+	return loaded;
+}
+
+export function getFamily(
+	id: string | null | undefined,
+): ProviderFamily | undefined {
+	if (!id) return undefined;
+	return families.find((f) => f.id === id);
+}
+
+/**
+ * Test-only: re-query provider state from the (mocked) backend so a fresh
+ * boot can be simulated without re-importing the module (which would
+ * duplicate the Svelte runtime and break component rendering).
+ */
+export async function __resetForTests(): Promise<void> {
+	loaded = false;
+	await queryProviderState().catch(() => {});
+	loaded = true;
 }

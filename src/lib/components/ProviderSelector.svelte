@@ -1,242 +1,161 @@
 <script lang="ts">
-	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 	import {
-		getLanguageState,
-		setLanguageProvider,
+		configureProvider,
+		disableProvider,
+		getCurrentProvider,
+		getFamilies,
+		getFamily,
+		getStoredApiKey,
+		listProviderModels,
+		loadFamilies,
+		type ProviderFamily,
+		type ProviderModel,
 	} from '$lib/stores/provider-state.svelte';
 
-	interface ProviderFamily {
-		id: string;
-		name: string;
-		description: string;
-		requires_api_key: boolean;
-	}
+	type Status = 'idle' | 'saving' | 'listing';
 
-	interface RemoteModelInfo {
-		id: string;
-		name: string;
-		description: string | null;
-	}
+	let { onConfigured }: { onConfigured?: () => void } = $props();
 
-	interface StoredApiKeys {
-		openai: string | null;
-		anthropic: string | null;
-	}
+	const families = $derived(getFamilies());
+	const current = $derived(getCurrentProvider());
 
-	type Status = 'idle' | 'verifying' | 'configuring';
-
-	type Props = {
-		onConfigured?: () => void;
-	};
-
-	let { onConfigured }: Props = $props();
-
-	let families = $state<ProviderFamily[]>([]);
-	let selectedFamily = $state<string>('openai');
-
-	// Use global language provider state
-	const languageState = getLanguageState();
-
-	// Stored API keys (for switching between providers without re-entering)
-	let storedKeys = $state<StoredApiKeys>({ openai: null, anthropic: null });
-
-	// Remote provider state
+	let selectedFamilyId = $state<string>('');
 	let apiKey = $state('');
-	let models = $state<RemoteModelInfo[]>([]);
-	let selectedModel = $state<string | null>(null);
+	let baseUrl = $state('');
+	let model = $state('');
+	let models = $state<ProviderModel[] | null>(null);
+	let listingFailed = $state(false);
 	let status = $state<Status>('idle');
 	let error = $state<string | null>(null);
-	let isVerified = $state(false);
 
-	// Check if the current provider matches selected family and model
-	let isCurrentActive = $derived(() => {
-		if (!languageState.providerType) return false;
-		if (languageState.providerType !== selectedFamily) return false;
-		if (
-			languageState.providerType === 'openai' ||
-			languageState.providerType === 'anthropic'
-		) {
-			return languageState.modelId === selectedModel;
-		}
-		return false;
-	});
+	const family = $derived<ProviderFamily | undefined>(
+		selectedFamilyId ? getFamily(selectedFamilyId) : undefined,
+	);
 
-	// Sync UI to active provider on initial load
-	$effect(() => {
-		if (languageState.providerType) {
-			selectedFamily = languageState.providerType;
+	const isCurrent = $derived(
+		current !== null &&
+			current.family === selectedFamilyId &&
+			current.model === model,
+	);
 
-			if (
-				languageState.providerType === 'openai' ||
-				languageState.providerType === 'anthropic'
-			) {
-				selectedModel = languageState.modelId;
-				// Use stored API key for verification
-				const storedKey =
-					languageState.providerType === 'openai'
-						? storedKeys.openai
-						: storedKeys.anthropic;
-				if (storedKey) {
-					apiKey = storedKey;
-					verifyApiKey();
-				}
-			}
-		}
-	});
+	const canSave = $derived(
+		status === 'idle' &&
+			!!selectedFamilyId &&
+			!!model.trim() &&
+			(!family?.requires_api_key || !!apiKey.trim()),
+	);
 
-	async function load() {
+	function syncFromCurrent() {
+		if (!current) return;
+		selectedFamilyId = current.family;
+		apiKey = current.api_key ?? getStoredApiKey(current.family) ?? '';
+		baseUrl = current.base_url ?? '';
+		model = current.model;
+	}
+
+	async function fetchModels(fam: ProviderFamily) {
+		models = null;
+		listingFailed = false;
+		if (!fam.supports_model_listing) return;
+
+		status = 'listing';
 		try {
-			const [familiesResult, keysResult] = await Promise.all([
-				invoke<ProviderFamily[]>('get_provider_families'),
-				invoke<StoredApiKeys>('get_stored_api_keys'),
-			]);
-			families = familiesResult;
-			storedKeys = keysResult;
+			const list = await listProviderModels({
+				family: fam.id,
+				apiKey: apiKey.trim() || null,
+				baseUrl: baseUrl.trim() || null,
+			});
+			models = list;
+			if (!model && list.length > 0) {
+				model = list[0].id;
+			}
 		} catch (e) {
-			error = `Failed to load providers: ${e}`;
+			// Listing failed (bad key, network, provider quirk): fall back to
+			// manual model entry.
+			console.error('Model listing failed:', e);
+			models = null;
+			listingFailed = true;
+		} finally {
+			status = 'idle';
 		}
 	}
 
 	function selectFamily(id: string) {
-		selectedFamily = id;
-		// Reset remote state when switching
+		selectedFamilyId = id;
 		error = null;
-		isVerified = false;
-		models = [];
-		selectedModel = null;
-		apiKey = '';
+		models = null;
+		listingFailed = false;
+		model = '';
+		apiKey = getStoredApiKey(id) ?? '';
+		baseUrl = '';
+		const fam = getFamily(id);
+		if (!fam) return;
 
-		// Restore state if switching to current provider's family
-		if (languageState.providerType === id) {
-			if (
-				languageState.providerType === 'openai' ||
-				languageState.providerType === 'anthropic'
-			) {
-				const storedKey =
-					languageState.providerType === 'openai'
-						? storedKeys.openai
-						: storedKeys.anthropic;
-				if (storedKey) {
-					apiKey = storedKey;
-				}
-				selectedModel = languageState.modelId;
-				// Re-verify to populate models
-				verifyApiKey();
-			}
-		} else if (id === 'openai' && storedKeys.openai) {
-			// Use stored API key for OpenAI
-			apiKey = storedKeys.openai;
-			verifyApiKey();
-		} else if (id === 'anthropic' && storedKeys.anthropic) {
-			// Use stored API key for Anthropic
-			apiKey = storedKeys.anthropic;
-			verifyApiKey();
+		if (current?.family === id) {
+			apiKey = current.api_key ?? apiKey;
+			baseUrl = current.base_url ?? '';
+			model = current.model;
+		}
+		if (fam.supports_model_listing) {
+			fetchModels(fam);
 		}
 	}
 
-	async function verifyApiKey() {
-		if (!apiKey.trim()) {
-			error = 'Please enter an API key';
-			return;
-		}
-
-		status = 'verifying';
+	async function save() {
+		if (!canSave) return;
+		status = 'saving';
 		error = null;
-
 		try {
-			const command =
-				selectedFamily === 'openai'
-					? 'fetch_openai_models'
-					: 'fetch_anthropic_models';
-			models = await invoke<RemoteModelInfo[]>(command, { apiKey });
-			isVerified = true;
-			if (models.length > 0 && !selectedModel) {
-				selectedModel = models[0].id;
-			}
-		} catch (e) {
-			error = `Verification failed: ${e}`;
-			isVerified = false;
-		} finally {
-			status = 'idle';
-		}
-	}
-
-	async function configureRemoteProvider() {
-		if (!selectedModel || !apiKey) return;
-
-		status = 'configuring';
-		error = null;
-
-		try {
-			const command =
-				selectedFamily === 'openai'
-					? 'configure_openai_provider'
-					: 'configure_anthropic_provider';
-			await invoke(command, { apiKey, model: selectedModel });
-
-			// Update stored keys locally so tab switching works immediately
-			if (selectedFamily === 'openai') {
-				storedKeys.openai = apiKey;
-			} else {
-				storedKeys.anthropic = apiKey;
-			}
-
-			// Update global provider state
-			setLanguageProvider(selectedFamily, selectedModel);
-
+			await configureProvider({
+				family: selectedFamilyId,
+				apiKey: family?.requires_api_key ? apiKey.trim() : null,
+				baseUrl: family?.supports_base_url ? baseUrl.trim() || null : null,
+				model: model.trim(),
+			});
 			onConfigured?.();
 		} catch (e) {
-			error = `Failed to configure: ${e}`;
+			error = `Failed to configure provider: ${e}`;
 		} finally {
 			status = 'idle';
 		}
 	}
 
-	async function disableProvider() {
-		status = 'configuring';
+	async function handleDisable() {
+		status = 'saving';
 		error = null;
-
 		try {
-			await invoke('disable_chat_provider');
-			setLanguageProvider(null, null);
+			await disableProvider();
 			onConfigured?.();
 		} catch (e) {
-			error = `Failed to disable: ${e}`;
+			error = `Failed to disable provider: ${e}`;
 		} finally {
 			status = 'idle';
 		}
 	}
 
-	onMount(load);
+	onMount(async () => {
+		const list = await loadFamilies();
+		if (current) {
+			syncFromCurrent();
+		} else if (list.length > 0) {
+			selectedFamilyId = list[0].id;
+			selectFamily(list[0].id);
+		}
+	});
 </script>
 
-<div>
-	<!-- Provider Tabs -->
-	<div class="mb-6 flex border-b border-neutral-300">
-		{#each families as family (family.id)}
-			<button
-				class="px-4 py-2 text-sm font-medium transition-colors -mb-px cursor-pointer
-					{selectedFamily === family.id
-					? 'text-primary-700 border-b-2 border-primary-500'
-					: 'text-neutral-500 hover:text-neutral-700'}"
-				onclick={() => selectFamily(family.id)}
-			>
-				{family.name}
-			</button>
-		{/each}
-	</div>
-
-	<!-- Current Provider Status (if active) -->
-	{#if languageState.providerType && languageState.providerType === selectedFamily}
+<div class="space-y-4">
+	<!-- Current provider indicator -->
+	{#if current}
 		<div
-			class="flex items-center gap-2 px-4 py-3 rounded-lg border mb-4 text-sm border-primary-400 bg-primary-50 text-neutral-700"
+			class="mb-4 flex items-center gap-2 rounded-lg border border-primary-400 bg-primary-50 px-4 py-3 text-sm text-neutral-700"
 		>
 			<svg
-				class="w-5 h-5 shrink-0 text-primary-500"
+				class="h-5 w-5 shrink-0 text-primary-500"
 				viewBox="0 0 24 24"
 				fill="none"
 				stroke="currentColor"
@@ -248,99 +167,117 @@
 					d="M5 13l4 4L19 7"
 				/>
 			</svg>
-			<span>
-				{languageState.providerType === 'openai' ? 'OpenAI' : 'Anthropic'}: {languageState.modelId}
+			<span data-testid="current-provider">
+				{getFamily(current.family)?.name ?? current.family}: {current.model}
 			</span>
 			<button
-				class="ml-auto text-xs text-neutral-500 hover:text-neutral-700 cursor-pointer"
-				onclick={disableProvider}
-				disabled={status === 'configuring'}
+				class="ml-auto cursor-pointer text-xs text-neutral-500 hover:text-neutral-700"
+				onclick={handleDisable}
+				disabled={status !== 'idle'}
 			>
 				Disable
 			</button>
 		</div>
 	{/if}
 
-	<!-- Provider Content -->
-	<!-- Remote Provider (OpenAI/Anthropic) -->
-	<div class="space-y-4">
-		<p class="text-sm text-neutral-500">
-			{#if selectedFamily === 'openai'}
-				Enter your OpenAI API key to access GPT models.
-			{:else}
-				Enter your Anthropic API key to access Claude models.
-			{/if}
-		</p>
+	<!-- Family selection -->
+	<div>
+		<label
+			for="provider-family-select"
+			class="mb-2 block text-sm font-medium text-neutral-700"
+		>
+			Provider
+		</label>
+		<select
+			id="provider-family-select"
+			class="w-full cursor-pointer rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 focus:border-transparent focus:ring-2 focus:ring-tertiary-400 focus:outline-none"
+			bind:value={selectedFamilyId}
+			onchange={(e) => selectFamily(e.currentTarget.value)}
+			disabled={status !== 'idle'}
+		>
+			{#each families as fam (fam.id)}
+				<option value={fam.id}>{fam.name}</option>
+			{/each}
+		</select>
+	</div>
 
-		<!-- API Key Input -->
-		<div class="flex gap-2">
-			<Input
-				id="api-key-input"
-				type="password"
-				label="API Key"
-				bind:value={apiKey}
-				placeholder={selectedFamily === 'openai' ? 'sk-...' : 'sk-ant-...'}
+	<!-- API key (only when the family requires one) -->
+	{#if family?.requires_api_key}
+		<Input
+			id="api-key-input"
+			type="password"
+			label="API Key"
+			bind:value={apiKey}
+			placeholder="API key"
+			disabled={status !== 'idle'}
+		/>
+	{/if}
+
+	<!-- Base URL (only when the family supports one) -->
+	{#if family?.supports_base_url}
+		<Input
+			id="base-url-input"
+			type="text"
+			label="Base URL"
+			bind:value={baseUrl}
+			placeholder="https://api.example.com/v1"
+			disabled={status !== 'idle'}
+		/>
+	{/if}
+
+	<!-- Model: fetched dropdown when listing is supported, free text otherwise -->
+	<div>
+		<label
+			for="model-input"
+			class="mb-2 block text-sm font-medium text-neutral-700"
+		>
+			Model
+		</label>
+		{#if family?.supports_model_listing && models && models.length > 0}
+			<select
+				id="model-input"
+				class="w-full cursor-pointer rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 focus:border-transparent focus:ring-2 focus:ring-tertiary-400 focus:outline-none"
+				bind:value={model}
+				disabled={status !== 'idle'}
+			>
+				{#if !models.some((m) => m.id === model)}
+					<option value={model}>{model}</option>
+				{/if}
+				{#each models as m (m.id)}
+					<option value={m.id}>{m.display_name}</option>
+				{/each}
+			</select>
+		{:else}
+			<input
+				id="model-input"
+				type="text"
+				class="w-full rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 focus:border-transparent focus:ring-2 focus:ring-tertiary-400 focus:outline-none"
+				bind:value={model}
+				placeholder="Model id"
 				disabled={status !== 'idle'}
 			/>
-			<div class="flex items-end">
-				<Button
-					variant="secondary"
-					onclick={verifyApiKey}
-					disabled={status !== 'idle' || !apiKey.trim()}
-					loading={status === 'verifying'}
-				>
-					Verify
-				</Button>
-			</div>
-		</div>
-
-		<!-- Model Selection (shown after verification) -->
-		{#if isVerified && models.length > 0}
-			<div>
-				<label
-					for="model-select"
-					class="block text-sm font-medium text-neutral-700 mb-2"
-				>
-					Model
-				</label>
-				<select
-					id="model-select"
-					bind:value={selectedModel}
-					class="w-full px-3 py-2 bg-surface-bright border border-neutral-300 rounded-md text-neutral-800 focus:outline-none focus:ring-2 focus:ring-tertiary-400 focus:border-transparent cursor-pointer"
-					disabled={status !== 'idle'}
-				>
-					{#each models as model (model.id)}
-						<option value={model.id}>
-							{model.name}
-							{#if model.description}
-								- {model.description}
-							{/if}
-						</option>
-					{/each}
-				</select>
-			</div>
-
-			<!-- Activate Button -->
-			<Button
-				fullWidth
-				onclick={configureRemoteProvider}
-				disabled={status === 'configuring' ||
-					!selectedModel ||
-					isCurrentActive()}
-				loading={status === 'configuring'}
-			>
-				{#if status === 'configuring'}
-					Activating...
-				{:else if isCurrentActive()}
-					Active
-				{:else}
-					Activate
-				{/if}
-			</Button>
-		{/if}
-
-		{#if error}
-			<ErrorAlert>{error}</ErrorAlert>
+			{#if listingFailed}
+				<p class="mt-1 text-xs text-neutral-500">
+					Could not load the model list — enter the model id manually.
+				</p>
+			{/if}
 		{/if}
 	</div>
+
+	<Button
+		fullWidth
+		onclick={save}
+		disabled={!canSave}
+		loading={status === 'saving'}
+	>
+		{#if isCurrent}
+			Active
+		{:else}
+			Save &amp; Activate
+		{/if}
+	</Button>
+
+	{#if error}
+		<ErrorAlert>{error}</ErrorAlert>
+	{/if}
 </div>
