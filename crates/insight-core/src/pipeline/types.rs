@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 pub enum Stage {
     Store,
     Extract,
-    Ocr,
-    Embed,
     Index,
 }
 
@@ -19,8 +17,6 @@ impl std::fmt::Display for Stage {
         match self {
             Stage::Store => write!(f, "store"),
             Stage::Extract => write!(f, "extract"),
-            Stage::Ocr => write!(f, "ocr"),
-            Stage::Embed => write!(f, "embed"),
             Stage::Index => write!(f, "index"),
         }
     }
@@ -33,26 +29,11 @@ pub struct ExtractJob {
     pub doc_id: String,
 }
 
-/// Job for the OCR worker pool.
-#[derive(Debug, Clone)]
-pub struct OcrJob {
-    pub namespace_id: NamespaceId,
-    pub doc_id: String,
-}
-
-/// Job for the embed worker pool.
-#[derive(Debug, Clone)]
-pub struct EmbedJob {
-    pub namespace_id: NamespaceId,
-    pub doc_id: String,
-}
-
 /// Job for the index worker.
 #[derive(Debug, Clone)]
 pub struct IndexJob {
     pub namespace_id: NamespaceId,
     pub doc_id: String,
-    pub model_id: String,
 }
 
 /// Progress update from workers.
@@ -70,12 +51,4 @@ pub enum ProgressUpdate {
     },
     /// Job queued for processing (-> pending).
     Queued { collection_id: String, stage: Stage },
-    /// Per-item progress within an active job (e.g. OCR page 5/20).
-    PageProgress {
-        collection_id: String,
-        doc_id: String,
-        stage: Stage,
-        current: usize,
-        total: usize,
-    },
 }
