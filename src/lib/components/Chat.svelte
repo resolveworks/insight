@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
+	import CollectionFilter from './CollectionFilter.svelte';
 	import Markdown from './Markdown.svelte';
-	import ProviderSelector from './ProviderSelector.svelte';
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
 	import { isProviderReady } from '$lib/stores/provider-state.svelte';
+	import * as collectionsStore from '$lib/stores/collections.svelte';
 	import * as chat from '$lib/stores/conversations.svelte';
 	import type { AssistantContentBlock, UserContentBlock } from '$lib/types/rig';
 
@@ -21,12 +22,14 @@
 	const isLoading = $derived(chat.getIsLoading());
 	const error = $derived(chat.getError());
 
+	// Collections available to scope the conversation to
+	const allCollections = $derived(collectionsStore.getCollections());
+
 	const hasCollection = $derived(collections.length > 0);
 
-	type EmptyState = 'no-provider' | 'pick-collection' | 'no-messages' | null;
+	type EmptyState = 'pick-collection' | 'no-messages' | null;
 
 	const emptyState = $derived.by<EmptyState>(() => {
-		if (!providerReady) return 'no-provider';
 		if (messages.length > 0) return null;
 		return hasCollection ? 'no-messages' : 'pick-collection';
 	});
@@ -38,6 +41,11 @@
 	let predictionTimeout: ReturnType<typeof setTimeout> | undefined;
 	let messagesContainer: HTMLElement | undefined;
 
+	// Conversations already auto-scoped this session. Deliberately
+	// non-reactive and module-scoped: it survives remounts and only
+	// dedupes, so a user removing scope is never re-added.
+	const autoScoped = new Set<string>();
+
 	// Initialize the store once the language provider is ready.
 	$effect(() => {
 		if (providerReady) {
@@ -45,6 +53,26 @@
 				chat.ensureInitialized();
 			});
 		}
+	});
+
+	// Single-collection auto-scope: a fresh, unscoped conversation gets the
+	// user's only collection added automatically. Fires at most once per
+	// conversation id per session.
+	$effect(() => {
+		if (
+			!providerReady ||
+			!activeId ||
+			messages.length > 0 ||
+			collections.length > 0 ||
+			allCollections.length !== 1 ||
+			autoScoped.has(activeId)
+		) {
+			return;
+		}
+		autoScoped.add(activeId);
+		untrack(() => {
+			void chat.addActiveCollection(allCollections[0]);
+		});
 	});
 
 	// Auto-scroll to bottom whenever chat content changes. Reading message /
@@ -69,6 +97,11 @@
 			}
 		});
 	});
+
+	async function handleAddCollection(id: string) {
+		const found = collectionsStore.getCollection(id);
+		if (found) await chat.addActiveCollection(found);
+	}
 
 	async function sendMessage() {
 		if (!inputValue.trim() || isGenerating || !hasCollection) return;
@@ -159,26 +192,21 @@
 		bind:this={messagesContainer}
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
-		{#if emptyState === 'no-provider'}
-			<div class="mx-auto max-w-xl pt-8">
-				<h2 class="mb-4 text-lg font-medium text-neutral-800">
-					Configure a Language Model
-				</h2>
-				<p class="mb-6 text-sm text-neutral-500">
-					Choose a provider to enable chat. Only the conversation is sent to the
-					provider — documents never leave your machine.
-				</p>
-				<div class="rounded-lg border border-neutral-300 bg-surface-bright p-6">
-					<ProviderSelector />
-				</div>
-			</div>
-		{:else if emptyState === 'pick-collection'}
+		{#if emptyState === 'pick-collection'}
 			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-neutral-500">
-					<div class="mb-2 text-lg">Pick a collection to begin</div>
-					<div class="text-sm">
-						Use the Collections filter on the right to scope your research.
-					</div>
+				<div class="w-full max-w-md rounded-lg border border-neutral-200 bg-surface-bright p-6">
+					<h2 class="mb-1 text-lg font-medium text-neutral-800">
+						Choose collections to search
+					</h2>
+					<p class="mb-4 text-sm text-neutral-500">
+						Your agent searches only the collections you pick.
+					</p>
+					<CollectionFilter
+						collections={allCollections}
+						selected={collections}
+						onAdd={handleAddCollection}
+						onRemove={chat.removeActiveCollection}
+					/>
 				</div>
 			</div>
 		{:else if emptyState === 'no-messages'}
