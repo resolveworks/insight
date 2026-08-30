@@ -4,18 +4,18 @@ Insight is built as a Tauri 2.0 desktop application with a Rust backend and Svel
 
 ## Core Stack
 
-| Component       | Library     | Purpose                                  |
-| --------------- | ----------- | ---------------------------------------- |
-| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend) |
-| UI              | Svelte 5    | Frontend                                 |
-| Styling         | Tailwind 4  | Utility-first CSS                        |
+| Component       | Library                 | Purpose                                      |
+| --------------- | ----------------------- | -------------------------------------------- |
+| App framework   | Tauri 2.0               | Desktop app (Rust backend, web frontend)     |
+| UI              | Svelte 5                | Frontend                                     |
+| Styling         | Tailwind 4              | Utility-first CSS                            |
 | Chat inference  | OpenAI / Anthropic APIs | Remote LLM providers, configured in Settings |
-| P2P / Sync      | iroh        | Connections, NAT traversal, sync         |
-| Content storage | iroh-blobs  | Content-addressed file storage           |
-| Metadata sync   | iroh-docs   | CRDT key-value store for metadata        |
-| Real-time       | iroh-gossip | Pub/sub for live updates                 |
-| Search          | milli       | Full-text keyword search (BM25)          |
-| PDF text        | lopdf       | Digital text extraction                  |
+| P2P / Sync      | iroh                    | Connections, NAT traversal, sync             |
+| Content storage | iroh-blobs              | Content-addressed file storage               |
+| Metadata sync   | iroh-docs               | CRDT key-value store for metadata            |
+| Real-time       | iroh-gossip             | Pub/sub for live updates                     |
+| Search          | milli                   | Full-text keyword search (BM25)              |
+| PDF text        | lopdf                   | Digital text extraction                      |
 
 ## Agent Architecture
 
@@ -87,7 +87,7 @@ All file content (PDFs, extracted text) is stored in iroh-blobs using content-ad
 
 ### On Sync
 
-When document entries arrive from a peer, iroh-docs automatically syncs the entry content blobs. The SyncWatcher listens for `files/*/meta` entries and triggers processing:
+When document entries arrive from a peer, iroh-docs automatically syncs the entry content blobs. The SyncWatcher listens for `files/*/text` entries and triggers indexing:
 
 1. Text is already available at `files/{id}/text` (synced by iroh)
 2. Chunks are indexed in milli for search
@@ -95,13 +95,13 @@ When document entries arrive from a peer, iroh-docs automatically syncs the entr
 
 ## What Syncs vs What's Local
 
-| Data            | Syncs                  | Stored in  |
-| --------------- | ---------------------- | ---------- |
-| PDF files       | Yes                    | iroh-blobs |
-| Extracted text  | Yes                    | iroh-blobs |
-| File metadata   | Yes                    | iroh-docs  |
-| Collection info | Yes                    | iroh-docs  |
-| Search index    | No (built from synced text) | milli |
+| Data            | Syncs                       | Stored in  |
+| --------------- | --------------------------- | ---------- |
+| PDF files       | Yes                         | iroh-blobs |
+| Extracted text  | Yes                         | iroh-blobs |
+| File metadata   | Yes                         | iroh-docs  |
+| Collection info | Yes                         | iroh-docs  |
+| Search index    | No (built from synced text) | milli      |
 
 Search is local keyword indexing over synced text: each peer builds its own milli index. Nothing beyond the raw document data is derived or replicated.
 

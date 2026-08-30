@@ -19,10 +19,8 @@ iroh-io = "0.6"
 # PDF processing
 lopdf = "0.38"
 
-# Search (milli from meilisearch)
+# milli from meilisearch — full-text keyword search
 milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1" }
-# milli exposes http_client::policy::IpPolicy in its public API; we need to construct one
-http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1", package = "http-client" }
 bumpalo = "3"
 fst = "0.4.7"
 roaring = "0.10.7"
@@ -36,31 +34,13 @@ bytes = "1"
 # Random
 rand = "0.9"
 
-# LLM inference
-# Pinned pre-PR#2059 (attention mask overhaul) — newer commits panic in
-# qwen3_embedding.rs::forward_embeds when flash-attn is compiled in.
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", tag = "v0.8.0" }
-hf-hub = { version = "0.4", features = ["tokio"] }
-tokio-stream = "0.1"
-tokio-util = "0.7"
-
 # Remote LLM providers
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 async-openai = { version = "0.32", features = ["responses", "model"] }
 
-# Text chunking for embeddings
-text-splitter = { version = "0.28", features = ["tokenizers"] }
-tokenizers = "0.22"
-
-# Image handling for OCR (matches mistralrs's transitive version)
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-
-# PDF rasterization + per-page image detection for OCR.
-# AGPL-3.0; compatible with our AGPL-3.0-only license.
-# First build vendors and compiles MuPDF C source (~5 min); subsequent
-# builds are cached.
-mupdf = { version = "0.6", default-features = false, features = ["all-fonts"] }
+# Text chunking for search indexing
+text-splitter = "0.28"
 
 # Utilities
 anyhow = "1"
@@ -68,16 +48,7 @@ thiserror = "2"
 tracing = "0.1"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
-
-[features]
-default = []
-# GPU/accelerated builds (optional; CPU-only by default)
-cuda = ["mistralrs/cuda", "mistralrs/flash-attn", "mistralrs/cudnn"]
-flash-attn = ["mistralrs/flash-attn"]
-cudnn = ["mistralrs/cudnn"]
-metal = ["mistralrs/metal", "mistralrs/accelerate"]
-accelerate = ["mistralrs/accelerate"]
-mkl = ["mistralrs/mkl"]
+tokio-util = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
