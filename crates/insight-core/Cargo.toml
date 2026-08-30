@@ -46,11 +46,6 @@ rand = "0.9"
 # ../rig checkout is the API reference for this dependency.
 rig = { git = "https://github.com/0xPlaygrounds/rig.git", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b" }
 
-# Legacy chat providers (async-openai) — removed when the rig runtime lands
-async-trait = "0.1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-async-openai = { version = "0.41", features = ["responses", "model"] }
-
 # Text chunking for search indexing
 text-splitter = "0.32"
 
@@ -64,3 +59,5 @@ tokio-util = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
+# Test-only rig features (mock completion models for runtime tests).
+rig = { git = "https://github.com/0xPlaygrounds/rig.git", rev = "475cfddc28cc5b367108a3d387b84d5f838d613b", features = ["test-utils"] }

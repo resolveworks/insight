@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::provider::ProviderConfig;
+use crate::providers::ProviderSettings;
 
 /// Application configuration (paths, computed at runtime)
 #[derive(Debug, Clone)]
@@ -48,24 +48,19 @@ impl Config {
 /// User settings (persisted to disk)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
-    /// Active chat provider configuration (OpenAI or Anthropic)
+    /// Active chat provider configuration, as consumed by
+    /// [`crate::providers::build_model`].
     #[serde(default)]
-    pub provider: Option<ProviderConfig>,
-    /// Stored OpenAI API key (persisted separately from active provider)
+    pub provider: Option<ProviderSettings>,
+    /// Stored API keys per provider family (`family -> key`), persisted
+    /// separately from the active provider so switching families keeps the
+    /// previously entered key.
     #[serde(default)]
-    pub openai_api_key: Option<String>,
-    /// Stored Anthropic API key (persisted separately from active provider)
-    #[serde(default)]
-    pub anthropic_api_key: Option<String>,
+    pub api_keys: HashMap<String, String>,
 }
 
 impl Settings {
     /// Load settings from file, or return defaults if not found.
-    ///
-    /// Legacy settings files may contain a local-inference provider
-    /// (`"type": "local"`) that no longer parses; rather than wiping ALL
-    /// settings (including stored API keys), the stale provider entry is
-    /// dropped and the remaining fields are kept.
     pub fn load(path: &PathBuf) -> Self {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
@@ -76,14 +71,8 @@ impl Settings {
             }
         };
 
-        match serde_json::from_str::<serde_json::Value>(&contents) {
-            Ok(mut value) => {
-                let filtered = filter_legacy_provider(value.take());
-                serde_json::from_value(filtered).unwrap_or_else(|e| {
-                    tracing::warn!("Failed to parse settings file, using defaults: {}", e);
-                    Self::default()
-                })
-            }
+        match serde_json::from_str::<Self>(&contents) {
+            Ok(settings) => settings,
             Err(e) => {
                 tracing::warn!("Failed to parse settings file, using defaults: {}", e);
                 Self::default()
@@ -99,24 +88,6 @@ impl Settings {
     }
 }
 
-/// Remove a provider entry that doesn't describe a supported (remote)
-/// provider, e.g. a legacy `{"type": "local", ...}` object. Leaves
-/// everything else untouched.
-fn filter_legacy_provider(mut value: serde_json::Value) -> serde_json::Value {
-    if let Some(provider) = value.get("provider").cloned() {
-        let supported = provider
-            .get("type")
-            .and_then(|t| t.as_str())
-            .is_some_and(|t| t == "openai" || t == "anthropic");
-        if !supported {
-            if let Some(map) = value.as_object_mut() {
-                map.remove("provider");
-            }
-        }
-    }
-    value
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,65 +96,35 @@ mod tests {
     fn settings_all_defaults_when_empty_object() {
         let parsed: Settings = serde_json::from_str("{}").unwrap();
         assert!(parsed.provider.is_none());
-        assert!(parsed.openai_api_key.is_none());
-        assert!(parsed.anthropic_api_key.is_none());
+        assert!(parsed.api_keys.is_empty());
     }
 
     #[test]
     fn settings_defaults_when_fields_missing() {
-        let parsed: Settings = serde_json::from_str(r#"{"openai_api_key":"sk-x"}"#).unwrap();
-        assert_eq!(parsed.openai_api_key.as_deref(), Some("sk-x"));
+        let parsed: Settings = serde_json::from_str(r#"{"api_keys":{"openai":"sk-x"}}"#).unwrap();
+        assert_eq!(
+            parsed.api_keys.get("openai").map(String::as_str),
+            Some("sk-x")
+        );
         assert!(parsed.provider.is_none());
-        assert!(parsed.anthropic_api_key.is_none());
-    }
-
-    #[test]
-    fn legacy_local_provider_is_dropped_but_siblings_survive() {
-        let json = r#"{
-            "embedding_model_id": "qwen3-embedding",
-            "ocr_model_id": "nanonets",
-            "provider": {"type": "local", "model_id": "qwen3-8b"},
-            "openai_api_key": "sk-keep",
-            "anthropic_api_key": "ant-keep",
-            "lifecycle": {"chat_coexist": true}
-        }"#;
-        let value: serde_json::Value = serde_json::from_str(json).unwrap();
-        let filtered = filter_legacy_provider(value);
-        let parsed: Settings = serde_json::from_value(filtered).unwrap();
-        assert!(parsed.provider.is_none());
-        assert_eq!(parsed.openai_api_key.as_deref(), Some("sk-keep"));
-        assert_eq!(parsed.anthropic_api_key.as_deref(), Some("ant-keep"));
-    }
-
-    #[test]
-    fn remote_providers_survive_migration() {
-        let json = r#"{
-            "provider": {"type": "openai", "api_key": "sk-1", "model": "gpt-4o"},
-            "openai_api_key": "sk-2"
-        }"#;
-        let value: serde_json::Value = serde_json::from_str(json).unwrap();
-        let filtered = filter_legacy_provider(value);
-        let parsed: Settings = serde_json::from_value(filtered).unwrap();
-        assert!(matches!(
-            parsed.provider,
-            Some(ProviderConfig::OpenAI { ref model, .. }) if model == "gpt-4o"
-        ));
     }
 
     #[test]
     fn settings_roundtrip() {
         let original = Settings {
-            provider: Some(ProviderConfig::Anthropic {
-                api_key: "k".into(),
+            provider: Some(ProviderSettings {
+                family: "anthropic".into(),
                 model: "claude".into(),
+                api_key: Some("k".into()),
+                base_url: None,
             }),
-            openai_api_key: Some("sk".into()),
-            anthropic_api_key: Some("ant".into()),
+            api_keys: [("anthropic".to_string(), "k".to_string())]
+                .into_iter()
+                .collect(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.provider, original.provider);
-        assert_eq!(parsed.openai_api_key, original.openai_api_key);
-        assert_eq!(parsed.anthropic_api_key, original.anthropic_api_key);
+        assert_eq!(parsed.api_keys, original.api_keys);
     }
 }

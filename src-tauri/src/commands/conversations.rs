@@ -1,45 +1,84 @@
+//! Conversation commands: lifecycle (list/load/start/delete), scope
+//! management, message sending with streamed agent events, and next-message
+//! prediction.
+
 use iroh_docs::NamespaceId;
+use rig::completion::Message;
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::{agent, conversations, AppState, ProviderEvent};
+use crate::core::{
+    providers, runtime, AppState, CollectionInfo, ConversationMeta, ConversationSummary, Settings,
+};
 use crate::error::{CommandError, CommandResult, ResultExt};
 
-/// List all saved conversations
+/// A conversation as seen by the frontend: metadata sidecar plus the full
+/// rig message history.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationView {
+    pub id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub collections: Vec<CollectionInfo>,
+    pub messages: Vec<Message>,
+}
+
+/// Load meta + messages into a [`ConversationView`].
+async fn conversation_view(
+    state: &AppState,
+    meta: ConversationMeta,
+) -> Result<ConversationView, CommandError> {
+    use rig::memory::ConversationMemory;
+
+    let id: rig::id::ConversationId = meta.id.clone().into();
+    let messages = state
+        .memory
+        .load(&id)
+        .await
+        .map_err(|e| CommandError::internal(format!("failed to load messages: {e}")))?;
+    Ok(ConversationView {
+        id: meta.id,
+        title: meta.title,
+        created_at: meta.created_at,
+        updated_at: meta.updated_at,
+        collections: meta.collections,
+        messages,
+    })
+}
+
+/// List all saved conversations, most recently updated first.
 #[tauri::command]
 pub async fn list_conversations(
     state: State<'_, AppState>,
-) -> CommandResult<Vec<conversations::ConversationSummary>> {
-    conversations::list_conversations(&state.config.conversations_dir).storage_err()
+) -> CommandResult<Vec<ConversationSummary>> {
+    state.memory.list_summaries().await.storage_err()
 }
 
-/// Load a conversation by ID
+/// Load a conversation by ID (404-style error when missing).
 #[tauri::command]
 pub async fn load_conversation(
     conversation_id: String,
     state: State<'_, AppState>,
-) -> CommandResult<agent::Conversation> {
-    let path = conversations::conversation_path(&state.config.conversations_dir, &conversation_id);
-    let conversation = conversations::load_conversation(&path).storage_err()?;
-
-    // Add to in-memory cache
-    state
-        .conversations
-        .write()
+) -> CommandResult<ConversationView> {
+    let meta = state
+        .memory
+        .load_meta(&conversation_id)
         .await
-        .insert(conversation_id, conversation.clone());
-
-    Ok(conversation)
+        .storage_err()?
+        .ok_or_else(CommandError::conversation_not_found)?;
+    conversation_view(&state, meta).await
 }
 
 /// Enrich bare [`CollectionInfo`] values (which the frontend only knows a
-/// subset of) with storage-derived `total_pages` counts. Collections whose IDs
-/// don't parse as valid namespaces are passed through untouched so the call
-/// never silently drops the user's selection.
+/// subset of) with storage-derived counts. Collections whose IDs don't parse
+/// as valid namespaces are passed through untouched so the call never
+/// silently drops the user's selection.
 async fn enrich_collections(
     state: &AppState,
-    collections: Vec<agent::CollectionInfo>,
-) -> Vec<agent::CollectionInfo> {
+    collections: Vec<CollectionInfo>,
+) -> Vec<CollectionInfo> {
     let storage = state.storage.read().await;
     let mut enriched = Vec::with_capacity(collections.len());
     for col in collections {
@@ -51,7 +90,7 @@ async fn enrich_collections(
             .list_documents(namespace_id)
             .await
             .unwrap_or_default();
-        enriched.push(agent::CollectionInfo {
+        enriched.push(CollectionInfo {
             id: col.id,
             name: col.name,
             document_count: documents.len(),
@@ -62,96 +101,82 @@ async fn enrich_collections(
     enriched
 }
 
-/// Start a new chat conversation
+/// Whether the configured chat provider passes validation.
+async fn provider_ready(state: &AppState) -> bool {
+    let settings = Settings::load(&state.config.settings_file);
+    settings
+        .provider
+        .as_ref()
+        .is_some_and(|p| providers::build_model(p).is_ok())
+}
+
+/// Start a new chat conversation.
 ///
-/// Requires a chat provider to be configured first. If `collections` is
-/// provided and non-empty, the conversation's initial scope is recorded via
-/// `Conversation::set_collections` so a breadcrumb is added to the transcript.
+/// Requires a configured chat provider and a non-empty collection scope.
 #[tauri::command]
 pub async fn start_chat(
-    collections: Option<Vec<agent::CollectionInfo>>,
+    collections: Option<Vec<CollectionInfo>>,
     state: State<'_, AppState>,
-) -> CommandResult<agent::Conversation> {
-    if !state.models.chat_ready().await {
+) -> CommandResult<ConversationView> {
+    if !provider_ready(&state).await {
         return Err(CommandError::provider_not_configured());
     }
 
-    let conversation_id = uuid::Uuid::new_v4().to_string();
-    let mut conversation = agent::Conversation::new(conversation_id.clone());
+    let collections = match collections {
+        Some(cols) if !cols.is_empty() => enrich_collections(&state, cols).await,
+        _ => return Err(CommandError::no_collection_scope()),
+    };
 
-    if let Some(cols) = collections {
-        if !cols.is_empty() {
-            let enriched = enrich_collections(&state, cols).await;
-            conversation.set_collections(enriched);
-        }
-    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let meta = ConversationMeta {
+        id: id.clone(),
+        title: "New conversation".to_string(),
+        collections,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    let meta = state.memory.create(meta).await.storage_err()?;
 
-    conversations::save_conversation(&state.config.conversations_dir, &conversation)
-        .storage_err()?;
-
-    state
-        .conversations
-        .write()
-        .await
-        .insert(conversation_id.clone(), conversation.clone());
-
-    tracing::info!("Started new chat conversation: {}", conversation_id);
-    Ok(conversation)
+    tracing::info!("Started new chat conversation: {}", id);
+    conversation_view(&state, meta).await
 }
 
-/// Replace the active collection scope for a conversation.
-///
-/// Appends a scope-change breadcrumb to the transcript (when the selection
-/// actually differs) so the model knows earlier tool results were run against
-/// the previous scope.
+/// Replace the active collection scope for a conversation. Returns the
+/// refreshed view.
 #[tauri::command]
 pub async fn set_conversation_collections(
     conversation_id: String,
-    collections: Vec<agent::CollectionInfo>,
+    collections: Vec<CollectionInfo>,
     state: State<'_, AppState>,
-) -> CommandResult<agent::Conversation> {
-    let mut conversation = state
-        .conversations
-        .read()
+) -> CommandResult<ConversationView> {
+    let mut meta = state
+        .memory
+        .load_meta(&conversation_id)
         .await
-        .get(&conversation_id)
-        .cloned()
-        .ok_or(CommandError::conversation_not_found())?;
+        .storage_err()?
+        .ok_or_else(CommandError::conversation_not_found)?;
 
-    // Skip storage work when the selection is unchanged — set_collections
-    // would no-op anyway, but enrichment isn't free for multi-collection
-    // workspaces.
-    let existing_ids: std::collections::HashSet<&str> = conversation
-        .collections
-        .iter()
-        .map(|c| c.id.as_str())
-        .collect();
+    // Skip storage work when the selection is unchanged.
+    let existing_ids: std::collections::HashSet<&str> =
+        meta.collections.iter().map(|c| c.id.as_str()).collect();
     let unchanged = collections.len() == existing_ids.len()
         && collections
             .iter()
             .all(|c| existing_ids.contains(c.id.as_str()));
-    if unchanged {
-        return Ok(conversation);
-    }
-
-    let enriched = enrich_collections(&state, collections).await;
-    let changed = conversation.set_collections(enriched);
-
-    if changed {
-        conversations::save_conversation(&state.config.conversations_dir, &conversation)
-            .storage_err()?;
+    if !unchanged {
+        meta.collections = enrich_collections(&state, collections).await;
         state
-            .conversations
-            .write()
+            .memory
+            .update_meta(&conversation_id, meta)
             .await
-            .insert(conversation_id, conversation.clone());
+            .storage_err()?;
     }
 
-    Ok(conversation)
+    load_conversation(conversation_id, state).await
 }
 
-/// Delete a conversation. Cancels any in-flight generation or prediction,
-/// drops the in-memory entry, and removes the JSON file from disk.
+/// Delete a conversation: cancel any in-flight generation or prediction,
+/// then remove it from disk. Idempotent.
 #[tauri::command]
 pub async fn delete_conversation(
     conversation_id: String,
@@ -176,19 +201,18 @@ pub async fn delete_conversation(
         token.cancel();
     }
 
-    state.conversations.write().await.remove(&conversation_id);
-
-    conversations::delete_conversation(&state.config.conversations_dir, &conversation_id)
-        .storage_err()?;
-
+    state.memory.delete(&conversation_id).await.storage_err()?;
     Ok(())
 }
 
-/// Send a message to a conversation and stream the response.
+/// Send a message to a conversation and stream the agent's response as
+/// `agent-event-{id}` Tauri events.
 ///
-/// The search tools are scoped to the conversation's stored collection set;
-/// callers change that scope via [`set_conversation_collections`] ahead of
-/// time, not here.
+/// Each event payload is one serialized rig `MultiTurnStreamItem` (JSON,
+/// `type`-tagged, camelCase). Stream errors surface as a final
+/// `{"type":"streamError","message":...}` payload on the same channel. The
+/// command returns immediately; the run continues in a spawned task until it
+/// completes, errors, or is cancelled via [`cancel_generation`].
 #[tauri::command]
 pub async fn send_message(
     conversation_id: String,
@@ -202,19 +226,17 @@ pub async fn send_message(
         message
     );
 
-    let conversation = state
-        .conversations
-        .read()
+    let meta = state
+        .memory
+        .load_meta(&conversation_id)
         .await
-        .get(&conversation_id)
-        .ok_or(CommandError::conversation_not_found())?
-        .clone();
+        .storage_err()?
+        .ok_or_else(CommandError::conversation_not_found)?;
 
-    if !state.models.chat_ready().await {
+    if !provider_ready(&state).await {
         return Err(CommandError::provider_not_configured());
     }
-
-    if conversation.collections.is_empty() {
+    if meta.collections.is_empty() {
         return Err(CommandError::no_collection_scope());
     }
 
@@ -225,101 +247,42 @@ pub async fn send_message(
         .await
         .insert(conversation_id.clone(), cancel_token.clone());
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<agent::AgentEvent>(100);
-
-    let app_handle = app.clone();
+    let state_clone = state.inner().clone();
     let conv_id = conversation_id.clone();
+    let app_handle = app.clone();
+
     tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let event_name = format!("agent-event-{}", conv_id);
-            if let Err(e) = app_handle.emit(&event_name, &event) {
+        let event_name = format!("agent-event-{}", conv_id);
+        let emitter = move |value: serde_json::Value| {
+            if let Err(e) = app_handle.emit(&event_name, &value) {
                 tracing::error!("Failed to emit agent event: {}", e);
             }
-        }
-    });
-
-    let conversations_dir = state.config.conversations_dir.clone();
-    let state_clone = state.inner().clone();
-
-    let conv_id = conversation_id.clone();
-    let mut conversation = conversation;
-    let scope_collections = Some(conversation.collections.clone());
-
-    tokio::spawn(async move {
-        let ctx = agent::AgentContext {
-            state: state_clone.clone(),
-            collections: scope_collections,
         };
 
-        let lease = match state_clone.models.acquire_chat().await {
-            Ok(Some(l)) => l,
-            Ok(None) => {
-                tracing::error!("Provider not configured when running agent loop");
-                return;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to load chat provider");
-                return;
-            }
-        };
-
-        if let Err(e) = agent::run_agent_loop(
-            lease.provider(),
-            &mut conversation,
-            message,
-            &ctx,
-            tx,
-            cancel_token,
-        )
-        .await
+        if let Err(e) =
+            runtime::send_message(&state_clone, &conv_id, message, emitter, cancel_token).await
         {
             tracing::error!(
                 conversation_id = %conv_id,
                 error = %e,
                 error_chain = ?e,
-                "Agent loop error"
+                "Agent run error"
             );
         }
-        drop(lease);
 
-        let user_count = conversation
-            .messages
-            .iter()
-            .filter(|m| m.role == agent::MessageRole::User)
-            .count();
-        if user_count == 1 {
-            conversation.generate_title();
-        }
-
-        if let Err(e) = conversations::save_conversation(&conversations_dir, &conversation) {
-            tracing::error!("Failed to save conversation: {}", e);
-            return;
-        }
-
-        // Delete may race with the save: if the cache entry is gone, the JSON
-        // we just wrote would resurrect a deleted conversation. Remove the
-        // orphan so delete stays durable. The cache write is kept short so
-        // other conversation commands aren't blocked by disk I/O.
-        let orphaned = {
-            let mut map = state_clone.conversations.write().await;
-            if map.contains_key(&conv_id) {
-                map.insert(conv_id.clone(), conversation);
-                false
-            } else {
-                true
-            }
-        };
-        if orphaned {
-            if let Err(e) = conversations::delete_conversation(&conversations_dir, &conv_id) {
-                tracing::warn!("Failed to clean up orphaned conversation file: {}", e);
-            }
-        }
+        // Cleanup: drop the cancel token so a later generation can register
+        // a fresh one (and `delete_conversation` stops cancelling a dead run).
+        state_clone
+            .active_generations
+            .write()
+            .await
+            .remove(&conv_id);
     });
 
     Ok(())
 }
 
-/// Cancel an in-progress generation
+/// Cancel an in-progress generation.
 #[tauri::command]
 pub async fn cancel_generation(
     conversation_id: String,
@@ -333,36 +296,13 @@ pub async fn cancel_generation(
     Ok(())
 }
 
-const PREDICTION_PROMPT: &str = r#"Based on the conversation above, predict what the user is most likely to ask or say next.
-
-Rules:
-- Output ONLY the predicted message, nothing else
-- Keep it concise (1-2 sentences max)
-- Make it a natural follow-up question or statement
-- If the assistant just answered a question, predict a likely follow-up
-- If unsure, output nothing"#;
-
-/// Predict what the user might say next in a conversation
+/// Predict what the user might say next (tab completion). Supersedes any
+/// in-flight prediction for the same conversation.
 #[tauri::command]
 pub async fn predict_next_message(
     conversation_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<Option<String>> {
-    let conversation = match state.conversations.read().await.get(&conversation_id) {
-        Some(c) => c.clone(),
-        None => return Ok(None),
-    };
-
-    // Need at least one user + one assistant message for a meaningful prediction.
-    let non_system_messages = conversation
-        .messages
-        .iter()
-        .filter(|m| m.role != agent::MessageRole::System)
-        .count();
-    if non_system_messages < 2 {
-        return Ok(None);
-    }
-
     // Supersede any in-flight prediction for this conversation.
     {
         let predictions = state.active_predictions.read().await;
@@ -378,40 +318,8 @@ pub async fn predict_next_message(
         .await
         .insert(conversation_id.clone(), cancel_token.clone());
 
-    let lease = match state.models.acquire_chat().await {
-        Ok(Some(l)) => l,
-        Ok(None) => return Ok(None),
-        Err(e) => {
-            tracing::debug!(error = %e, "Failed to load chat provider for prediction");
-            return Ok(None);
-        }
-    };
-
-    let mut prediction_messages = conversation.messages.clone();
-    prediction_messages.push(agent::Message {
-        role: agent::MessageRole::User,
-        content: vec![agent::ContentBlock::Text {
-            text: PREDICTION_PROMPT.to_string(),
-        }],
-    });
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ProviderEvent>(50);
-
-    let collect_task = tokio::spawn(async move {
-        let mut result = String::new();
-        while let Some(event) = rx.recv().await {
-            if let ProviderEvent::TextDelta(text) = event {
-                result.push_str(&text);
-            }
-        }
-        result
-    });
-
-    let completion_result = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        lease.stream_completion(&prediction_messages, &[], tx, cancel_token.clone()),
-    )
-    .await;
+    let state_clone = state.inner().clone();
+    let result = runtime::predict_next_message(&state_clone, &conversation_id, cancel_token).await;
 
     state
         .active_predictions
@@ -419,34 +327,18 @@ pub async fn predict_next_message(
         .await
         .remove(&conversation_id);
 
-    let collected_text = collect_task.await.unwrap_or_default();
-
-    match completion_result {
-        Ok(Ok(_)) => {
-            let prediction = collected_text.trim().to_string();
-            let prediction = if prediction.len() > 150 {
-                format!("{}...", &prediction[..147])
-            } else {
-                prediction
-            };
-            if prediction.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(prediction))
-            }
-        }
-        Ok(Err(e)) => {
+    // A failed prediction completes nothing; surface it as `None` like the
+    // other non-fatal outcomes.
+    match result {
+        Ok(prediction) => Ok(prediction),
+        Err(e) => {
             tracing::debug!("Prediction failed: {}", e);
-            Ok(None)
-        }
-        Err(_) => {
-            tracing::debug!("Prediction timed out");
             Ok(None)
         }
     }
 }
 
-/// Cancel any pending prediction for a conversation
+/// Cancel any pending prediction for a conversation.
 #[tauri::command]
 pub async fn cancel_prediction(
     conversation_id: String,

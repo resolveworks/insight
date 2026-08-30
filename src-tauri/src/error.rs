@@ -111,6 +111,13 @@ impl From<anyhow::Error> for CommandError {
     }
 }
 
+// Conversion from the provider registry (unknown family, missing key, ...)
+impl From<insight_core::providers::ProviderRegistryError> for CommandError {
+    fn from(err: insight_core::providers::ProviderRegistryError) -> Self {
+        Self::external(err.to_string())
+    }
+}
+
 // Conversion from std::io::Error
 impl From<std::io::Error> for CommandError {
     fn from(err: std::io::Error) -> Self {
