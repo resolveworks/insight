@@ -1,9 +1,10 @@
 <script lang="ts">
 	import type { Collection } from '$lib/stores/collections.svelte';
+	import type { CollectionInfo } from '$lib/stores/conversations.svelte';
 
 	type Props = {
 		collections: Collection[];
-		selected: Collection[];
+		selected: CollectionInfo[];
 		onAdd: (id: string) => void;
 		onRemove: (id: string) => void;
 	};
