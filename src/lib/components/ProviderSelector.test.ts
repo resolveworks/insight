@@ -104,7 +104,45 @@ describe('ProviderSelector', () => {
 		expect(options).toContain('gpt-4o-mini');
 	});
 
-	it('falls back to manual model entry when listing fails', async () => {
+	it('shows a locked placeholder until the API key unlocks model listing', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'get_stored_api_keys') return {};
+			if (cmd === 'list_provider_models')
+				return [
+					{ id: 'gpt-4o', display_name: 'GPT-4o' },
+					{ id: 'gpt-4o-mini', display_name: 'GPT-4o mini' },
+				];
+			return null;
+		});
+		await providerStore.__resetForTests();
+
+		render(ProviderSelector);
+
+		// No API key yet: the model control exists but is a disabled placeholder,
+		// never an editable free-text field.
+		await waitFor(() => {
+			const locked = screen.getByLabelText('Model') as HTMLSelectElement;
+			expect(locked.tagName).toBe('SELECT');
+			expect(locked.disabled).toBe(true);
+			expect(locked.options[0].textContent).toMatch(/enter your api key/i);
+		});
+
+		// Entering the key (re-)triggers the debounced listing automatically.
+		await fireEvent.input(screen.getByLabelText('API Key'), {
+			target: { value: 'sk-typed' },
+		});
+		await waitFor(
+			() => {
+				const select = screen.getByLabelText('Model') as HTMLSelectElement;
+				expect(select.disabled).toBe(false);
+				expect(select.value).toBe('gpt-4o');
+			},
+			{ timeout: 3000 },
+		);
+	});
+
+	it('offers retry and manual entry when listing fails', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'list_provider_families') return FAMILIES;
 			if (cmd === 'get_current_provider') return null;
@@ -117,13 +155,13 @@ describe('ProviderSelector', () => {
 
 		render(ProviderSelector);
 
+		const alert = await screen.findByRole('alert');
+		expect(alert.textContent).toMatch(/could not load the model list/i);
+		screen.getByRole('button', { name: /enter a model id manually/i }).click();
+
 		const input = (await screen.findByLabelText('Model')) as HTMLInputElement;
 		expect(input.tagName).toBe('INPUT');
-		await waitFor(() => {
-			expect(
-				screen.getByText(/enter the model id manually/i),
-			).toBeInTheDocument();
-		});
+		expect(input.disabled).toBe(false);
 	});
 
 	it('shows a free-text model input for families without model listing', async () => {
@@ -136,12 +174,20 @@ describe('ProviderSelector', () => {
 		select.value = 'deepseek';
 		await fireEvent.change(select);
 
-		const modelInput = (await screen.findByLabelText(
-			'Model',
-		)) as HTMLInputElement;
-		expect(modelInput.tagName).toBe('INPUT');
-		// DeepSeek requires an API key; base URL not supported.
-		expect(screen.getByLabelText('API Key')).toBeInTheDocument();
+		// DeepSeek requires an API key, so entry is locked until the key is
+		// present — same rule as the listing-capable families.
+		const locked = (await screen.findByLabelText('Model')) as HTMLSelectElement;
+		expect(locked.tagName).toBe('SELECT');
+		expect(locked.disabled).toBe(true);
+		await fireEvent.input(screen.getByLabelText('API Key'), {
+			target: { value: 'sk-deepseek' },
+		});
+		await waitFor(() => {
+			const input = screen.getByLabelText('Model') as HTMLInputElement;
+			expect(input.tagName).toBe('INPUT');
+			expect(input.disabled).toBe(false);
+		});
+		// Base URL not supported.
 		expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument();
 	});
 

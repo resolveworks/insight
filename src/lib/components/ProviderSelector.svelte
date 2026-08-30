@@ -17,6 +17,13 @@
 	} from '$lib/stores/provider-state.svelte';
 
 	type Status = 'idle' | 'saving' | 'listing';
+	type ModelState = 'loading' | 'locked' | 'manual' | 'error' | 'ready';
+
+	const DEBOUNCE_MS = 400;
+	const LISTING_FAILED = 'Could not load the model list.';
+
+	const modelControlClasses =
+		'w-full cursor-pointer rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 focus:border-transparent focus:ring-2 focus:ring-tertiary-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-500';
 
 	let { onConfigured }: { onConfigured?: () => void } = $props();
 
@@ -28,13 +35,36 @@
 	let baseUrl = $state('');
 	let model = $state('');
 	let models = $state<ProviderModel[] | null>(null);
-	let listingFailed = $state(false);
+	let listingError = $state<string | null>(null);
+	// Manual model entry: escape hatch when listing fails, or the default for
+	// families whose rig client cannot list models.
+	let manualEntry = $state(false);
 	let status = $state<Status>('idle');
 	let error = $state<string | null>(null);
 
 	const family = $derived<ProviderFamily | undefined>(
 		selectedFamilyId ? getFamily(selectedFamilyId) : undefined,
 	);
+
+	// Credentials come before models: listing is an authenticated call, so
+	// the model control stays locked until the family's requirements are met.
+	const needsKey = $derived(!!family?.requires_api_key && !apiKey.trim());
+	const readyToList = $derived(
+		!!family?.supports_model_listing && !manualEntry && !needsKey,
+	);
+
+	// One state machine drives the whole model control.
+	const modelState = $derived.by<ModelState>(() => {
+		if (!family) return 'loading';
+		if (needsKey) return 'locked';
+		if (!family.supports_model_listing || manualEntry) return 'manual';
+		if (listingError) return 'error';
+		return models?.length ? 'ready' : 'loading';
+	});
+	const modelPlaceholder = $derived(
+		needsKey ? 'Enter your API key' : 'Loading models…',
+	);
+	const modelOptions = $derived(modelState === 'ready' && models ? models : []);
 
 	const isCurrent = $derived(
 		current !== null &&
@@ -43,10 +73,7 @@
 	);
 
 	const canSave = $derived(
-		status === 'idle' &&
-			!!selectedFamilyId &&
-			!!model.trim() &&
-			(!family?.requires_api_key || !!apiKey.trim()),
+		status === 'idle' && !!selectedFamilyId && !!model.trim() && !needsKey,
 	);
 
 	function syncFromCurrent() {
@@ -57,52 +84,59 @@
 		model = current.model;
 	}
 
-	async function fetchModels(fam: ProviderFamily) {
-		models = null;
-		listingFailed = false;
-		if (!fam.supports_model_listing) return;
-
+	async function fetchModels() {
+		if (!family) return;
 		status = 'listing';
+		listingError = null;
 		try {
 			const list = await listProviderModels({
-				family: fam.id,
+				family: family.id,
 				apiKey: apiKey.trim() || null,
 				baseUrl: baseUrl.trim() || null,
 			});
+			if (list.length === 0) throw new Error('provider returned no models');
 			models = list;
-			if (!model && list.length > 0) {
-				model = list[0].id;
-			}
+			if (!model) model = list[0].id;
 		} catch (e) {
-			// Listing failed (bad key, network, provider quirk): fall back to
-			// manual model entry.
+			// Bad key, network, provider quirk — offer retry or manual entry.
 			console.error('Model listing failed:', e);
 			models = null;
-			listingFailed = true;
+			listingError = LISTING_FAILED;
 		} finally {
 			status = 'idle';
 		}
 	}
 
+	// Fetch models whenever the credentials become (or change to) something
+	// that might work — debounced so typing a key doesn't spam the provider.
+	// `lastFetched` is deliberately non-reactive: it only dedupes.
+	let lastFetched = '';
+	$effect(() => {
+		if (!readyToList) return;
+		const sig = `${selectedFamilyId}|${apiKey.trim()}|${baseUrl.trim()}`;
+		if (sig === lastFetched) return;
+		const timer = setTimeout(() => {
+			lastFetched = sig;
+			void fetchModels();
+		}, DEBOUNCE_MS);
+		return () => clearTimeout(timer);
+	});
+
 	function selectFamily(id: string) {
 		selectedFamilyId = id;
 		error = null;
 		models = null;
-		listingFailed = false;
+		listingError = null;
+		manualEntry = false;
 		model = '';
 		apiKey = getStoredApiKey(id) ?? '';
 		baseUrl = '';
-		const fam = getFamily(id);
-		if (!fam) return;
-
 		if (current?.family === id) {
 			apiKey = current.api_key ?? apiKey;
 			baseUrl = current.base_url ?? '';
 			model = current.model;
 		}
-		if (fam.supports_model_listing) {
-			fetchModels(fam);
-		}
+		// The credential effect above re-lists models when ready.
 	}
 
 	async function save() {
@@ -225,7 +259,8 @@
 		/>
 	{/if}
 
-	<!-- Model: fetched dropdown when listing is supported, free text otherwise -->
+	<!-- Model: credentials first — listing-capable families load a dropdown
+	     once the key is in; others (or a failed load) use manual entry. -->
 	<div>
 		<label
 			for="model-input"
@@ -233,34 +268,53 @@
 		>
 			Model
 		</label>
-		{#if family?.supports_model_listing && models && models.length > 0}
+		{#if modelState === 'ready'}
 			<select
 				id="model-input"
-				class="w-full cursor-pointer rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 focus:border-transparent focus:ring-2 focus:ring-tertiary-400 focus:outline-none"
+				class={modelControlClasses}
 				bind:value={model}
 				disabled={status !== 'idle'}
 			>
-				{#if !models.some((m) => m.id === model)}
+				{#if model && !modelOptions.some((m) => m.id === model)}
 					<option value={model}>{model}</option>
 				{/if}
-				{#each models as m (m.id)}
+				{#each modelOptions as m (m.id)}
 					<option value={m.id}>{m.display_name}</option>
 				{/each}
 			</select>
-		{:else}
+		{:else if modelState === 'error'}
+			<p role="alert" class="text-sm text-neutral-700">
+				{LISTING_FAILED}
+				<button
+					type="button"
+					class="cursor-pointer font-medium text-primary-600 hover:text-primary-700"
+					onclick={() => fetchModels()}
+				>
+					Try again
+				</button>
+				or
+				<button
+					type="button"
+					class="cursor-pointer font-medium text-primary-600 hover:text-primary-700"
+					onclick={() => (manualEntry = true)}
+				>
+					enter a model id manually
+				</button>
+			</p>
+		{:else if modelState === 'manual'}
 			<input
 				id="model-input"
 				type="text"
-				class="w-full rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 focus:border-transparent focus:ring-2 focus:ring-tertiary-400 focus:outline-none"
+				class={modelControlClasses}
 				bind:value={model}
 				placeholder="Model id"
 				disabled={status !== 'idle'}
 			/>
-			{#if listingFailed}
-				<p class="mt-1 text-xs text-neutral-500">
-					Could not load the model list — enter the model id manually.
-				</p>
-			{/if}
+		{:else}
+			<!-- locked (waiting for credentials) or loading -->
+			<select id="model-input" class={modelControlClasses} disabled>
+				<option value="">{modelPlaceholder}</option>
+			</select>
 		{/if}
 	</div>
 
