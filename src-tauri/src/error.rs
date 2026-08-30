@@ -18,11 +18,8 @@ pub enum CommandError {
     TextNotFound { message: String },
     CollectionNotFound { message: String },
     ConversationNotFound { message: String },
-    ModelNotFound { message: String, model_id: String },
 
     // Configuration errors
-    ModelNotDownloaded { message: String, model_id: String },
-    EmbedderNotConfigured { message: String },
     ProviderNotConfigured { message: String },
     NoCollectionScope { message: String },
 
@@ -54,29 +51,6 @@ impl CommandError {
     pub fn conversation_not_found() -> Self {
         Self::ConversationNotFound {
             message: "Conversation not found".to_string(),
-        }
-    }
-
-    pub fn model_not_found(model_id: impl Into<String>) -> Self {
-        let model_id = model_id.into();
-        Self::ModelNotFound {
-            message: format!("Model not found: {}", model_id),
-            model_id,
-        }
-    }
-
-    pub fn model_not_downloaded(model_id: impl Into<String>) -> Self {
-        let model_id = model_id.into();
-        Self::ModelNotDownloaded {
-            message: format!("Model not downloaded: {}", model_id),
-            model_id,
-        }
-    }
-
-    pub fn embedder_not_configured() -> Self {
-        Self::EmbedderNotConfigured {
-            message: "Embedder not configured. Please configure an embedding model first."
-                .to_string(),
         }
     }
 
@@ -119,9 +93,6 @@ impl std::fmt::Display for CommandError {
             Self::TextNotFound { message } => write!(f, "{}", message),
             Self::CollectionNotFound { message } => write!(f, "{}", message),
             Self::ConversationNotFound { message } => write!(f, "{}", message),
-            Self::ModelNotFound { message, .. } => write!(f, "{}", message),
-            Self::ModelNotDownloaded { message, .. } => write!(f, "{}", message),
-            Self::EmbedderNotConfigured { message } => write!(f, "{}", message),
             Self::ProviderNotConfigured { message } => write!(f, "{}", message),
             Self::NoCollectionScope { message } => write!(f, "{}", message),
             Self::StorageError { message } => write!(f, "{}", message),

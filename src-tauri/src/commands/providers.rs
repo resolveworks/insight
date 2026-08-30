@@ -5,7 +5,7 @@ use tauri::State;
 
 use crate::core::{
     get_provider_families as core_get_provider_families, AnthropicChatProvider, AppState,
-    LifecycleConfig, OpenAIChatProvider, ProviderConfig, ProviderFamily, RemoteModelInfo,
+    OpenAIChatProvider, ProviderConfig, ProviderFamily, RemoteModelInfo,
 };
 use crate::error::{CommandError, CommandResult, ResultExt};
 
@@ -120,45 +120,4 @@ pub async fn get_stored_api_keys(state: State<'_, AppState>) -> CommandResult<St
 pub struct StoredApiKeys {
     pub openai: Option<String>,
     pub anthropic: Option<String>,
-}
-
-/// Get the current lifecycle config (coexist flags).
-#[tauri::command]
-pub async fn get_lifecycle_config(state: State<'_, AppState>) -> CommandResult<LifecycleConfig> {
-    Ok(state.models.lifecycle_config().await)
-}
-
-/// Update the lifecycle config. Propagates coexist flags to any currently
-/// installed providers without triggering a load.
-#[tauri::command]
-pub async fn set_lifecycle_config(
-    config: LifecycleConfig,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    use crate::core::Settings;
-
-    state.models.set_lifecycle_config(config.clone()).await;
-
-    let mut settings = Settings::load(&state.config.settings_file);
-    settings.lifecycle = config;
-    settings.save(&state.config.settings_file).storage_err()?;
-
-    Ok(())
-}
-
-/// Mark the research surface as focused. Background workers (embed, OCR)
-/// yield at their next job boundary so chat has priority access to the
-/// local models.
-#[tauri::command]
-pub async fn research_focus_enter(state: State<'_, AppState>) -> CommandResult<()> {
-    state.models.set_research_focused(true);
-    Ok(())
-}
-
-/// Mark the research surface as no longer focused. Background workers
-/// resume on their next poll.
-#[tauri::command]
-pub async fn research_focus_leave(state: State<'_, AppState>) -> CommandResult<()> {
-    state.models.set_research_focused(false);
-    Ok(())
 }
