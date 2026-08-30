@@ -15,11 +15,13 @@ nul
 # Local dev scripts and config
 .claude/settings.local.json
 dev.bat
+# Tracked tooling lives in scripts/, everything else there is local
+/scripts/*
+!/scripts/fetch-samples.sh
 # Rust build artifacts (workspace target at root)
 /target
 styles.css
 /docs/book
-/scripts
 
 # Local test documents (fetched, not authored)
 /samples

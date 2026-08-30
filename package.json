@@ -16,6 +16,7 @@
 		"tauri:build": "tauri build",
 		"lint": "eslint .",
 		"format": "prettier --write .",
+		"samples": "bash scripts/fetch-samples.sh",
 		"prepare": "husky"
 	},
 	"lint-staged": {
