@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
-import type { MultiTurnStreamItem } from '$lib/types/rig';
+import type { MultiTurnStreamItem, RigMessage } from '$lib/types/rig';
+import { emptyLiveRun } from '$lib/chat/transcript';
 
 type EventListener = (event: { payload: unknown }) => void;
 const listeners = new Map<string, EventListener>();
@@ -54,43 +55,42 @@ describe('conversations store event handling', () => {
 		clearMocks();
 	});
 
-	it('builds live assistant state from a streamed multi-turn sequence', async () => {
+	it('builds a chronological transcript from a streamed multi-turn sequence', async () => {
+		const finalMessages: RigMessage[] = [
+			{ role: 'user', content: [{ type: 'text', text: 'find papers' }] },
+			{
+				role: 'assistant',
+				id: null,
+				content: [
+					{
+						type: 'tool_call',
+						id: 'call1',
+						function: { name: 'search', arguments: { q: 'papers' } },
+					},
+				],
+			},
+			{
+				role: 'user',
+				content: [
+					{
+						type: 'tool_result',
+						call: 'call1',
+						name: 'search',
+						content: [{ type: 'text', text: '3 results' }],
+					},
+				],
+			},
+			{
+				role: 'assistant',
+				id: null,
+				content: [{ type: 'text', text: 'Found 3 results.' }],
+			},
+		];
 		const views: Record<string, unknown> = {
 			// First load (start_chat): empty history
 			empty: conversationView('conv1'),
 			// Authoritative refresh after finalResponse
-			final: conversationView('conv1', {
-				messages: [
-					{ role: 'user', content: [{ type: 'text', text: 'find papers' }] },
-					{
-						role: 'assistant',
-						id: null,
-						content: [
-							{
-								type: 'tool_call',
-								id: 'call1',
-								function: { name: 'search', arguments: { q: 'papers' } },
-							},
-						],
-					},
-					{
-						role: 'user',
-						content: [
-							{
-								type: 'tool_result',
-								call: 'call1',
-								name: 'search',
-								content: [{ type: 'text', text: '3 results' }],
-							},
-						],
-					},
-					{
-						role: 'assistant',
-						id: null,
-						content: [{ type: 'text', text: 'Found 3 results.' }],
-					},
-				],
-			}),
+			final: conversationView('conv1', { messages: finalMessages }),
 		};
 		let currentView = views.empty;
 		const loadCalls: string[] = [];
@@ -132,6 +132,15 @@ describe('conversations store event handling', () => {
 		});
 		emit('conv1', { type: 'streamAssistantItem', text: 'Let me search' });
 		emit('conv1', { type: 'streamAssistantItem', text: ' the index.' });
+
+		const items = store.getTranscript().map((item) => item.kind);
+		expect(items).toEqual(['userText', 'reasoning', 'assistantText']);
+		const liveItems = store.getTranscript().slice(1);
+		expect(liveItems.every((item) => item.provisional)).toBe(true);
+		expect(
+			store.getTranscript().find((item) => item.kind === 'assistantText'),
+		).toMatchObject({ text: 'Let me search the index.', streaming: true });
+
 		emit('conv1', {
 			type: 'streamAssistantItem',
 			internal_call_id: 'ic1',
@@ -148,18 +157,6 @@ describe('conversations store event handling', () => {
 			content: { Delta: 'ers"}' },
 		});
 
-		let live = store.getLiveState();
-		expect(live.text).toBe('Let me search the index.');
-		expect(live.reasoning).toEqual([{ id: 'r1', text: 'Thinking' }]);
-		expect(live.toolCalls).toHaveLength(1);
-		expect(live.toolCalls[0]).toMatchObject({
-			internal_call_id: 'ic1',
-			name: 'search',
-			args: '{"q": "papers"}',
-			committed: false,
-			executed: false,
-		});
-
 		emit('conv1', {
 			type: 'streamAssistantItem',
 			tool_call: {
@@ -168,11 +165,23 @@ describe('conversations store event handling', () => {
 			},
 			internal_call_id: 'ic1',
 		});
+
+		const callItem = () =>
+			store.getTranscript().find((item) => item.kind === 'toolCall')!;
+		const prettyArgs = JSON.stringify({ q: 'papers' }, null, 2);
+		expect(callItem()).toMatchObject({
+			name: 'search',
+			args: prettyArgs,
+			executing: true,
+		});
+
 		emit('conv1', {
 			type: 'toolExecutionCommitted',
 			tool_call: { id: 'call1', function: { name: 'search', arguments: {} } },
 			internal_call_id: 'ic1',
 		});
+		expect(callItem().executing).toBe(false);
+
 		emit('conv1', {
 			type: 'streamUserItem',
 			tool_result: {
@@ -184,39 +193,44 @@ describe('conversations store event handling', () => {
 		});
 		emit('conv1', { type: 'completionCall', call_index: 0, usage: USAGE });
 
-		live = store.getLiveState();
-		expect(live.toolCalls[0]).toMatchObject({
-			committed: true,
-			executed: true,
-		});
-		expect(live.toolResults).toEqual([
-			{ internal_call_id: 'ic1', name: 'search', text: '3 results' },
+		expect(store.getTranscript().map((item) => item.kind)).toEqual([
+			'userText',
+			'reasoning',
+			'assistantText',
+			'toolCall',
+			'toolResult',
 		]);
+		expect(
+			store.getTranscript().find((item) => item.kind === 'toolResult'),
+		).toMatchObject({ text: '3 results' });
 		expect(store.getIsGenerating()).toBe(true);
 
-		// Terminal: refresh from the server's authoritative history.
+		// Terminal: adopt the event's authoritative transcript synchronously.
 		currentView = views.final;
 		emit('conv1', {
 			type: 'finalResponse',
 			output: 'Found 3 results.',
 			usage: USAGE,
-			messages: null,
+			messages: finalMessages,
 			content: [{ type: 'text', text: 'Found 3 results.' }],
 		});
 
+		// No await: the swap must already be rendered.
+		expect(store.getIsGenerating()).toBe(false);
+		expect(store.getActiveMessages()).toHaveLength(4);
+		const adopted = store.getTranscript();
+		expect(adopted.map((item) => item.kind)).toEqual([
+			'userText',
+			'toolCall',
+			'toolResult',
+			'assistantText',
+		]);
+		expect(adopted.every((item) => !item.provisional)).toBe(true);
+
 		await vi.waitFor(() => {
-			expect(store.getIsGenerating()).toBe(false);
+			expect(loadCalls).toContain('load');
 		});
-		await vi.waitFor(() => {
-			expect(store.getActiveMessages()).toHaveLength(4);
-		});
-		expect(loadCalls).toContain('load');
-		expect(store.getLiveState()).toEqual({
-			text: '',
-			reasoning: [],
-			toolCalls: [],
-			toolResults: [],
-		});
+		expect(store.getLiveState()).toEqual(emptyLiveRun());
 		expect(store.getActiveMessages()[3]?.content[0]).toEqual({
 			type: 'text',
 			text: 'Found 3 results.',
@@ -243,9 +257,10 @@ describe('conversations store event handling', () => {
 			},
 			id: 'r1',
 		});
-		expect(store.getLiveState().reasoning).toEqual([
-			{ id: 'r1', text: 'final text' },
-		]);
+		const reasoning = store
+			.getTranscript()
+			.find((item) => item.kind === 'reasoning');
+		expect(reasoning?.text).toBe('final text');
 	});
 
 	it('discards provisional live output on modelTurnRetried', async () => {
@@ -257,12 +272,8 @@ describe('conversations store event handling', () => {
 			reasoning: 'thinking',
 		});
 		store.applyStreamItem({ type: 'modelTurnRetried', turn: 1 });
-		expect(store.getLiveState()).toEqual({
-			text: '',
-			reasoning: [],
-			toolCalls: [],
-			toolResults: [],
-		});
+		expect(store.getTranscript()).toEqual([]);
+		expect(store.getLiveState()).toEqual(emptyLiveRun());
 	});
 
 	it('ignores the provider terminal record (StreamFinal) and unknown payloads', async () => {
@@ -280,7 +291,7 @@ describe('conversations store event handling', () => {
 			type: 'streamAssistantItem',
 			web_search_call: { id: 'x' },
 		});
-		expect(store.getLiveState().text).toBe('');
+		expect(store.getTranscript()).toEqual([]);
 	});
 
 	it('surfaces stream errors and refreshes history', async () => {
@@ -312,7 +323,9 @@ describe('conversations store event handling', () => {
 			expect(store.getError()).toBe('provider exploded');
 		});
 		expect(store.getIsGenerating()).toBe(false);
-		expect(store.getLiveState().text).toBe('');
+		await vi.waitFor(() => {
+			expect(store.getTranscript()).toEqual([]);
+		});
 		expect(loadCalls).toContain('load');
 		store.clearError();
 		expect(store.getError()).toBeNull();
@@ -323,7 +336,11 @@ describe('conversations store event handling', () => {
 		mockIPC((cmd, args) => {
 			if (cmd === 'list_conversations')
 				return [
-					{ id: 'conv3', title: 'Test chat', updated_at: '2024-01-01T00:00:00Z' },
+					{
+						id: 'conv3',
+						title: 'Test chat',
+						updated_at: '2024-01-01T00:00:00Z',
+					},
 				];
 			if (cmd === 'load_conversation') return conversationView('conv3');
 			if (cmd === 'set_conversation_collections') {
@@ -404,7 +421,7 @@ describe('conversations store event handling', () => {
 			});
 
 			const store = await importStore();
-		await store.ensureInitialized();
+			await store.ensureInitialized();
 
 			expect(store.getIsInitialized()).toBe(true);
 			expect(store.getActiveId()).toBeNull();
@@ -413,7 +430,7 @@ describe('conversations store event handling', () => {
 
 		it('newConversation makes no IPC call and resets to draft', async () => {
 			const commands: string[] = [];
-			mockIPC((cmd, args) => {
+			mockIPC((cmd) => {
 				commands.push(cmd);
 				if (cmd === 'list_conversations')
 					return [
@@ -470,7 +487,8 @@ describe('conversations store event handling', () => {
 		});
 
 		it('sendMessage from a draft creates the conversation with the draft scope, then sends', async () => {
-			const commands: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+			const commands: Array<{ cmd: string; args: Record<string, unknown> }> =
+				[];
 			mockIPC((cmd, args) => {
 				commands.push({ cmd, args: args as Record<string, unknown> });
 				if (cmd === 'list_conversations') return [];

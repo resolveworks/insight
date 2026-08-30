@@ -13,13 +13,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { MultiTurnStreamItem, RigMessage } from '$lib/types/rig';
 import {
-	isCompleteReasoning,
-	isCompleteToolCall,
-	isReasoningDelta,
-	isStreamFinal,
-	isTextDelta,
-	isToolCallDelta,
-} from '$lib/types/rig';
+	applyItem,
+	buildTranscript,
+	emptyLiveRun,
+	type LiveRun,
+	type TranscriptItem,
+} from '$lib/chat/transcript';
 
 // =============================================================================
 // Types (backend contract)
@@ -48,40 +47,6 @@ export interface ConversationSummary {
 	updated_at: string;
 }
 
-/** One tool call being assembled from stream deltas. */
-export interface LiveToolCall {
-	internal_call_id: string;
-	name: string;
-	args: string;
-	committed: boolean;
-	executed: boolean;
-}
-
-/** One streamed reasoning part (accumulated from deltas). */
-export interface LiveReasoning {
-	id: string;
-	text: string;
-}
-
-/** One completed tool result surfaced during the stream. */
-export interface LiveToolResult {
-	internal_call_id: string;
-	name: string;
-	text: string;
-}
-
-/** The live assistant turn, assembled from `MultiTurnStreamItem`s. */
-export interface LiveAssistantState {
-	text: string;
-	reasoning: LiveReasoning[];
-	toolCalls: LiveToolCall[];
-	toolResults: LiveToolResult[];
-}
-
-function emptyLiveState(): LiveAssistantState {
-	return { text: '', reasoning: [], toolCalls: [], toolResults: [] };
-}
-
 // =============================================================================
 // State
 // =============================================================================
@@ -101,7 +66,10 @@ let conversations = $state<ConversationSummary[]>([]);
 let activeId = $state<string | null>(null);
 let activeMessages = $state<RigMessage[]>([]);
 let activeCollections = $state<CollectionInfo[]>([]);
-let live = $state<LiveAssistantState>(emptyLiveState());
+let live = $state<LiveRun>(emptyLiveRun());
+// Stored-message count when the current run started: slices the optimistic
+// user message (and any prior run) out when adopting a finalResponse payload.
+let runBase = 0;
 let isGenerating = $state(false);
 let isLoading = $state(false);
 let listLoaded = $state(false);
@@ -134,8 +102,9 @@ function persistActiveId() {
 function adoptConversation(conv: ConversationView) {
 	activeId = conv.id;
 	activeMessages = conv.messages ?? [];
+	runBase = conv.messages?.length ?? 0;
 	activeCollections = conv.collections ?? [];
-	live = emptyLiveState();
+	live = emptyLiveRun();
 }
 
 /** Drop the active conversation and land in the draft state (no IPC). */
@@ -144,8 +113,9 @@ function clearActive() {
 	unlistenAgent = undefined;
 	activeId = null;
 	activeMessages = [];
+	runBase = 0;
 	activeCollections = [];
-	live = emptyLiveState();
+	live = emptyLiveRun();
 	isGenerating = false;
 	persistActiveId();
 }
@@ -158,151 +128,16 @@ async function attachListener(convId: string) {
 	);
 }
 
-function toolResultText(
-	content: { type: string; [key: string]: unknown }[],
-): string {
-	return content
-		.map((part) => {
-			if (part.type === 'text') return part.text as string;
-			if (part.type === 'json') return JSON.stringify(part.value, null, 2);
-			return `[${part.type}]`;
-		})
-		.join('\n');
-}
-
-function reasoningCompleteText(reasoning: {
-	content: { type: string; [key: string]: unknown }[];
-}): string {
-	return reasoning.content
-		.map((part) => {
-			if (part.type === 'text') {
-				const inner = part.content as { text: string };
-				return inner.text;
-			}
-			if (part.type === 'summary') return part.content as string;
-			return '';
-		})
-		.filter(Boolean)
-		.join('\n');
-}
-
-function upsertToolCall(
-	internalCallId: string,
-	mutate: (call: LiveToolCall) => LiveToolCall,
-) {
-	const idx = live.toolCalls.findIndex(
-		(c) => c.internal_call_id === internalCallId,
-	);
-	if (idx === -1) {
-		live.toolCalls = [
-			...live.toolCalls,
-			mutate({
-				internal_call_id: internalCallId,
-				name: '',
-				args: '',
-				committed: false,
-				executed: false,
-			}),
-		];
-	} else {
-		const next = live.toolCalls.slice();
-		next[idx] = mutate(next[idx]);
-		live.toolCalls = next;
-	}
-}
-
 /**
- * Apply one streamed item to the live assistant state.
+ * Apply one streamed item to the live run (pure fold over `LiveRun`).
  *
  * Unknown payloads (provider-native items rig preserves verbatim) and usage
  * records are ignored: they carry nothing the transcript view needs.
+ * `finalResponse`/`streamError` are terminal and handled by
+ * `handleAgentEvent`, not the fold.
  */
 export function applyStreamItem(item: MultiTurnStreamItem): void {
-	switch (item.type) {
-		case 'streamAssistantItem': {
-			if (isTextDelta(item)) {
-				live.text += item.text;
-			} else if (isToolCallDelta(item)) {
-				upsertToolCall(item.internal_call_id, (call) => {
-					if (item.content.Name !== undefined) call.name += item.content.Name;
-					if (item.content.Delta !== undefined) call.args += item.content.Delta;
-					return call;
-				});
-			} else if (isCompleteToolCall(item)) {
-				const args =
-					typeof item.tool_call.function.arguments === 'string'
-						? item.tool_call.function.arguments
-						: JSON.stringify(item.tool_call.function.arguments, null, 2);
-				upsertToolCall(item.internal_call_id, (call) => ({
-					...call,
-					name: item.tool_call.function.name,
-					args,
-					committed: true,
-				}));
-			} else if (isReasoningDelta(item)) {
-				const idx = live.reasoning.findIndex((r) => r.id === item.id);
-				if (idx === -1) {
-					live.reasoning = [
-						...live.reasoning,
-						{ id: item.id, text: item.reasoning },
-					];
-				} else {
-					const next = live.reasoning.slice();
-					next[idx] = { ...next[idx], text: next[idx].text + item.reasoning };
-					live.reasoning = next;
-				}
-			} else if (isCompleteReasoning(item)) {
-				// A complete block supersedes the accumulated deltas for its id.
-				const text = reasoningCompleteText(item.reasoning);
-				const idx = live.reasoning.findIndex((r) => r.id === item.id);
-				if (idx === -1) {
-					live.reasoning = [...live.reasoning, { id: item.id, text }];
-				} else {
-					const next = live.reasoning.slice();
-					next[idx] = { ...next[idx], text };
-					live.reasoning = next;
-				}
-			} else if (isStreamFinal(item)) {
-				// Provider terminal record (usage etc.): nothing to render.
-			}
-			break;
-		}
-
-		case 'toolExecutionCommitted': {
-			upsertToolCall(item.internal_call_id, (call) => ({
-				...call,
-				executed: true,
-			}));
-			break;
-		}
-
-		case 'streamUserItem': {
-			live.toolResults = [
-				...live.toolResults,
-				{
-					internal_call_id: item.internal_call_id,
-					name: item.tool_result.name,
-					text: toolResultText(item.tool_result.content),
-				},
-			];
-			break;
-		}
-
-		case 'completionCall':
-			// Per-call usage accounting: not rendered.
-			break;
-
-		case 'modelTurnRetried':
-			// The model turn that produced the live output was rejected and is
-			// retried: discard the provisional output.
-			live = emptyLiveState();
-			break;
-
-		case 'finalResponse':
-		case 'streamError':
-			// Handled by handleAgentEvent (they also drive refreshes).
-			break;
-	}
+	live = applyItem(live, item);
 }
 
 async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
@@ -311,9 +146,20 @@ async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
 
 	switch (payload.type) {
 		case 'finalResponse': {
-			// The server state is authoritative: refresh from it.
+			// The event carries the run's authoritative transcript (including
+			// the user message): adopt it synchronously so Svelte swaps
+			// provisional -> committed without a blank frame. The silent reload
+			// afterwards is pure reconciliation (meta/title/authority).
 			isGenerating = false;
-			live = emptyLiveState();
+			if (Array.isArray(payload.messages)) {
+				activeMessages = [
+					...activeMessages.slice(0, runBase),
+					...payload.messages,
+				];
+				live = emptyLiveRun();
+			} else {
+				live = emptyLiveRun();
+			}
 			await loadById(convId, { silent: true });
 			refreshList();
 			break;
@@ -323,7 +169,7 @@ async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
 			error = payload.message || 'Unknown error';
 			console.error('Agent stream error:', payload.message);
 			isGenerating = false;
-			live = emptyLiveState();
+			live = emptyLiveRun();
 			await loadById(convId, { silent: true });
 			refreshList();
 			break;
@@ -548,12 +394,13 @@ export async function sendMessage(text: string): Promise<void> {
 
 		const convId = activeId!;
 		error = null;
+		runBase = activeMessages.length;
 		activeMessages = [
 			...activeMessages,
 			{ role: 'user', content: [{ type: 'text', text: trimmed }] },
 		];
 		isGenerating = true;
-		live = emptyLiveState();
+		live = emptyLiveRun();
 
 		try {
 			await invoke('send_message', {
@@ -628,8 +475,13 @@ export function getActiveCollections(): CollectionInfo[] {
 	return activeCollections;
 }
 
-export function getLiveState(): LiveAssistantState {
+export function getLiveState(): LiveRun {
 	return live;
+}
+
+/** Stored history + live run as one flat renderable list. */
+export function getTranscript(): TranscriptItem[] {
+	return buildTranscript(activeMessages, live);
 }
 
 export function getIsGenerating(): boolean {
