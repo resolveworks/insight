@@ -19,6 +19,7 @@ pub mod pipeline;
 pub mod provider;
 pub mod search;
 pub mod storage;
+pub mod tools;
 
 use std::collections::HashMap;
 use std::sync::Arc;
