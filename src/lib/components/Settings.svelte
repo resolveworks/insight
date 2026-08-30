@@ -1,8 +1,5 @@
 <script lang="ts">
-	import LifecycleSettings from './LifecycleSettings.svelte';
-	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
-	import { embeddingModelConfig, ocrModelConfig } from '$lib/models/config';
 </script>
 
 <div class="flex h-full flex-col bg-surface">
@@ -15,49 +12,11 @@
 					Language Model
 				</h2>
 				<p class="mb-6 text-sm text-neutral-500">
-					Choose a provider for chat. Run models locally on your machine, or
-					connect to OpenAI or Anthropic APIs.
+					Choose a remote provider for chat. Connect to the OpenAI or Anthropic
+					API.
 				</p>
 				<div class="rounded-lg border border-neutral-200 bg-surface-bright p-6">
 					<ProviderSelector />
-				</div>
-			</section>
-
-			<section class="mb-8">
-				<h2 class="mb-4 text-lg font-medium text-neutral-700">
-					Embedding Model
-				</h2>
-				<p class="mb-6 text-sm text-neutral-500">
-					Enable semantic search to find documents by meaning, not just
-					keywords. Requires downloading an embedding model.
-				</p>
-				<div class="rounded-lg border border-neutral-200 bg-surface-bright p-6">
-					<ModelDownloadSelector config={embeddingModelConfig} />
-				</div>
-			</section>
-
-			<section class="mb-8">
-				<h2 class="mb-4 text-lg font-medium text-neutral-700">OCR Model</h2>
-				<p class="mb-6 text-sm text-neutral-500">
-					Required to extract text from scanned PDFs. Without an OCR model,
-					scanned documents are stored but not searchable.
-				</p>
-				<div class="rounded-lg border border-neutral-200 bg-surface-bright p-6">
-					<ModelDownloadSelector config={ocrModelConfig} />
-				</div>
-			</section>
-
-			<section class="mb-8">
-				<h2 class="mb-4 text-lg font-medium text-neutral-700">
-					Memory Management
-				</h2>
-				<p class="mb-6 text-sm text-neutral-500">
-					By default, Insight unloads a model when switching to another so
-					modest GPUs stay happy. Enable coexistence to keep both resident when
-					you have VRAM to spare.
-				</p>
-				<div class="rounded-lg border border-neutral-200 bg-surface-bright p-6">
-					<LifecycleSettings />
 				</div>
 			</section>
 		</div>

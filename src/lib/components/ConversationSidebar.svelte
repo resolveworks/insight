@@ -15,7 +15,7 @@
 
 	// The list is independent of provider configuration; fetch it as soon as
 	// the sidebar mounts so users see their history even before picking a
-	// model (or while one is still downloading).
+	// model.
 	onMount(() => {
 		chat.loadList();
 	});

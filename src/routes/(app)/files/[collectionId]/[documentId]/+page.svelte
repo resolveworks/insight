@@ -102,7 +102,7 @@
 		}
 
 		// Load document content — failure here is non-critical;
-		// the document was just imported and may be pending OCR.
+		// the document was just imported and extraction may still be running.
 		loadingContent = true;
 		try {
 			content = await invoke<string>('get_document_text', {
@@ -226,7 +226,7 @@
 				{/if}
 			</div>
 
-			<!-- Embedding Chunks -->
+			<!-- Text Chunks -->
 			<div class="mt-6">
 				<button
 					onclick={toggleChunks}
@@ -238,7 +238,7 @@
 					>
 						&#9654;
 					</span>
-					Embedding Chunks
+					Text Chunks
 					{#if chunks}
 						<span class="text-xs font-normal normal-case text-neutral-400"
 							>({chunks.length} chunks)</span
