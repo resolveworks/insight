@@ -2,9 +2,9 @@ pub mod commands;
 pub mod core;
 pub mod error;
 
-use tauri::{Manager, RunEvent};
+use tauri::Manager;
 
-use crate::core::{AppState, Config, ModelDownloadProgress, ModelStatus};
+use crate::core::{AppState, Config};
 
 /// Initialize tracing/logging with the given directives
 pub fn init_logging(directives: &[&str]) {
@@ -55,41 +55,12 @@ pub fn run() {
                 }
             });
 
-            // Restore provider configs (no weights loaded yet) and start
-            // the idle reaper. Both need a Tokio runtime, so we do them
-            // from inside async_runtime::spawn.
+            // Restore the chat provider config from settings (no remote
+            // connections opened yet) once the async runtime is up.
             let state_clone = state.inner().clone();
-            let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                use tauri::Emitter;
-
-                state_clone.models.spawn_idle_reaper();
-
-                let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<ModelStatus>(10);
-                let (progress_tx, mut progress_rx) =
-                    tokio::sync::mpsc::channel::<ModelDownloadProgress>(100);
-
-                // Forward download-sourced status events (distinct from the
-                // manager's broadcast channel — this covers the one-shot
-                // "downloading" transition during initial setup).
-                let status_handle = app_handle.clone();
-                tokio::spawn(async move {
-                    while let Some(status) = status_rx.recv().await {
-                        let _ = status_handle.emit("model-status-changed", &status);
-                    }
-                });
-
-                let progress_handle = app_handle.clone();
-                tokio::spawn(async move {
-                    while let Some(progress) = progress_rx.recv().await {
-                        let _ = progress_handle.emit("model-download-progress", &progress);
-                    }
-                });
-
-                state_clone
-                    .restore_configs_from_settings(status_tx, progress_tx)
-                    .await;
+                state_clone.restore_configs_from_settings().await;
             });
 
             Ok(())
@@ -116,13 +87,9 @@ pub fn run() {
             commands::conversations::cancel_generation,
             commands::conversations::set_conversation_collections,
             commands::conversations::delete_conversation,
-            // Model commands (unified)
-            commands::models::get_available_models,
-            commands::models::get_model_status,
+            // Chat provider status
             commands::models::get_provider_status,
-            commands::models::download_model,
-            commands::models::get_current_model,
-            commands::models::configure_model,
+            commands::models::disable_chat_provider,
             // Provider management
             commands::providers::get_provider_families,
             commands::providers::get_current_provider,
@@ -131,30 +98,11 @@ pub fn run() {
             commands::providers::configure_openai_provider,
             commands::providers::configure_anthropic_provider,
             commands::providers::get_stored_api_keys,
-            commands::providers::get_lifecycle_config,
-            commands::providers::set_lifecycle_config,
-            commands::providers::research_focus_enter,
-            commands::providers::research_focus_leave,
             // Prediction commands (tab completion)
             commands::conversations::predict_next_message,
             commands::conversations::cancel_prediction,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let RunEvent::Exit = event {
-                // Gracefully unload models before the runtime drops.
-                // This gives CUDA threads a chance to clean up before
-                // the driver is deinitialized.
-                tauri::async_runtime::block_on(async {
-                    let state = app_handle.state::<AppState>();
-                    let models = state.models.clone();
-                    // Run in a separate task with a deadline so we don't
-                    // block exit indefinitely.
-                    let _ =
-                        tokio::time::timeout(std::time::Duration::from_secs(3), models.shutdown())
-                            .await;
-                });
-            }
-        });
+        .run(|_app_handle, _event| {});
 }

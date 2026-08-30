@@ -9,17 +9,14 @@ use iroh_docs::NamespaceId;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::manager::ModelManager;
 use crate::storage::{LiveEvent, Storage};
 
 use super::progress::ProgressTracker;
-use super::types::{EmbedJob, ExtractJob, IndexJob, OcrJob, Stage};
+use super::types::{ExtractJob, IndexJob, Stage};
 
 /// Grouped job dispatch channels for pipeline stages.
 pub struct JobSenders {
     pub extract: mpsc::UnboundedSender<ExtractJob>,
-    pub ocr: mpsc::UnboundedSender<OcrJob>,
-    pub embed: mpsc::UnboundedSender<EmbedJob>,
     pub index: mpsc::UnboundedSender<IndexJob>,
 }
 
@@ -33,31 +30,10 @@ fn is_text_key(key: &str) -> bool {
     key.starts_with("files/") && key.ends_with("/text")
 }
 
-/// Check if key is an OCR task entry: files/{doc_id}/ocr_task
-fn is_ocr_task_key(key: &str) -> bool {
-    key.starts_with("files/") && key.ends_with("/ocr_task")
-}
-
-/// Check if key is an embedding entry: files/{doc_id}/embeddings/{model_id}
-fn is_embedding_key(key: &str) -> bool {
-    key.starts_with("files/") && key.contains("/embeddings/")
-}
-
 /// Extract doc_id from a files/{doc_id}/... key
 fn extract_doc_id(key: &str) -> Option<&str> {
     let rest = key.strip_prefix("files/")?;
     rest.split('/').next()
-}
-
-/// Extract model_id from files/{doc_id}/embeddings/{model_id} key
-fn extract_model_id(key: &str) -> Option<&str> {
-    let parts: Vec<&str> = key.split('/').collect();
-    // files / {doc_id} / embeddings / {model_id}
-    if parts.len() >= 4 && parts[2] == "embeddings" {
-        Some(parts[3])
-    } else {
-        None
-    }
 }
 
 /// Watches a collection for iroh events and dispatches to worker pools.
@@ -71,13 +47,10 @@ impl CollectionWatcher {
     /// The watcher subscribes to iroh-docs events and dispatches jobs
     /// to the appropriate worker pools based on key patterns:
     /// - files/*/source (InsertLocal only) → Extract
-    /// - files/*/ocr_task (InsertLocal only) → OCR
-    /// - files/*/text → Embed
-    /// - files/*/embeddings/* → Index
+    /// - files/*/text (local or remote) → Index
     pub fn spawn(
         namespace_id: NamespaceId,
         storage: Arc<RwLock<Storage>>,
-        models: Arc<ModelManager>,
         senders: JobSenders,
         progress: ProgressTracker,
         cancel: CancellationToken,
@@ -85,16 +58,7 @@ impl CollectionWatcher {
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = run_watcher(
-                namespace_id,
-                storage,
-                models,
-                senders,
-                progress,
-                cancel_clone.clone(),
-            )
-            .await
-            {
+            if let Err(e) = run_watcher(namespace_id, storage, senders, progress, cancel_clone.clone()).await {
                 if !cancel_clone.is_cancelled() {
                     tracing::error!(
                         namespace = %namespace_id,
@@ -117,7 +81,6 @@ impl CollectionWatcher {
 async fn run_watcher(
     namespace_id: NamespaceId,
     storage: Arc<RwLock<Storage>>,
-    models: Arc<ModelManager>,
     senders: JobSenders,
     progress: ProgressTracker,
     cancel: CancellationToken,
@@ -147,17 +110,7 @@ async fn run_watcher(
             event = stream.next() => {
                 match event {
                     Some(Ok(live_event)) => {
-                        // Read configured embedding model once per event
-                        let current_model_id = models.embedding_model_id().await;
-                        handle_event(
-                            &live_event,
-                            namespace_id,
-                            &collection_id,
-                            &current_model_id,
-                            &senders,
-                            &progress,
-                        )
-                        .await;
+                        handle_event(&live_event, namespace_id, &collection_id, &senders, &progress).await;
                     }
                     Some(Err(e)) => {
                         tracing::warn!(
@@ -183,7 +136,6 @@ async fn handle_event(
     event: &LiveEvent,
     namespace_id: NamespaceId,
     collection_id: &str,
-    model_id: &Option<String>,
     senders: &JobSenders,
     progress: &ProgressTracker,
 ) {
@@ -207,39 +159,14 @@ async fn handle_event(
             namespace_id,
             doc_id,
         });
-    } else if is_ocr_task_key(&key) && is_local {
-        // OCR task written by extract → queue OCR. Local-only — peers
-        // don't OCR for documents they didn't import.
-        tracing::debug!(doc_id = %doc_id, "OCR task queued");
-        progress.queue(collection_id, Stage::Ocr).await;
-        let _ = senders.ocr.send(OcrJob {
-            namespace_id,
-            doc_id,
-        });
     } else if is_text_key(&key) {
-        // Text ready → queue embed
-        tracing::debug!(doc_id = %doc_id, is_local, "Text ready, queuing embed");
-        progress.queue(collection_id, Stage::Embed).await;
-        let _ = senders.embed.send(EmbedJob {
+        // Text ready (local extract or remote sync) → queue index
+        tracing::debug!(doc_id = %doc_id, is_local, "Text ready, queuing index");
+        progress.queue(collection_id, Stage::Index).await;
+        let _ = senders.index.send(IndexJob {
             namespace_id,
             doc_id,
         });
-    } else if is_embedding_key(&key) {
-        // Embeddings ready → queue index
-        let event_model_id = extract_model_id(&key).unwrap_or("unknown");
-
-        // Only index if this is for our configured model
-        if let Some(ref mid) = model_id {
-            if mid == event_model_id {
-                tracing::debug!(doc_id = %doc_id, model = %event_model_id, "Embeddings ready, queuing index");
-                progress.queue(collection_id, Stage::Index).await;
-                let _ = senders.index.send(IndexJob {
-                    namespace_id,
-                    doc_id,
-                    model_id: mid.clone(),
-                });
-            }
-        }
     }
 }
 
@@ -255,36 +182,13 @@ mod tests {
 
         assert!(is_text_key("files/doc-123/text"));
         assert!(!is_text_key("files/doc-123/source"));
-
-        assert!(is_embedding_key("files/doc-123/embeddings/qwen3"));
-        assert!(!is_embedding_key("files/doc-123/text"));
-
-        assert!(is_ocr_task_key("files/doc-123/ocr_task"));
-        assert!(!is_ocr_task_key("files/doc-123/text"));
-        assert!(!is_ocr_task_key("files/doc-123/source"));
+        assert!(!is_text_key("files/doc-123/meta"));
     }
 
     #[test]
     fn test_extract_doc_id() {
         assert_eq!(extract_doc_id("files/doc-123/source"), Some("doc-123"));
         assert_eq!(extract_doc_id("files/abc/text"), Some("abc"));
-        assert_eq!(
-            extract_doc_id("files/uuid-here/embeddings/model"),
-            Some("uuid-here")
-        );
         assert_eq!(extract_doc_id("_collection"), None);
-    }
-
-    #[test]
-    fn test_extract_model_id() {
-        assert_eq!(
-            extract_model_id("files/doc-123/embeddings/qwen3"),
-            Some("qwen3")
-        );
-        assert_eq!(
-            extract_model_id("files/abc/embeddings/custom-model"),
-            Some("custom-model")
-        );
-        assert_eq!(extract_model_id("files/doc-123/text"), None);
     }
 }

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use super::AgentContext;
 use crate::search;
@@ -35,34 +35,11 @@ pub async fn execute_tool(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResul
     }
 }
 
-/// Hybrid search combining keyword (BM25) and semantic matching.
-/// Falls back to keyword-only if no embedder is configured.
+/// Keyword (BM25) search over indexed document chunks.
 async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult {
     let query = tool_call.arguments["query"].as_str().unwrap_or("");
 
-    info!(query = %query, "Executing hybrid search");
-
-    // Try to get query embedding for semantic component
-    let (query_vector, semantic_ratio) = match ctx.state.models.acquire_embedding().await {
-        Ok(Some(embedder)) => match embedder.embed(query).await {
-            Ok(vec) => {
-                debug!(dimensions = vec.len(), "Query embedded for hybrid search");
-                (Some(vec), 0.4)
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to embed query, using keyword-only search");
-                (None, 0.0)
-            }
-        },
-        Ok(None) => {
-            debug!("No embedder configured, using keyword-only search");
-            (None, 0.0)
-        }
-        Err(e) => {
-            warn!(error = %e, "Failed to load embedder, using keyword-only search");
-            (None, 0.0)
-        }
-    };
+    info!(query = %query, "Executing keyword search");
 
     let index = &*ctx.state.search;
     let collection_ids = ctx.collection_ids();
@@ -70,13 +47,6 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
     let search_params = search::SearchParams {
         query,
         limit: 15,
-        query_vector,
-        semantic_ratio,
-        min_score: if semantic_ratio > 0.0 {
-            Some(0.15)
-        } else {
-            None
-        },
         collection_ids: collection_ids.as_deref(),
         ..Default::default()
     };
@@ -86,7 +56,6 @@ async fn execute_search(tool_call: &ToolCall, ctx: &AgentContext) -> ToolResult 
             info!(
                 query = %query,
                 hits = results.hits.len(),
-                hybrid = semantic_ratio > 0.0,
                 "Search completed"
             );
             let formatted = format_search_results(index, &results.hits, ctx);
@@ -486,7 +455,6 @@ mod tests {
             page_count,
             start_page,
             end_page,
-            vector: None,
         }
     }
 

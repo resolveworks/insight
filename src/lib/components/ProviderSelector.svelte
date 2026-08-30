@@ -1,8 +1,6 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
-	import ModelDownloadSelector from './ModelDownloadSelector.svelte';
-	import { languageModelConfig } from '$lib/models/config';
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
@@ -38,7 +36,7 @@
 	let { onConfigured }: Props = $props();
 
 	let families = $state<ProviderFamily[]>([]);
-	let selectedFamily = $state<string>('local');
+	let selectedFamily = $state<string>('openai');
 
 	// Use global language provider state
 	const languageState = getLanguageState();
@@ -58,7 +56,6 @@
 	let isCurrentActive = $derived(() => {
 		if (!languageState.providerType) return false;
 		if (languageState.providerType !== selectedFamily) return false;
-		if (languageState.providerType === 'local') return true;
 		if (
 			languageState.providerType === 'openai' ||
 			languageState.providerType === 'anthropic'
@@ -191,7 +188,6 @@
 			// Update global provider state
 			setLanguageProvider(selectedFamily, selectedModel);
 
-			// Notify parent
 			onConfigured?.();
 		} catch (e) {
 			error = `Failed to configure: ${e}`;
@@ -200,23 +196,14 @@
 		}
 	}
 
-	function handleLocalProviderConfigured(modelId: string | null) {
-		if (modelId) {
-			setLanguageProvider('local', modelId);
-			onConfigured?.();
-		}
-	}
-
 	async function disableProvider() {
 		status = 'configuring';
 		error = null;
 
 		try {
-			await invoke('configure_model', {
-				modelType: 'language',
-				modelId: null,
-			});
+			await invoke('disable_chat_provider');
 			setLanguageProvider(null, null);
+			onConfigured?.();
 		} catch (e) {
 			error = `Failed to disable: ${e}`;
 		} finally {
@@ -262,11 +249,7 @@
 				/>
 			</svg>
 			<span>
-				{#if languageState.providerType === 'local'}
-					Local model active
-				{:else}
-					{languageState.providerType === 'openai' ? 'OpenAI' : 'Anthropic'}: {languageState.modelId}
-				{/if}
+				{languageState.providerType === 'openai' ? 'OpenAI' : 'Anthropic'}: {languageState.modelId}
 			</span>
 			<button
 				class="ml-auto text-xs text-neutral-500 hover:text-neutral-700 cursor-pointer"
@@ -279,92 +262,85 @@
 	{/if}
 
 	<!-- Provider Content -->
-	{#if selectedFamily === 'local'}
-		<ModelDownloadSelector
-			config={languageModelConfig}
-			onConfigured={handleLocalProviderConfigured}
-		/>
-	{:else}
-		<!-- Remote Provider (OpenAI/Anthropic) -->
-		<div class="space-y-4">
-			<p class="text-sm text-neutral-500">
-				{#if selectedFamily === 'openai'}
-					Enter your OpenAI API key to access GPT models.
-				{:else}
-					Enter your Anthropic API key to access Claude models.
-				{/if}
-			</p>
+	<!-- Remote Provider (OpenAI/Anthropic) -->
+	<div class="space-y-4">
+		<p class="text-sm text-neutral-500">
+			{#if selectedFamily === 'openai'}
+				Enter your OpenAI API key to access GPT models.
+			{:else}
+				Enter your Anthropic API key to access Claude models.
+			{/if}
+		</p>
 
-			<!-- API Key Input -->
-			<div class="flex gap-2">
-				<Input
-					id="api-key-input"
-					type="password"
-					label="API Key"
-					bind:value={apiKey}
-					placeholder={selectedFamily === 'openai' ? 'sk-...' : 'sk-ant-...'}
+		<!-- API Key Input -->
+		<div class="flex gap-2">
+			<Input
+				id="api-key-input"
+				type="password"
+				label="API Key"
+				bind:value={apiKey}
+				placeholder={selectedFamily === 'openai' ? 'sk-...' : 'sk-ant-...'}
+				disabled={status !== 'idle'}
+			/>
+			<div class="flex items-end">
+				<Button
+					variant="secondary"
+					onclick={verifyApiKey}
+					disabled={status !== 'idle' || !apiKey.trim()}
+					loading={status === 'verifying'}
+				>
+					Verify
+				</Button>
+			</div>
+		</div>
+
+		<!-- Model Selection (shown after verification) -->
+		{#if isVerified && models.length > 0}
+			<div>
+				<label
+					for="model-select"
+					class="block text-sm font-medium text-neutral-700 mb-2"
+				>
+					Model
+				</label>
+				<select
+					id="model-select"
+					bind:value={selectedModel}
+					class="w-full px-3 py-2 bg-surface-bright border border-neutral-300 rounded-md text-neutral-800 focus:outline-none focus:ring-2 focus:ring-tertiary-400 focus:border-transparent cursor-pointer"
 					disabled={status !== 'idle'}
-				/>
-				<div class="flex items-end">
-					<Button
-						variant="secondary"
-						onclick={verifyApiKey}
-						disabled={status !== 'idle' || !apiKey.trim()}
-						loading={status === 'verifying'}
-					>
-						Verify
-					</Button>
-				</div>
+				>
+					{#each models as model (model.id)}
+						<option value={model.id}>
+							{model.name}
+							{#if model.description}
+								- {model.description}
+							{/if}
+						</option>
+					{/each}
+				</select>
 			</div>
 
-			<!-- Model Selection (shown after verification) -->
-			{#if isVerified && models.length > 0}
-				<div>
-					<label
-						for="model-select"
-						class="block text-sm font-medium text-neutral-700 mb-2"
-					>
-						Model
-					</label>
-					<select
-						id="model-select"
-						bind:value={selectedModel}
-						class="w-full px-3 py-2 bg-surface-bright border border-neutral-300 rounded-md text-neutral-800 focus:outline-none focus:ring-2 focus:ring-tertiary-400 focus:border-transparent cursor-pointer"
-						disabled={status !== 'idle'}
-					>
-						{#each models as model (model.id)}
-							<option value={model.id}>
-								{model.name}
-								{#if model.description}
-									- {model.description}
-								{/if}
-							</option>
-						{/each}
-					</select>
-				</div>
+			<!-- Activate Button -->
+			<Button
+				fullWidth
+				onclick={configureRemoteProvider}
+				disabled={status === 'configuring' ||
+					!selectedModel ||
+					isCurrentActive()}
+				loading={status === 'configuring'}
+			>
+				{#if status === 'configuring'}
+					Activating...
+				{:else if isCurrentActive()}
+					Active
+				{:else}
+					Activate
+				{/if}
+			</Button>
+		{/if}
 
-				<!-- Activate Button -->
-				<Button
-					fullWidth
-					onclick={configureRemoteProvider}
-					disabled={status === 'configuring' ||
-						!selectedModel ||
-						isCurrentActive()}
-					loading={status === 'configuring'}
-				>
-					{#if status === 'configuring'}
-						Activating...
-					{:else if isCurrentActive()}
-						Active
-					{:else}
-						Activate
-					{/if}
-				</Button>
-			{/if}
-
-			{#if error}
-				<ErrorAlert>{error}</ErrorAlert>
-			{/if}
-		</div>
-	{/if}
+		{#if error}
+			<ErrorAlert>{error}</ErrorAlert>
+		{/if}
+	</div>
 </div>

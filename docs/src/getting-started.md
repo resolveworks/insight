@@ -10,21 +10,13 @@
 - **Windows**: Download the `.exe` installer. (IT departments may prefer the `.msi`.)
 - **Linux**: Download `.deb` for Ubuntu/Debian, `.rpm` for Fedora/Red Hat, or `.AppImage` to run on any distribution.
 
-## Choosing an AI Model
+## Configure an AI Provider
 
-Insight can use either local AI models or cloud services for chat. Your documents are always processed locally—only your questions and the AI's answers go through the cloud if you choose that option.
+Insight uses OpenAI or Anthropic for chat. Add an API key from either provider in Settings to get started. This works well on any computer.
 
-### Cloud Models (Recommended for most users)
-
-If you have an API key from Anthropic or OpenAI, you can use their models. Add your key in settings. This is the easiest option and works well on any computer.
+Your documents are always processed and stored locally—only your questions and the AI's answers go through the provider.
 
 **You don't need the biggest model.** Smaller models like GPT-5 mini or Claude Haiku work well with Insight's agent—they're faster, cheaper, and handle document research tasks effectively. The agent harness does the heavy lifting of breaking down queries and gathering evidence, so even lightweight models produce good results.
-
-### Local Models
-
-Running AI locally requires a powerful computer—ideally with a dedicated GPU (NVIDIA or Apple Silicon). On a typical laptop without a GPU, responses will be slow.
-
-If you choose local models, Insight will download about 5 GB for the AI model on first use.
 
 ## Create a Collection
 
@@ -34,7 +26,7 @@ Collections are folders for organizing your documents. You might create one for 
 2. Give it a name (e.g., "City Budget Investigation")
 3. Drag and drop PDF files into the collection
 
-Insight will process each document so the AI can search and read them.
+Insight will process each document so the AI can search and read them. Note: text extraction works on digital PDFs; scanned PDFs (images of text) won't be text-searchable.
 
 ## Ask Questions
 

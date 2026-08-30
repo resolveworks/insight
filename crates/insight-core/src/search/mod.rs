@@ -2,7 +2,6 @@ mod index_worker;
 
 pub use index_worker::{spawn_index_worker, IndexWorkerHandle};
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,22 +11,18 @@ use fst::Streamer;
 
 use http_client::policy::IpPolicy;
 use milli::documents::mmap_from_objects;
-use milli::heed::{EnvOpenOptions, RoTxn};
+use milli::heed::EnvOpenOptions;
 use milli::progress::{EmbedderStats, Progress};
-use milli::prompt::Prompt;
 use milli::score_details::ScoringStrategy;
 use milli::update::new::indexer::{self, IndexOperations};
-use milli::update::{IndexerConfig, MissingDocumentPolicy, Setting};
-use milli::vector::settings::{EmbedderSource, EmbeddingSettings};
-use milli::vector::{embedder::manual, Embedder, RuntimeEmbedder, RuntimeEmbedders};
+use milli::update::{IndexerConfig, MissingDocumentPolicy};
+use milli::vector::RuntimeEmbedders;
 use milli::{
     CreateOrOpen, Filter, FilterCondition, FilterableAttributesRule, Index, IndexFilter,
     IndexFilterCondition, TermsMatchingStrategy,
 };
 use roaring::RoaringBitmap;
-use serde_json::{json, Map, Value};
-
-use std::collections::HashMap;
+use serde_json::{Map, Value};
 
 /// Default map size for the LMDB environment (10 GB)
 /// This is the maximum size the database can grow to
@@ -100,67 +95,6 @@ fn condition_to_index_condition(cond: FilterCondition<'_>) -> IndexFilterConditi
     }
 }
 
-/// Get an embedder from the index's stored configuration
-///
-/// This reads the embedder settings from the index and creates an `Embedder` instance.
-/// Returns None if the embedder is not configured.
-fn get_embedder_from_index(
-    index: &Index,
-    rtxn: &RoTxn<'_>,
-    embedder_name: &str,
-) -> Result<Option<(Arc<Embedder>, bool)>> {
-    let embedders = index.embedding_configs();
-
-    // Check if embedder has an ID (meaning it's properly registered)
-    let embedder_id = embedders.embedder_id(rtxn, embedder_name)?;
-    if embedder_id.is_none() {
-        return Ok(None);
-    }
-
-    // Get the embedder config
-    let configs = embedders.embedding_configs(rtxn)?;
-    let config = configs.iter().find(|c| c.name == embedder_name);
-
-    match config {
-        Some(cfg) => {
-            // Create embedder from stored options
-            let embedder = Embedder::new(
-                cfg.config.embedder_options.clone(),
-                0,
-                IpPolicy::danger_always_allow(),
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to create embedder: {}", e))?;
-            let quantized = cfg.config.quantized.unwrap_or(false);
-            Ok(Some((Arc::new(embedder), quantized)))
-        }
-        None => Ok(None),
-    }
-}
-
-/// Create RuntimeEmbedders for user-provided vectors
-///
-/// This creates a minimal embedder configuration that tells milli to accept
-/// pre-computed vectors from the `_vectors` field without generating new ones.
-fn create_user_provided_embedders(embedder_name: &str, dimensions: usize) -> RuntimeEmbedders {
-    let manual_embedder = manual::Embedder::new(manual::EmbedderOptions {
-        dimensions,
-        distribution: None,
-    });
-    let embedder = Arc::new(Embedder::UserProvided(manual_embedder));
-    let prompt = Prompt::default();
-
-    let runtime_embedder = Arc::new(RuntimeEmbedder::new(
-        embedder,
-        prompt,
-        vec![], // no fragments for user-provided
-        false,  // not quantized
-    ));
-
-    let mut map = HashMap::new();
-    map.insert(embedder_name.to_string(), runtime_embedder);
-    RuntimeEmbedders::new(map)
-}
-
 /// Open or create a milli search index
 pub fn open_index(path: &Path) -> Result<Index> {
     std::fs::create_dir_all(path)?;
@@ -210,143 +144,6 @@ pub fn open_index(path: &Path) -> Result<Index> {
     Ok(index)
 }
 
-/// Configure the embedder settings for vector search
-///
-/// This must be called when an embedding model is configured so milli knows
-/// how to index and search vectors stored in documents.
-pub fn configure_embedder(
-    index: &Index,
-    indexer_config: &IndexerConfig,
-    embedder_name: &str,
-    dimensions: usize,
-) -> Result<()> {
-    tracing::info!(
-        embedder_name = embedder_name,
-        dimensions = dimensions,
-        "Configuring embedder for vector search"
-    );
-
-    let mut wtxn = index.write_txn()?;
-    let mut settings = milli::update::Settings::new(&mut wtxn, index, indexer_config);
-
-    // Create userProvided embedder settings (matching milli's from_user_provided pattern)
-    let embedder_settings = EmbeddingSettings {
-        source: Setting::Set(EmbedderSource::UserProvided),
-        model: Setting::NotSet,
-        revision: Setting::NotSet,
-        pooling: Setting::NotSet,
-        api_key: Setting::NotSet,
-        dimensions: Setting::Set(dimensions),
-        binary_quantized: Setting::NotSet,
-        document_template: Setting::NotSet,
-        document_template_max_bytes: Setting::NotSet,
-        url: Setting::NotSet,
-        indexing_fragments: Setting::NotSet,
-        search_fragments: Setting::NotSet,
-        request: Setting::NotSet,
-        response: Setting::NotSet,
-        headers: Setting::NotSet,
-        search_embedder: Setting::NotSet,
-        indexing_embedder: Setting::NotSet,
-        distribution: Setting::NotSet,
-    };
-
-    // Set the embedder configuration
-    let mut embedders_map = BTreeMap::new();
-    embedders_map.insert(embedder_name.to_string(), Setting::Set(embedder_settings));
-    settings.set_embedder_settings(embedders_map);
-
-    settings.execute(
-        &|| false,
-        &Progress::default(),
-        &IpPolicy::danger_always_allow(),
-        Arc::new(EmbedderStats::default()),
-    )?;
-    wtxn.commit()?;
-
-    // Verify the embedder was registered with an ID
-    let rtxn = index.read_txn()?;
-    let embedders = index.embedding_configs();
-    let embedder_id = embedders.embedder_id(&rtxn, embedder_name)?;
-    let configs = embedders.embedding_configs(&rtxn)?;
-
-    tracing::info!(
-        embedder_name = embedder_name,
-        embedder_id = ?embedder_id,
-        config_count = configs.len(),
-        "Embedder configured successfully"
-    );
-
-    if embedder_id.is_none() {
-        tracing::error!("Embedder was not assigned an ID!");
-    }
-
-    Ok(())
-}
-
-/// Remove embedder configuration from the index
-pub fn remove_embedder(index: &Index, indexer_config: &IndexerConfig) -> Result<()> {
-    tracing::info!("Removing embedder configuration");
-
-    let mut wtxn = index.write_txn()?;
-    let mut settings = milli::update::Settings::new(&mut wtxn, index, indexer_config);
-    settings.reset_embedder_settings();
-    settings.execute(
-        &|| false,
-        &Progress::default(),
-        &IpPolicy::danger_always_allow(),
-        Arc::new(EmbedderStats::default()),
-    )?;
-    wtxn.commit()?;
-
-    tracing::info!("Embedder configuration removed");
-    Ok(())
-}
-
-/// Log current embedder configurations in the index (for debugging)
-pub fn log_embedder_configs(index: &Index) -> Result<()> {
-    let rtxn = index.read_txn()?;
-    let embedders = index.embedding_configs();
-    let configs = embedders.embedding_configs(&rtxn)?;
-
-    if configs.is_empty() {
-        tracing::info!("No embedders configured in index");
-    } else {
-        for config in &configs {
-            // Check if embedder has an ID assigned
-            let embedder_id = embedders.embedder_id(&rtxn, &config.name)?;
-            tracing::info!(
-                name = config.name,
-                embedder_id = ?embedder_id,
-                "Embedder configured in index"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Check if embedder is properly configured for vector search
-pub fn check_embedder_ready(index: &Index, embedder_name: &str) -> Result<bool> {
-    let rtxn = index.read_txn()?;
-    let embedders = index.embedding_configs();
-
-    // Check if embedder config exists
-    let configs = embedders.embedding_configs(&rtxn)?;
-    let has_config = configs.iter().any(|c| c.name == embedder_name);
-
-    // Check if embedder has an ID
-    let embedder_id = embedders.embedder_id(&rtxn, embedder_name)?;
-
-    tracing::debug!(
-        embedder_name = embedder_name,
-        has_config = has_config,
-        embedder_id = ?embedder_id,
-        "Embedder readiness check"
-    );
-
-    Ok(has_config && embedder_id.is_some())
-}
-
 // ============================================================================
 // Indexing
 // ============================================================================
@@ -354,7 +151,7 @@ pub fn check_embedder_ready(index: &Index, embedder_name: &str) -> Result<bool> 
 /// A text chunk to be indexed (for search)
 ///
 /// Documents are split into chunks for more precise search results.
-/// Each chunk is indexed separately with its own embedding vector.
+/// Each chunk is indexed separately as a BM25 keyword-search document.
 pub struct ChunkToIndex {
     /// Unique chunk ID: "{parent_id}_chunk_{chunk_index}"
     pub id: String,
@@ -374,8 +171,6 @@ pub struct ChunkToIndex {
     pub start_page: usize,
     /// Last page this chunk appears on (1-indexed)
     pub end_page: usize,
-    /// Pre-computed embedding vector for this chunk
-    pub vector: Option<Vec<f32>>,
 }
 
 /// Maximum chunks per indexing batch
@@ -449,10 +244,6 @@ fn index_chunk_batch(
                 Value::Number(chunk.start_page.into()),
             );
             m.insert("end_page".to_string(), Value::Number(chunk.end_page.into()));
-            // Add pre-computed vector if present (single vector, not array)
-            if let Some(ref vector) = chunk.vector {
-                m.insert("_vectors".to_string(), json!({ "default": [vector] }));
-            }
             m
         })
         .collect();
@@ -484,14 +275,6 @@ fn index_chunk_batch(
 
     let mut wtxn = index.write_txn()?;
 
-    // Create RuntimeEmbedders if any chunks have vectors
-    // We need to tell milli about the embedder so it indexes the pre-computed vectors
-    let embedders = chunks
-        .iter()
-        .find_map(|chunk| chunk.vector.as_ref().map(|v| v.len()))
-        .map(|dimensions| create_user_provided_embedders("default", dimensions))
-        .unwrap_or_default();
-
     indexer_config
         .thread_pool
         .install(|| {
@@ -504,7 +287,7 @@ fn index_chunk_batch(
                 new_fields_ids_map,
                 primary_key,
                 &document_changes,
-                embedders,
+                RuntimeEmbedders::default(), // no embedders: keyword-only index
                 &|| false,
                 &Progress::default(),
                 &IpPolicy::danger_always_allow(),
@@ -537,7 +320,6 @@ pub fn get_document_count(index: &Index) -> Result<u64> {
 }
 
 /// Extract the global score from a list of score details.
-/// For hybrid search, this combines keyword and semantic scores.
 pub fn compute_hit_score(scores: &[milli::score_details::ScoreDetails]) -> f64 {
     milli::score_details::ScoreDetails::global_score(scores.iter())
 }
@@ -548,12 +330,6 @@ pub struct SearchParams<'a> {
     pub limit: usize,
     pub offset: usize,
     pub collection_ids: Option<&'a [String]>,
-    /// Pre-computed query embedding for semantic search
-    pub query_vector: Option<Vec<f32>>,
-    /// Balance between keyword (0.0) and semantic (1.0) search
-    pub semantic_ratio: f32,
-    /// Filter out results below this score threshold
-    pub min_score: Option<f32>,
 }
 
 impl Default for SearchParams<'_> {
@@ -563,69 +339,17 @@ impl Default for SearchParams<'_> {
             limit: 20,
             offset: 0,
             collection_ids: None,
-            query_vector: None,
-            semantic_ratio: 0.0,
-            min_score: None,
         }
     }
 }
 
-/// Execute hybrid search with semantic + keyword scoring
-fn execute_hybrid_search<'a>(
-    index: &Index,
-    rtxn: &'a milli::heed::RoTxn<'a>,
-    search: &mut milli::Search<'a>,
-    query_vector: Vec<f32>,
-    semantic_ratio: f32,
-) -> Result<milli::SearchResult> {
-    const EMBEDDER_NAME: &str = "default";
-
-    let Some((embedder, quantized)) = get_embedder_from_index(index, rtxn, EMBEDDER_NAME)? else {
-        tracing::warn!("Embedder not configured, falling back to keyword search");
-        return Ok(search.execute()?);
-    };
-
-    tracing::debug!(
-        semantic_ratio = semantic_ratio,
-        vector_dims = query_vector.len(),
-        "Executing hybrid search"
-    );
-
-    search.semantic(
-        EMBEDDER_NAME.to_string(),
-        embedder,
-        quantized,
-        Some(query_vector),
-        None,
-    );
-
-    match search.execute_hybrid(semantic_ratio) {
-        Ok((result, _)) => Ok(result),
-        Err(e) => {
-            tracing::error!(error = %e, "Hybrid search failed, falling back to keyword");
-            Ok(search.execute()?)
-        }
-    }
-}
-
-/// Search the milli index
-///
-/// When `semantic_ratio > 0` and `query_vector` is provided, performs hybrid search
-/// combining keyword (BM25) and vector similarity. The ratio controls the balance:
-/// - 0.0 = pure keyword search
-/// - 1.0 = pure semantic search
-/// - 0.5 = equal weight to both
-///
-/// The `min_score` parameter filters out results below the threshold (0.0 to 1.0).
+/// Execute a keyword (BM25) search against the milli index.
 pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchResults> {
     let SearchParams {
         query,
         limit,
         offset,
         collection_ids,
-        query_vector,
-        semantic_ratio,
-        min_score,
     } = params;
 
     let rtxn = index.read_txn()?;
@@ -649,39 +373,17 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
         }
     }
 
-    // Execute search (hybrid if semantic enabled, otherwise keyword-only)
-    let result = match query_vector.filter(|_| semantic_ratio > 0.0) {
-        Some(vec) => execute_hybrid_search(index, &rtxn, &mut search, vec, semantic_ratio)?,
-        None => search.execute()?,
-    };
+    // Execute keyword (BM25) search
+    let result = search.execute()?;
 
     // Collect hits
-    let all_hits: Vec<SearchHit> = result
+    let hits: Vec<SearchHit> = result
         .documents_ids
         .into_iter()
         .zip(result.document_scores)
         .map(|(doc_id, scores)| SearchHit { doc_id, scores })
         .collect();
-
-    // Apply minimum score filter
-    let (hits, total_hits) = match min_score {
-        Some(threshold) => {
-            let filtered: Vec<_> = all_hits
-                .into_iter()
-                .filter(|hit| compute_hit_score(&hit.scores) >= threshold as f64)
-                .collect();
-            let count = filtered.len();
-            (filtered, count)
-        }
-        None => {
-            let count = if semantic_ratio > 0.0 {
-                all_hits.len()
-            } else {
-                result.candidates.len() as usize
-            };
-            (all_hits, count)
-        }
-    };
+    let total_hits = result.candidates.len() as usize;
 
     Ok(SearchResults { hits, total_hits })
 }
@@ -981,7 +683,6 @@ mod tests {
         parent_name: &str,
         content: &str,
         collection_id: &str,
-        vector: Option<Vec<f32>>,
     ) -> ChunkToIndex {
         ChunkToIndex {
             id: format!("{}_chunk_0", parent_id),
@@ -993,7 +694,6 @@ mod tests {
             page_count: 1,
             start_page: 1,
             end_page: 1,
-            vector,
         }
     }
 
@@ -1039,7 +739,6 @@ mod tests {
             "test.pdf",
             "This is a test document about climate change.",
             "collection1",
-            None,
         );
         index_chunks_batch(&index, &config, vec![chunk]).unwrap();
 
@@ -1069,7 +768,7 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        let chunk = make_chunk("doc1", "test.pdf", "Hello world", "col1", None);
+        let chunk = make_chunk("doc1", "test.pdf", "Hello world", "col1");
         index_chunks_batch(&index, &config, vec![chunk]).unwrap();
 
         let results = search_index(
@@ -1091,9 +790,9 @@ mod tests {
         let config = test_indexer_config();
 
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "Climate research paper", "climate", None),
-            make_chunk("doc2", "b.pdf", "Climate news article", "news", None),
-            make_chunk("doc3", "c.pdf", "Climate policy document", "policy", None),
+            make_chunk("doc1", "a.pdf", "Climate research paper", "climate"),
+            make_chunk("doc2", "b.pdf", "Climate news article", "news"),
+            make_chunk("doc3", "c.pdf", "Climate policy document", "policy"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
@@ -1145,8 +844,8 @@ mod tests {
         let config = test_indexer_config();
 
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "Test content", "col1", None),
-            make_chunk("doc2", "b.pdf", "Test content", "col2", None),
+            make_chunk("doc1", "a.pdf", "Test content", "col1"),
+            make_chunk("doc2", "b.pdf", "Test content", "col2"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
@@ -1176,21 +875,18 @@ mod tests {
                 "a.pdf",
                 "First document about science",
                 "col1",
-                None,
             ),
             make_chunk(
                 "doc2",
                 "b.pdf",
                 "Second document about science",
                 "col1",
-                None,
             ),
             make_chunk(
                 "doc3",
                 "c.pdf",
                 "Third document about science",
                 "col1",
-                None,
             ),
         ];
 
@@ -1233,7 +929,6 @@ mod tests {
                 page_count: 10,
                 start_page: 1,
                 end_page: 1,
-                vector: None,
             },
             ChunkToIndex {
                 id: "doc2_chunk_0".to_string(),
@@ -1245,7 +940,6 @@ mod tests {
                 page_count: 5,
                 start_page: 1,
                 end_page: 1,
-                vector: None,
             },
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
@@ -1287,8 +981,8 @@ mod tests {
 
         // Index chunks for two documents
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "First document", "col1", None),
-            make_chunk("doc2", "b.pdf", "Second document", "col1", None),
+            make_chunk("doc1", "a.pdf", "First document", "col1"),
+            make_chunk("doc2", "b.pdf", "Second document", "col1"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
@@ -1326,9 +1020,9 @@ mod tests {
 
         // Index chunks in different collections
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "Document alpha", "col1", None),
-            make_chunk("doc2", "b.pdf", "Document beta", "col1", None),
-            make_chunk("doc3", "c.pdf", "Document gamma", "col2", None),
+            make_chunk("doc1", "a.pdf", "Document alpha", "col1"),
+            make_chunk("doc2", "b.pdf", "Document beta", "col1"),
+            make_chunk("doc3", "c.pdf", "Document gamma", "col2"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
@@ -1359,95 +1053,6 @@ mod tests {
     }
 
     #[test]
-    fn test_configure_embedder() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let index = open_index(temp_dir.path()).unwrap();
-        let config = test_indexer_config();
-
-        // Configure embedder
-        configure_embedder(&index, &config, "default", 384).unwrap();
-
-        // Verify embedder is registered
-        let rtxn = index.read_txn().unwrap();
-        let embedders = index.embedding_configs();
-        let embedder_id = embedders.embedder_id(&rtxn, "default").unwrap();
-        assert!(embedder_id.is_some(), "Embedder should have an ID assigned");
-
-        let configs = embedders.embedding_configs(&rtxn).unwrap();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].name, "default");
-    }
-
-    #[test]
-    fn test_semantic_search_with_vectors() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let index = open_index(temp_dir.path()).unwrap();
-        let config = test_indexer_config();
-
-        // IMPORTANT: Configure embedder BEFORE indexing chunks with vectors
-        configure_embedder(&index, &config, "default", 3).unwrap();
-
-        // Create simple 3D vectors for testing
-        // doc1: about cats [1, 0, 0]
-        // doc2: about dogs [0, 1, 0]
-        // doc3: also about cats [0.9, 0.1, 0]
-        let chunks = vec![
-            make_chunk(
-                "doc1",
-                "cats.pdf",
-                "A document about cats and felines.",
-                "collection1",
-                Some(vec![1.0, 0.0, 0.0]),
-            ),
-            make_chunk(
-                "doc2",
-                "dogs.pdf",
-                "A document about dogs and canines.",
-                "collection1",
-                Some(vec![0.0, 1.0, 0.0]),
-            ),
-            make_chunk(
-                "doc3",
-                "more_cats.pdf",
-                "Another document about cats.",
-                "collection1",
-                Some(vec![0.9, 0.1, 0.0]),
-            ),
-        ];
-        index_chunks_batch(&index, &config, chunks).unwrap();
-
-        let rtxn = index.read_txn().unwrap();
-        assert_eq!(index.number_of_documents(&rtxn).unwrap(), 3);
-        drop(rtxn);
-
-        // Query with a cat-like vector [1, 0, 0] - should rank cat chunks higher
-        let query_vector = vec![1.0, 0.0, 0.0];
-        let results = search_index(
-            &index,
-            SearchParams {
-                query: "document",
-                limit: 10,
-                query_vector: Some(query_vector),
-                semantic_ratio: 0.8, // High semantic ratio
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        // Should find all 3 chunks
-        assert!(results.hits.len() >= 2, "Should find at least 2 chunks");
-
-        // The cat chunks should be ranked higher (first)
-        let first_name = get_field(&index, results.hits[0].doc_id, "parent_name");
-        assert!(
-            first_name == Some("cats.pdf".to_string())
-                || first_name == Some("more_cats.pdf".to_string()),
-            "First result should be a cat document, got {:?}",
-            first_name
-        );
-    }
-
-    #[test]
     fn test_get_collection_terms_empty_index() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
@@ -1469,21 +1074,18 @@ mod tests {
                 "climate.pdf",
                 "Climate change affects global temperatures and weather patterns.",
                 "research",
-                None,
             ),
             make_chunk(
                 "doc2",
                 "weather.pdf",
                 "Weather patterns are changing due to climate shifts.",
                 "research",
-                None,
             ),
             make_chunk(
                 "doc3",
                 "finance.pdf",
                 "Financial markets respond to climate policy changes.",
                 "finance",
-                None,
             ),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
@@ -1516,14 +1118,12 @@ mod tests {
                 "climate.pdf",
                 "Climate research and environmental studies.",
                 "research",
-                None,
             ),
             make_chunk(
                 "doc2",
                 "finance.pdf",
                 "Financial analysis and market trends.",
                 "finance",
-                None,
             ),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
@@ -1559,7 +1159,6 @@ mod tests {
             "varied.pdf",
             "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
             "col1",
-            None,
         );
         index_chunks_batch(&index, &config, vec![chunk]).unwrap();
 
