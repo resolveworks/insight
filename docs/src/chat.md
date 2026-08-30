@@ -42,4 +42,4 @@ Every answer includes citations. Click one to jump straight to that passage in t
 
 ## Privacy Note
 
-When using cloud models, your questions and relevant document excerpts are sent to the provider. Your full documents stay on your computer. See [Getting Started](./getting-started.md#choosing-an-ai-model) for model options.
+Your questions and relevant document excerpts are sent to the configured chat provider (OpenAI or Anthropic). Your full documents stay on your computer. See [Getting Started](./getting-started.md) for provider setup.

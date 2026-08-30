@@ -45,16 +45,6 @@ pnpm tauri build --debug
 pnpm tauri build
 ```
 
-### GPU Acceleration
-
-```bash
-# NVIDIA (CUDA)
-cd src-tauri && cargo build --release --features "cuda flash-attn cudnn"
-
-# Apple Silicon (Metal)
-cd src-tauri && cargo build --release --features metal
-```
-
 ## Testing
 
 ### Backend (Rust)

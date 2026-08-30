@@ -2,15 +2,14 @@
 
 **AI-powered research agent for journalists and newsrooms.**
 
-Search documents, ask questions, get answers with citations. Use cloud AI for convenience or run everything locally for maximum privacy.
+Search documents, ask questions, get answers with citations. Your documents stay local; chat runs on your configured AI provider.
 
 ## What Insight Does
 
 - **Ask questions, get answers** — AI agent searches your documents and synthesizes answers with citations
-- **Your choice of AI** — use cloud models (Anthropic, OpenAI) or run local models on-device
-- **Documents stay local** — your files are processed on your machine, never uploaded
+- **Documents stay local** — your files are stored, indexed, and searched on your machine, never uploaded
+- **Choice of provider** — use OpenAI or Anthropic for chat, configured with your API key
 - **Share with colleagues** — sync collections peer-to-peer, no server required
-- **Work offline** — with local models, everything runs without internet
 
 ## How It Works
 
@@ -24,9 +23,9 @@ Reads relevant files, synthesizes answer
 "According to the March 2019 filing [doc: contract-v2.pdf]..."
 ```
 
-Your documents are indexed locally using [milli](https://github.com/meilisearch/milli) for hybrid full-text and vector search. The AI agent—powered by cloud models or a local LLM via [mistralrs](https://github.com/EricLBuehler/mistral.rs)—searches and reads documents to answer your questions.
+Your documents are indexed locally using [milli](https://github.com/meilisearch/milli) for full-text keyword search (BM25). The AI agent—powered by OpenAI or Anthropic, configured with your API key—searches and reads documents to answer your questions. Only your conversation (questions and retrieved excerpts) goes to the provider; the documents themselves never leave your machine.
 
-Collections sync peer-to-peer using [iroh](https://iroh.computer/), including pre-computed embeddings so collaborators don't redo the work.
+Collections sync peer-to-peer using [iroh](https://iroh.computer/), so collaborators get full copies of documents and extracted text. Each peer builds its own search index locally.
 
 ## Project Status
 
@@ -34,44 +33,34 @@ This is a **research project** exploring:
 
 - AI-assisted document research for journalism
 - Practical P2P sync for document workflows
-- Agent-driven search with hybrid full-text and vector retrieval
+- Agent-driven search with full-text retrieval
 - Trust models for journalist collaboration
 
 Not production-ready. Built to learn and prototype.
 
 ## Technology
 
-| Layer    | Choice       | Why                                          |
-| -------- | ------------ | -------------------------------------------- |
-| App      | Tauri + Rust | Single binary, cross-platform, no Electron   |
-| Frontend | Svelte 5     | Fast, minimal                                |
-| LLM      | mistralrs    | Local inference option (GGUF models)         |
-| P2P      | iroh         | Modern QUIC-based, handles NAT traversal     |
-| Search   | milli        | Full-text + vector search, runs locally      |
-| PDF      | lopdf        | Text extraction (opens in system PDF viewer) |
+| Layer    | Choice             | Why                                        |
+| -------- | ------------------ | ------------------------------------------ |
+| App      | Tauri + Rust       | Single binary, cross-platform, no Electron |
+| Frontend | Svelte 5           | Fast, minimal                              |
+| LLM      | OpenAI / Anthropic | Remote inference via API, user-configured  |
+| P2P      | iroh               | Modern QUIC-based, handles NAT traversal   |
+| Search   | milli              | Full-text keyword search (BM25), local     |
+| PDF      | lopdf              | Digital text extraction                    |
 
 ## Building
 
 ```bash
 pnpm install
 pnpm tauri dev          # Desktop app with hot reload
-pnpm tauri build        # Release build (CPU)
-```
-
-GPU-accelerated builds (faster inference):
-
-```bash
-# NVIDIA (requires CUDA toolkit)
-pnpm tauri build -- --features cuda
-
-# Apple Silicon
-pnpm tauri build -- --features metal
+pnpm tauri build        # Release build
 ```
 
 ## Who This Is For
 
 - **Journalists** managing document collections for investigations
-- **Newsrooms** wanting AI-assisted research with privacy options
+- **Newsrooms** wanting AI-assisted research without uploading documents
 - **Investigators** who need to analyze and search large document sets
 - **Researchers** exploring AI tools for document-based work
 
