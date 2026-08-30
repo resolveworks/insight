@@ -3,7 +3,7 @@
 	import type { HTMLButtonAttributes } from 'svelte/elements';
 	import LoadingSpinner from './LoadingSpinner.svelte';
 
-	type Variant = 'primary' | 'secondary' | 'ghost';
+	type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
 	type Size = 'sm' | 'md' | 'lg';
 	type Color = 'primary' | 'accent';
 
@@ -41,6 +41,7 @@
 		secondary:
 			'bg-secondary-400 hover:bg-secondary-500 text-neutral-800 border border-secondary-600',
 		ghost: 'bg-transparent hover:bg-neutral-200 text-neutral-700',
+		danger: 'bg-error hover:bg-red-800 text-white',
 	}));
 
 	const sizeClasses: Record<Size, string> = {
