@@ -4,24 +4,22 @@ A local-first research agent for evidence-based journalism. Think Claude Code, b
 
 ## Vision
 
-Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight combines local LLM inference with P2P document sync to give journalists an AI research assistant that runs entirely on their hardware.
+Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight keeps document storage, search, and sync entirely local — while chat runs on user-configured remote providers (OpenAI, Anthropic). Only the conversation goes to the provider; documents never leave your machine.
 
 ## Core Stack
 
-| Component       | Library     | Purpose                                                   |
-| --------------- | ----------- | --------------------------------------------------------- |
-| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                  |
-| UI              | Svelte 5    | Frontend                                                  |
-| Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles)        |
-| LLM inference   | mistralrs   | Local model loading + inference (GGUF + multimodal)       |
-| Model download  | hf-hub      | Fetch models from HuggingFace                             |
-| P2P / Sync      | iroh        | Connections, NAT traversal, sync                          |
-| Content storage | iroh-blobs  | Content-addressed file storage                            |
-| Metadata sync   | iroh-docs   | CRDT key-value store for metadata                         |
-| Real-time       | iroh-gossip | Pub/sub for live updates                                  |
-| Search          | milli       | Full-text + vector hybrid search (uses candle internally) |
-| PDF text        | lopdf       | Digital text extraction                                   |
-| PDF rendering   | mupdf-rs    | Image-XObject detection + rasterization for OCR (AGPL-3)  |
+| Component       | Library     | Purpose                                |
+| --------------- | ----------- | -------------------------------------- |
+| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend) |
+| UI              | Svelte 5    | Frontend                               |
+| Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles) |
+| Chat inference  | OpenAI / Anthropic APIs | Remote LLM providers, configured in Settings |
+| P2P / Sync      | iroh        | Connections, NAT traversal, sync       |
+| Content storage | iroh-blobs  | Content-addressed file storage         |
+| Metadata sync   | iroh-docs   | CRDT key-value store for metadata      |
+| Real-time       | iroh-gossip | Pub/sub for live updates               |
+| Search          | milli       | Full-text keyword search (BM25)        |
+| PDF text        | lopdf       | Digital text extraction                |
 
 ## Architecture
 
@@ -30,54 +28,18 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 ```
 User Query
     ↓
-Local LLM (via mistralrs)
+Remote LLM (OpenAI / Anthropic)
     ↓
 Tool Calling Loop
     ↓
 Synthesized Answer (with citations)
 ```
 
-With local models, the agent runs entirely on-device—no data leaves your machine.
-
-## Models
-
-Insight is batteries-included: local models are downloaded from HuggingFace and run on-device via mistralrs. Remote model providers (OpenAI, Anthropic, etc.) will also be supported for users who prefer them.
-
-### Local Models
-
-Three roles, each independently configured via Settings:
-
-**Chat (Language)**
-
-| Model           | Size   | Notes                  |
-| --------------- | ------ | ---------------------- |
-| Qwen3 8B Q4_K_M | 5 GB   | Default, good balance  |
-| Qwen3 4B Q4_K_M | 2.5 GB | Lightweight, faster    |
-| Qwen3 8B Q8_0   | 8.5 GB | Higher quality, slower |
-
-**Embedding** (auto-configured to default on first launch)
-
-| Model                | Size   | Notes             |
-| -------------------- | ------ | ----------------- |
-| Qwen3 Embedding 0.6B | 1.2 GB | Default, 1024-dim |
-
-**OCR** (opt-in; needed only for scanned PDFs)
-
-| Model              | Size  | Notes                              |
-| ------------------ | ----- | ---------------------------------- |
-| Nanonets-OCR2 3B   | 6 GB  | Recommended. Qwen2.5-VL fine-tune  |
-| olmOCR-2 7B (1025) | 15 GB | Higher accuracy, Qwen2.5-VL 7B     |
-| Chandra-OCR        | 18 GB | SOTA, Qwen3-VL 9B; needs more VRAM |
-
-GPU acceleration available via feature flags:
-
-- `cuda` - NVIDIA GPUs
-- `metal` - Apple Silicon
-- `flash-attn` - Flash attention optimization
+Inference is remote-only: the chat provider is configured in Settings (API key + model). Documents never leave the machine — only the conversation (queries and retrieved excerpts) is sent to the configured provider.
 
 ## Agent Tools
 
-The agent has tools to search and read documents from indexed collections. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search—all document retrieval happens through the agent.
+The agent has tools to search and read documents from indexed collections. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search—all document retrieval happens through the agent. Tools include search (keyword, BM25 via milli), reading chunks, listing documents, and collection terms.
 
 ## Data Model
 
@@ -91,22 +53,14 @@ Namespace: 7f3a8b2c... ("Climate Research")
 ├── files/abc123/meta                → document metadata (JSON)
 ├── files/abc123/text                → extracted text content
 ├── files/abc123/source              → original file bytes (PDF, etc.)
-├── files/abc123/ocr_task            → per-page OCR plan (transient: deleted once text is written)
-├── files/abc123/embeddings/qwen3    → chunked text + vectors for model
 ├── files/def456/meta                → document metadata (JSON)
 ├── files/def456/text                → extracted text content
 ├── files/def456/source              → original file bytes
-├── files/def456/embeddings/qwen3    → chunked text + vectors for model
 ├── _hash_index/{hash}               → duplicate detection index
 └── _collection                      → collection settings
 ```
 
-`ocr_task` entries are written by the extract phase when one or more
-pages need OCR. They're consumed by the OCR worker, which then writes
-the merged `text` and deletes the task. OCR is local-only — each peer
-processes its own imports, so `ocr_task` is never replicated.
-
-All document data (content, source, embeddings) is grouped under `files/{doc_id}/`. This is the idiomatic iroh pattern: each entry's content IS the blob data. When iroh-docs syncs entries, it automatically syncs their content blobs, enabling seamless P2P document sharing.
+All document data is grouped under `files/{doc_id}/`. This is the idiomatic iroh pattern: each entry's content IS the blob data. When iroh-docs syncs entries, it automatically syncs their content blobs, enabling seamless P2P document sharing.
 
 ### Document Metadata (files/{id}/meta)
 
@@ -124,83 +78,42 @@ All document data (content, source, embeddings) is grouped under `files/{doc_id}
 
 ### What Syncs vs What's Local
 
-| Data            | Syncs                       | Stored in                |
-| --------------- | --------------------------- | ------------------------ |
-| PDF files       | Yes                         | iroh-blobs               |
-| Extracted text  | Yes                         | iroh-blobs               |
-| File metadata   | Yes                         | iroh-docs                |
-| Collection info | Yes                         | iroh-docs                |
-| Embeddings      | Yes (keyed by model)        | iroh-docs                |
-| Search index    | No (built from synced data) | milli                    |
-| LLM models      | No                          | ~/.cache/huggingface/hub |
+| Data            | Syncs | Stored in         |
+| --------------- | ----- | ----------------- |
+| PDF files       | Yes   | iroh-blobs        |
+| Extracted text  | Yes   | iroh-blobs        |
+| File metadata   | Yes   | iroh-docs         |
+| Collection info | Yes   | iroh-docs         |
+| Search index    | No (built from synced text) | milli |
 
-### Embedding Sync Strategy
-
-Embeddings are stored under `files/{doc_id}/embeddings/{model_id}`, grouping all document data together. Each embedding entry contains both the chunked text and vectors:
-
-```json
-{
-	"model_id": "qwen3",
-	"dimensions": 1024,
-	"chunks": [
-		{
-			"index": 0,
-			"content": "text of chunk...",
-			"vector": [0.1, 0.2, ...],
-			"start_page": 1,
-			"end_page": 1
-		}
-	],
-	"created_at": "2024-01-15T10:30:00Z"
-}
-```
-
-This design:
-
-- **Avoids redundant computation** — generating embeddings is expensive, so peers share them
-- **Preserves model flexibility** — different peers can use different embedding models
-- **Enables offline use** — embeddings sync with documents, ready for immediate search
-- **Groups all document data** — everything about a document lives under one prefix
-
-When a peer receives a document, it checks for existing embeddings matching its configured model. If found, they're used directly. If not (different model or new document), embeddings are generated locally and stored for other peers to use.
+Search is local keyword indexing over synced text: each peer builds its own milli index from the documents' text. Nothing beyond the raw document data is derived or replicated.
 
 ## Document Ingestion
 
 ### Local Import
 
 1. User adds PDF to collection
-2. Per-page triage via lopdf (digital text) + mupdf (image XObjects):
-   - Pages with enough digital text → use lopdf output directly
-   - Pages with images but little text → mark `NeedsOcr`
-   - Blank pages → skip
-3. Store three entries in iroh-docs:
-   - `files/{id}/meta` — metadata JSON
-   - `files/{id}/source` — original PDF bytes
-   - **Either** `files/{id}/text` (all-digital path) **or**
-     `files/{id}/ocr_task` (any-page-needs-OCR path)
-4. If an OCR task was written, the OCR worker rasterizes scanned pages
-   via mupdf, runs them through the configured vision-language model,
-   merges with digital text, writes `files/{id}/text`, deletes the task.
-5. Chunk text, generate embeddings at `files/{id}/embeddings/{model_id}`.
-6. Index chunks in milli for search.
+2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
+3. **Extract**: per-page text extracted with lopdf (digital text only; page boundaries recorded), written to `files/{id}/text`, alongside `files/{id}/meta`
+4. **Index**: the watcher triggers the index worker, which chunks text with a character-based splitter (~1500 chars, ~200 overlap, page-mapped) and indexes chunks in milli for full-text search
 
-OCR is **opt-in** via Settings. While unconfigured, scanned imports park
-as `ocr_task` entries; once a model is configured (or after a crash
-mid-OCR), the startup orphan scan resumes them.
+**No OCR**: text extraction uses lopdf only, so scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable. This is a known limitation.
 
 ### On Sync
 
 When document entries arrive from a peer, iroh-docs automatically syncs the entry content blobs. The SyncWatcher listens for `files/*/meta` entries and triggers processing:
 
 1. Text is already available at `files/{id}/text` (synced by iroh)
-2. Check for existing embeddings at `files/{id}/embeddings/{model_id}`
-3. If embeddings exist for configured model, use them; otherwise generate locally
-4. Index chunks in milli for search
-5. Source file at `files/{id}/source` is available immediately
+2. Chunks are indexed in milli for search
+3. Source file at `files/{id}/source` is available immediately
 
 ## Sync Model
 
 Collections sync fully between peers—all documents are copied so you have them even when colleagues are offline.
+
+## Settings
+
+`~/.local/share/insight/settings.json` holds chat provider configuration: `provider` (openai/anthropic config), `openai_api_key`, `anthropic_api_key`. Legacy local-model settings are dropped gracefully on upgrade.
 
 ## Development
 
@@ -208,16 +121,6 @@ Collections sync fully between peers—all documents are copied so you have them
 pnpm install
 pnpm tauri dev    # Development mode
 pnpm tauri build  # Release build
-```
-
-### GPU Builds
-
-```bash
-# NVIDIA
-cargo build --release --features "cuda flash-attn cudnn"
-
-# Apple Silicon
-cargo build --release --features metal
 ```
 
 ## Understanding Dependencies
@@ -239,16 +142,6 @@ cd src-tauri && cargo test
 ```
 
 Focus on core modules, Tauri commands, and critical paths.
-
-**First build note**: mupdf-rs vendors and compiles the MuPDF C source
-on its first build (~5 min). Subsequent builds are cached.
-
-The OCR provider has a gated smoke test that downloads ~6 GB and runs a
-real model. Skipped by default; run manually with:
-
-```bash
-cargo test --release -p insight-core ocr_smoke -- --ignored --nocapture --test-threads=1
-```
 
 ### Frontend (Svelte)
 
@@ -275,12 +168,6 @@ mockIPC((cmd, args) => {
 
 Focus on:
 
-- Critical user flows (document ingestion, chat)
-- Complex logic that's hard to verify manually
-- Bug fixes (prevent regressions)
-
-### Guidelines
-
 - Test behavior, not implementation details
 - Use `#[tokio::test]` for async Rust tests
 - Temporary directories for test data (avoid polluting real data)
@@ -291,10 +178,8 @@ Focus on:
 ```
 ~/.local/share/insight/
 ├── iroh/               # iroh data (blobs, docs)
-└── search/             # milli index
-
-~/.cache/huggingface/hub/
-└── models--*/          # LLM files (downloaded via hf-hub)
+├── search/             # milli index
+└── conversations/      # chat history
 ```
 
 ## Conventions

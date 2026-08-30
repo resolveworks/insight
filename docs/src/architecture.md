@@ -4,33 +4,34 @@ Insight is built as a Tauri 2.0 desktop application with a Rust backend and Svel
 
 ## Core Stack
 
-| Component       | Library     | Purpose                                         |
-| --------------- | ----------- | ----------------------------------------------- |
-| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)        |
-| UI              | Svelte 5    | Frontend                                        |
-| Styling         | Tailwind 4  | Utility-first CSS                               |
-| LLM inference   | mistralrs   | Local model loading and inference (GGUF format) |
-| Model download  | hf-hub      | Fetch models from HuggingFace                   |
-| P2P / Sync      | iroh        | Connections, NAT traversal, sync                |
-| Content storage | iroh-blobs  | Content-addressed file storage                  |
-| Metadata sync   | iroh-docs   | CRDT key-value store for metadata               |
-| Real-time       | iroh-gossip | Pub/sub for live updates                        |
-| Search          | milli       | Full-text + vector search (used by agent)       |
-| PDF processing  | lopdf       | Text extraction                                 |
+| Component       | Library     | Purpose                                  |
+| --------------- | ----------- | ---------------------------------------- |
+| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend) |
+| UI              | Svelte 5    | Frontend                                 |
+| Styling         | Tailwind 4  | Utility-first CSS                        |
+| Chat inference  | OpenAI / Anthropic APIs | Remote LLM providers, configured in Settings |
+| P2P / Sync      | iroh        | Connections, NAT traversal, sync         |
+| Content storage | iroh-blobs  | Content-addressed file storage           |
+| Metadata sync   | iroh-docs   | CRDT key-value store for metadata        |
+| Real-time       | iroh-gossip | Pub/sub for live updates                 |
+| Search          | milli       | Full-text keyword search (BM25)          |
+| PDF text        | lopdf       | Digital text extraction                  |
 
 ## Agent Architecture
 
 ```
 User Query
     ↓
-Local LLM (via mistralrs)
+Remote LLM (OpenAI / Anthropic)
     ↓
 Tool Calling Loop
     ↓
 Synthesized Answer (with citations)
 ```
 
-The agent has tools for searching and reading documents. It iteratively gathers evidence to answer questions, citing sources along the way. There is no direct user-facing search—all document retrieval happens through the agent.
+Inference is remote-only: the chat provider (OpenAI or Anthropic) is configured in Settings with an API key and model. Only the conversation—queries and retrieved excerpts—goes to the provider. Documents are stored, searched, and synced entirely on your machine.
+
+The agent has tools for searching (keyword, BM25 via milli) and reading documents. It iteratively gathers evidence to answer questions, citing sources along the way. There is no direct user-facing search—all document retrieval happens through the agent.
 
 ## Data Model
 
@@ -41,22 +42,27 @@ Each collection is an iroh-docs namespace. Sharing a collection means sharing na
 ```
 Namespace: 7f3a8b2c... ("Climate Research")
 │
-├── files/abc123     → blob with metadata JSON
-├── files/def456     → blob with metadata JSON
-└── _collection      → blob with collection settings
+├── files/abc123/meta     → document metadata (JSON)
+├── files/abc123/text     → extracted text
+├── files/abc123/source   → original PDF bytes
+├── files/def456/meta     → document metadata (JSON)
+├── files/def456/text     → extracted text
+├── files/def456/source   → original PDF bytes
+├── _hash_index/{hash}    → duplicate detection index
+└── _collection           → collection settings
 ```
 
 ### Document Metadata
 
-Document metadata is stored as a blob and referenced by an entry in the namespace:
-
 ```json
 {
+	"id": "abc123",
 	"name": "paper.pdf",
-	"pdf_hash": "blake3-hash-of-pdf",
-	"text_hash": "blake3-hash-of-extracted-text",
+	"file_type": "application/pdf",
+	"page_count": 42,
 	"tags": ["research", "climate"],
-	"created_at": "2024-01-15T10:30:00Z"
+	"created_at": "2024-01-15T10:30:00Z",
+	"page_boundaries": [0, 1500, 3200]
 }
 ```
 
@@ -68,56 +74,44 @@ All file content (PDFs, extracted text) is stored in iroh-blobs using content-ad
 - Duplicate files are automatically deduplicated
 - Content can be verified for integrity
 
-### Embedding Sync
-
-Embeddings are stored in iroh-docs under `embeddings/{doc_id}/{model_id}`. This design:
-
-- **Avoids redundant computation** — generating embeddings is expensive, so peers share them
-- **Preserves model flexibility** — different peers can use different embedding models
-- **Enables offline use** — embeddings sync with documents, ready for immediate use
-
-When a peer receives a document, it checks for existing embeddings matching its configured model. If found, they're used directly. If not (different model or new document), embeddings are generated locally and stored for other peers to use.
-
 ## Data Flow
 
 ### Local Import
 
 1. User adds PDF to collection
-2. Extract text via lopdf
-3. Store PDF blob → get `pdf_hash`
-4. Store text blob → get `text_hash`
-5. Create metadata entry in iroh-docs
-6. Index text + generate embeddings in milli
+2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
+3. **Extract**: per-page text extracted with lopdf (digital text only; page boundaries recorded), written to `files/{id}/text` alongside `files/{id}/meta`
+4. **Index**: the watcher triggers the index worker, which chunks text (~1500 chars, ~200 overlap, page-mapped) and indexes chunks in milli for full-text search
+
+**No OCR**: extraction uses lopdf only. Scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable.
 
 ### On Sync
 
-When a new metadata entry arrives from a peer:
+When document entries arrive from a peer, iroh-docs automatically syncs the entry content blobs. The SyncWatcher listens for `files/*/meta` entries and triggers processing:
 
-1. Fetch text blob using `text_hash`
-2. Index text + generate embeddings in milli
-3. PDF blob fetched on-demand (when user opens document)
+1. Text is already available at `files/{id}/text` (synced by iroh)
+2. Chunks are indexed in milli for search
+3. Source file at `files/{id}/source` is available immediately
 
 ## What Syncs vs What's Local
 
-| Data            | Syncs                | Stored in                |
-| --------------- | -------------------- | ------------------------ |
-| PDF files       | Yes                  | iroh-blobs               |
-| Extracted text  | Yes                  | iroh-blobs               |
-| File metadata   | Yes                  | iroh-docs                |
-| Collection info | Yes                  | iroh-docs                |
-| Embeddings      | Yes (keyed by model) | iroh-docs                |
-| Search index    | No (derived)         | milli (for agent)        |
-| LLM models      | No                   | ~/.cache/huggingface/hub |
+| Data            | Syncs                  | Stored in  |
+| --------------- | ---------------------- | ---------- |
+| PDF files       | Yes                    | iroh-blobs |
+| Extracted text  | Yes                    | iroh-blobs |
+| File metadata   | Yes                    | iroh-docs  |
+| Collection info | Yes                    | iroh-docs  |
+| Search index    | No (built from synced text) | milli |
+
+Search is local keyword indexing over synced text: each peer builds its own milli index. Nothing beyond the raw document data is derived or replicated.
 
 ## Local Storage
 
 ```
 ~/.local/share/insight/
 ├── iroh/               # iroh data (blobs, docs)
-└── search/             # milli index
-
-~/.cache/huggingface/hub/
-└── models--*/          # Downloaded models (LLM + embedding)
+├── search/             # milli index
+└── conversations/      # chat history
 ```
 
-On Windows, app data is under `%LOCALAPPDATA%\insight\` and models under `%USERPROFILE%\.cache\huggingface\hub\`.
+Chat provider configuration (provider, API keys) lives in `~/.local/share/insight/settings.json`. On Windows, app data is under `%LOCALAPPDATA%\insight\`.
