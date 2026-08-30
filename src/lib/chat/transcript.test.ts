@@ -425,4 +425,18 @@ describe('buildTranscript', () => {
 	it('handles empty inputs', () => {
 		expect(buildTranscript([], emptyLiveRun())).toEqual([]);
 	});
+
+	it('renders nothing for unknown stored block kinds', () => {
+		const message = {
+			role: 'assistant',
+			id: null,
+			content: [
+				{ type: 'text', text: 'before' },
+				{ type: 'image', image_url: 'https://example.invalid/x.png' },
+			],
+		} as unknown as RigMessage;
+		const items = buildTranscript([message], emptyLiveRun());
+		expect(items).toHaveLength(1);
+		expect(items[0]).toMatchObject({ kind: 'assistantText', text: 'before' });
+	});
 });

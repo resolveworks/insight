@@ -391,31 +391,38 @@ function storedItems(
 		...fields,
 	});
 	if (message.role === 'user') {
-		return message.content.map((block, i) =>
-			block.type === 'text'
-				? item(i, 'userText', { text: block.text })
-				: block.type === 'tool_result'
-					? item(i, 'toolResult', {
-							name: block.name,
-							text: flattenToolResult(block.content),
-						})
-					: item(i, 'userText', {}),
+		return message.content.flatMap(
+			(block, i) =>
+				block.type === 'text'
+					? [item(i, 'userText', { text: block.text })]
+					: block.type === 'tool_result'
+						? [
+								item(i, 'toolResult', {
+									name: block.name,
+									text: flattenToolResult(block.content),
+								}),
+							]
+						: [], // unknown block kinds (images, …) render nothing
 		);
 	}
-	return message.content.map((block, i) => {
+	return message.content.flatMap((block, i) => {
 		if (block.type === 'text')
-			return item(i, 'assistantText', { text: block.text });
+			return [item(i, 'assistantText', { text: block.text })];
 		if (block.type === 'reasoning')
-			return item(i, 'reasoning', {
-				text: flattenReasoning({ id: block.id, content: block.content }),
-			});
+			return [
+				item(i, 'reasoning', {
+					text: flattenReasoning({ id: block.id, content: block.content }),
+				}),
+			];
 		if (block.type === 'tool_call') {
-			return item(i, 'toolCall', {
-				name: block.function.name,
-				args: toolCallArgs(block.function.arguments),
-			});
+			return [
+				item(i, 'toolCall', {
+					name: block.function.name,
+					args: toolCallArgs(block.function.arguments),
+				}),
+			];
 		}
-		return item(i, 'assistantText', {});
+		return []; // unknown block kinds (images, …) render nothing
 	});
 }
 
