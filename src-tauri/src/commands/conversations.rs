@@ -250,6 +250,7 @@ pub async fn send_message(
     let state_clone = state.inner().clone();
     let conv_id = conversation_id.clone();
     let app_handle = app.clone();
+    let app_handle_error = app.clone();
 
     tokio::spawn(async move {
         let event_name = format!("agent-event-{}", conv_id);
@@ -267,6 +268,17 @@ pub async fn send_message(
                 error = %e,
                 error_chain = ?e,
                 "Agent run error"
+            );
+            // The run failed before or outside the stream: the frontend is
+            // waiting on the event channel, so surface the failure there
+            // instead of leaving the chat stuck in its generating state.
+            let event_name = format!("agent-event-{}", conv_id);
+            let _ = app_handle_error.emit(
+                &event_name,
+                &serde_json::json!({
+                    "type": "streamError",
+                    "message": format!("Agent run failed: {e}"),
+                }),
             );
         }
 
