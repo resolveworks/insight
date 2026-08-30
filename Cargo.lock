@@ -5599,9 +5599,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "insight-core",
- "iroh-blobs",
  "iroh-docs",
- "lopdf",
  "rig",
  "serde",
  "serde_json",
@@ -5632,7 +5630,6 @@ dependencies = [
  "iroh-blobs",
  "iroh-docs",
  "iroh-gossip",
- "iroh-io",
  "lopdf",
  "milli",
  "rand 0.9.5",

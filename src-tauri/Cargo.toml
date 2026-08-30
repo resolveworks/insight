@@ -29,7 +29,6 @@ tauri-plugin-dialog = "2"
 tokio = { version = "1", features = ["full"] }
 
 # iroh types (needed for NamespaceId parsing in commands)
-iroh-blobs = "0.103"
 iroh-docs = "0.101"
 
 # Serialization (for command layer types)
@@ -48,4 +47,3 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 tempfile = "3"
 tauri = { version = "2", features = ["test"] }
-lopdf = { version = "0.44", default-features = false, features = ["rayon"] }

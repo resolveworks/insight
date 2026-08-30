@@ -14,7 +14,6 @@ iroh = "1"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = "0.101"
-iroh-io = "0.6"
 
 # PDF processing (default features off: the `time` feature of 0.44.0 is broken
 # upstream, see lopdf issue #518 — we don't use PDF date conversion)
