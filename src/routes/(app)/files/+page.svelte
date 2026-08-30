@@ -5,21 +5,27 @@
 	import Button from '$lib/components/Button.svelte';
 	import Input from '$lib/components/Input.svelte';
 	import ErrorAlert from '$lib/components/ErrorAlert.svelte';
+	import Modal from '$lib/components/Modal.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import * as collections from '$lib/stores/collections.svelte';
 
 	// Create collection state
 	let newCollectionName = $state('');
 
-	// Sharing state
+	// Share modal state
 	let sharingCollectionId = $state<string | null>(null);
 	let shareTicket = $state<string | null>(null);
 	let shareError = $state<string | null>(null);
 	let ticketCopied = $state(false);
 
-	// Import from ticket state
+	// Import modal state
+	let showImportModal = $state(false);
 	let importTicket = $state('');
 	let importingCollection = $state(false);
 	let importError = $state<string | null>(null);
+
+	// Delete confirmation state
+	let deletingCollection = $state<{ id: string; name: string } | null>(null);
 
 	const breadcrumbs = [{ label: 'Files' }];
 
@@ -34,25 +40,25 @@
 		}
 	}
 
-	async function handleShareCollection(collectionId: string) {
+	async function openShareModal(collectionId: string) {
+		sharingCollectionId = collectionId;
+		shareTicket = null;
 		shareError = null;
 		ticketCopied = false;
 
-		if (sharingCollectionId === collectionId) {
-			sharingCollectionId = null;
-			shareTicket = null;
-			return;
-		}
-
-		sharingCollectionId = collectionId;
-		shareTicket = null;
-
 		const ticket = await collections.shareCollection(collectionId);
+		if (sharingCollectionId !== collectionId) return; // modal was closed meanwhile
 		if (ticket) {
 			shareTicket = ticket;
 		} else {
 			shareError = 'Failed to generate share ticket';
 		}
+	}
+
+	function closeShareModal() {
+		sharingCollectionId = null;
+		shareTicket = null;
+		shareError = null;
 	}
 
 	async function copyTicket() {
@@ -75,6 +81,7 @@
 		const collection = await collections.importCollection(importTicket);
 		if (collection) {
 			importTicket = '';
+			showImportModal = false;
 			goto(resolve(`/files/${collection.id}`));
 		} else {
 			importError = 'Failed to import collection';
@@ -82,12 +89,11 @@
 		importingCollection = false;
 	}
 
-	async function handleDeleteCollection(collectionId: string) {
-		await collections.deleteCollection(collectionId);
-		if (sharingCollectionId === collectionId) {
-			sharingCollectionId = null;
-			shareTicket = null;
-		}
+	async function handleDeleteCollection() {
+		if (!deletingCollection) return;
+		const id = deletingCollection.id;
+		deletingCollection = null;
+		await collections.deleteCollection(id);
 	}
 </script>
 
@@ -112,36 +118,9 @@
 				<Button onclick={handleCreateCollection}>Create</Button>
 			</div>
 
-			<details class="relative">
-				<summary
-					class="cursor-pointer text-sm text-neutral-500 hover:text-neutral-700"
-				>
-					Import shared collection
-				</summary>
-				<div
-					class="absolute left-0 top-full z-10 mt-2 w-80 rounded-lg border border-neutral-200 bg-surface-bright p-4 shadow-lg"
-				>
-					<textarea
-						placeholder="Paste ticket here..."
-						bind:value={importTicket}
-						rows="3"
-						class="w-full resize-none rounded-md border border-neutral-300 bg-surface px-3 py-2 text-sm placeholder-neutral-400 focus:border-primary-400 focus:outline-none"
-					></textarea>
-					<Button
-						class="mt-2"
-						fullWidth
-						onclick={handleImportCollection}
-						disabled={importingCollection || !importTicket.trim()}
-					>
-						{importingCollection ? 'Importing...' : 'Import'}
-					</Button>
-					{#if importError}
-						<div class="mt-2">
-							<ErrorAlert>{importError}</ErrorAlert>
-						</div>
-					{/if}
-				</div>
-			</details>
+			<Button variant="secondary" onclick={() => (showImportModal = true)}
+				>Import…</Button
+			>
 		</div>
 
 		<!-- Collections grid -->
@@ -170,54 +149,130 @@
 
 						<!-- Action buttons -->
 						<div
-							class="absolute right-3 top-3 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100"
+							class="absolute right-3 top-3 flex gap-2 opacity-60 transition-opacity hover:opacity-100 group-hover:opacity-100"
 						>
 							<button
-								onclick={() => handleShareCollection(collection.id)}
-								class="text-neutral-400 hover:text-tertiary-500"
+								onclick={() => openShareModal(collection.id)}
+								class="cursor-pointer text-neutral-400 hover:text-tertiary-500"
+								aria-label="Share collection"
 								title="Share collection"
 							>
-								&#8599;
+								<svg
+									class="h-4 w-4"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+								>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2"
+										d="M7 11L7 17 17 17 17 11"
+									/>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2"
+										d="M12 3v10"
+									/>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2"
+										d="M8 7l4-4 4 4"
+									/>
+								</svg>
 							</button>
 							<button
-								onclick={() => handleDeleteCollection(collection.id)}
-								class="text-neutral-400 hover:text-error"
+								onclick={() =>
+									(deletingCollection = {
+										id: collection.id,
+										name: collection.name,
+									})}
+								class="cursor-pointer text-neutral-400 hover:text-error"
+								aria-label="Delete collection"
 								title="Delete collection"
 							>
-								&times;
+								<svg
+									class="h-4 w-4"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+								>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2"
+										d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+									/>
+								</svg>
 							</button>
 						</div>
-
-						<!-- Share ticket display -->
-						{#if sharingCollectionId === collection.id}
-							<div
-								class="mt-3 rounded border border-neutral-200 bg-surface p-3"
-							>
-								{#if shareTicket}
-									<div class="flex items-start gap-2">
-										<code class="flex-1 break-all text-xs text-neutral-600">
-											{shareTicket.slice(0, 50)}...
-										</code>
-										<button
-											onclick={copyTicket}
-											class="shrink-0 text-xs text-tertiary-500 hover:text-tertiary-600"
-										>
-											{ticketCopied ? 'Copied!' : 'Copy'}
-										</button>
-									</div>
-									<p class="mt-2 text-xs text-neutral-400">
-										Share this ticket with others to sync this collection
-									</p>
-								{:else if shareError}
-									<p class="text-xs text-error">{shareError}</p>
-								{:else}
-									<p class="text-xs text-neutral-400">Generating ticket...</p>
-								{/if}
-							</div>
-						{/if}
 					</div>
 				{/each}
 			</div>
 		{/if}
 	</div>
 </div>
+
+<!-- Import shared collection modal -->
+{#if showImportModal}
+	<Modal
+		title="Import shared collection"
+		onClose={() => (showImportModal = false)}
+	>
+		<div class="space-y-3">
+			<textarea
+				placeholder="Paste ticket here..."
+				bind:value={importTicket}
+				rows="3"
+				class="w-full resize-none rounded-md border border-neutral-300 bg-surface px-3 py-2 text-sm placeholder-neutral-400 focus:border-primary-400 focus:outline-none"
+			></textarea>
+			<Button
+				fullWidth
+				onclick={handleImportCollection}
+				disabled={importingCollection || !importTicket.trim()}
+			>
+				{importingCollection ? 'Importing...' : 'Import'}
+			</Button>
+			{#if importError}
+				<ErrorAlert>{importError}</ErrorAlert>
+			{/if}
+		</div>
+	</Modal>
+{/if}
+
+<!-- Share collection modal -->
+{#if sharingCollectionId !== null}
+	<Modal title="Share collection" onClose={closeShareModal}>
+		{#if shareTicket}
+			<div class="space-y-3">
+				<div class="flex items-start gap-2">
+					<code class="flex-1 break-all text-xs text-neutral-600">
+						{shareTicket}
+					</code>
+					<Button size="sm" variant="secondary" onclick={copyTicket}>
+						{ticketCopied ? 'Copied!' : 'Copy'}
+					</Button>
+				</div>
+				<p class="text-xs text-neutral-400">
+					Share this ticket with others to sync this collection
+				</p>
+			</div>
+		{:else if shareError}
+			<ErrorAlert>{shareError}</ErrorAlert>
+		{:else}
+			<p class="text-sm text-neutral-400">Generating ticket...</p>
+		{/if}
+	</Modal>
+{/if}
+
+<!-- Delete collection confirmation -->
+{#if deletingCollection}
+	<ConfirmDialog
+		title="Delete collection"
+		message="Delete &quot;{deletingCollection.name}&quot;? This removes the collection and its documents from this machine."
+		onConfirm={handleDeleteCollection}
+		onCancel={() => (deletingCollection = null)}
+	/>
+{/if}

@@ -8,9 +8,11 @@
 	import Button from '$lib/components/Button.svelte';
 	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
 	import * as collections from '$lib/stores/collections.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import type { Document } from '$lib/stores/collections.svelte';
 
 	let documents = $state<Document[]>([]);
+	let deletingDocument = $state<Document | null>(null);
 
 	const collectionId = $derived($page.params.collectionId);
 	const collection = $derived(
@@ -69,8 +71,10 @@
 		}
 	}
 
-	function deleteDocument(documentId: string) {
-		if (!collectionId) return;
+	function confirmDeleteDocument() {
+		if (!deletingDocument || !collectionId) return;
+		const documentId = deletingDocument.id;
+		deletingDocument = null;
 		const previousDocuments = documents;
 		documents = documents.filter((d) => d.id !== documentId);
 		invoke('delete_document', { collectionId, documentId }).catch((e) => {
@@ -171,11 +175,24 @@
 							>
 						</a>
 						<button
-							onclick={() => deleteDocument(doc.id)}
-							class="hidden text-neutral-400 hover:text-error group-hover:block"
+							onclick={() => (deletingDocument = doc)}
+							class="cursor-pointer text-neutral-400 opacity-60 transition-opacity hover:opacity-100 hover:text-error"
+							aria-label="Delete document"
 							title="Delete document"
 						>
-							x
+							<svg
+								class="h-4 w-4"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+							>
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="2"
+									d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+								/>
+							</svg>
 						</button>
 					</li>
 				{/each}
@@ -183,3 +200,12 @@
 		{/if}
 	</div>
 </div>
+
+{#if deletingDocument}
+	<ConfirmDialog
+		title="Delete document"
+		message="Delete &quot;{deletingDocument.name}&quot; from this collection? This removes the document and its extracted text from this machine."
+		onConfirm={confirmDeleteDocument}
+		onCancel={() => (deletingDocument = null)}
+	/>
+{/if}
