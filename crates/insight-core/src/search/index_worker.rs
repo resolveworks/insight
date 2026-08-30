@@ -13,10 +13,7 @@ use milli::update::IndexerConfig;
 use milli::Index;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{
-    configure_embedder, delete_chunks_by_collection, delete_document_chunks, index_chunks_batch,
-    ChunkToIndex,
-};
+use super::{delete_chunks_by_collection, delete_document_chunks, index_chunks_batch, ChunkToIndex};
 
 /// Request to the index worker.
 pub enum IndexRequest {
@@ -34,12 +31,6 @@ pub enum IndexRequest {
     DeleteCollection {
         collection_id: String,
         response_tx: oneshot::Sender<anyhow::Result<usize>>,
-    },
-    /// Configure embedder for vector search.
-    ConfigureEmbedder {
-        embedder_name: String,
-        dimensions: usize,
-        response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
 }
 
@@ -94,28 +85,6 @@ impl IndexWorkerHandle {
         self.tx
             .send(IndexRequest::DeleteCollection {
                 collection_id,
-                response_tx,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("Index worker channel closed"))?;
-        response_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("Index worker dropped response"))?
-    }
-
-    /// Configure embedder for vector search.
-    ///
-    /// This must be called before indexing documents with vectors.
-    pub async fn configure_embedder(
-        &self,
-        embedder_name: String,
-        dimensions: usize,
-    ) -> anyhow::Result<()> {
-        let (response_tx, response_rx) = oneshot::channel();
-        self.tx
-            .send(IndexRequest::ConfigureEmbedder {
-                embedder_name,
-                dimensions,
                 response_tx,
             })
             .await
@@ -209,22 +178,6 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
 
             let _ = response_tx.send(result);
         }
-
-        IndexRequest::ConfigureEmbedder {
-            embedder_name,
-            dimensions,
-            response_tx,
-        } => {
-            tracing::debug!(embedder_name = %embedder_name, dimensions, "Processing configure embedder request");
-
-            let result = configure_embedder(index, indexer_config, &embedder_name, dimensions);
-
-            if let Err(ref e) = result {
-                tracing::error!(embedder_name = %embedder_name, error = %e, "Failed to configure embedder");
-            }
-
-            let _ = response_tx.send(result);
-        }
     }
 }
 
@@ -257,7 +210,6 @@ mod tests {
             page_count: 1,
             start_page: 1,
             end_page: 1,
-            vector: None,
         }];
 
         let result = handle.index_chunks(chunks).await;
@@ -280,7 +232,6 @@ mod tests {
             page_count: 1,
             start_page: 1,
             end_page: 1,
-            vector: None,
         }];
         handle.index_chunks(chunks).await.unwrap();
 
