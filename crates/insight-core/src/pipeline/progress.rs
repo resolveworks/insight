@@ -29,31 +29,13 @@ impl StageProgress {
     }
 }
 
-/// Per-document progress within a stage.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DocProgress {
-    pub doc_id: String,
-    pub current: usize,
-    pub total: usize,
-}
-
 /// Progress for a collection across all pipeline stages.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineProgress {
     pub collection_id: String,
     pub store: StageProgress,
     pub extract: StageProgress,
-    pub ocr: StageProgress,
-    pub embed: StageProgress,
     pub index: StageProgress,
-
-    /// Which document is currently being processed per stage (if any).
-    /// Only set for stages with 1 active job (e.g. single-document OCR).
-    pub store_doc: Option<DocProgress>,
-    pub extract_doc: Option<DocProgress>,
-    pub ocr_doc: Option<DocProgress>,
-    pub embed_doc: Option<DocProgress>,
-    pub index_doc: Option<DocProgress>,
 }
 
 impl PipelineProgress {
@@ -69,54 +51,13 @@ impl PipelineProgress {
         match stage {
             Stage::Store => &mut self.store,
             Stage::Extract => &mut self.extract,
-            Stage::Ocr => &mut self.ocr,
-            Stage::Embed => &mut self.embed,
             Stage::Index => &mut self.index,
-        }
-    }
-
-    /// Get mutable reference to per-document progress for a stage.
-    fn doc_mut(&mut self, stage: Stage) -> &mut Option<DocProgress> {
-        match stage {
-            Stage::Store => &mut self.store_doc,
-            Stage::Extract => &mut self.extract_doc,
-            Stage::Ocr => &mut self.ocr_doc,
-            Stage::Embed => &mut self.embed_doc,
-            Stage::Index => &mut self.index_doc,
         }
     }
 
     /// Check if any stage has active work.
     pub fn is_active(&self) -> bool {
-        self.store.is_active()
-            || self.extract.is_active()
-            || self.ocr.is_active()
-            || self.embed.is_active()
-            || self.index.is_active()
-    }
-
-    /// Summary line for the most interesting active doc. The frontend
-    /// uses this to show what's happening right now.
-    pub fn active_doc_summary(&self) -> Option<(String, String)> {
-        for (stage, doc) in &[
-            ("OCR", &self.ocr_doc),
-            ("Embed", &self.embed_doc),
-            ("Extract", &self.extract_doc),
-            ("Index", &self.index_doc),
-        ] {
-            if let Some(d) = doc {
-                let short_id = if d.doc_id.len() > 8 {
-                    &d.doc_id[..8]
-                } else {
-                    &d.doc_id
-                };
-                return Some((
-                    stage.to_string(),
-                    format!("{}… {} / {}", short_id, d.current, d.total),
-                ));
-            }
-        }
-        None
+        self.store.is_active() || self.extract.is_active() || self.index.is_active()
     }
 }
 
@@ -157,8 +98,7 @@ impl ProgressTracker {
             ProgressUpdate::Queued { collection_id, .. }
             | ProgressUpdate::Started { collection_id, .. }
             | ProgressUpdate::Completed { collection_id, .. }
-            | ProgressUpdate::Failed { collection_id, .. }
-            | ProgressUpdate::PageProgress { collection_id, .. } => collection_id.clone(),
+            | ProgressUpdate::Failed { collection_id, .. } => collection_id.clone(),
         };
 
         match update {
@@ -189,8 +129,6 @@ impl ProgressTracker {
                     let stage_progress = progress.stage_mut(stage);
                     stage_progress.active = stage_progress.active.saturating_sub(1);
                     stage_progress.completed += 1;
-                    // Clear per-doc progress when the stage completes.
-                    *progress.doc_mut(stage) = None;
                 }
             }
             ProgressUpdate::Failed {
@@ -202,22 +140,6 @@ impl ProgressTracker {
                     let stage_progress = progress.stage_mut(stage);
                     stage_progress.active = stage_progress.active.saturating_sub(1);
                     stage_progress.failed += 1;
-                    *progress.doc_mut(stage) = None;
-                }
-            }
-            ProgressUpdate::PageProgress {
-                collection_id,
-                doc_id,
-                stage,
-                current,
-                total,
-            } => {
-                if let Some(progress) = collections.get_mut(&collection_id) {
-                    *progress.doc_mut(stage) = Some(DocProgress {
-                        doc_id,
-                        current,
-                        total,
-                    });
                 }
             }
         }
