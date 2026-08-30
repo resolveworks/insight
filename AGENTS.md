@@ -52,7 +52,9 @@ Inference is remote-only: the chat provider is configured in Settings. Documents
 
 ### Event Flow
 
-`send_message` streams rig `MultiTurnStreamItem`s; the Tauri command layer (`src-tauri/src/commands/conversations.rs`) serializes them and emits them on `agent-event-{id}`. The backend appends a terminal `{"type":"streamError","message"}` item when the run fails outside the stream. The frontend mirrors the rig types in `src/lib/types/rig.ts` and renders the live stream.
+`send_message` streams rig `MultiTurnStreamItem`s; the Tauri command layer (`src-tauri/src/commands/conversations.rs`) serializes them and emits them on `agent-event-{id}`. The backend appends a terminal `{"type":"streamError","message"}` item when the run fails outside the stream.
+
+The frontend renders ONE view model for both stored history and the live run. A pure fold (`src/lib/chat/transcript.ts`, `applyItem`) accumulates the stream into a `LiveRun` shaped like the stored transcript (chronological segments; a tool result closes the current assistant turn), and `buildTranscript` normalizes stored + live into a flat `TranscriptItem[]` (the conversations store exposes it as `getTranscript()`). Live-only state is data on the items (`provisional`, `executing`, `streaming` flags), so `Chat.svelte` has a single render path: a run committing swaps the provisional tail for the `finalResponse` payload's `messages` synchronously (tracked by the store's `runBase`) and the flags flip — no re-render through a different code path. The silent reload afterwards is reconciliation only.
 
 ## Agent Tools
 

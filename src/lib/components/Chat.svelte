@@ -253,9 +253,9 @@
 						<div
 							class="max-w-[80%] min-w-0 break-words rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
 						>
-							<Markdown content={item.text} /><span
-								class="animate-pulse text-primary-500">▊</span
-							>
+							<Markdown content={item.text} />{#if item.streaming}<span
+									class="animate-pulse text-primary-500">▊</span
+								>{/if}
 						</div>
 					</div>
 				{:else if item.kind === 'reasoning'}
