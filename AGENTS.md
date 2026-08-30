@@ -44,9 +44,9 @@ Synthesized Answer (with citations)
 Key pieces, all in `crates/insight-core/`:
 
 - **`providers/`** — a data-driven registry over all rig chat-completion provider families: `list_families()` (UI descriptors; local-server families like ollama/llamafile need no API key), `build_model()` (validates settings and returns a rig `ModelHandle`), and `list_models()` (rig's `ModelListingClient` capability for families that support remote model listing).
-- **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools + `FileConversationMemory` + `default_max_turns(100)`. A scope hook (`AgentHook`) injects the conversation's active collections as an `extra_context` document (`RequestPatch`) on every turn — non-sticky, so mid-conversation scope changes take effect on the next model call without touching stored history. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. `generate_title` and `predict_next_message` are bare-model completions (no tools, no agent loop) over the same provider settings.
+- **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools (stateless `#[rig_tool]` units) + `FileConversationMemory` + `default_max_turns(100)`; the per-run `ToolState` (index, storage, active collections) is attached to the stream via `ToolContext`. A scope hook (`AgentHook`) injects the conversation's active collections as an `extra_context` document (`RequestPatch`) on every turn — non-sticky, so mid-conversation scope changes take effect on the next model call without touching stored history. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. `generate_title` and `predict_next_message` are bare-model completions (no tools, no agent loop) over the same provider settings.
 - **`memory.rs`** — `FileConversationMemory` implements rig's `ConversationMemory` trait on a directory tree; a `ConversationMeta` sidecar holds app-facing data (title, linked collections, timestamps).
-- **`tools/`** — typed rig `Tool` implementations over milli search + iroh storage.
+- **`tools/`** — `#[rig_tool]` document functions over milli search + iroh storage; per-run state (`ToolState`: index, storage, collection scope) reaches them through the agent's `ToolContext`.
 
 Inference is remote-only: the chat provider is configured in Settings. Documents never leave the machine — only the conversation (queries and retrieved excerpts) is sent to the configured provider.
 
@@ -56,14 +56,14 @@ Inference is remote-only: the chat provider is configured in Settings. Documents
 
 ## Agent Tools
 
-The agent has 4 typed rig tools to search and read documents from indexed collections (`crates/insight-core/src/tools/`). It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search — all document retrieval happens through the agent:
+The agent has 4 rig tools (`#[rig_tool]` functions in `crates/insight-core/src/tools/`) to search and read documents from indexed collections. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search — all document retrieval happens through the agent:
 
 - **search** — keyword search (BM25 via milli), scoped to active collections
 - **read_chunk** — read an indexed text chunk by document + chunk id
 - **list_documents** — list documents in the active collections
 - **get_collection_terms** — frequent/representative terms of a collection
 
-Tool outputs are typed serializable structs — rig converts them into structured model output at dispatch time.
+Tool outputs are typed serializable structs and errors are `ToolExecutionError` with precise kinds (`not_found`, …) — rig converts them into structured model output at dispatch time.
 
 ## Data Model
 

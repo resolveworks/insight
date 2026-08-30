@@ -21,12 +21,13 @@ use rig::agent::{
 use rig::completion::{CompletionModel, Document, Message};
 use rig::memory::ConversationMemory;
 use rig::streaming::StreamingPrompt;
+use rig::tool::ToolContext;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Settings;
 use crate::memory::ConversationMeta;
 use crate::providers;
-use crate::tools::{CollectionTermsTool, ListDocumentsTool, ReadChunkTool, SearchTool, ToolDeps};
+use crate::tools::{self, ToolState};
 use crate::{AppState, CollectionInfo};
 
 /// System prompt for the research agent. Stable across the life of the app —
@@ -196,15 +197,17 @@ fn build_configured_model(state: &AppState) -> Result<ModelHandle> {
 }
 
 /// Build the fully-configured agent for one conversation run.
+///
+/// The tools are stateless `#[rig_tool]` units; the per-run state (index,
+/// storage, collection scope) reaches them through the [`ToolContext`]
+/// attached to the stream in [`run_agent`].
 fn build_agent(state: &AppState, meta: &ConversationMeta, model: ModelHandle) -> rig::Agent {
-    let deps = std::sync::Arc::new(ToolDeps::from_state(state));
-    let scope = Some(meta.collections.clone());
     AgentBuilder::from_model_handle(model)
         .preamble(BASE_SYSTEM_PROMPT)
-        .tool(SearchTool::new(deps.clone(), scope.clone()))
-        .tool(ReadChunkTool::new(deps.clone()))
-        .tool(ListDocumentsTool::new(deps.clone(), scope.clone()))
-        .tool(CollectionTermsTool::new(deps, scope))
+        .tool(tools::Search)
+        .tool(tools::ReadChunk)
+        .tool(tools::ListDocuments)
+        .tool(tools::GetCollectionTerms)
         .memory(state.memory.clone())
         .default_max_turns(MAX_TURNS)
         .add_hook(ScopeHook {
@@ -229,9 +232,12 @@ async fn run_agent(
     if cancel.is_cancelled() {
         return Ok(());
     }
+    let mut tool_context = ToolContext::new();
+    tool_context.insert(ToolState::new(state, meta.collections.clone()));
     let mut stream = agent
         .stream_prompt(message)
         .conversation(conversation_id.to_string())
+        .tool_context(tool_context)
         .await;
 
     loop {

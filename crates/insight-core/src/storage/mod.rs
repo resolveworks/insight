@@ -459,9 +459,16 @@ impl Storage {
     pub async fn list_documents(&self, namespace_id: NamespaceId) -> Result<Vec<DocumentMetadata>> {
         use futures::StreamExt;
 
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(Vec::new()),
+        // An unknown namespace is "no documents", not an error. This iroh
+        // version signals it inconsistently — sometimes `Ok(None)`, sometimes
+        // an error whose typed `OpenError::NotFound` does not survive the
+        // in-process RPC boundary and arrives as an opaque error carrying
+        // only the display string — so match on the message.
+        let doc = match self.docs.api().open(namespace_id).await {
+            Ok(Some(doc)) => doc,
+            Ok(None) => return Ok(Vec::new()),
+            Err(e) if e.to_string() == "Replica not found" => return Ok(Vec::new()),
+            Err(e) => return Err(e),
         };
 
         // Query for all entries - we'll filter for /meta suffix
