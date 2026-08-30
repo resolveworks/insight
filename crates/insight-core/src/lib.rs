@@ -13,6 +13,7 @@ pub mod agent;
 pub mod config;
 pub mod conversations;
 pub mod manager;
+pub mod memory;
 pub mod pdf;
 pub mod pipeline;
 pub mod provider;
