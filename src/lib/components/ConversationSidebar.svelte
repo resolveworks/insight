@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as chat from '$lib/stores/conversations.svelte';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	type Props = {
 		onSelect?: (id: string) => void;
@@ -13,6 +14,12 @@
 	const activeId = $derived(chat.getActiveId());
 	const listLoaded = $derived(chat.getIsListLoaded());
 
+	// Conversation pending delete confirmation, if any.
+	let pendingDelete = $state<{
+		id: string;
+		title: string;
+	} | null>(null);
+
 	// The list is independent of provider configuration; fetch it as soon as
 	// the sidebar mounts so users see their history even before picking a
 	// model.
@@ -20,9 +27,9 @@
 		chat.loadList();
 	});
 
-	function handleDelete(event: MouseEvent, id: string) {
-		event.stopPropagation();
-		chat.deleteConversation(id);
+	function confirmDelete() {
+		if (pendingDelete) chat.deleteConversation(pendingDelete.id);
+		pendingDelete = null;
 	}
 </script>
 
@@ -65,12 +72,30 @@
 							{conv.title}
 						</button>
 						<button
-							onclick={(e) => handleDelete(e, conv.id)}
-							class="hidden px-2 py-1.5 text-sm text-primary-200 hover:text-error group-hover:block"
+							onclick={(e) => {
+								e.stopPropagation();
+								pendingDelete = {
+									id: conv.id,
+									title: conv.title,
+								};
+							}}
+							class="px-2 py-1.5 text-primary-200 opacity-60 transition-opacity hover:opacity-100 hover:text-error"
 							title="Delete chat"
 							aria-label="Delete chat"
 						>
-							x
+							<svg
+								class="h-4 w-4"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+							>
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="2"
+									d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+								/>
+							</svg>
 						</button>
 					</li>
 				{/each}
@@ -78,3 +103,12 @@
 		{/if}
 	</div>
 </div>
+
+{#if pendingDelete}
+	<ConfirmDialog
+		title="Delete chat"
+		message={`Delete "${pendingDelete.title}"? This conversation's history will be removed.`}
+		onConfirm={confirmDelete}
+		onCancel={() => (pendingDelete = null)}
+	/>
+{/if}

@@ -110,6 +110,9 @@ let error = $state<string | null>(null);
 
 let unlistenAgent: UnlistenFn | undefined;
 let initializing = false;
+// Synchronous send guard: blocks re-entry while a draft conversation is
+// being created (before `isGenerating`/`activeId` would catch it).
+let sendInFlight = false;
 
 // =============================================================================
 // Internal helpers
@@ -135,7 +138,7 @@ function adoptConversation(conv: ConversationView) {
 	live = emptyLiveState();
 }
 
-/** Drop the active conversation: detach listener and reset per-chat state. */
+/** Drop the active conversation and land in the draft state (no IPC). */
 function clearActive() {
 	unlistenAgent?.();
 	unlistenAgent = undefined;
@@ -377,8 +380,6 @@ async function createNew(
 		isLoading = true;
 		error = null;
 
-		// Fresh conversations start unscoped — the user picks a collection via
-		// the filter bar before they can chat.
 		const conv = await invoke<ConversationView>('start_chat', { collections });
 
 		adoptConversation(conv);
@@ -410,7 +411,8 @@ export async function loadList(): Promise<void> {
 
 /**
  * Resolve the initial active conversation. Idempotent — safe to call multiple
- * times. Order: stored ID → most recent → create new.
+ * times. Order: stored ID → most recent → draft state (nothing is persisted
+ * until the first message is sent).
  */
 export async function ensureInitialized(): Promise<void> {
 	if (initialized || initializing) return;
@@ -433,7 +435,9 @@ export async function ensureInitialized(): Promise<void> {
 				return;
 			}
 		}
-		await createNew();
+		// Draft state: activeId stays null; the conversation is created on the
+		// first sendMessage.
+		clearActive();
 		initialized = true;
 	} finally {
 		initializing = false;
@@ -446,15 +450,18 @@ export async function selectConversation(id: string): Promise<void> {
 	await loadById(id);
 }
 
-/** Create a brand-new conversation (called by the "New Chat" button). */
-export async function newConversation(): Promise<void> {
-	await createNew();
+/**
+ * Start a new draft conversation (called by the "New Chat" button). Local
+ * only: no IPC — the conversation is persisted on the first sendMessage.
+ */
+export function newConversation(): void {
+	clearActive();
 }
 
 /**
  * Delete a conversation. Optimistically removes it from the sidebar; on
  * failure the list is restored. If the deleted chat was active, the next
- * most-recent chat is opened, or a fresh one is created if none remain.
+ * most-recent chat is opened, or the draft state is entered if none remain.
  */
 export async function deleteConversation(id: string): Promise<boolean> {
 	const previous = conversations;
@@ -474,9 +481,8 @@ export async function deleteConversation(id: string): Promise<boolean> {
 		clearActive();
 		if (conversations.length > 0) {
 			await loadById(conversations[0].id, { silent: true });
-		} else {
-			await createNew();
 		}
+		// Otherwise: stay in draft state (already set by clearActive).
 	}
 	return true;
 }
@@ -488,14 +494,19 @@ export async function deleteConversation(id: string): Promise<boolean> {
 export async function setActiveCollections(
 	cols: CollectionInfo[],
 ): Promise<void> {
-	if (!activeId) return;
-
 	// Skip the round-trip when the id-set is already what we have locally.
 	const currentIds = activeCollections.map((c) => c.id);
 	if (
 		cols.length === currentIds.length &&
 		cols.every((c) => currentIds.includes(c.id))
 	) {
+		return;
+	}
+
+	// Draft state: track the local scope only; it gets persisted by
+	// start_chat on the first send.
+	if (!activeId) {
+		activeCollections = cols;
 		return;
 	}
 
@@ -525,25 +536,37 @@ export async function removeActiveCollection(id: string): Promise<void> {
 /** Send a user message to the active conversation. */
 export async function sendMessage(text: string): Promise<void> {
 	const trimmed = text.trim();
-	if (!activeId || !trimmed || isGenerating) return;
-
-	error = null;
-	activeMessages = [
-		...activeMessages,
-		{ role: 'user', content: [{ type: 'text', text: trimmed }] },
-	];
-	isGenerating = true;
-	live = emptyLiveState();
-
+	if (!trimmed || isGenerating || sendInFlight) return;
+	sendInFlight = true;
 	try {
-		await invoke('send_message', {
-			conversationId: activeId,
-			message: trimmed,
-		});
-	} catch (e) {
-		error = `Failed to send message: ${e}`;
-		console.error('Failed to send message:', e);
-		isGenerating = false;
+		// Draft state: persist the conversation now, scoped to the locally
+		// selected collections (the UI gates sending on having a scope).
+		if (!activeId) {
+			if (activeCollections.length === 0) return;
+			if (!(await createNew(activeCollections))) return;
+		}
+
+		const convId = activeId!;
+		error = null;
+		activeMessages = [
+			...activeMessages,
+			{ role: 'user', content: [{ type: 'text', text: trimmed }] },
+		];
+		isGenerating = true;
+		live = emptyLiveState();
+
+		try {
+			await invoke('send_message', {
+				conversationId: convId,
+				message: trimmed,
+			});
+		} catch (e) {
+			error = `Failed to send message: ${e}`;
+			console.error('Failed to send message:', e);
+			isGenerating = false;
+		}
+	} finally {
+		sendInFlight = false;
 	}
 }
 
