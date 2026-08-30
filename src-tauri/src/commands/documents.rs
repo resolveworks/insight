@@ -26,10 +26,9 @@ pub struct DocumentAddedEvent {
 /// Start importing files into a collection.
 ///
 /// This queues files for the event-driven import pipeline:
-/// 1. Store PDF source → triggers extract
-/// 2. Extract text → triggers embed
-/// 3. Generate embeddings → triggers index
-/// 4. Index → document searchable
+/// 1. Store source → triggers extract
+/// 2. Extract text → triggers index
+/// 3. Chunk + index → document searchable
 ///
 /// Progress is tracked per-stage via the pipeline.
 /// Returns immediately with initial progress.
@@ -48,13 +47,6 @@ pub async fn start_import<R: tauri::Runtime>(
         paths.len(),
         collection_id
     );
-
-    // Warn if embedder not ready
-    if !state.models.embedding_ready().await {
-        tracing::warn!(
-            "Embedder not yet configured - documents will be stored but embedding will fail"
-        );
-    }
 
     // Convert paths to PathBuf
     let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
@@ -191,30 +183,30 @@ pub async fn get_document_text(
     })
 }
 
-/// Get the text chunks for a document (read from stored embeddings)
+/// Get the text chunks for a document (chunked on demand; no embeddings).
+///
+/// Returns an empty list when the document has no extracted text yet.
 #[tauri::command]
 pub async fn get_document_chunks(
     collection_id: CollectionId,
     document_id: String,
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<String>> {
-    // Get current embedding model ID
-    let model_id = state
-        .models
-        .embedding_model_id()
-        .await
-        .ok_or(CommandError::embedder_not_configured())?;
-
-    // Fetch stored embeddings
     let storage = state.storage.read().await;
-    let embeddings = storage
-        .get_embeddings(collection_id.namespace(), &document_id, &model_id)
+    let text_bytes = storage
+        .get_document_text(collection_id.namespace(), &document_id)
         .await
         .storage_err()?;
+    drop(storage);
 
-    match embeddings {
-        Some(data) => Ok(data.chunks.into_iter().map(|c| c.content).collect()),
-        None => Ok(vec![]), // No embeddings stored yet
+    match text_bytes {
+        Some(bytes) => {
+            let text = String::from_utf8(bytes).map_err(|e| CommandError::InvalidUtf8 {
+                message: format!("Invalid UTF-8 in text content: {}", e),
+            })?;
+            Ok(insight_core::pipeline::chunk_text(&text))
+        }
+        None => Ok(vec![]), // No text stored yet
     }
 }
 
