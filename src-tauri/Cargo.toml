@@ -29,9 +29,6 @@ tokio = { version = "1", features = ["full"] }
 iroh-blobs = "0.97"
 iroh-docs = "0.95"
 
-# milli types (needed for score_details in search command)
-milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1" }
-
 # Serialization (for command layer types)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -44,16 +41,6 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
-
-[features]
-default = []
-# GPU/accelerated builds (optional; CPU-only by default)
-cuda = ["insight-core/cuda"]
-flash-attn = ["insight-core/flash-attn"]
-cudnn = ["insight-core/cudnn"]
-metal = ["insight-core/metal"]
-accelerate = ["insight-core/accelerate"]
-mkl = ["insight-core/mkl"]
 
 [dev-dependencies]
 tempfile = "3"
