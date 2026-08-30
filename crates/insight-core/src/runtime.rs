@@ -8,8 +8,8 @@
 //! an [`AgentHook`] — non-sticky, so a mid-conversation scope change takes
 //! effect on the very next model call without touching stored history.
 //!
-//! [`generate_title`] and [`predict_next_message`] are bare-model
-//! completions (no tools, no agent loop) over the same provider settings.
+//! [`predict_next_message`] is a bare-model completion (no tools, no agent loop)
+//! over the same provider settings.
 
 use std::time::Duration;
 
@@ -286,17 +286,6 @@ async fn load_history(state: &AppState, conversation_id: &str) -> Result<Vec<Mes
         .load(&id)
         .await
         .map_err(|e| anyhow!("failed to load conversation history: {e}"))
-}
-
-/// Generate and persist a title for a conversation.
-///
-/// Uses a bare-model completion (no tools, no agent) summarizing the
-/// conversation into ≤50 characters. Falls back to truncating the first user
-/// message when the completion fails or returns nothing.
-pub async fn generate_title(state: &AppState, conversation_id: &str) -> Result<()> {
-    let history = load_history(state, conversation_id).await?;
-    let model = build_configured_model(state)?;
-    generate_title_with(state, conversation_id, &history, &model).await
 }
 
 /// Title generation over an explicit model, so the agent run can reuse its
