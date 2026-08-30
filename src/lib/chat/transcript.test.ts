@@ -341,12 +341,12 @@ describe('buildTranscript', () => {
 		const items = buildTranscript(stored, emptyLiveRun());
 		expect(items).toHaveLength(6);
 		expect(items.map((i) => i.key)).toEqual([
-			's0-0',
-			's1-0',
-			's1-1',
-			's1-2',
-			's1-3',
-			's2-0',
+			'0-0',
+			'1-0',
+			'1-1',
+			'1-2',
+			'1-3',
+			'2-0',
 		]);
 		expect(items.map((i) => i.kind)).toEqual([
 			'userText',
@@ -392,7 +392,7 @@ describe('buildTranscript', () => {
 			completeToolCall('b', 'read', {}),
 		]);
 		const items = buildTranscript([], live);
-		expect(items.map((i) => i.key)).toEqual(['l0-0', 'l0-1', 'l0-2']);
+		expect(items.map((i) => i.key)).toEqual(['0-0', '0-1', '0-2']);
 		expect(items[1]).toMatchObject({
 			provisional: true,
 			name: 'search',
@@ -418,7 +418,7 @@ describe('buildTranscript', () => {
 		const items = buildTranscript(stored2, live);
 		const streaming = items.filter((i) => i.streaming);
 		expect(streaming).toHaveLength(1);
-		expect(streaming[0].key).toBe('l0-2');
+		expect(streaming[0].key).toBe('2-2');
 		expect(streaming[0].text).toBe('second');
 	});
 

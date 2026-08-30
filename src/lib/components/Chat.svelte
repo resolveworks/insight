@@ -259,12 +259,11 @@
 						</div>
 					</div>
 				{:else if item.kind === 'reasoning'}
-					<!-- open={item.provisional}: live blocks are expanded while you
-					     watch them execute and fold to their summary line when the
-					     run commits — flags flipping, not a different code path. -->
+					<!-- Always open — nothing ever auto-folds when a run commits. The
+					     static attribute is set once, so manual folds stick. -->
 					<details
 						class="mx-4 rounded border border-neutral-300 bg-surface-bright"
-						open={item.provisional}
+						open
 					>
 						<summary
 							class="cursor-pointer px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"
@@ -277,7 +276,7 @@
 				{:else if item.kind === 'toolCall'}
 					<details
 						class="mx-4 rounded border border-neutral-300 bg-surface-bright"
-						open={item.provisional}
+						open
 					>
 						<summary
 							class="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs font-medium text-neutral-500 hover:text-neutral-700"

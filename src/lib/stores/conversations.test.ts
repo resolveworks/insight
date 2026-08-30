@@ -63,6 +63,12 @@ describe('conversations store event handling', () => {
 				id: null,
 				content: [
 					{
+						type: 'reasoning',
+						id: null,
+						content: [{ type: 'text', content: { text: 'Thinking' } }],
+					},
+					{ type: 'text', text: 'Let me search the index.' },
+					{
 						type: 'tool_call',
 						id: 'call1',
 						function: { name: 'search', arguments: { q: 'papers' } },
@@ -205,6 +211,10 @@ describe('conversations store event handling', () => {
 		).toMatchObject({ text: '3 results' });
 		expect(store.getIsGenerating()).toBe(true);
 
+		// Keys of the live tail — committing the run must keep every one of
+		// them (same keys = same DOM nodes = nothing remounts or collapses).
+		const liveKeys = store.getTranscript().map((item) => item.key);
+
 		// Terminal: adopt the event's authoritative transcript synchronously.
 		currentView = views.final;
 		emit('conv1', {
@@ -221,11 +231,15 @@ describe('conversations store event handling', () => {
 		const adopted = store.getTranscript();
 		expect(adopted.map((item) => item.kind)).toEqual([
 			'userText',
+			'reasoning',
+			'assistantText',
 			'toolCall',
 			'toolResult',
 			'assistantText',
 		]);
 		expect(adopted.every((item) => !item.provisional)).toBe(true);
+		// The live blocks keep their exact keys; only the final answer is new.
+		expect(adopted.map((item) => item.key).slice(0, -1)).toEqual(liveKeys);
 
 		await vi.waitFor(() => {
 			expect(loadCalls).toContain('load');

@@ -379,7 +379,7 @@ function storedItems(
 		kind: TranscriptKind,
 		fields: Partial<TranscriptItem>,
 	): TranscriptItem => ({
-		key: `s${messageIndex}-${blockIndex}`,
+		key: `${messageIndex}-${blockIndex}`,
 		role: message.role,
 		kind,
 		text: '',
@@ -436,7 +436,7 @@ function liveItems(
 		kind: TranscriptKind,
 		fields: Partial<TranscriptItem>,
 	): TranscriptItem => ({
-		key: `l${messageIndex}-${blockIndex}`,
+		key: `${messageIndex}-${blockIndex}`,
 		role: message.role,
 		kind,
 		text: '',
@@ -465,14 +465,22 @@ function liveItems(
 	});
 }
 
-/** Normalize stored history + live run into one flat renderable list. */
+/** Normalize stored history + live run into one flat renderable list.
+ *
+ * Keys are position-based over the combined list (live messages continue
+ * the stored numbering) so that when a run commits and its provisional
+ * messages are adopted into the stored history at the same positions, the
+ * keys — and therefore the rendered DOM nodes — stay identical: committing
+ * a run must not remount or collapse anything. */
 export function buildTranscript(
 	stored: RigMessage[],
 	live: LiveRun,
 ): TranscriptItem[] {
 	const items = [
 		...stored.flatMap((message, i) => storedItems(message, i)),
-		...live.messages.flatMap((message, i) => liveItems(message, i)),
+		...live.messages.flatMap((message, i) =>
+			liveItems(message, stored.length + i),
+		),
 	];
 	if (live.streamingText) {
 		for (let i = items.length - 1; i >= 0; i--) {
