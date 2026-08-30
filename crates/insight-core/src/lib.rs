@@ -16,6 +16,7 @@ pub mod manager;
 pub mod pdf;
 pub mod pipeline;
 pub mod provider;
+pub mod providers;
 pub mod search;
 pub mod storage;
 
