@@ -47,7 +47,49 @@ describe('ConversationSidebar', () => {
 		});
 	});
 
-	it('invokes delete_conversation when the delete button is clicked', async () => {
+	it('deletes a conversation after confirmation', async () => {
+		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+		mockIPC((cmd, args) => {
+			calls.push({ cmd, args: args as Record<string, unknown> });
+			if (cmd === 'list_conversations') {
+				return [
+					{
+					id: 'c1',
+					title: 'Climate research',
+					updated_at: '2024-02-01T00:00:00Z',
+				},
+				];
+			}
+			if (cmd === 'delete_conversation') return null;
+		});
+
+		render(ConversationSidebar, { props: {} });
+
+		await waitFor(() => {
+			expect(screen.getByText('Climate research')).toBeInTheDocument();
+		});
+
+		// Opening the confirm dialog alone does not delete anything.
+		screen.getByLabelText('Delete chat').click();
+		await waitFor(() => {
+			expect(screen.getByText('Delete chat')).toBeInTheDocument();
+		});
+		expect(
+			screen.getByText(
+				/This conversation's history will be removed\./,
+			),
+		).toBeInTheDocument();
+		expect(calls.find((c) => c.cmd === 'delete_conversation')).toBeUndefined();
+
+		screen.getByRole('button', { name: 'Delete' }).click();
+
+		await waitFor(() => {
+			const deleteCall = calls.find((c) => c.cmd === 'delete_conversation');
+			expect(deleteCall?.args).toEqual({ conversationId: 'c1' });
+		});
+	});
+
+	it('cancels deletion without invoking the backend', async () => {
 		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
@@ -70,10 +112,14 @@ describe('ConversationSidebar', () => {
 		});
 
 		screen.getByLabelText('Delete chat').click();
+		await waitFor(() => {
+			expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+		});
+		screen.getByRole('button', { name: 'Cancel' }).click();
 
 		await waitFor(() => {
-			const deleteCall = calls.find((c) => c.cmd === 'delete_conversation');
-			expect(deleteCall?.args).toEqual({ conversationId: 'c1' });
+			expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 		});
+		expect(calls.find((c) => c.cmd === 'delete_conversation')).toBeUndefined();
 	});
 });

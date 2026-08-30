@@ -46,6 +46,8 @@
 	// non-reactive and module-scoped: it survives remounts and only
 	// dedupes, so a user removing scope is never re-added.
 	const autoScoped = new Set<string>();
+	let autoScopedDraft = false;
+	let prevChatKey = 'init';
 
 	// Initialize the store once the language provider is ready.
 	$effect(() => {
@@ -56,21 +58,45 @@
 		}
 	});
 
-	// Single-collection auto-scope: a fresh, unscoped conversation gets the
-	// user's only collection added automatically. Fires at most once per
-	// conversation id per session.
+	// Single-collection auto-scope: a fresh, unscoped conversation (or draft)
+	// gets the user's only collection added automatically. Fires at most once
+	// per conversation id per session — and at most once per draft (the flag
+	// resets whenever a new draft starts: after "New Chat" or deleting the
+	// last conversation).
+	$effect(() => {
+		const chatKey = activeId ?? 'draft';
+		if (
+			activeId === null &&
+			messages.length === 0 &&
+			collections.length === 0 &&
+			prevChatKey !== 'draft'
+		) {
+			autoScopedDraft = false;
+		}
+		// A conversation created from an auto-scoped draft inherits the flag,
+		// so removing its scope later is never re-auto-scoped.
+		if (prevChatKey === 'draft' && activeId !== null && autoScopedDraft) {
+			autoScoped.add(activeId);
+		}
+		prevChatKey = chatKey;
+	});
+
 	$effect(() => {
 		if (
 			!providerReady ||
-			!activeId ||
 			messages.length > 0 ||
 			collections.length > 0 ||
-			allCollections.length !== 1 ||
-			autoScoped.has(activeId)
+			allCollections.length !== 1
 		) {
 			return;
 		}
-		autoScoped.add(activeId);
+		if (activeId) {
+			if (autoScoped.has(activeId)) return;
+			autoScoped.add(activeId);
+		} else {
+			if (autoScopedDraft) return;
+			autoScopedDraft = true;
+		}
 		untrack(() => {
 			void chat.addActiveCollection(allCollections[0]);
 		});
@@ -212,22 +238,24 @@
 					</div>
 				</div>
 			{:else}
-			<div class="flex h-full items-center justify-center">
-				<div class="w-full max-w-md rounded-lg border border-neutral-200 bg-surface-bright p-6">
-					<h2 class="mb-1 text-lg font-medium text-neutral-800">
-						Choose collections to search
-					</h2>
-					<p class="mb-4 text-sm text-neutral-500">
-						Your agent searches only the collections you pick.
-					</p>
-					<CollectionFilter
-						collections={allCollections}
-						selected={collections}
-						onAdd={handleAddCollection}
-						onRemove={chat.removeActiveCollection}
-					/>
+				<div class="flex h-full items-center justify-center">
+					<div
+						class="w-full max-w-md rounded-lg border border-neutral-200 bg-surface-bright p-6"
+					>
+						<h2 class="mb-1 text-lg font-medium text-neutral-800">
+							Choose collections to search
+						</h2>
+						<p class="mb-4 text-sm text-neutral-500">
+							Your agent searches only the collections you pick.
+						</p>
+						<CollectionFilter
+							collections={allCollections}
+							selected={collections}
+							onAdd={handleAddCollection}
+							onRemove={chat.removeActiveCollection}
+						/>
+					</div>
 				</div>
-			</div>
 			{/if}
 		{:else if emptyState === 'no-messages'}
 			<div class="flex h-full items-center justify-center">
