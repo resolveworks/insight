@@ -12,7 +12,7 @@
 
 ## Configure an AI Provider
 
-Insight uses OpenAI or Anthropic for chat. Add an API key from either provider in Settings to get started. This works well on any computer.
+Insight supports 25+ chat providers (OpenAI, Anthropic, Gemini, Groq, and local servers like Ollama and llama.cpp). Pick one in Settings and add an API key where required to get started. This works well on any computer.
 
 Your documents are always processed and stored locally—only your questions and the AI's answers go through the provider.
 

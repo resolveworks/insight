@@ -8,7 +8,7 @@ Search documents, ask questions, get answers with citations. Your documents stay
 
 - **Ask questions, get answers** — AI agent searches your documents and synthesizes answers with citations
 - **Documents stay local** — your files are stored, indexed, and searched on your machine, never uploaded
-- **Choice of provider** — use OpenAI or Anthropic for chat, configured with your API key
+- **Choice of provider** — 25+ LLM providers for chat (OpenAI, Anthropic, Gemini, Groq, local servers like Ollama), configured with your own API key
 - **Share with colleagues** — sync collections peer-to-peer, no server required
 
 ## How It Works
@@ -23,7 +23,7 @@ Reads relevant files, synthesizes answer
 "According to the March 2019 filing [doc: contract-v2.pdf]..."
 ```
 
-Your documents are indexed locally using [milli](https://github.com/meilisearch/milli) for full-text keyword search (BM25). The AI agent—powered by OpenAI or Anthropic, configured with your API key—searches and reads documents to answer your questions. Only your conversation (questions and retrieved excerpts) goes to the provider; the documents themselves never leave your machine.
+Your documents are indexed locally using [milli](https://github.com/meilisearch/milli) for full-text keyword search (BM25). The AI agent—running on the [rig](https://github.com/0xPlaygrounds/rig) framework with your configured provider—searches and reads documents to answer your questions. Only your conversation (questions and retrieved excerpts) goes to the provider; the documents themselves never leave your machine.
 
 Collections sync peer-to-peer using [iroh](https://iroh.computer/), so collaborators get full copies of documents and extracted text. Each peer builds its own search index locally.
 
@@ -44,7 +44,7 @@ Not production-ready. Built to learn and prototype.
 | -------- | ------------------ | ------------------------------------------ |
 | App      | Tauri + Rust       | Single binary, cross-platform, no Electron |
 | Frontend | Svelte 5           | Fast, minimal                              |
-| LLM      | OpenAI / Anthropic | Remote inference via API, user-configured  |
+| LLM      | rig (25+ providers) | Remote inference via API (or local servers), user-configured |
 | P2P      | iroh               | Modern QUIC-based, handles NAT traversal   |
 | Search   | milli              | Full-text keyword search (BM25), local     |
 | PDF      | lopdf              | Digital text extraction                    |

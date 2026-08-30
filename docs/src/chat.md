@@ -42,4 +42,4 @@ Every answer includes citations. Click one to jump straight to that passage in t
 
 ## Privacy Note
 
-Your questions and relevant document excerpts are sent to the configured chat provider (OpenAI or Anthropic). Your full documents stay on your computer. See [Getting Started](./getting-started.md) for provider setup.
+Your questions and relevant document excerpts are sent to the chat provider you configure in Settings — any of the 25+ provider families Insight supports (OpenAI, Anthropic, Gemini, Groq, Ollama for local servers, ...). Your full documents stay on your computer. See [Getting Started](./getting-started.md) for provider setup.

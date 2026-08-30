@@ -10,7 +10,7 @@
 //! - [`build_model`] constructs a [`ModelHandle`] for a persisted
 //!   [`ProviderSettings`], validating required key/URL inputs first.
 //! - [`list_models`] queries a listing-capable family via rig's
-//!   [`ModelListingClient`](rig::client::ModelListingClient).
+//!   [`ModelListingClient`].
 //!
 //! The family table mirrors the provider modules in rig-core that declare a
 //! completion capability. Providers that are embeddings-only (e.g. voyageai)
