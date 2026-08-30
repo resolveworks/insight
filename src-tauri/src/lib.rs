@@ -4,7 +4,7 @@ pub mod error;
 
 use tauri::Manager;
 
-use crate::core::{AppState, Config, ModelStatus};
+use crate::core::{AppState, Config};
 
 /// Initialize tracing/logging with the given directives
 pub fn init_logging(directives: &[&str]) {
@@ -55,25 +55,12 @@ pub fn run() {
                 }
             });
 
-            // Restore provider configs (no weights loaded yet) and start
-            // the idle reaper. Both need a Tokio runtime, so we do them
-            // from inside async_runtime::spawn.
+            // Restore the chat provider config from settings (no remote
+            // connections opened yet) once the async runtime is up.
             let state_clone = state.inner().clone();
-            let app_handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<ModelStatus>(10);
-
-                // Forward restore-sourced status events (distinct from the
-                // manager's broadcast channel).
-                let status_handle = app_handle.clone();
-                tokio::spawn(async move {
-                    while let Some(status) = status_rx.recv().await {
-                        let _ = status_handle.emit("model-status-changed", &status);
-                    }
-                });
-
-                state_clone.restore_configs_from_settings(status_tx).await;
+                state_clone.restore_configs_from_settings().await;
             });
 
             Ok(())

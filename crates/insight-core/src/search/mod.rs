@@ -768,7 +768,7 @@ mod tests {
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
 
-        let chunk = make_chunk("doc1", "test.pdf", "Hello world", "col1", None);
+        let chunk = make_chunk("doc1", "test.pdf", "Hello world", "col1");
         index_chunks_batch(&index, &config, vec![chunk]).unwrap();
 
         let results = search_index(
@@ -790,9 +790,9 @@ mod tests {
         let config = test_indexer_config();
 
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "Climate research paper", "climate", None),
-            make_chunk("doc2", "b.pdf", "Climate news article", "news", None),
-            make_chunk("doc3", "c.pdf", "Climate policy document", "policy", None),
+            make_chunk("doc1", "a.pdf", "Climate research paper", "climate"),
+            make_chunk("doc2", "b.pdf", "Climate news article", "news"),
+            make_chunk("doc3", "c.pdf", "Climate policy document", "policy"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
@@ -844,8 +844,8 @@ mod tests {
         let config = test_indexer_config();
 
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "Test content", "col1", None),
-            make_chunk("doc2", "b.pdf", "Test content", "col2", None),
+            make_chunk("doc1", "a.pdf", "Test content", "col1"),
+            make_chunk("doc2", "b.pdf", "Test content", "col2"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
@@ -981,8 +981,8 @@ mod tests {
 
         // Index chunks for two documents
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "First document", "col1", None),
-            make_chunk("doc2", "b.pdf", "Second document", "col1", None),
+            make_chunk("doc1", "a.pdf", "First document", "col1"),
+            make_chunk("doc2", "b.pdf", "Second document", "col1"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
@@ -1020,9 +1020,9 @@ mod tests {
 
         // Index chunks in different collections
         let chunks = vec![
-            make_chunk("doc1", "a.pdf", "Document alpha", "col1", None),
-            make_chunk("doc2", "b.pdf", "Document beta", "col1", None),
-            make_chunk("doc3", "c.pdf", "Document gamma", "col2", None),
+            make_chunk("doc1", "a.pdf", "Document alpha", "col1"),
+            make_chunk("doc2", "b.pdf", "Document beta", "col1"),
+            make_chunk("doc3", "c.pdf", "Document gamma", "col2"),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 

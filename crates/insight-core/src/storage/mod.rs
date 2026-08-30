@@ -1017,7 +1017,7 @@ impl Storage {
         };
 
         metadata.page_count = extracted.page_count;
-        metadata.page_boundaries = extracted.page_boundaries;
+        metadata.page_boundaries = extracted.page_boundaries.clone();
 
         self.write_text_and_meta(
             namespace_id,

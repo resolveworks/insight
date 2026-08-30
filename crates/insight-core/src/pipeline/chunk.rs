@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 const CHUNK_SIZE: usize = 1500;
 const CHUNK_OVERLAP: usize = 200;
 
-static SPLITTER: LazyLock<text_splitter::TextSplitter<text_splitter::ChunkConfig>> =
+static SPLITTER: LazyLock<text_splitter::TextSplitter<text_splitter::Characters>> =
     LazyLock::new(|| {
         text_splitter::TextSplitter::new(
             text_splitter::ChunkConfig::new(CHUNK_SIZE)

@@ -237,7 +237,6 @@ pub fn spawn_index_worker(
                                     page_count: metadata.page_count,
                                     start_page,
                                     end_page,
-                                    vector: None,
                                 }
                             })
                             .collect();

@@ -162,10 +162,7 @@ impl AppState {
     ///
     /// Installs the configured chat provider (if any) without any blocking
     /// work — remote providers are ready immediately.
-    pub async fn restore_configs_from_settings(
-        &self,
-        status_tx: tokio::sync::mpsc::Sender<ModelStatus>,
-    ) {
+    pub async fn restore_configs_from_settings(&self) {
         let settings = Settings::load(&self.config.settings_file);
 
         // Start watching existing collections for indexing events.
@@ -173,18 +170,14 @@ impl AppState {
 
         // Install chat provider if configured.
         if let Some(ref provider_config) = settings.provider {
-            self.install_chat_provider_from_config(provider_config, &status_tx)
+            self.install_chat_provider_from_config(provider_config)
                 .await;
         }
     }
 
     /// Install a chat provider from saved configuration without loading
     /// weights. The first inference request pays the load cost.
-    async fn install_chat_provider_from_config(
-        &self,
-        config: &ProviderConfig,
-        status_tx: &tokio::sync::mpsc::Sender<ModelStatus>,
-    ) {
+    async fn install_chat_provider_from_config(&self, config: &ProviderConfig) {
         match config {
             ProviderConfig::OpenAI { api_key, model } => {
                 let provider = OpenAIChatProvider::new(api_key, model);

@@ -37,8 +37,12 @@ pub fn extract_text_from_bytes(pdf_bytes: Vec<u8>) -> Result<ExtractedDocument> 
     let mut boundaries = Vec::with_capacity(page_count);
     for page_num in &pages {
         let page_text = doc.extract_text(&[*page_num]).unwrap_or_default();
-        if !page_text.is_empty() {
-            text.push_str(&page_text);
+        // Normalize: lopdf may emit a bare newline for an empty content
+        // stream — treat whitespace-only pages as blank (no text, no
+        // boundary advance).
+        let page_text = page_text.trim_end_matches(['\r', '\n']);
+        if !page_text.trim().is_empty() {
+            text.push_str(page_text);
             if !text.ends_with('\n') {
                 text.push('\n');
             }

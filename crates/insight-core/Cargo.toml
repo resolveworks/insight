@@ -21,6 +21,8 @@ lopdf = "0.38"
 
 # milli from meilisearch — full-text keyword search
 milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1" }
+# milli's Settings::execute / indexer::index take &IpPolicy even without embedders
+http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1", package = "http-client" }
 bumpalo = "3"
 fst = "0.4.7"
 roaring = "0.10.7"
