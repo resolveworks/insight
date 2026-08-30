@@ -1,102 +1,38 @@
-//! Central manager for in-memory inference state.
+//! Central manager for the active chat provider.
 //!
-//! One slot per role (chat, embedding, OCR). Ownership of the provider lives
-//! here, not in `AppState`. Callers go through `acquire_*` to get a lease
-//! they can use for one request; the lease keeps the provider alive for the
-//! duration of the call.
-//!
-//! # Lifecycle
-//!
-//! - `set_*` installs a provider but does **not** load its weights.
-//! - `acquire_*` returns a lease and triggers [`Provider::ensure_loaded`] on
-//!   first use. Status events stream to subscribers so the UI can show the
-//!   one-time load — emitted only when the load actually has to happen.
-//! - Before loading a `coexist = false` local provider, the manager first
-//!   unloads any other `coexist = false` local residents in different roles
-//!   ("reactive eviction"). Remote providers never participate.
-//! - An idle reaper (`spawn_idle_reaper`) unloads residents with no
-//!   activity in the last `IDLE_TTL`, emitting `Unloaded` on each.
-//! - Whenever the manager calls `Provider::unload`, it emits `Unloaded`
-//!   iff the call returned `true` (i.e. it actually transitioned a
-//!   loaded provider to unloaded). The provider is the single authority
-//!   on whether a transition happened, which keeps replace/clear, evict,
-//!   and reap announcements consistent and prevents spurious events.
+//! There is a single chat slot; ownership of the provider lives here, not
+//! in `AppState`. Callers go through [`ModelManager::acquire_chat`] to get
+//! a lease they can use for one request. Providers are remote (OpenAI,
+//! Anthropic), so there is no weight lifecycle to manage — but status
+//! events (`Loading`/`Ready`/`Failed`/`Unloaded`) still stream to
+//! subscribers around the (default no-op) load calls, keeping the UI
+//! contract stable.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use tokio::sync::{broadcast, watch, RwLock};
+use tokio::sync::{broadcast, RwLock};
 
-use crate::config::LifecycleConfig;
-use crate::provider::{
-    ChatProvider, EmbeddingProvider, MemoryKind, OcrProvider, Provider, ProviderConfig,
-};
+use crate::provider::{ChatProvider, Provider, ProviderConfig};
 use crate::{ModelStatus, ModelType};
 
 const STATUS_CHANNEL_CAPACITY: usize = 64;
 
-/// How long a loaded local model can be idle before the reaper unloads it.
-const IDLE_TTL: Duration = Duration::from_secs(5 * 60);
-
-/// How often the reaper checks for idle models.
-const REAP_INTERVAL: Duration = Duration::from_secs(30);
-
-/// Central manager for chat / embedding / OCR providers.
+/// Central manager for the chat provider slot.
 pub struct ModelManager {
     chat: RwLock<Option<Arc<dyn ChatProvider>>>,
     chat_config: RwLock<Option<ProviderConfig>>,
-    chat_last_activity: AtomicU64,
-
-    embedding: RwLock<Option<Arc<dyn EmbeddingProvider>>>,
-    embedding_model_id: RwLock<Option<String>>,
-    embedding_last_activity: AtomicU64,
-
-    ocr: RwLock<Option<Arc<dyn OcrProvider>>>,
-    ocr_model_id: RwLock<Option<String>>,
-    ocr_last_activity: AtomicU64,
-
-    lifecycle: RwLock<LifecycleConfig>,
     status_tx: broadcast::Sender<ModelStatus>,
-    focus_tx: watch::Sender<bool>,
 }
 
 impl ModelManager {
     pub fn new() -> Self {
         let (status_tx, _) = broadcast::channel(STATUS_CHANNEL_CAPACITY);
-        let (focus_tx, _) = watch::channel(false);
         Self {
             chat: RwLock::new(None),
             chat_config: RwLock::new(None),
-            chat_last_activity: AtomicU64::new(0),
-            embedding: RwLock::new(None),
-            embedding_model_id: RwLock::new(None),
-            embedding_last_activity: AtomicU64::new(0),
-            ocr: RwLock::new(None),
-            ocr_model_id: RwLock::new(None),
-            ocr_last_activity: AtomicU64::new(0),
-            lifecycle: RwLock::new(LifecycleConfig::default()),
             status_tx,
-            focus_tx,
         }
-    }
-
-    /// Spawn the idle reaper. Call once from app startup.
-    ///
-    /// Ticks every [`REAP_INTERVAL`]; any resident local model idle longer
-    /// than [`IDLE_TTL`] is unloaded. Skips the chat slot while research
-    /// focus is held so returning to the page doesn't pay a reload.
-    pub fn spawn_idle_reaper(self: &Arc<Self>) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(REAP_INTERVAL);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                ticker.tick().await;
-                this.reap_idle().await;
-            }
-        });
     }
 
     pub fn subscribe_status(&self) -> broadcast::Receiver<ModelStatus> {
@@ -108,56 +44,6 @@ impl ModelManager {
     }
 
     // ------------------------------------------------------------------
-    // Foreground signal
-    // ------------------------------------------------------------------
-
-    /// Mark research focus as entered or left. No-op if the value is
-    /// already set — subscribers aren't woken for repeat enters.
-    pub fn set_research_focused(&self, focused: bool) {
-        self.focus_tx.send_if_modified(|current| {
-            if *current == focused {
-                false
-            } else {
-                *current = focused;
-                true
-            }
-        });
-    }
-
-    pub fn is_research_focused(&self) -> bool {
-        *self.focus_tx.borrow()
-    }
-
-    pub fn focus_guard(&self) -> FocusGuard {
-        FocusGuard {
-            rx: self.focus_tx.subscribe(),
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Lifecycle config
-    // ------------------------------------------------------------------
-
-    /// Replace the lifecycle configuration and propagate coexist flags to
-    /// currently installed providers.
-    pub async fn set_lifecycle_config(&self, cfg: LifecycleConfig) {
-        *self.lifecycle.write().await = cfg.clone();
-        if let Some(p) = self.chat.read().await.as_ref() {
-            p.set_coexist(cfg.chat_coexist);
-        }
-        if let Some(p) = self.embedding.read().await.as_ref() {
-            p.set_coexist(cfg.embedding_coexist);
-        }
-        if let Some(p) = self.ocr.read().await.as_ref() {
-            p.set_coexist(cfg.ocr_coexist);
-        }
-    }
-
-    pub async fn lifecycle_config(&self) -> LifecycleConfig {
-        self.lifecycle.read().await.clone()
-    }
-
-    // ------------------------------------------------------------------
     // Chat
     // ------------------------------------------------------------------
 
@@ -166,9 +52,6 @@ impl ModelManager {
         provider: Arc<dyn ChatProvider>,
         config: ProviderConfig,
     ) -> Result<()> {
-        // Apply current coexist setting so the provider's view matches
-        // settings without a separate call.
-        provider.set_coexist(self.lifecycle.read().await.chat_coexist);
         if let Some(old) = self.chat.write().await.replace(provider) {
             self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Language)
                 .await;
@@ -190,9 +73,6 @@ impl ModelManager {
             Some(p) => p,
             None => return Ok(None),
         };
-        self.touch(ModelType::Language);
-        self.evict_conflicting(ModelType::Language, provider.as_ref() as &dyn Provider)
-            .await;
         self.ensure_loaded(provider.as_ref() as &dyn Provider, ModelType::Language)
             .await?;
         Ok(Some(Lease { provider }))
@@ -207,114 +87,13 @@ impl ModelManager {
     }
 
     // ------------------------------------------------------------------
-    // Embedding
-    // ------------------------------------------------------------------
-
-    pub async fn set_embedding(
-        &self,
-        provider: Arc<dyn EmbeddingProvider>,
-        model_id: String,
-    ) -> Result<()> {
-        provider.set_coexist(self.lifecycle.read().await.embedding_coexist);
-        if let Some(old) = self.embedding.write().await.replace(provider) {
-            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Embedding)
-                .await;
-        }
-        *self.embedding_model_id.write().await = Some(model_id);
-        Ok(())
-    }
-
-    pub async fn clear_embedding(&self) {
-        if let Some(old) = self.embedding.write().await.take() {
-            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Embedding)
-                .await;
-        }
-        *self.embedding_model_id.write().await = None;
-    }
-
-    pub async fn acquire_embedding(&self) -> Result<Option<EmbeddingLease>> {
-        let provider = match self.embedding.read().await.as_ref().cloned() {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-        self.touch(ModelType::Embedding);
-        self.evict_conflicting(ModelType::Embedding, provider.as_ref() as &dyn Provider)
-            .await;
-        self.ensure_loaded(provider.as_ref() as &dyn Provider, ModelType::Embedding)
-            .await?;
-        Ok(Some(Lease { provider }))
-    }
-
-    /// Refresh the embedding activity timestamp. Call from long-running
-    /// embed jobs so the reaper doesn't unload mid-batch.
-    pub fn touch_embedding(&self) {
-        self.touch(ModelType::Embedding);
-    }
-
-    pub async fn embedding_model_id(&self) -> Option<String> {
-        self.embedding_model_id.read().await.clone()
-    }
-
-    pub async fn embedding_ready(&self) -> bool {
-        self.embedding.read().await.is_some()
-    }
-
-    // ------------------------------------------------------------------
-    // OCR
-    // ------------------------------------------------------------------
-
-    pub async fn set_ocr(&self, provider: Arc<dyn OcrProvider>, model_id: String) -> Result<()> {
-        provider.set_coexist(self.lifecycle.read().await.ocr_coexist);
-        if let Some(old) = self.ocr.write().await.replace(provider) {
-            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Ocr)
-                .await;
-        }
-        *self.ocr_model_id.write().await = Some(model_id);
-        Ok(())
-    }
-
-    pub async fn clear_ocr(&self) {
-        if let Some(old) = self.ocr.write().await.take() {
-            self.announce_unload(old.as_ref() as &dyn Provider, ModelType::Ocr)
-                .await;
-        }
-        *self.ocr_model_id.write().await = None;
-    }
-
-    pub async fn acquire_ocr(&self) -> Result<Option<OcrLease>> {
-        let provider = match self.ocr.read().await.as_ref().cloned() {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-        self.touch(ModelType::Ocr);
-        self.evict_conflicting(ModelType::Ocr, provider.as_ref() as &dyn Provider)
-            .await;
-        self.ensure_loaded(provider.as_ref() as &dyn Provider, ModelType::Ocr)
-            .await?;
-        Ok(Some(Lease { provider }))
-    }
-
-    /// Refresh the OCR activity timestamp. Call from long-running OCR
-    /// jobs so the reaper doesn't unload mid-document.
-    pub fn touch_ocr(&self) {
-        self.touch(ModelType::Ocr);
-    }
-
-    pub async fn ocr_model_id(&self) -> Option<String> {
-        self.ocr_model_id.read().await.clone()
-    }
-
-    pub async fn ocr_ready(&self) -> bool {
-        self.ocr.read().await.is_some()
-    }
-
-    // ------------------------------------------------------------------
-    // Internal: loading, eviction, reaping
+    // Internal: loading
     // ------------------------------------------------------------------
 
     /// Emit Loading/Ready only when the provider actually has to load.
-    /// For already-resident or remote providers this is a no-op event-wise,
-    /// which means the UI doesn't flash a loading state on every request.
+    /// For already-resident (remote) providers this is a no-op
+    /// event-wise, which means the UI doesn't flash a loading state on
+    /// every request.
     async fn ensure_loaded(&self, provider: &dyn Provider, model_type: ModelType) -> Result<()> {
         if provider.is_loaded().await {
             return Ok(());
@@ -346,89 +125,6 @@ impl ModelManager {
         }
     }
 
-    /// If `target` is a local `coexist = false` provider, unload any other
-    /// local `coexist = false` residents in the other roles before we load.
-    async fn evict_conflicting(&self, target_role: ModelType, target: &dyn Provider) {
-        if target.memory_kind() != MemoryKind::Local || target.coexist() {
-            return;
-        }
-
-        if target_role != ModelType::Language {
-            if let Some(p) = self.chat.read().await.as_ref().cloned() {
-                self.maybe_evict(p.as_ref() as &dyn Provider, ModelType::Language)
-                    .await;
-            }
-        }
-        if target_role != ModelType::Embedding {
-            if let Some(p) = self.embedding.read().await.as_ref().cloned() {
-                self.maybe_evict(p.as_ref() as &dyn Provider, ModelType::Embedding)
-                    .await;
-            }
-        }
-        if target_role != ModelType::Ocr {
-            if let Some(p) = self.ocr.read().await.as_ref().cloned() {
-                self.maybe_evict(p.as_ref() as &dyn Provider, ModelType::Ocr)
-                    .await;
-            }
-        }
-    }
-
-    async fn maybe_evict(&self, provider: &dyn Provider, model_type: ModelType) {
-        if provider.memory_kind() != MemoryKind::Local || provider.coexist() {
-            return;
-        }
-        if self.announce_unload(provider, model_type).await {
-            tracing::info!(
-                target = provider.model_id(),
-                "Reactive eviction: unloaded coexist=false local resident"
-            );
-        }
-    }
-
-    async fn reap_idle(&self) {
-        let cutoff = unix_now().saturating_sub(IDLE_TTL.as_secs());
-        let focus_held = self.is_research_focused();
-
-        // Skip chat while the user is looking at research.
-        if !focus_held {
-            if let Some(provider) = self.chat.read().await.as_ref().cloned() {
-                let last = self.chat_last_activity.load(Ordering::Relaxed);
-                if last != 0 && last <= cutoff {
-                    self.try_reap(provider.as_ref() as &dyn Provider, ModelType::Language)
-                        .await;
-                }
-            }
-        }
-
-        if let Some(provider) = self.embedding.read().await.as_ref().cloned() {
-            let last = self.embedding_last_activity.load(Ordering::Relaxed);
-            if last != 0 && last <= cutoff {
-                self.try_reap(provider.as_ref() as &dyn Provider, ModelType::Embedding)
-                    .await;
-            }
-        }
-
-        if let Some(provider) = self.ocr.read().await.as_ref().cloned() {
-            let last = self.ocr_last_activity.load(Ordering::Relaxed);
-            if last != 0 && last <= cutoff {
-                self.try_reap(provider.as_ref() as &dyn Provider, ModelType::Ocr)
-                    .await;
-            }
-        }
-    }
-
-    async fn try_reap(&self, provider: &dyn Provider, model_type: ModelType) {
-        if provider.memory_kind() != MemoryKind::Local {
-            return;
-        }
-        if self.announce_unload(provider, model_type).await {
-            tracing::info!(model = %provider.model_id(), "Idle reaper: unloaded model");
-        }
-        // Mark the slot dormant either way: if we just reaped it, or if it
-        // was already unloaded out-of-band. Subsequent acquires re-touch.
-        self.reset_activity(model_type);
-    }
-
     /// Call `unload` on `provider` and emit `Unloaded` iff it actually
     /// transitioned (loaded → unloaded). The provider's own `unload` impl is
     /// the single authority on whether a transition happened.
@@ -452,37 +148,6 @@ impl ModelManager {
             }
         }
     }
-
-    fn touch(&self, model_type: ModelType) {
-        let now = unix_now();
-        match model_type {
-            ModelType::Language => self.chat_last_activity.store(now, Ordering::Relaxed),
-            ModelType::Embedding => self.embedding_last_activity.store(now, Ordering::Relaxed),
-            ModelType::Ocr => self.ocr_last_activity.store(now, Ordering::Relaxed),
-        }
-    }
-
-    /// Gracefully unload all local providers. Call before process exit to
-    /// give CUDA threads a chance to clean up before the driver is
-    /// deinitialized.
-    pub async fn shutdown(&self) {
-        tracing::info!("ModelManager: shutting down all providers");
-        self.clear_chat().await;
-        self.clear_embedding().await;
-        self.clear_ocr().await;
-        // Give background threads (e.g. mistralrs engine) a moment to
-        // notice the unload and wind down before the runtime drops.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        tracing::info!("ModelManager: shutdown complete");
-    }
-
-    fn reset_activity(&self, model_type: ModelType) {
-        match model_type {
-            ModelType::Language => self.chat_last_activity.store(0, Ordering::Relaxed),
-            ModelType::Embedding => self.embedding_last_activity.store(0, Ordering::Relaxed),
-            ModelType::Ocr => self.ocr_last_activity.store(0, Ordering::Relaxed),
-        }
-    }
 }
 
 impl Default for ModelManager {
@@ -494,30 +159,6 @@ impl Default for ModelManager {
 // ------------------------------------------------------------------
 // Leases
 // ------------------------------------------------------------------
-
-/// Subscription to the foreground-focus signal. Background workers call
-/// [`FocusGuard::wait_until_released`] between jobs so chat has priority.
-pub struct FocusGuard {
-    rx: watch::Receiver<bool>,
-}
-
-impl FocusGuard {
-    /// Return immediately if focus isn't held; otherwise wait until it is
-    /// released. In-progress work is never preempted — workers call this at
-    /// natural boundaries (between documents).
-    pub async fn wait_until_released(&mut self) {
-        if !*self.rx.borrow() {
-            return;
-        }
-        tracing::debug!("Worker yielding — research focus is held");
-        while *self.rx.borrow() {
-            if self.rx.changed().await.is_err() {
-                return;
-            }
-        }
-        tracing::debug!("Research focus released — worker resuming");
-    }
-}
 
 /// Short-lived handle that keeps a provider alive for the duration of one
 /// request. Deref-s to `T` so callers can forward methods transparently.
@@ -547,15 +188,6 @@ impl<T: ?Sized> std::ops::Deref for Lease<T> {
 }
 
 pub type ChatLease = Lease<dyn ChatProvider>;
-pub type EmbeddingLease = Lease<dyn EmbeddingProvider>;
-pub type OcrLease = Lease<dyn OcrProvider>;
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
 
 #[cfg(test)]
 mod tests {
@@ -564,27 +196,25 @@ mod tests {
     use crate::provider::{ChatProvider, CompletionResult, ProviderEvent, ToolDefinition};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    /// A test chat provider that tracks load/unload calls and reports a
-    /// configurable memory kind + coexist flag.
+    /// A test chat provider that tracks load/unload calls with remote-style
+    /// semantics: starts unloaded-in-name, loads on `ensure_loaded`, and
+    /// reports real loaded→unloaded transitions.
     struct TestChatProvider {
         id: String,
-        kind: MemoryKind,
-        coexist: AtomicBool,
         loaded: AtomicBool,
         ensure_calls: AtomicUsize,
         unload_calls: AtomicUsize,
     }
 
     impl TestChatProvider {
-        fn new(id: &str, kind: MemoryKind, coexist: bool) -> Arc<Self> {
+        fn new(id: &str) -> Arc<Self> {
             Arc::new(Self {
                 id: id.to_string(),
-                kind,
-                coexist: AtomicBool::new(coexist),
-                loaded: AtomicBool::new(kind == MemoryKind::Remote),
+                loaded: AtomicBool::new(false),
                 ensure_calls: AtomicUsize::new(0),
                 unload_calls: AtomicUsize::new(0),
             })
@@ -605,15 +235,6 @@ mod tests {
         }
         fn model_id(&self) -> &str {
             &self.id
-        }
-        fn memory_kind(&self) -> MemoryKind {
-            self.kind
-        }
-        fn coexist(&self) -> bool {
-            self.coexist.load(Ordering::Relaxed)
-        }
-        fn set_coexist(&self, v: bool) {
-            self.coexist.store(v, Ordering::Relaxed);
         }
         async fn is_loaded(&self) -> bool {
             self.loaded.load(Ordering::Relaxed)
@@ -653,8 +274,8 @@ mod tests {
     #[tokio::test]
     async fn set_chat_replaces_and_unloads_old_provider() {
         let manager = ModelManager::new();
-        let first = TestChatProvider::new("first", MemoryKind::Local, false);
-        let second = TestChatProvider::new("second", MemoryKind::Local, false);
+        let first = TestChatProvider::new("first");
+        let second = TestChatProvider::new("second");
         manager
             .set_chat(first.clone(), remote_config())
             .await
@@ -670,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_chat_loads_exactly_once() {
         let manager = ModelManager::new();
-        let p = TestChatProvider::new("chat", MemoryKind::Local, false);
+        let p = TestChatProvider::new("chat");
         manager.set_chat(p.clone(), remote_config()).await.unwrap();
 
         assert_eq!(p.ensure_calls(), 0);
@@ -678,99 +299,24 @@ mod tests {
         assert_eq!(p.ensure_calls(), 1);
         let _ = manager.acquire_chat().await.unwrap().unwrap();
         // Second acquire hits the fast path (is_loaded == true) and skips
-        // ensure_loaded — that's the whole point: no UI flash per request.
+        // ensure_loaded — no UI flash per request.
         assert_eq!(p.ensure_calls(), 1);
         assert!(p.is_loaded().await);
     }
 
     #[tokio::test]
-    async fn reactive_eviction_unloads_coexist_false_peer() {
+    async fn acquire_chat_returns_none_when_unconfigured() {
         let manager = ModelManager::new();
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
-        let _ = manager.acquire_chat().await.unwrap().unwrap();
-        assert!(chat.is_loaded().await);
-
-        // A second local coexist=false provider acquires — chat should evict.
-        let other = TestChatProvider::new("other", MemoryKind::Local, false);
-        manager
-            .evict_conflicting(ModelType::Embedding, &*other)
-            .await;
-        assert_eq!(chat.unload_calls(), 1);
-        assert!(!chat.is_loaded().await);
-    }
-
-    #[tokio::test]
-    async fn reactive_eviction_leaves_coexist_peer_alone() {
-        let manager = ModelManager::new();
-        manager
-            .set_lifecycle_config(LifecycleConfig {
-                chat_coexist: true,
-                embedding_coexist: false,
-                ocr_coexist: false,
-            })
-            .await;
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, true);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
-        let _ = manager.acquire_chat().await.unwrap().unwrap();
-
-        let other = TestChatProvider::new("other", MemoryKind::Local, false);
-        manager
-            .evict_conflicting(ModelType::Embedding, &*other)
-            .await;
-        assert_eq!(chat.unload_calls(), 0);
-    }
-
-    #[tokio::test]
-    async fn remote_provider_is_ignored_by_eviction() {
-        let manager = ModelManager::new();
-        let remote = TestChatProvider::new("remote", MemoryKind::Remote, true);
-        manager
-            .set_chat(remote.clone(), remote_config())
-            .await
-            .unwrap();
-
-        let target = TestChatProvider::new("target", MemoryKind::Local, false);
-        manager
-            .evict_conflicting(ModelType::Embedding, &*target)
-            .await;
-        assert_eq!(remote.unload_calls(), 0);
-    }
-
-    #[tokio::test]
-    async fn set_lifecycle_config_propagates_to_installed_provider() {
-        let manager = ModelManager::new();
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
-        assert!(!chat.coexist());
-
-        manager
-            .set_lifecycle_config(LifecycleConfig {
-                chat_coexist: true,
-                embedding_coexist: false,
-                ocr_coexist: false,
-            })
-            .await;
-        assert!(chat.coexist());
+        assert!(manager.acquire_chat().await.unwrap().is_none());
+        assert!(!manager.chat_ready().await);
+        assert!(manager.chat_config().await.is_none());
     }
 
     #[tokio::test]
     async fn clear_chat_unloads_and_clears_config() {
         let manager = ModelManager::new();
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
+        let chat = TestChatProvider::new("chat");
+        manager.set_chat(chat.clone(), remote_config()).await.unwrap();
         manager.clear_chat().await;
         assert_eq!(chat.unload_calls(), 1);
         assert!(manager.chat_config().await.is_none());
@@ -780,20 +326,14 @@ mod tests {
     #[tokio::test]
     async fn set_chat_emits_unloaded_for_loaded_displaced_provider() {
         let manager = ModelManager::new();
-        let first = TestChatProvider::new("first", MemoryKind::Local, false);
-        manager
-            .set_chat(first.clone(), remote_config())
-            .await
-            .unwrap();
+        let first = TestChatProvider::new("first");
+        manager.set_chat(first.clone(), remote_config()).await.unwrap();
         let _ = manager.acquire_chat().await.unwrap().unwrap();
         assert!(first.is_loaded().await);
 
         let mut events = manager.subscribe_status();
-        let second = TestChatProvider::new("second", MemoryKind::Local, false);
-        manager
-            .set_chat(second.clone(), remote_config())
-            .await
-            .unwrap();
+        let second = TestChatProvider::new("second");
+        manager.set_chat(second.clone(), remote_config()).await.unwrap();
 
         // First was loaded → displacement must announce Unloaded for it.
         match events.try_recv() {
@@ -808,20 +348,14 @@ mod tests {
     #[tokio::test]
     async fn set_chat_silent_for_unloaded_displaced_provider() {
         let manager = ModelManager::new();
-        let first = TestChatProvider::new("first", MemoryKind::Local, false);
+        let first = TestChatProvider::new("first");
         // Install but never acquire — first stays unloaded.
-        manager
-            .set_chat(first.clone(), remote_config())
-            .await
-            .unwrap();
+        manager.set_chat(first.clone(), remote_config()).await.unwrap();
         assert!(!first.is_loaded().await);
 
         let mut events = manager.subscribe_status();
-        let second = TestChatProvider::new("second", MemoryKind::Local, false);
-        manager
-            .set_chat(second.clone(), remote_config())
-            .await
-            .unwrap();
+        let second = TestChatProvider::new("second");
+        manager.set_chat(second.clone(), remote_config()).await.unwrap();
 
         // No transition happened — no Unloaded should fire.
         assert!(events.try_recv().is_err());
@@ -832,11 +366,8 @@ mod tests {
     #[tokio::test]
     async fn clear_chat_emits_unloaded_when_loaded() {
         let manager = ModelManager::new();
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
+        let chat = TestChatProvider::new("chat");
+        manager.set_chat(chat.clone(), remote_config()).await.unwrap();
         let _ = manager.acquire_chat().await.unwrap().unwrap();
 
         let mut events = manager.subscribe_status();
@@ -852,265 +383,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reaper_resets_activity_after_unload() {
-        let manager = Arc::new(ModelManager::new());
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
-        let _ = manager.acquire_chat().await.unwrap().unwrap();
-
-        manager.chat_last_activity.store(1, Ordering::Relaxed);
-        manager.reap_idle().await;
-        // After a reap, the slot is dormant: last_activity is reset to 0
-        // so the trigger condition no longer fires until a new acquire.
-        assert_eq!(manager.chat_last_activity.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
-    async fn reaper_skips_chat_when_focus_held() {
-        let manager = Arc::new(ModelManager::new());
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
-        let _ = manager.acquire_chat().await.unwrap().unwrap();
-
-        // Pretend the model has been idle long enough to be reaped.
-        manager.chat_last_activity.store(1, Ordering::Relaxed);
-        manager.set_research_focused(true);
-
-        manager.reap_idle().await;
-        assert_eq!(chat.unload_calls(), 0);
-
-        manager.set_research_focused(false);
-        manager.reap_idle().await;
-        assert_eq!(chat.unload_calls(), 1);
-    }
-
-    #[tokio::test]
-    async fn reaper_does_not_re_reap_already_unloaded_provider() {
-        let manager = Arc::new(ModelManager::new());
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
-        let _ = manager.acquire_chat().await.unwrap().unwrap();
-
-        manager.chat_last_activity.store(1, Ordering::Relaxed);
+    async fn acquire_chat_emits_ready_after_load() {
+        let manager = ModelManager::new();
+        let chat = TestChatProvider::new("chat");
+        manager.set_chat(chat.clone(), remote_config()).await.unwrap();
 
         let mut events = manager.subscribe_status();
-        manager.reap_idle().await;
-        assert_eq!(chat.unload_calls(), 1);
-        assert!(matches!(
-            events.try_recv(),
-            Ok(ModelStatus::Unloaded { .. })
-        ));
-
-        // Second tick with the same stale timestamp must not unload again
-        // or emit another Unloaded — the provider is already unloaded.
-        manager.reap_idle().await;
-        assert_eq!(chat.unload_calls(), 1);
-        assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn reaper_skips_remote_providers() {
-        let manager = Arc::new(ModelManager::new());
-        let remote = TestChatProvider::new("remote", MemoryKind::Remote, true);
-        manager
-            .set_chat(remote.clone(), remote_config())
-            .await
-            .unwrap();
         let _ = manager.acquire_chat().await.unwrap().unwrap();
 
-        manager.chat_last_activity.store(1, Ordering::Relaxed);
-        manager.reap_idle().await;
-        assert_eq!(remote.unload_calls(), 0);
-    }
-
-    #[tokio::test]
-    async fn set_research_focused_is_idempotent() {
-        let manager = ModelManager::new();
-        let mut guard = manager.focus_guard();
-
-        manager.set_research_focused(true);
-        // Second call with same value should not fire a change.
-        manager.set_research_focused(true);
-
-        // Flip to false: guard.wait_until_released() returns.
-        manager.set_research_focused(false);
-        tokio::time::timeout(Duration::from_millis(100), guard.wait_until_released())
-            .await
-            .expect("wait_until_released did not complete in time");
-    }
-
-    #[tokio::test]
-    async fn focus_guard_returns_immediately_when_not_focused() {
-        let manager = ModelManager::new();
-        let mut guard = manager.focus_guard();
-        // Never set focus — should return immediately.
-        tokio::time::timeout(Duration::from_millis(50), guard.wait_until_released())
-            .await
-            .expect("should not block when focus is false");
-    }
-
-    #[tokio::test]
-    async fn focus_guard_blocks_then_releases() {
-        let manager = Arc::new(ModelManager::new());
-        manager.set_research_focused(true);
-        let mut guard = manager.focus_guard();
-
-        let m = manager.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            m.set_research_focused(false);
-        });
-
-        tokio::time::timeout(Duration::from_millis(500), guard.wait_until_released())
-            .await
-            .expect("guard should release after focus flips to false");
-    }
-
-    // ---- OCR slot tests ----
-
-    use crate::provider::OcrProvider;
-
-    struct TestOcrProvider {
-        id: String,
-        kind: MemoryKind,
-        coexist: AtomicBool,
-        loaded: AtomicBool,
-        unload_calls: AtomicUsize,
-    }
-
-    impl TestOcrProvider {
-        fn new(id: &str, kind: MemoryKind, coexist: bool) -> Arc<Self> {
-            Arc::new(Self {
-                id: id.to_string(),
-                kind,
-                coexist: AtomicBool::new(coexist),
-                loaded: AtomicBool::new(kind == MemoryKind::Remote),
-                unload_calls: AtomicUsize::new(0),
-            })
+        match events.try_recv() {
+            Ok(ModelStatus::Loading { model_id, .. }) => assert_eq!(model_id, "chat"),
+            other => panic!("expected Loading, got {other:?}"),
         }
-
-        fn unload_calls(&self) -> usize {
-            self.unload_calls.load(Ordering::Relaxed)
+        match events.try_recv() {
+            Ok(ModelStatus::Ready { model_id, .. }) => assert_eq!(model_id, "chat"),
+            other => panic!("expected Ready, got {other:?}"),
         }
-    }
-
-    #[async_trait]
-    impl Provider for TestOcrProvider {
-        fn provider_name(&self) -> &'static str {
-            "test-ocr"
-        }
-        fn model_id(&self) -> &str {
-            &self.id
-        }
-        fn memory_kind(&self) -> MemoryKind {
-            self.kind
-        }
-        fn coexist(&self) -> bool {
-            self.coexist.load(Ordering::Relaxed)
-        }
-        fn set_coexist(&self, v: bool) {
-            self.coexist.store(v, Ordering::Relaxed);
-        }
-        async fn is_loaded(&self) -> bool {
-            self.loaded.load(Ordering::Relaxed)
-        }
-        async fn ensure_loaded(&self) -> Result<()> {
-            self.loaded.store(true, Ordering::Relaxed);
-            Ok(())
-        }
-        async fn unload(&self) -> Result<bool> {
-            self.unload_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(self.loaded.swap(false, Ordering::Relaxed))
-        }
-    }
-
-    #[async_trait]
-    impl OcrProvider for TestOcrProvider {
-        async fn ocr_page(&self, _image: image::DynamicImage) -> Result<String> {
-            Ok(String::new())
-        }
-    }
-
-    #[tokio::test]
-    async fn acquire_ocr_returns_none_when_unconfigured() {
-        let manager = ModelManager::new();
-        assert!(manager.acquire_ocr().await.unwrap().is_none());
-        assert!(!manager.ocr_ready().await);
-    }
-
-    #[tokio::test]
-    async fn set_ocr_replaces_and_unloads_old_provider() {
-        let manager = ModelManager::new();
-        let first = TestOcrProvider::new("first", MemoryKind::Local, false);
-        let second = TestOcrProvider::new("second", MemoryKind::Local, false);
-
-        manager
-            .set_ocr(first.clone(), "first".into())
-            .await
-            .unwrap();
-        assert_eq!(manager.ocr_model_id().await.as_deref(), Some("first"));
-
-        manager
-            .set_ocr(second.clone(), "second".into())
-            .await
-            .unwrap();
-        assert_eq!(first.unload_calls(), 1);
-        assert_eq!(second.unload_calls(), 0);
-        assert_eq!(manager.ocr_model_id().await.as_deref(), Some("second"));
-    }
-
-    #[tokio::test]
-    async fn clear_ocr_unloads_and_clears_model_id() {
-        let manager = ModelManager::new();
-        let p = TestOcrProvider::new("p", MemoryKind::Local, false);
-        manager.set_ocr(p.clone(), "p".into()).await.unwrap();
-        manager.clear_ocr().await;
-        assert_eq!(p.unload_calls(), 1);
-        assert!(manager.ocr_model_id().await.is_none());
-        assert!(!manager.ocr_ready().await);
-    }
-
-    #[tokio::test]
-    async fn ocr_propagates_lifecycle_coexist() {
-        let manager = ModelManager::new();
-        manager
-            .set_lifecycle_config(LifecycleConfig {
-                chat_coexist: false,
-                embedding_coexist: false,
-                ocr_coexist: true,
-            })
-            .await;
-        let p = TestOcrProvider::new("p", MemoryKind::Local, false);
-        manager.set_ocr(p.clone(), "p".into()).await.unwrap();
-        // After set, the provider's coexist flag matches the lifecycle.
-        assert!(p.coexist());
-    }
-
-    #[tokio::test]
-    async fn acquire_ocr_evicts_chat_when_coexist_false() {
-        let manager = ModelManager::new();
-        let chat = TestChatProvider::new("chat", MemoryKind::Local, false);
-        manager
-            .set_chat(chat.clone(), remote_config())
-            .await
-            .unwrap();
-        let _ = manager.acquire_chat().await.unwrap().unwrap();
-        assert!(chat.is_loaded().await);
-
-        let ocr = TestOcrProvider::new("ocr", MemoryKind::Local, false);
-        manager.set_ocr(ocr.clone(), "ocr".into()).await.unwrap();
-        let _ = manager.acquire_ocr().await.unwrap().unwrap();
-
-        assert_eq!(chat.unload_calls(), 1);
-        assert!(!chat.is_loaded().await);
     }
 }

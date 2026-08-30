@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderConfig {
-    /// Local model via mistralrs
-    Local { model_id: String },
     /// OpenAI API
     #[serde(rename = "openai")]
     OpenAI { api_key: String, model: String },
@@ -19,7 +17,6 @@ impl ProviderConfig {
     /// Short provider family name.
     pub fn provider_type(&self) -> &'static str {
         match self {
-            ProviderConfig::Local { .. } => "local",
             ProviderConfig::OpenAI { .. } => "openai",
             ProviderConfig::Anthropic { .. } => "anthropic",
         }
@@ -28,7 +25,6 @@ impl ProviderConfig {
     /// Model identifier within the provider family.
     pub fn model_id(&self) -> &str {
         match self {
-            ProviderConfig::Local { model_id } => model_id,
             ProviderConfig::OpenAI { model, .. } => model,
             ProviderConfig::Anthropic { model, .. } => model,
         }
@@ -54,12 +50,6 @@ pub struct ProviderFamily {
 
 pub fn get_provider_families() -> Vec<ProviderFamily> {
     vec![
-        ProviderFamily {
-            id: "local".to_string(),
-            name: "Local".to_string(),
-            description: "Run models locally on your machine".to_string(),
-            requires_api_key: false,
-        },
         ProviderFamily {
             id: "openai".to_string(),
             name: "OpenAI".to_string(),

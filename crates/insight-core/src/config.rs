@@ -45,35 +45,10 @@ impl Config {
     }
 }
 
-/// Per-role lifecycle settings.
-///
-/// Defaults are `false`: local models do **not** stay resident alongside
-/// other local models. Remote providers ignore these flags (they're
-/// hard-coded to `coexist = true`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct LifecycleConfig {
-    /// Keep the local chat model loaded while other local models load.
-    #[serde(default)]
-    pub chat_coexist: bool,
-    /// Keep the local embedding model loaded while other local models load.
-    #[serde(default)]
-    pub embedding_coexist: bool,
-    /// Keep the local OCR model loaded while other local models load.
-    #[serde(default)]
-    pub ocr_coexist: bool,
-}
-
 /// User settings (persisted to disk)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
-    /// Configured embedding model ID (None = disabled)
-    #[serde(default)]
-    pub embedding_model_id: Option<String>,
-    /// Configured OCR model ID (None = disabled; scanned PDFs park as
-    /// `ocr_task` entries until a model is configured).
-    #[serde(default)]
-    pub ocr_model_id: Option<String>,
-    /// Active chat provider configuration (local, OpenAI, or Anthropic)
+    /// Active chat provider configuration (OpenAI or Anthropic)
     #[serde(default)]
     pub provider: Option<ProviderConfig>,
     /// Stored OpenAI API key (persisted separately from active provider)
@@ -82,22 +57,35 @@ pub struct Settings {
     /// Stored Anthropic API key (persisted separately from active provider)
     #[serde(default)]
     pub anthropic_api_key: Option<String>,
-    /// Per-role lifecycle controls (coexist flags, idle TTL, etc.).
-    #[serde(default)]
-    pub lifecycle: LifecycleConfig,
 }
 
 impl Settings {
-    /// Load settings from file, or return defaults if not found
+    /// Load settings from file, or return defaults if not found.
+    ///
+    /// Legacy settings files may contain a local-inference provider
+    /// (`"type": "local"`) that no longer parses; rather than wiping ALL
+    /// settings (including stored API keys), the stale provider entry is
+    /// dropped and the remaining fields are kept.
     pub fn load(path: &PathBuf) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|e| {
-                tracing::warn!("Failed to parse settings file, using defaults: {}", e);
-                Self::default()
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+        let contents = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(e) => {
                 tracing::warn!("Failed to read settings file, using defaults: {}", e);
+                return Self::default();
+            }
+        };
+
+        match serde_json::from_str::<serde_json::Value>(&contents) {
+            Ok(mut value) => {
+                let filtered = filter_legacy_provider(value.take());
+                serde_json::from_value(filtered).unwrap_or_else(|e| {
+                    tracing::warn!("Failed to parse settings file, using defaults: {}", e);
+                    Self::default()
+                })
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse settings file, using defaults: {}", e);
                 Self::default()
             }
         }
@@ -111,47 +99,91 @@ impl Settings {
     }
 }
 
+/// Remove a provider entry that doesn't describe a supported (remote)
+/// provider, e.g. a legacy `{"type": "local", ...}` object. Leaves
+/// everything else untouched.
+fn filter_legacy_provider(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(provider) = value.get("provider").cloned() {
+        let supported = provider
+            .get("type")
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| t == "openai" || t == "anthropic");
+        if !supported {
+            if let Some(map) = value.as_object_mut() {
+                map.remove("provider");
+            }
+        }
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn lifecycle_config_defaults_when_missing() {
-        // Existing installs whose settings.json pre-dates the `lifecycle`
-        // field should deserialize cleanly with defaults.
-        let json = r#"{"embedding_model_id":"qwen3-embedding"}"#;
-        let parsed: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.lifecycle, LifecycleConfig::default());
-        assert!(!parsed.lifecycle.chat_coexist);
-        assert!(!parsed.lifecycle.embedding_coexist);
+    fn settings_all_defaults_when_empty_object() {
+        let parsed: Settings = serde_json::from_str("{}").unwrap();
+        assert!(parsed.provider.is_none());
+        assert!(parsed.openai_api_key.is_none());
+        assert!(parsed.anthropic_api_key.is_none());
     }
 
     #[test]
-    fn lifecycle_config_roundtrip() {
+    fn settings_defaults_when_fields_missing() {
+        let parsed: Settings = serde_json::from_str(r#"{"openai_api_key":"sk-x"}"#).unwrap();
+        assert_eq!(parsed.openai_api_key.as_deref(), Some("sk-x"));
+        assert!(parsed.provider.is_none());
+        assert!(parsed.anthropic_api_key.is_none());
+    }
+
+    #[test]
+    fn legacy_local_provider_is_dropped_but_siblings_survive() {
+        let json = r#"{
+            "embedding_model_id": "qwen3-embedding",
+            "ocr_model_id": "nanonets",
+            "provider": {"type": "local", "model_id": "qwen3-8b"},
+            "openai_api_key": "sk-keep",
+            "anthropic_api_key": "ant-keep",
+            "lifecycle": {"chat_coexist": true}
+        }"#;
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let filtered = filter_legacy_provider(value);
+        let parsed: Settings = serde_json::from_value(filtered).unwrap();
+        assert!(parsed.provider.is_none());
+        assert_eq!(parsed.openai_api_key.as_deref(), Some("sk-keep"));
+        assert_eq!(parsed.anthropic_api_key.as_deref(), Some("ant-keep"));
+    }
+
+    #[test]
+    fn remote_providers_survive_migration() {
+        let json = r#"{
+            "provider": {"type": "openai", "api_key": "sk-1", "model": "gpt-4o"},
+            "openai_api_key": "sk-2"
+        }"#;
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let filtered = filter_legacy_provider(value);
+        let parsed: Settings = serde_json::from_value(filtered).unwrap();
+        assert!(matches!(
+            parsed.provider,
+            Some(ProviderConfig::OpenAI { ref model, .. }) if model == "gpt-4o"
+        ));
+    }
+
+    #[test]
+    fn settings_roundtrip() {
         let original = Settings {
-            embedding_model_id: Some("m".into()),
-            ocr_model_id: Some("ocr-m".into()),
-            provider: None,
-            openai_api_key: None,
-            anthropic_api_key: None,
-            lifecycle: LifecycleConfig {
-                chat_coexist: true,
-                embedding_coexist: false,
-                ocr_coexist: true,
-            },
+            provider: Some(ProviderConfig::Anthropic {
+                api_key: "k".into(),
+                model: "claude".into(),
+            }),
+            openai_api_key: Some("sk".into()),
+            anthropic_api_key: Some("ant".into()),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.lifecycle, original.lifecycle);
-        assert_eq!(parsed.ocr_model_id, original.ocr_model_id);
-    }
-
-    #[test]
-    fn settings_all_defaults_when_empty_object() {
-        let parsed: Settings = serde_json::from_str("{}").unwrap();
-        assert!(parsed.embedding_model_id.is_none());
-        assert!(parsed.ocr_model_id.is_none());
-        assert!(parsed.provider.is_none());
-        assert_eq!(parsed.lifecycle, LifecycleConfig::default());
+        assert_eq!(parsed.provider, original.provider);
+        assert_eq!(parsed.openai_api_key, original.openai_api_key);
+        assert_eq!(parsed.anthropic_api_key, original.anthropic_api_key);
     }
 }
