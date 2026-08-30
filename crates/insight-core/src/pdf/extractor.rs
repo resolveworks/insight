@@ -113,10 +113,8 @@ mod tests {
             "Count" => 1,
         });
 
-        if let Ok(page) = doc.get_object_mut(page_id) {
-            if let Object::Dictionary(ref mut dict) = page {
-                dict.set("Parent", pages_id);
-            }
+        if let Ok(Object::Dictionary(ref mut dict)) = doc.get_object_mut(page_id) {
+            dict.set("Parent", pages_id);
         }
 
         let catalog_id = doc.add_object(dictionary! {
@@ -133,7 +131,8 @@ mod tests {
 
     #[test]
     fn extract_digital_text_pdf() {
-        let pdf = create_test_pdf("This is a test document with enough characters to count as digital");
+        let pdf =
+            create_test_pdf("This is a test document with enough characters to count as digital");
         let result = extract_text_from_bytes(pdf).unwrap();
         assert_eq!(result.page_count, 1);
         assert_eq!(result.page_boundaries.len(), 1);

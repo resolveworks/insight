@@ -195,8 +195,8 @@ mod tests {
     use crate::agent::Message;
     use crate::provider::{ChatProvider, CompletionResult, ProviderEvent, ToolDefinition};
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -316,7 +316,10 @@ mod tests {
     async fn clear_chat_unloads_and_clears_config() {
         let manager = ModelManager::new();
         let chat = TestChatProvider::new("chat");
-        manager.set_chat(chat.clone(), remote_config()).await.unwrap();
+        manager
+            .set_chat(chat.clone(), remote_config())
+            .await
+            .unwrap();
         manager.clear_chat().await;
         assert_eq!(chat.unload_calls(), 1);
         assert!(manager.chat_config().await.is_none());
@@ -327,13 +330,19 @@ mod tests {
     async fn set_chat_emits_unloaded_for_loaded_displaced_provider() {
         let manager = ModelManager::new();
         let first = TestChatProvider::new("first");
-        manager.set_chat(first.clone(), remote_config()).await.unwrap();
+        manager
+            .set_chat(first.clone(), remote_config())
+            .await
+            .unwrap();
         let _ = manager.acquire_chat().await.unwrap().unwrap();
         assert!(first.is_loaded().await);
 
         let mut events = manager.subscribe_status();
         let second = TestChatProvider::new("second");
-        manager.set_chat(second.clone(), remote_config()).await.unwrap();
+        manager
+            .set_chat(second.clone(), remote_config())
+            .await
+            .unwrap();
 
         // First was loaded → displacement must announce Unloaded for it.
         match events.try_recv() {
@@ -350,12 +359,18 @@ mod tests {
         let manager = ModelManager::new();
         let first = TestChatProvider::new("first");
         // Install but never acquire — first stays unloaded.
-        manager.set_chat(first.clone(), remote_config()).await.unwrap();
+        manager
+            .set_chat(first.clone(), remote_config())
+            .await
+            .unwrap();
         assert!(!first.is_loaded().await);
 
         let mut events = manager.subscribe_status();
         let second = TestChatProvider::new("second");
-        manager.set_chat(second.clone(), remote_config()).await.unwrap();
+        manager
+            .set_chat(second.clone(), remote_config())
+            .await
+            .unwrap();
 
         // No transition happened — no Unloaded should fire.
         assert!(events.try_recv().is_err());
@@ -367,7 +382,10 @@ mod tests {
     async fn clear_chat_emits_unloaded_when_loaded() {
         let manager = ModelManager::new();
         let chat = TestChatProvider::new("chat");
-        manager.set_chat(chat.clone(), remote_config()).await.unwrap();
+        manager
+            .set_chat(chat.clone(), remote_config())
+            .await
+            .unwrap();
         let _ = manager.acquire_chat().await.unwrap().unwrap();
 
         let mut events = manager.subscribe_status();
@@ -386,7 +404,10 @@ mod tests {
     async fn acquire_chat_emits_ready_after_load() {
         let manager = ModelManager::new();
         let chat = TestChatProvider::new("chat");
-        manager.set_chat(chat.clone(), remote_config()).await.unwrap();
+        manager
+            .set_chat(chat.clone(), remote_config())
+            .await
+            .unwrap();
 
         let mut events = manager.subscribe_status();
         let _ = manager.acquire_chat().await.unwrap().unwrap();

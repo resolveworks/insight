@@ -104,10 +104,7 @@ impl Pipeline {
 
         workers::spawn_index_worker(index_rx, storage.clone(), index_worker, progress.clone());
 
-        tracing::info!(
-            extract_workers = EXTRACT_WORKERS,
-            "Pipeline started"
-        );
+        tracing::info!(extract_workers = EXTRACT_WORKERS, "Pipeline started");
 
         (
             Self {

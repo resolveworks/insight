@@ -10,28 +10,33 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # iroh P2P
-iroh = "0.95"
-iroh-blobs = "0.97"
-iroh-docs = "0.95"
-iroh-gossip = "0.95"
+iroh = "1"
+iroh-blobs = "0.103"
+iroh-docs = "0.101"
+iroh-gossip = "0.101"
 iroh-io = "0.6"
 
-# PDF processing
-lopdf = "0.38"
+# PDF processing (default features off: the `time` feature of 0.44.0 is broken
+# upstream, see lopdf issue #518 — we don't use PDF date conversion)
+lopdf = { version = "0.44", default-features = false, features = ["rayon"] }
 
 # milli from meilisearch — full-text keyword search
-milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1" }
+milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.53.1" }
 # milli's Settings::execute / indexer::index take &IpPolicy even without embedders
-http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.42.1", package = "http-client" }
+http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.53.1", package = "http-client" }
 bumpalo = "3"
 fst = "0.4.7"
 roaring = "0.10.7"
+# milli serializes SmartString but relies on rhai's feature flags to enable
+# smartstring/serde; declare it explicitly so it doesn't depend on unification
+smartstring = { version = "1", features = ["serde"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
+time = "0.3"
 
 # Random
 rand = "0.9"
@@ -39,10 +44,10 @@ rand = "0.9"
 # Remote LLM providers
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-async-openai = { version = "0.32", features = ["responses", "model"] }
+async-openai = { version = "0.41", features = ["responses", "model"] }
 
 # Text chunking for search indexing
-text-splitter = "0.28"
+text-splitter = "0.32"
 
 # Utilities
 anyhow = "1"

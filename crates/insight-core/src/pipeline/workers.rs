@@ -176,11 +176,8 @@ pub fn spawn_index_worker(
                     let text = match String::from_utf8(text_bytes) {
                         Ok(t) => t,
                         Err(e) => {
-                            let err = anyhow::anyhow!(
-                                "Invalid UTF-8 in document {}: {}",
-                                job.doc_id,
-                                e
-                            );
+                            let err =
+                                anyhow::anyhow!("Invalid UTF-8 in document {}: {}", job.doc_id, e);
                             tracing::error!(doc_id = %job.doc_id, error = %err, "Index failed");
                             progress
                                 .apply(ProgressUpdate::Failed {

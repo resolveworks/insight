@@ -154,7 +154,7 @@ impl Storage {
             .context("Failed to open blob store")?;
 
         // Create endpoint with relay servers for P2P connectivity
-        let endpoint = Endpoint::builder()
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
             .relay_mode(RelayMode::Default)
             .bind()
             .await
@@ -1425,10 +1425,8 @@ mod tests {
                 "Kids" => vec![page_id.into()],
                 "Count" => 1,
             });
-            if let Ok(page) = doc.get_object_mut(page_id) {
-                if let Object::Dictionary(ref mut dict) = page {
-                    dict.set("Parent", pages_id);
-                }
+            if let Ok(Object::Dictionary(ref mut dict)) = doc.get_object_mut(page_id) {
+                dict.set("Parent", pages_id);
             }
             let catalog_id = doc.add_object(dictionary! {
                 "Type" => "Catalog",
@@ -1507,5 +1505,4 @@ mod tests {
             .await
             .unwrap());
     }
-
 }

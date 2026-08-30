@@ -19,10 +19,11 @@ use milli::update::{IndexerConfig, MissingDocumentPolicy};
 use milli::vector::RuntimeEmbedders;
 use milli::{
     CreateOrOpen, Filter, FilterCondition, FilterableAttributesRule, Index, IndexFilter,
-    IndexFilterCondition, TermsMatchingStrategy,
+    IndexFilterCondition, MustStopProcessing, TermsMatchingStrategy,
 };
 use roaring::RoaringBitmap;
 use serde_json::{Map, Value};
+use time::OffsetDateTime;
 
 /// Default map size for the LMDB environment (10 GB)
 /// This is the maximum size the database can grow to
@@ -33,7 +34,7 @@ const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
 /// milli's `Filter::from_str` produces a `Filter`, but `Search::filter` now wants
 /// an `IndexFilter` (the variant without `Foreign` conditions). We only ever build
 /// simple field/IN filters, so conversion is mechanical.
-fn parse_index_filter(expr: &str) -> Result<Option<IndexFilter<'_>>> {
+fn parse_index_filter(expr: &str) -> Result<Option<IndexFilter>> {
     let Some(filter) =
         Filter::from_str(expr).map_err(|e| anyhow::anyhow!("Filter error: {e:?}"))?
     else {
@@ -44,7 +45,7 @@ fn parse_index_filter(expr: &str) -> Result<Option<IndexFilter<'_>>> {
     ))))
 }
 
-fn condition_to_index_condition(cond: FilterCondition<'_>) -> IndexFilterCondition<'_> {
+fn condition_to_index_condition(cond: FilterCondition) -> IndexFilterCondition {
     match cond {
         FilterCondition::Not(inner) => {
             IndexFilterCondition::Not(Box::new(condition_to_index_condition(*inner)))
@@ -130,7 +131,7 @@ pub fn open_index(path: &Path) -> Result<Index> {
             FilterableAttributesRule::Field("parent_id".to_string()),
         ]);
         settings.execute(
-            &|| false,
+            &MustStopProcessing::default(),
             &Progress::default(),
             &IpPolicy::danger_always_allow(),
             Arc::new(EmbedderStats::default()),
@@ -258,13 +259,14 @@ fn index_chunk_batch(
     operation.replace_documents(&mmap, MissingDocumentPolicy::Create)?;
 
     let indexer_alloc = Bump::new();
+    let must_stop = MustStopProcessing::default();
     let (document_changes, operation_stats, primary_key) = operation.into_changes(
         &indexer_alloc,
         index,
         &rtxn,
         None,
         &mut new_fields_ids_map,
-        &|| false,
+        &must_stop,
         Progress::default(),
         None,
     )?;
@@ -288,7 +290,7 @@ fn index_chunk_batch(
                 primary_key,
                 &document_changes,
                 RuntimeEmbedders::default(), // no embedders: keyword-only index
-                &|| false,
+                &must_stop,
                 &Progress::default(),
                 &IpPolicy::danger_always_allow(),
                 &EmbedderStats::default(),
@@ -353,8 +355,16 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
     } = params;
 
     let rtxn = index.read_txn()?;
+    let fields_ids_map = index.fields_ids_map(&rtxn)?;
     let progress = Progress::default();
-    let mut search = milli::Search::new(&rtxn, index, &progress);
+    let mut search = milli::Search::new(
+        &rtxn,
+        index,
+        &fields_ids_map,
+        "insight",
+        OffsetDateTime::now_utc(),
+        &progress,
+    );
     search.query(query);
     search.limit(limit);
     search.offset(offset);
@@ -369,7 +379,7 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
     });
     if let Some(ref fs) = filter_str {
         if let Some(f) = parse_index_filter(fs)? {
-            search.filter(f);
+            search.filter(Some(f));
         }
     }
 
@@ -432,11 +442,19 @@ pub fn delete_document_chunks(
     // Build filter for parent_id
     let filter_str = format!("parent_id = \"{}\"", parent_id);
     let progress = Progress::default();
-    let mut search = milli::Search::new(&rtxn, index, &progress);
+    let fields_ids_map = index.fields_ids_map(&rtxn)?;
+    let mut search = milli::Search::new(
+        &rtxn,
+        index,
+        &fields_ids_map,
+        "insight",
+        OffsetDateTime::now_utc(),
+        &progress,
+    );
     search.query("");
     search.limit(usize::MAX);
     if let Some(f) = parse_index_filter(&filter_str)? {
-        search.filter(f);
+        search.filter(Some(f));
     }
 
     let result = search.execute()?;
@@ -500,11 +518,19 @@ pub fn get_collection_terms(
         let filter_str = format!("collection_id IN [{}]", quoted.join(", "));
 
         let progress = Progress::default();
-        let mut search = milli::Search::new(&rtxn, index, &progress);
+        let fields_ids_map = index.fields_ids_map(&rtxn)?;
+        let mut search = milli::Search::new(
+            &rtxn,
+            index,
+            &fields_ids_map,
+            "insight",
+            OffsetDateTime::now_utc(),
+            &progress,
+        );
         search.query("");
         search.limit(usize::MAX);
         if let Some(f) = parse_index_filter(&filter_str)? {
-            search.filter(f);
+            search.filter(Some(f));
         }
 
         let result = search.execute()?;
@@ -572,16 +598,17 @@ fn delete_chunks_by_id(
     let mut new_fields_ids_map = db_fields_ids_map.clone();
 
     let mut operation = IndexOperations::new();
-    operation.delete_documents(&chunk_ids_refs);
+    operation.delete_documents_by_external_ids(&chunk_ids_refs);
 
     let indexer_alloc = Bump::new();
+    let must_stop = MustStopProcessing::default();
     let (document_changes, operation_stats, primary_key) = operation.into_changes(
         &indexer_alloc,
         index,
         &rtxn,
         None,
         &mut new_fields_ids_map,
-        &|| false,
+        &must_stop,
         Progress::default(),
         None,
     )?;
@@ -605,7 +632,7 @@ fn delete_chunks_by_id(
                 primary_key,
                 &document_changes,
                 RuntimeEmbedders::default(),
-                &|| false,
+                &must_stop,
                 &Progress::default(),
                 &IpPolicy::danger_always_allow(),
                 &EmbedderStats::default(),
@@ -870,24 +897,9 @@ mod tests {
         let config = test_indexer_config();
 
         let chunks = vec![
-            make_chunk(
-                "doc1",
-                "a.pdf",
-                "First document about science",
-                "col1",
-            ),
-            make_chunk(
-                "doc2",
-                "b.pdf",
-                "Second document about science",
-                "col1",
-            ),
-            make_chunk(
-                "doc3",
-                "c.pdf",
-                "Third document about science",
-                "col1",
-            ),
+            make_chunk("doc1", "a.pdf", "First document about science", "col1"),
+            make_chunk("doc2", "b.pdf", "Second document about science", "col1"),
+            make_chunk("doc3", "c.pdf", "Third document about science", "col1"),
         ];
 
         index_chunks_batch(&index, &config, chunks).unwrap();

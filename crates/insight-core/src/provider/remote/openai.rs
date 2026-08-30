@@ -130,6 +130,7 @@ impl ChatProvider for OpenAIChatProvider {
                             description: Some(t.description.clone()),
                             parameters: Some(params),
                             strict: Some(true),
+                            defer_loading: None,
                         })
                     })
                     .collect(),
@@ -258,6 +259,7 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                     r#type: MessageType::Message,
                     role: Role::User,
                     content: EasyInputContent::Text(render_context_message(&msg.text())),
+                    phase: None,
                 }));
             }
             MessageRole::User => {
@@ -268,6 +270,7 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                                 r#type: MessageType::Message,
                                 role: Role::User,
                                 content: EasyInputContent::Text(text.clone()),
+                                phase: None,
                             }));
                         }
                         ContentBlock::ToolResult {
@@ -296,6 +299,7 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                                 r#type: MessageType::Message,
                                 role: Role::Assistant,
                                 content: EasyInputContent::Text(text.clone()),
+                                phase: None,
                             }));
                         }
                         ContentBlock::ToolUse {
@@ -307,6 +311,7 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<InputItem>) {
                                 call_id: id.clone(),
                                 name: name.clone(),
                                 arguments: arguments.to_string(),
+                                namespace: None,
                                 id: None,
                                 status: None,
                             })));

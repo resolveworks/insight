@@ -58,7 +58,15 @@ impl CollectionWatcher {
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = run_watcher(namespace_id, storage, senders, progress, cancel_clone.clone()).await {
+            if let Err(e) = run_watcher(
+                namespace_id,
+                storage,
+                senders,
+                progress,
+                cancel_clone.clone(),
+            )
+            .await
+            {
                 if !cancel_clone.is_cancelled() {
                     tracing::error!(
                         namespace = %namespace_id,

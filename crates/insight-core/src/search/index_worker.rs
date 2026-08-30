@@ -13,7 +13,9 @@ use milli::update::IndexerConfig;
 use milli::Index;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{delete_chunks_by_collection, delete_document_chunks, index_chunks_batch, ChunkToIndex};
+use super::{
+    delete_chunks_by_collection, delete_document_chunks, index_chunks_batch, ChunkToIndex,
+};
 
 /// Request to the index worker.
 pub enum IndexRequest {

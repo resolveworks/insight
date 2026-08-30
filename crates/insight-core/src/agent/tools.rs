@@ -435,6 +435,7 @@ mod tests {
     }
 
     /// Helper to create a chunk for indexing
+    #[allow(clippy::too_many_arguments)]
     fn make_chunk(
         parent_id: &str,
         parent_name: &str,
@@ -727,7 +728,7 @@ mod tests {
                     1,
                 ),
             ];
-            search::index_chunks_batch(&index, &config, chunks).unwrap();
+            search::index_chunks_batch(index, &config, chunks).unwrap();
         }
 
         // Only search in research collection
