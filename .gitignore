@@ -20,3 +20,6 @@ dev.bat
 styles.css
 /docs/book
 /scripts
+
+# Local test documents (fetched, not authored)
+/samples
