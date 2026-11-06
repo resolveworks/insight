@@ -344,6 +344,24 @@ describe('applyItem — control items', () => {
 		});
 	});
 
+	it('modelTurnRetried ignores consecutive rejected attempts that streamed nothing', () => {
+		const run = fold([
+			start(0, 'text'),
+			textDelta(0, 'kept'),
+			{ type: 'modelTurnRetried', turn: 2 },
+			{ type: 'modelTurnRetried', turn: 3 },
+		]);
+		expect(run).toEqual({
+			streamingText: false,
+			messages: [
+				{
+					role: 'assistant',
+					content: [{ type: 'text', part: 0, text: 'kept' }],
+				},
+			],
+		});
+	});
+
 	it('completionCall, finalResponse, and unknown payloads are no-ops', () => {
 		const base = fold([start(0, 'text'), textDelta(0, 'keep')]);
 		const noop = (item: MultiTurnStreamItem) => {

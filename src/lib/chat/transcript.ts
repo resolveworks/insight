@@ -181,13 +181,14 @@ export function applyItem(run: LiveRun, item: MultiTurnStreamItem): LiveRun {
 
 /** Drop the retried model turn's provisional output, keeping committed segments.
  *
- * `turn` is one-based, so it either equals the number of assistant segments
- * (the rejected attempt streamed content) or exceeds it by one (it did not). */
+ * `turn` is one-based. A turn beyond the assistant segment count streamed
+ * nothing (possibly across several consecutive rejected attempts); a turn
+ * equal to the count drops the trailing assistant segment. */
 function discardCurrentTurn(run: LiveRun, turn: number): LiveRun {
 	const assistantTurns = run.messages.filter(
 		(message) => message.role === 'assistant',
 	).length;
-	if (turn === assistantTurns + 1) {
+	if (turn > assistantTurns) {
 		return { ...run, streamingText: false };
 	}
 	const last = lastMessage(run);

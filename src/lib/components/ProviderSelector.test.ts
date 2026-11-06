@@ -75,6 +75,26 @@ describe('ProviderSelector', () => {
 		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
 	});
 
+	it('shows the provider state error when the boot query fails', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'get_current_provider') throw new Error('malformed settings');
+			if (cmd === 'get_provider_status')
+				return { family: null, model: null, ready: false };
+			if (cmd === 'get_stored_api_keys') return {};
+			return null;
+		});
+		await providerStore.__resetForTests();
+
+		render(ProviderSelector);
+
+		expect(
+			await screen.findByText(/failed to load provider settings/i),
+		).toHaveTextContent('malformed settings');
+		// The form stays visible so the settings can be inspected and fixed.
+		expect(screen.getByLabelText('Provider')).toBeInTheDocument();
+	});
+
 	it('shows a fetched model dropdown for families with model listing', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'list_provider_families') return FAMILIES;

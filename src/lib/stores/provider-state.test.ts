@@ -170,6 +170,42 @@ describe('provider-state store', () => {
 		expect(store.isProviderReady()).toBe(false);
 	});
 
+	it('exposes a failed state query and clears it after a successful configure', async () => {
+		let broken = true;
+		mockIPC((cmd) => {
+			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'get_current_provider') {
+				if (broken) throw new Error('malformed settings file');
+				return {
+					family: 'openai/openai',
+					model: 'gpt-4o-mini',
+					api_key: 'sk-new',
+					base_url: null,
+				};
+			}
+			if (cmd === 'get_provider_status')
+				return { family: 'openai/openai', model: 'gpt-4o-mini', ready: true };
+			if (cmd === 'get_stored_api_keys') return {};
+			if (cmd === 'configure_provider') return null;
+		});
+
+		const store = await importStore();
+		await store.ensureProviderStateLoaded();
+
+		expect(store.getProviderStateError()).toContain('malformed settings file');
+		expect(store.isLoaded()).toBe(true);
+
+		broken = false;
+		await store.configureProvider({
+			family: 'openai/openai',
+			apiKey: 'sk-new',
+			model: 'gpt-4o-mini',
+		});
+
+		expect(store.getProviderStateError()).toBeNull();
+		expect(store.isProviderReady()).toBe(true);
+	});
+
 	it('lists models for a family, forwarding key and base url', async () => {
 		let listArgs: Record<string, unknown> | null = null;
 		mockIPC((cmd, args) => {
