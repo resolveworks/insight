@@ -113,12 +113,12 @@ mod tests {
     fn settings_roundtrip() {
         let original = Settings {
             provider: Some(ProviderSettings {
-                family: "anthropic".into(),
+                family: "anthropic/anthropic".into(),
                 model: "claude".into(),
                 api_key: Some("k".into()),
                 base_url: None,
             }),
-            api_keys: [("anthropic".to_string(), "k".to_string())]
+            api_keys: [("anthropic/anthropic".to_string(), "k".to_string())]
                 .into_iter()
                 .collect(),
         };

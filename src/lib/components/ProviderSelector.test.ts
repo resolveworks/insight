@@ -6,24 +6,24 @@ import * as providerStore from '#lib/stores/provider-state.svelte.js';
 
 const FAMILIES = [
 	{
-		id: 'openai',
+		id: 'openai/openai',
 		name: 'OpenAI',
 		requires_api_key: true,
-		supports_base_url: false,
+		supports_base_url: true,
 		supports_model_listing: true,
 	},
 	{
-		id: 'ollama',
+		id: 'ollama/openai',
 		name: 'Ollama',
 		requires_api_key: false,
 		supports_base_url: true,
 		supports_model_listing: true,
 	},
 	{
-		id: 'deepseek',
+		id: 'deepseek/openai',
 		name: 'DeepSeek',
 		requires_api_key: true,
-		supports_base_url: false,
+		supports_base_url: true,
 		supports_model_listing: false,
 	},
 ];
@@ -37,7 +37,8 @@ describe('ProviderSelector', () => {
 			if (cmd === 'get_current_provider') return null;
 			if (cmd === 'get_provider_status')
 				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys') return { openai: 'sk-stored' };
+			if (cmd === 'get_stored_api_keys')
+				return { 'openai/openai': 'sk-stored' };
 			return null;
 		});
 		await providerStore.__resetForTests();
@@ -48,14 +49,15 @@ describe('ProviderSelector', () => {
 			if (cmd === 'list_provider_families') return FAMILIES;
 			if (cmd === 'get_current_provider')
 				return {
-					family: 'openai',
+					family: 'openai/openai',
 					model: 'gpt-4o',
 					api_key: 'sk-stored',
 					base_url: null,
 				};
 			if (cmd === 'get_provider_status')
-				return { family: 'openai', model: 'gpt-4o', ready: true };
-			if (cmd === 'get_stored_api_keys') return { openai: 'sk-stored' };
+				return { family: 'openai/openai', model: 'gpt-4o', ready: true };
+			if (cmd === 'get_stored_api_keys')
+				return { 'openai/openai': 'sk-stored' };
 			return null;
 		});
 		await providerStore.__resetForTests();
@@ -65,15 +67,15 @@ describe('ProviderSelector', () => {
 		const select = (await screen.findByLabelText(
 			'Provider',
 		)) as HTMLSelectElement;
-		await waitFor(() => expect(select.value).toBe('openai'));
+		await waitFor(() => expect(select.value).toBe('openai/openai'));
 		expect(screen.getByText('OpenAI: gpt-4o')).toBeInTheDocument();
 
-		// Key-required family: API key input prefilled from stored keys; no
-		// base URL input.
+		// Key-required family: API key input prefilled from stored keys, and
+		// every family accepts a custom base URL.
 		expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe(
 			'sk-stored',
 		);
-		expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument();
+		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
 	});
 
 	it('shows a fetched model dropdown for families with model listing', async () => {
@@ -82,7 +84,8 @@ describe('ProviderSelector', () => {
 			if (cmd === 'get_current_provider') return null;
 			if (cmd === 'get_provider_status')
 				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys') return { openai: 'sk-stored' };
+			if (cmd === 'get_stored_api_keys')
+				return { 'openai/openai': 'sk-stored' };
 			if (cmd === 'list_provider_models')
 				return [
 					{ id: 'gpt-4o', display_name: 'GPT-4o' },
@@ -148,7 +151,8 @@ describe('ProviderSelector', () => {
 			if (cmd === 'get_current_provider') return null;
 			if (cmd === 'get_provider_status')
 				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys') return { openai: 'sk-stored' };
+			if (cmd === 'get_stored_api_keys')
+				return { 'openai/openai': 'sk-stored' };
 			if (cmd === 'list_provider_models') throw new Error('listing failed');
 			return null;
 		});
@@ -171,7 +175,7 @@ describe('ProviderSelector', () => {
 			'Provider',
 		)) as HTMLSelectElement;
 		await waitFor(() => expect(select.options.length).toBeGreaterThan(0));
-		select.value = 'deepseek';
+		select.value = 'deepseek/openai';
 		await fireEvent.change(select);
 
 		// DeepSeek requires an API key, so entry is locked until the key is
@@ -187,8 +191,8 @@ describe('ProviderSelector', () => {
 			expect(input.tagName).toBe('INPUT');
 			expect(input.disabled).toBe(false);
 		});
-		// Base URL not supported.
-		expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument();
+		// Every family accepts a custom base URL.
+		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
 	});
 
 	it('shows a base URL input for families that support one', async () => {
@@ -198,7 +202,7 @@ describe('ProviderSelector', () => {
 			'Provider',
 		)) as HTMLSelectElement;
 		await waitFor(() => expect(select.options.length).toBeGreaterThan(0));
-		select.value = 'ollama';
+		select.value = 'ollama/openai';
 		await fireEvent.change(select);
 
 		expect(await screen.findByLabelText('Base URL')).toBeInTheDocument();
@@ -210,7 +214,8 @@ describe('ProviderSelector', () => {
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
 			if (cmd === 'list_provider_families') return FAMILIES;
-			if (cmd === 'get_stored_api_keys') return { openai: 'sk-stored' };
+			if (cmd === 'get_stored_api_keys')
+				return { 'openai/openai': 'sk-stored' };
 			if (cmd === 'list_provider_models')
 				return [
 					{ id: 'gpt-4o', display_name: 'GPT-4o' },
@@ -232,7 +237,7 @@ describe('ProviderSelector', () => {
 		await waitFor(() => {
 			const call = calls.find((c) => c.cmd === 'configure_provider');
 			expect(call?.args).toMatchObject({
-				family: 'openai',
+				family: 'openai/openai',
 				apiKey: 'sk-stored',
 				baseUrl: null,
 				model: 'gpt-4o',
@@ -247,13 +252,13 @@ describe('ProviderSelector', () => {
 			if (cmd === 'list_provider_families') return FAMILIES;
 			if (cmd === 'get_current_provider')
 				return {
-					family: 'openai',
+					family: 'openai/openai',
 					model: 'gpt-4o',
 					api_key: 'sk',
 					base_url: null,
 				};
 			if (cmd === 'get_provider_status')
-				return { family: 'openai', model: 'gpt-4o', ready: true };
+				return { family: 'openai/openai', model: 'gpt-4o', ready: true };
 			if (cmd === 'get_stored_api_keys') return {};
 			return null;
 		});
