@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 import ProviderSelector from './ProviderSelector.svelte';
-import * as providerStore from '$lib/stores/provider-state.svelte';
+import * as providerStore from '#lib/stores/provider-state.svelte.js';
 
 const FAMILIES = [
 	{

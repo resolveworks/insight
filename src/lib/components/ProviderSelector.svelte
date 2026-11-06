@@ -14,7 +14,7 @@
 		loadFamilies,
 		type ProviderFamily,
 		type ProviderModel,
-	} from '$lib/stores/provider-state.svelte';
+	} from '#lib/stores/provider-state.svelte.js';
 
 	type Status = 'idle' | 'saving' | 'listing';
 	type ModelState = 'loading' | 'locked' | 'manual' | 'error' | 'ready';

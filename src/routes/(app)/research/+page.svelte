@@ -1,13 +1,13 @@
 <script lang="ts">
-	import Chat from '$lib/components/Chat.svelte';
-	import CollectionFilter from '$lib/components/CollectionFilter.svelte';
-	import ConversationSidebar from '$lib/components/ConversationSidebar.svelte';
-	import FilterSidebar from '$lib/components/FilterSidebar.svelte';
-	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
-	import SetupScreen from '$lib/components/SetupScreen.svelte';
-	import { isLoaded, isProviderReady } from '$lib/stores/provider-state.svelte';
-	import * as collectionsStore from '$lib/stores/collections.svelte';
-	import * as chat from '$lib/stores/conversations.svelte';
+	import Chat from '#lib/components/Chat.svelte';
+	import CollectionFilter from '#lib/components/CollectionFilter.svelte';
+	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
+	import FilterSidebar from '#lib/components/FilterSidebar.svelte';
+	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
+	import SetupScreen from '#lib/components/SetupScreen.svelte';
+	import { isLoaded, isProviderReady } from '#lib/stores/provider-state.svelte.js';
+	import * as collectionsStore from '#lib/stores/collections.svelte.js';
+	import * as chat from '#lib/stores/conversations.svelte.js';
 
 	const loaded = $derived(isLoaded());
 	const providerReady = $derived(isProviderReady());

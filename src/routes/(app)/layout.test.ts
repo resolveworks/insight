@@ -22,9 +22,9 @@ describe('App Layout Navigation', () => {
 	it('tab configuration is complete', () => {
 		// Verify the tab configuration matches our routes
 		const tabs = [
-			{ id: 'research', label: 'Research', href: '/research' },
-			{ id: 'files', label: 'Files', href: '/files' },
-			{ id: 'settings', label: 'Settings', href: '/settings' },
+			{ id: 'research', label: 'Research', href: 'research' },
+			{ id: 'files', label: 'Files', href: 'files' },
+			{ id: 'settings', label: 'Settings', href: 'settings' },
 		];
 
 		expect(tabs).toHaveLength(3);
@@ -34,7 +34,7 @@ describe('App Layout Navigation', () => {
 
 		// Each tab should have matching id and href
 		for (const tab of tabs) {
-			expect(tab.href).toBe(`/${tab.id}`);
+			expect(tab.href).toBe(tab.id);
 		}
 	});
 });

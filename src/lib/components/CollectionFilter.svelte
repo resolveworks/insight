@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Collection } from '$lib/stores/collections.svelte';
-	import type { CollectionInfo } from '$lib/stores/conversations.svelte';
+	import type { Collection } from '#lib/stores/collections.svelte.js';
+	import type { CollectionInfo } from '#lib/stores/conversations.svelte.js';
 
 	type Props = {
 		collections: Collection[];

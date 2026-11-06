@@ -11,14 +11,14 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { MultiTurnStreamItem, RigMessage } from '$lib/types/rig';
+import type { MultiTurnStreamItem, RigMessage } from '#lib/types/rig.js';
 import {
 	applyItem,
 	buildTranscript,
 	emptyLiveRun,
 	type LiveRun,
 	type TranscriptItem,
-} from '$lib/chat/transcript';
+} from '#lib/chat/transcript.js';
 
 // =============================================================================
 // Types (backend contract)

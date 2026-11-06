@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { MultiTurnStreamItem, RigMessage } from '$lib/types/rig';
+import type { MultiTurnStreamItem, RigMessage } from '#lib/types/rig.js';
 import {
 	applyItem,
 	buildTranscript,

@@ -13,14 +13,14 @@ import type {
 	RigReasoning,
 	RigToolResultContent,
 	StreamAssistantItem,
-} from '$lib/types/rig';
+} from '#lib/types/rig.js';
 import {
 	isCompleteReasoning,
 	isCompleteToolCall,
 	isReasoningDelta,
 	isTextDelta,
 	isToolCallDelta,
-} from '$lib/types/rig';
+} from '#lib/types/rig.js';
 
 // --- Live (provisional) run state -----------------------------------------
 

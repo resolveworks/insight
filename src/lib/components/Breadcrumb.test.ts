@@ -6,7 +6,7 @@ describe('Breadcrumb', () => {
 	it('renders segments', () => {
 		render(Breadcrumb, {
 			props: {
-				segments: [{ label: 'Home', href: '/' }, { label: 'Documents' }],
+				segments: [{ label: 'Home', href: '' }, { label: 'Documents' }],
 			},
 		});
 
@@ -17,7 +17,7 @@ describe('Breadcrumb', () => {
 	it('renders links for segments with href', () => {
 		render(Breadcrumb, {
 			props: {
-				segments: [{ label: 'Home', href: '/' }],
+				segments: [{ label: 'Home', href: '' }],
 			},
 		});
 

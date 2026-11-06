@@ -5,10 +5,10 @@
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
-	import { isProviderReady } from '$lib/stores/provider-state.svelte';
+	import { isProviderReady } from '#lib/stores/provider-state.svelte.js';
 	import { resolve } from '$app/paths';
-	import * as collectionsStore from '$lib/stores/collections.svelte';
-	import * as chat from '$lib/stores/conversations.svelte';
+	import * as collectionsStore from '#lib/stores/collections.svelte.js';
+	import * as chat from '#lib/stores/conversations.svelte.js';
 
 	// Provider state
 	const providerReady = $derived(isProviderReady());
@@ -199,7 +199,7 @@
 							Collections hold the documents your agent searches.
 						</p>
 						<a
-							href={resolve('/files')}
+							href={resolve('files')}
 							class="inline-flex items-center justify-center rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
 						>
 							Go to Files

@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
-	import Button from '$lib/components/Button.svelte';
-	import Input from '$lib/components/Input.svelte';
-	import ErrorAlert from '$lib/components/ErrorAlert.svelte';
-	import Modal from '$lib/components/Modal.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import * as collections from '$lib/stores/collections.svelte';
+	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
+	import Button from '#lib/components/Button.svelte';
+	import Input from '#lib/components/Input.svelte';
+	import ErrorAlert from '#lib/components/ErrorAlert.svelte';
+	import Modal from '#lib/components/Modal.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import * as collections from '#lib/stores/collections.svelte.js';
 
 	// Create collection state
 	let newCollectionName = $state('');
@@ -36,7 +36,7 @@
 		const collection = await collections.createCollection(newCollectionName);
 		if (collection) {
 			newCollectionName = '';
-			goto(resolve(`/files/${collection.id}`));
+			goto(resolve(`files/${collection.id}`));
 		}
 	}
 
@@ -82,7 +82,7 @@
 		if (collection) {
 			importTicket = '';
 			showImportModal = false;
-			goto(resolve(`/files/${collection.id}`));
+			goto(resolve(`files/${collection.id}`));
 		} else {
 			importError = 'Failed to import collection';
 		}
@@ -137,7 +137,7 @@
 					<div
 						class="group relative rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
-						<a href={resolve(`/files/${collection.id}`)} class="block">
+						<a href={resolve(`files/${collection.id}`)} class="block">
 							<h3 class="font-medium text-neutral-800">
 								{collection.name}
 							</h3>

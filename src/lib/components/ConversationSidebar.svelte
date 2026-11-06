@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import * as chat from '$lib/stores/conversations.svelte';
+	import * as chat from '#lib/stores/conversations.svelte.js';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	type Props = {

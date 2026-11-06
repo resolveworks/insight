@@ -3,14 +3,13 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import path from 'path';
 
 export default defineConfig({
-	plugins: [svelte({ hot: false })],
+	plugins: [svelte()],
 	resolve: {
 		conditions: ['browser'],
 		alias: {
-			$lib: path.resolve('./src/lib'),
 			'$app/paths': path.resolve('./src/tests/mocks/app-paths.ts'),
 			'$app/environment': path.resolve('./src/tests/mocks/app-environment.ts'),
-			'$app/stores': path.resolve('./src/tests/mocks/app-stores.ts'),
+			'$app/state': path.resolve('./src/tests/mocks/app-state.ts'),
 		},
 	},
 	test: {

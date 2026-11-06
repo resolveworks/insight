@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
-import type { MultiTurnStreamItem, RigMessage } from '$lib/types/rig';
-import { emptyLiveRun } from '$lib/chat/transcript';
+import type { MultiTurnStreamItem, RigMessage } from '#lib/types/rig.js';
+import { emptyLiveRun } from '#lib/chat/transcript.js';
 
 type EventListener = (event: { payload: unknown }) => void;
 const listeners = new Map<string, EventListener>();

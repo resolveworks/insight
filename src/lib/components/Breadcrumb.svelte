@@ -18,8 +18,8 @@
 		{#if i > 0}
 			<span class="text-neutral-400">/</span>
 		{/if}
-		{#if segment.href}
-			{@const href = resolve(segment.href as '/')}
+		{#if segment.href !== undefined}
+			{@const href = resolve(segment.href as 'research')}
 			<a {href} class="hover:text-primary-600 transition-colors">
 				{segment.label}
 			</a>

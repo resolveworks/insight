@@ -1,20 +1,20 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { invoke } from '@tauri-apps/api/core';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { onDestroy, onMount } from 'svelte';
-	import Button from '$lib/components/Button.svelte';
-	import Breadcrumb from '$lib/components/Breadcrumb.svelte';
-	import * as collections from '$lib/stores/collections.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import type { Document } from '$lib/stores/collections.svelte';
+	import Button from '#lib/components/Button.svelte';
+	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
+	import * as collections from '#lib/stores/collections.svelte.js';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import type { Document } from '#lib/stores/collections.svelte.js';
 
 	let documents = $state<Document[]>([]);
 	let deletingDocument = $state<Document | null>(null);
 
-	const collectionId = $derived($page.params.collectionId);
+	const collectionId = $derived(page.params.collectionId);
 	const collection = $derived(
 		collectionId ? collections.getCollection(collectionId) : undefined,
 	);
@@ -38,7 +38,7 @@
 	);
 
 	const breadcrumbs = $derived([
-		{ label: 'Files', href: '/files' },
+		{ label: 'Files', href: 'files' },
 		{ label: collectionName },
 	]);
 
@@ -163,7 +163,7 @@
 						class="group flex items-center justify-between rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
 						<a
-							href={resolve(`/files/${collectionId}/${doc.id}`)}
+							href={resolve(`files/${collectionId}/${doc.id}`)}
 							class="flex-1"
 						>
 							<span
