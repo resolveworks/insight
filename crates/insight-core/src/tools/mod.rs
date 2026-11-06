@@ -50,14 +50,17 @@ impl ToolState {
         self.collections.iter().map(|c| c.id.clone()).collect()
     }
 
-    /// Resolve a collection name, falling back to the first 8 characters of
-    /// the ID plus an ellipsis.
-    fn name_of(&self, collection_id: &str) -> String {
+    /// Resolve a collection name from the active scope.
+    fn name_of(&self, collection_id: &str) -> Result<String, ToolExecutionError> {
         self.collections
             .iter()
             .find(|c| c.id == collection_id)
             .map(|c| c.name.clone())
-            .unwrap_or_else(|| collection_id.chars().take(8).collect::<String>() + "...")
+            .ok_or_else(|| {
+                ToolExecutionError::not_found(format!(
+                    "collection {collection_id} is not in the active scope"
+                ))
+            })
     }
 }
 
@@ -70,6 +73,11 @@ const MAX_DOCS_TO_SHOW: usize = 25;
 /// Default and maximum term counts for [`get_collection_terms`].
 const TERMS_DEFAULT_LIMIT: usize = 50;
 const TERMS_MAX_LIMIT: usize = 200;
+
+/// Wrap an internal failure for safe model-facing presentation.
+fn infrastructure_error(error: impl std::fmt::Display) -> ToolExecutionError {
+    ToolExecutionError::from_error(std::io::Error::other(error.to_string()))
+}
 
 // ==================== search ====================
 
@@ -84,7 +92,7 @@ pub struct SearchHitResult {
     pub chunk_index: i64,
     /// ID of the collection the document belongs to.
     pub collection_id: String,
-    /// Collection name (8-char ID fallback when unknown).
+    /// Collection name.
     pub collection_name: String,
     /// Passage content, truncated to ~500 characters.
     pub passage: String,
@@ -162,45 +170,35 @@ async fn search(state: &ToolState, query: String) -> Result<SearchOutput, ToolEx
         ..Default::default()
     };
 
-    let results = search::search_index(index, params)
-        .map_err(|e| ToolExecutionError::other(e.to_string()))?;
-    let rtxn = index
-        .read_txn()
-        .map_err(|e| ToolExecutionError::other(e.to_string()))?;
+    let results = search::search_index(index, params).map_err(infrastructure_error)?;
+    let rtxn = index.read_txn().map_err(infrastructure_error)?;
     let mut hits = Vec::with_capacity(results.hits.len());
 
     for hit in &results.hits {
-        let Some(doc) = search::get_document(index, &rtxn, hit.doc_id)
-            .map_err(|e| ToolExecutionError::other(e.to_string()))?
-        else {
-            continue;
-        };
+        let chunk = search::get_indexed_chunk(index, &rtxn, hit.doc_id)
+            .map_err(infrastructure_error)?
+            .ok_or_else(|| {
+                infrastructure_error(format!(
+                    "search hit references missing indexed chunk {}",
+                    hit.doc_id
+                ))
+            })?;
 
-        let get_str = |key: &str| -> String {
-            doc.get(key)
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string()
-        };
-        let get_num =
-            |key: &str| -> i64 { doc.get(key).and_then(|v| v.as_i64()).unwrap_or_default() };
+        let truncated = chunk.content.chars().count() > PASSAGE_LIMIT;
+        let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
+        let collection_name = state.name_of(&chunk.collection_id)?;
 
-        let content = get_str("content");
-        let truncated = content.chars().count() > PASSAGE_LIMIT;
-        let passage: String = content.chars().take(PASSAGE_LIMIT).collect();
-
-        let collection_id = get_str("collection_id");
         hits.push(SearchHitResult {
-            document_name: get_str("parent_name"),
-            document_id: get_str("parent_id"),
-            chunk_index: get_num("chunk_index"),
-            collection_name: state.name_of(&collection_id),
-            collection_id,
+            document_name: chunk.parent_name,
+            document_id: chunk.parent_id,
+            chunk_index: chunk.chunk_index as i64,
+            collection_name,
+            collection_id: chunk.collection_id,
             passage,
             truncated,
-            start_page: get_num("start_page"),
-            end_page: get_num("end_page"),
-            page_count: get_num("page_count"),
+            start_page: chunk.start_page as i64,
+            end_page: chunk.end_page as i64,
+            page_count: chunk.page_count as i64,
             score: search::compute_hit_score(&hit.scores),
         });
     }
@@ -277,18 +275,29 @@ async fn read_chunk(
     tracing::info!(document_id = %document_id, chunk_index, "Reading chunk");
 
     let chunk_id = format!("{document_id}_chunk_{chunk_index}");
-    match search::get_document_by_external_id(&state.search, &chunk_id)
-        .map_err(|e| ToolExecutionError::other(e.to_string()))?
-    {
-        Some(content) => Ok(ReadChunkOutput {
-            document_id,
-            chunk_index,
-            content,
-        }),
-        None => Err(ToolExecutionError::not_found(format!(
+    let not_found = || {
+        ToolExecutionError::not_found(format!(
             "chunk {chunk_index} not found for document {document_id}. Try a different chunk index."
-        ))),
+        ))
+    };
+
+    let chunk = search::get_indexed_chunk_by_external_id(&state.search, &chunk_id)
+        .map_err(infrastructure_error)?
+        .ok_or_else(not_found)?;
+
+    if !state
+        .collections
+        .iter()
+        .any(|collection| collection.id == chunk.collection_id)
+    {
+        return Err(not_found());
     }
+
+    Ok(ReadChunkOutput {
+        document_id,
+        chunk_index,
+        content: chunk.content,
+    })
 }
 
 // ==================== list_documents ====================
@@ -309,7 +318,7 @@ pub struct DocumentEntry {
 pub struct CollectionGroup {
     /// Collection ID.
     pub collection_id: String,
-    /// Collection name (8-char ID fallback when unknown).
+    /// Collection name.
     pub collection_name: String,
     /// Documents in this collection (sorted by name).
     pub documents: Vec<DocumentEntry>,
@@ -369,47 +378,42 @@ impl Tool for ListDocuments {
 }
 
 async fn list_documents(state: &ToolState) -> Result<ListDocumentsOutput, ToolExecutionError> {
-    if state.collections.is_empty() {
-        return Err(ToolExecutionError::other(
-            "no collections selected. Please select collections to list documents from.",
-        ));
-    }
-
     tracing::info!("Listing documents");
     let storage = state.storage.read().await;
 
-    // (collection_id, document) pairs, sorted by collection then document name.
+    // (collection_id, collection_name, document), sorted by collection then
+    // document name.
     let mut all_documents = Vec::new();
     for collection in &state.collections {
-        let Ok(namespace_id) = collection.id.parse::<iroh_docs::NamespaceId>() else {
-            tracing::warn!(collection_id = %collection.id, "Invalid collection ID, skipping");
-            continue;
-        };
+        let namespace_id = collection
+            .id
+            .parse::<iroh_docs::NamespaceId>()
+            .map_err(|_| {
+                ToolExecutionError::invalid_args(format!(
+                    "collection {} is not a valid namespace ID",
+                    collection.id
+                ))
+            })?;
+        let collection_name = state.name_of(&collection.id)?;
 
         let documents = storage
             .list_documents(namespace_id)
             .await
-            .map_err(|e| ToolExecutionError::other(e.to_string()))?;
+            .map_err(infrastructure_error)?;
         for doc in documents {
-            all_documents.push((collection.id.clone(), doc));
+            all_documents.push((collection.id.clone(), collection_name.clone(), doc));
         }
     }
 
-    all_documents.sort_by(|a, b| {
-        state
-            .name_of(&a.0)
-            .cmp(&state.name_of(&b.0))
-            .then_with(|| a.1.name.cmp(&b.1.name))
-    });
+    all_documents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name)));
 
     let total = all_documents.len();
-    let total_pages: usize = all_documents.iter().map(|(_, d)| d.page_count).sum();
+    let total_pages: usize = all_documents.iter().map(|(_, _, d)| d.page_count).sum();
     let truncated = total > MAX_DOCS_TO_SHOW;
 
     // Group by collection, in sorted order.
     let mut groups: Vec<CollectionGroup> = Vec::new();
-    for (collection_id, doc) in all_documents.into_iter().take(MAX_DOCS_TO_SHOW) {
-        let collection_name = state.name_of(&collection_id);
+    for (collection_id, collection_name, doc) in all_documents.into_iter().take(MAX_DOCS_TO_SHOW) {
         let group = match groups.iter_mut().find(|g| g.collection_id == collection_id) {
             Some(g) => g,
             None => {
@@ -511,7 +515,7 @@ async fn get_collection_terms(
 
     let collection_ids = state.collection_ids();
     let terms = search::get_collection_terms(&state.search, Some(&collection_ids), limit)
-        .map_err(|e| ToolExecutionError::other(e.to_string()))?;
+        .map_err(infrastructure_error)?;
 
     tracing::info!(term_count = terms.len(), "Retrieved collection terms");
 
@@ -701,14 +705,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_collection_name_fallback() {
-        // Search hits always belong to a scoped collection (the milli filter
-        // guarantees it), so the 8-char fallback only matters when resolving
-        // an id the scope does not name — test it where it lives.
+    async fn test_collection_name_unknown_errors() {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("col_abcdefgh1234", "Named");
-        assert_eq!(state.name_of("col_abcdefgh1234"), "Named");
-        assert_eq!(state.name_of("col_abcdefgh1234_extra"), "col_abcd...");
+        assert_eq!(state.name_of("col_abcdefgh1234").unwrap(), "Named");
+
+        let err = state.name_of("col_abcdefgh1234_extra").unwrap_err();
+        assert_eq!(err.kind(), ToolErrorKind::NotFound);
     }
 
     #[tokio::test]
@@ -749,7 +752,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_chunk_success() {
-        let (_tmp, state) = create_state().await;
+        let (_tmp, mut state) = create_state().await;
         search::index_chunks_batch(
             &state.search,
             &IndexerConfig::default(),
@@ -765,6 +768,7 @@ mod tests {
             )],
         )
         .unwrap();
+        state.collections = scope("collection1", "Collection One");
 
         let out = read_chunk(&state, "test_doc".to_string(), 0).await.unwrap();
 
@@ -786,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_chunk_wrong_index() {
-        let (_tmp, state) = create_state().await;
+        let (_tmp, mut state) = create_state().await;
         search::index_chunks_batch(
             &state.search,
             &IndexerConfig::default(),
@@ -802,6 +806,7 @@ mod tests {
             )],
         )
         .unwrap();
+        state.collections = scope("col1", "Collection One");
 
         let err = read_chunk(&state, "test_doc".to_string(), 5)
             .await
@@ -812,21 +817,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_documents_errors_without_scope() {
-        let (_tmp, state) = create_state().await;
+    async fn test_read_chunk_rejects_chunk_outside_scope() {
+        let (_tmp, mut state) = create_state().await;
+        search::index_chunks_batch(
+            &state.search,
+            &IndexerConfig::default(),
+            vec![make_chunk(
+                "test_doc",
+                "Test.pdf",
+                "Content in another collection",
+                "other_collection",
+                0,
+                1,
+                1,
+                1,
+            )],
+        )
+        .unwrap();
+        state.collections = scope("active_collection", "Active");
+
+        let err = read_chunk(&state, "test_doc".to_string(), 0)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ToolErrorKind::NotFound);
+        assert!(err.to_string().contains("test_doc"));
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_rejects_invalid_collection_id() {
+        let (_tmp, mut state) = create_state().await;
+        state.collections = scope("not-a-namespace-id", "Invalid");
+
         let err = list_documents(&state).await.unwrap_err();
-        assert!(err
-            .to_string()
-            .to_lowercase()
-            .contains("no collections selected"));
+
+        assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
+        assert!(err.to_string().contains("not-a-namespace-id"));
     }
 
     #[tokio::test]
     async fn test_list_documents_with_valid_scope() {
         let (_tmp, mut state) = create_state().await;
-        // A real namespace ID so parsing succeeds; storage has no docs.
-        let ns: iroh_docs::NamespaceId = (&rand::random::<[u8; 32]>()).into();
-        state.collections = scope(&ns.to_string(), "Empty Collection");
+        let namespace_id = {
+            let storage = state.storage.write().await;
+            storage
+                .create_collection("Empty Collection")
+                .await
+                .unwrap()
+                .0
+        };
+        state.collections = scope(&namespace_id.to_string(), "Empty Collection");
 
         let out = list_documents(&state).await.unwrap();
 
