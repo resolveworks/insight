@@ -8,7 +8,7 @@ Search documents, ask questions, get answers with citations. Your documents stay
 
 - **Ask questions, get answers** — AI agent searches your documents and synthesizes answers with citations
 - **Documents stay local** — your files are stored, indexed, and searched on your machine, never uploaded
-- **Choice of provider** — 25+ LLM providers for chat (OpenAI, Anthropic, Gemini, Groq, local servers like Ollama), configured with your own API key
+- **Choice of provider** — 27 LLM vendors for chat (OpenAI, Anthropic, Gemini, Groq, local servers like Ollama), configured with your own API key
 - **Share with colleagues** — sync collections peer-to-peer, no server required
 
 ## How It Works
@@ -40,14 +40,14 @@ Not production-ready. Built to learn and prototype.
 
 ## Technology
 
-| Layer    | Choice             | Why                                        |
-| -------- | ------------------ | ------------------------------------------ |
-| App      | Tauri + Rust       | Single binary, cross-platform, no Electron |
-| Frontend | Svelte 5           | Fast, minimal                              |
-| LLM      | rig (25+ providers) | Remote inference via API (or local servers), user-configured |
-| P2P      | iroh               | Modern QUIC-based, handles NAT traversal   |
-| Search   | milli              | Full-text keyword search (BM25), local     |
-| PDF      | lopdf              | Digital text extraction                    |
+| Layer    | Choice                     | Why                                                          |
+| -------- | -------------------------- | ------------------------------------------------------------ |
+| App      | Tauri + Rust               | Single binary, cross-platform, no Electron                   |
+| Frontend | Svelte 5                   | Fast, minimal                                                |
+| LLM      | rig (27 vendor selections) | Remote inference via API (or local servers), user-configured |
+| P2P      | iroh                       | Modern QUIC-based, handles NAT traversal                     |
+| Search   | milli                      | Full-text keyword search (BM25), local                       |
+| PDF      | lopdf                      | Digital text extraction                                      |
 
 ## Building
 

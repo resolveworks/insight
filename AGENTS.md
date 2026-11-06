@@ -4,7 +4,7 @@ A local-first research agent for evidence-based journalism. Think Claude Code, b
 
 ## Vision
 
-Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight keeps document storage, search, and sync entirely local — while chat runs on a user-configured remote LLM provider (25+ families via the rig registry: OpenAI, Anthropic, Gemini, Groq, local servers like Ollama/llama.cpp, ...). Only the conversation goes to the provider; documents never leave your machine.
+Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight keeps document storage, search, and sync entirely local — while chat runs on a user-configured remote LLM provider (27 vendors via the rig registry: OpenAI, Anthropic, Gemini, Groq, local servers like Ollama/llama.cpp, ...). Only the conversation goes to the provider; documents never leave your machine.
 
 ## Core Stack
 
@@ -13,7 +13,7 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 | App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                                         |
 | UI              | Svelte 5    | Frontend                                                                         |
 | Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles)                               |
-| Chat inference  | [rig]       | LLM framework: 25 provider families via a registry, agent runtime, tools, memory |
+| Chat inference  | [rig]       | LLM framework: 27 vendor selections via a registry, agent runtime, tools, memory |
 | P2P / Sync      | iroh        | Connections, NAT traversal, sync                                                 |
 | Content storage | iroh-blobs  | Content-addressed file storage                                                   |
 | Metadata sync   | iroh-docs   | CRDT key-value store for metadata                                                |
@@ -23,7 +23,7 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 
 [rig]: https://github.com/0xPlaygrounds/rig
 
-The rig dependency tracks released crates.io versions (currently v0.42.0). A local reference checkout lives at `../rig`, checked out at the matching tag (`v0.42.0`) — use it as the API reference for all rig types; see `../rig/AGENTS.md` and its examples for style.
+The rig dependency tracks released crates.io versions (currently v0.46.0). A local reference checkout lives at `~/Projects/rig`, checked out at the matching tag (`v0.46.0`) — use it as the API reference for all rig types; see `~/Projects/rig/AGENTS.md` and the examples under `~/Projects/rig/examples/` for style.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ User Query
     ↓
 rig Agent (per request: preamble + tools + memory + max turns)
     ↓
-Registry-built Model (any of ~25 rig provider families)
+Registry-built Model (one of 27 curated rig vendor selections)
     ↓
 Tool Calling Loop (multi-turn)
     ↓
@@ -43,22 +43,22 @@ Synthesized Answer (with citations)
 
 Key pieces, all in `crates/insight-core/`:
 
-- **`providers/`** — a data-driven registry over all rig chat-completion provider families: `list_families()` (UI descriptors; local-server families like ollama/llamafile need no API key), `build_model()` (validates settings and returns a rig `ModelHandle`), and `list_models()` (rig's `ModelListingClient` capability for families that support remote model listing).
-- **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools (stateless `#[rig_tool]` units) + `FileConversationMemory` + `default_max_turns(100)`; the per-run `ToolState` (index, storage, active collections) is attached to the stream via `ToolContext`. A scope hook (`AgentHook`) injects the conversation's active collections as an `extra_context` document (`RequestPatch`) on every turn — non-sticky, so mid-conversation scope changes take effect on the next model call without touching stored history. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. `generate_title` and `predict_next_message` are bare-model completions (no tools, no agent loop) over the same provider settings.
-- **`memory.rs`** — `FileConversationMemory` implements rig's `ConversationMemory` trait on a directory tree; a `ConversationMeta` sidecar holds app-facing data (title, linked collections, timestamps).
-- **`tools/`** — `#[rig_tool]` document functions over milli search + iroh storage; per-run state (`ToolState`: index, storage, collection scope) reaches them through the agent's `ToolContext`.
+- **`providers/`** — a data-driven registry over 27 vendors, one curated canonical [`ProviderId`] selection each (rig currently registers 34 selections; Insight does not expose every one): `list_families()` (UI descriptors; local-server selections like `ollama/openai` and `llamacpp/openai` need no API key), `build_model()` (validates settings and returns a `DynModel<Completion>` built from the selection's `ProviderConfig` and catalog facts), and `list_models()` (the provider clients' inherent listing APIs, rig's `operation::ModelListing`, for selections that support remote model listing).
+- **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools (manual `rig::tool::Tool` implementations) + `FileConversationMemory` + `default_max_turns(100)`. Each tool owns a clone of the per-run `ToolState` (index, storage, active collections); rig's `ToolContext` is reserved for serializable state, not live handles. The conversation's active collections are attached as a run document with `AgentRunner::document` on every turn — non-sticky, so mid-conversation scope changes take effect on the next model call without touching stored history. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. Stream failures return as `Err`; the Tauri command emits the single terminal `streamError`. `generate_title` and `predict_next_message` are bare-model completions (no tools, no agent loop) over the same provider settings.
+- **`memory.rs`** — `FileConversationMemory` wraps rig_memory's directory-backed `DirStore` for conversation logs and a rig `DirFiles` namespace for metadata; it does not implement a `ConversationMemory` trait. A `ConversationMeta` sidecar holds app-facing data (title, linked collections, timestamps).
+- **`tools/`** — manual `rig::tool::Tool` implementations over milli search + iroh storage; each owns a clone of the per-run `ToolState` (index, storage, collection scope).
 
 Inference is remote-only: the chat provider is configured in Settings. Documents never leave the machine — only the conversation (queries and retrieved excerpts) is sent to the configured provider.
 
 ### Event Flow
 
-`send_message` streams rig `MultiTurnStreamItem`s; the Tauri command layer (`src-tauri/src/commands/conversations.rs`) serializes them and emits them on `agent-event-{id}`. The backend appends a terminal `{"type":"streamError","message"}` item when the run fails outside the stream.
+`send_message` streams rig `MultiTurnStreamItem`s; the Tauri command layer (`src-tauri/src/commands/conversations.rs`) serializes them and emits them on `agent-event-{id}`. When the run fails, the runtime returns `Err` and the command emits the single terminal `{"type":"streamError","message"}` item.
 
 The frontend renders ONE view model for both stored history and the live run. A pure fold (`src/lib/chat/transcript.ts`, `applyItem`) accumulates the stream into a `LiveRun` shaped like the stored transcript (chronological segments; a tool result closes the current assistant turn), and `buildTranscript` normalizes stored + live into a flat `TranscriptItem[]` (the conversations store exposes it as `getTranscript()`). Live-only state is data on the items (`provisional`, `executing`, `streaming` flags), so `Chat.svelte` has a single render path: a run committing swaps the provisional tail for the `finalResponse` payload's `messages` synchronously (tracked by the store's `runBase`) and the flags flip — no re-render through a different code path. The silent reload afterwards is reconciliation only.
 
 ## Agent Tools
 
-The agent has 4 rig tools (`#[rig_tool]` functions in `crates/insight-core/src/tools/`) to search and read documents from indexed collections. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search — all document retrieval happens through the agent:
+The agent has 4 manual `rig::tool::Tool` implementations in `crates/insight-core/src/tools/` to search and read documents from indexed collections. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search — all document retrieval happens through the agent:
 
 - **search** — keyword search (BM25 via milli), scoped to active collections
 - **read_chunk** — read an indexed text chunk by document + chunk id
@@ -144,16 +144,19 @@ Settings v2 (`~/.local/share/insight/settings.json`):
 ```json
 {
 	"provider": {
-		"family": "openai",
+		"family": "openai/openai",
 		"model": "gpt-4o-mini",
 		"api_key": "...",
 		"base_url": "..."
 	},
-	"api_keys": { "openai": "sk-...", "anthropic": "sk-ant-..." }
+	"api_keys": {
+		"openai/openai": "sk-...",
+		"anthropic/anthropic": "sk-ant-..."
+	}
 }
 ```
 
-`provider` is `null` when chat is unconfigured. `api_keys` stores per-family keys separately from the active provider so switching families keeps previously entered keys. `api_key`/`base_url` are optional per family (local-server families like ollama/llamafile need neither). There is intentionally no legacy migration — no users yet.
+`provider` is `null` when chat is unconfigured. `family` is a canonical `ProviderId` selection id. `api_keys` stores per-selection keys separately from the active provider so switching selections keeps previously entered keys. `api_key`/`base_url` are optional per selection (local-server selections like `ollama/openai` and `llamacpp/openai` need neither). There is intentionally no legacy migration — no users yet.
 
 ## Development
 
@@ -170,7 +173,7 @@ Prefer local tools over web searches for understanding Rust dependencies:
 - `cargo doc --open` - Generate and browse docs for exact dependency versions
 - `cargo tree` - View dependency graph and enabled features
 - Source at `~/.cargo/registry/src/` or `~/.cargo/git/checkouts/`
-- For rig specifically: the local checkout at `../rig` (tag `v0.42.0`, matching the crates.io dependency) is the reference — read `../rig/AGENTS.md` and the examples under `../rig/rig-core/examples/` before writing code that touches rig APIs
+- For rig specifically: the local checkout at `~/Projects/rig` (tag `v0.46.0`, matching the crates.io dependency) is the reference — read `~/Projects/rig/AGENTS.md` and the examples under `~/Projects/rig/examples/` before writing code that touches rig APIs
 
 This ensures version accuracy and works offline.
 
@@ -201,8 +204,8 @@ Stack: Vitest + @testing-library/svelte + jsdom
 import { mockIPC } from '@tauri-apps/api/mocks';
 
 mockIPC((cmd, args) => {
-	if (cmd === 'search_documents') {
-		return [{ title: 'Test Doc' }];
+	if (cmd === 'list_provider_families') {
+		return [{ id: 'openai/openai', name: 'OpenAI' }];
 	}
 });
 ```
@@ -222,12 +225,13 @@ Focus on:
 ├── search/                        # milli index
 ├── settings.json                  # settings v2 (provider + API keys)
 └── conversations/
-    └── {conversation_id}/
-        ├── messages.json          # Vec<rig::completion::Message> — agent history
-        └── meta.json              # ConversationMeta sidecar (title, collections, timestamps)
+    ├── logs/
+    │   └── {conversation_id}.jsonl   # rig conversation history
+    └── metadata/
+        └── {conversation_id}.json    # title, collections, timestamps
 ```
 
-All conversation writes are write-temp-then-rename, so a crash mid-write never truncates a stored file.
+The old `conversations/{id}/messages.json` + `meta.json` layout is rejected, not migrated. Both stores write atomically: a crash mid-write leaves the previous file intact.
 
 ## Conventions
 
@@ -237,4 +241,4 @@ All conversation writes are write-temp-then-rename, so a crash mid-write never t
 - Agent events streamed via Tauri emit system
 - Error types via `thiserror` — no `String` errors
 - Doc comments on public items
-- **Rig conventions**: for code touching rig APIs, follow `../rig/AGENTS.md` and the examples under `../rig/rig-core/examples/` as the style reference
+- **Rig conventions**: for code touching rig APIs, follow `~/Projects/rig/AGENTS.md` and the examples under `~/Projects/rig/examples/` as the style reference
