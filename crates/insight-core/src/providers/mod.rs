@@ -187,6 +187,39 @@ fn lookup_family(id: &str) -> Result<&'static FamilySpec, ProviderRegistryError>
         .ok_or_else(|| ProviderRegistryError::UnknownFamily(id.to_string()))
 }
 
+/// The daemon root of an Ollama base URL.
+///
+/// Insight's stored convention is the daemon root. Rig's OpenAI-compatible
+/// configuration expects the `/v1` endpoint, so both roots and already-full
+/// endpoints normalize to the same root.
+fn ollama_daemon_root(base_url: &str) -> &str {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed.strip_suffix("/v1").unwrap_or(trimmed)
+}
+
+/// The OpenAI Compatibility endpoint of a Cohere base URL.
+///
+/// Insight's stored convention is the API root. Both roots and already-full
+/// endpoints normalize to the same `/compatibility/v1` endpoint.
+fn cohere_compatibility_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/compatibility/v1") {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}/compatibility/v1")
+    }
+}
+
+/// Normalize a custom base URL to the endpoint the family's rig
+/// configuration expects, preserving the vendor's pre-registry convention.
+fn normalize_base_url(family: &FamilySpec, base_url: &str) -> String {
+    match family.id {
+        "ollama/openai" => format!("{}/v1", ollama_daemon_root(base_url)),
+        "cohere/openai" => cohere_compatibility_url(base_url),
+        _ => base_url.to_owned(),
+    }
+}
+
 /// Resolve `family` and build its provider configuration.
 ///
 /// Credential requirements come from rig's selection, as does the
@@ -207,7 +240,7 @@ fn build_config(
         .config(key)
         .expect("registered provider selections have a configuration");
     let config = match base_url.map(str::trim).filter(|url| !url.is_empty()) {
-        Some(url) => config.with_base_url(url),
+        Some(url) => config.with_base_url(normalize_base_url(family, url)),
         None => config,
     };
     if config.base_url().is_empty() {
@@ -258,7 +291,7 @@ pub async fn list_models(
         let mut config = rig::providers::ollama::OllamaConfig::new()
             .with_api_key(api_key.map(str::trim).unwrap_or_default());
         if let Some(url) = base_url.map(str::trim).filter(|url| !url.is_empty()) {
-            config = config.with_base_url(url);
+            config = config.with_base_url(ollama_daemon_root(url));
         }
         config.client().list_models().await
     } else {
@@ -465,6 +498,58 @@ mod tests {
                 "{family} client should construct offline"
             );
         }
+    }
+
+    #[test]
+    fn ollama_base_url_keeps_daemon_root_convention() {
+        let family = lookup_family("ollama/openai").unwrap();
+        for root in ["http://gpu.internal:11434", "http://gpu.internal:11434/"] {
+            let (_, config) = build_config(family, None, Some(root)).unwrap();
+            assert_eq!(config.base_url(), "http://gpu.internal:11434/v1");
+            assert_eq!(ollama_daemon_root(root), "http://gpu.internal:11434");
+        }
+        for endpoint in [
+            "http://gpu.internal:11434/v1",
+            "http://gpu.internal:11434/v1/",
+        ] {
+            let (_, config) = build_config(family, None, Some(endpoint)).unwrap();
+            assert_eq!(config.base_url(), "http://gpu.internal:11434/v1");
+            // Listing talks to the daemon root, not the OpenAI endpoint.
+            assert_eq!(ollama_daemon_root(endpoint), "http://gpu.internal:11434");
+        }
+
+        // Normalization is idempotent for both the stored root and the
+        // full endpoint.
+        for url in ["http://gpu.internal:11434", "http://gpu.internal:11434/v1"] {
+            let once = normalize_base_url(family, url);
+            assert_eq!(normalize_base_url(family, &once), once);
+            assert_eq!(ollama_daemon_root(&once), "http://gpu.internal:11434");
+        }
+
+        let (_, default) = build_config(family, None, None).unwrap();
+        assert_eq!(default.base_url(), "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn cohere_base_url_keeps_api_root_convention() {
+        let family = lookup_family("cohere/openai").unwrap();
+        for url in [
+            "https://cohere.internal",
+            "https://cohere.internal/",
+            "https://cohere.internal/compatibility/v1",
+            "https://cohere.internal/compatibility/v1/",
+        ] {
+            let (_, config) = build_config(family, Some("key"), Some(url)).unwrap();
+            assert_eq!(
+                config.base_url(),
+                "https://cohere.internal/compatibility/v1"
+            );
+            let once = normalize_base_url(family, url);
+            assert_eq!(normalize_base_url(family, &once), once);
+        }
+
+        let (_, default) = build_config(family, Some("key"), None).unwrap();
+        assert_eq!(default.base_url(), "https://api.cohere.ai/compatibility/v1");
     }
 
     #[tokio::test]

@@ -173,15 +173,21 @@ impl FileConversationMemory {
 
     fn read_metadata(&self, id: &str) -> Result<Option<ConversationMeta>, MemoryStoreError> {
         match self.metadata.read_file(&meta_name(id)) {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Ok(bytes) => {
+                let meta: ConversationMeta = serde_json::from_slice(&bytes)?;
+                if meta.id != id {
+                    return Err(MemoryStoreError::InvalidMetadata(meta_name(id)));
+                }
+                Ok(Some(meta))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
-    fn write_metadata(&self, meta: &ConversationMeta) -> Result<(), MemoryStoreError> {
+    fn write_metadata(&self, id: &str, meta: &ConversationMeta) -> Result<(), MemoryStoreError> {
         let bytes = serde_json::to_vec_pretty(meta)?;
-        self.metadata.write_file(&meta_name(&meta.id), &bytes)?;
+        self.metadata.write_file(&meta_name(id), &bytes)?;
         Ok(())
     }
 
@@ -199,7 +205,7 @@ impl FileConversationMemory {
         let mut meta = meta;
         meta.created_at = now.clone();
         meta.updated_at = now;
-        self.write_metadata(&meta)?;
+        self.write_metadata(&meta.id, &meta)?;
         Ok(meta)
     }
 
@@ -222,7 +228,7 @@ impl FileConversationMemory {
             .read_metadata(id)?
             .ok_or_else(|| MemoryStoreError::NotFound(id.to_owned()))?;
         update(&mut meta);
-        self.write_metadata(&meta)
+        self.write_metadata(id, &meta)
     }
 
     /// List all conversation summaries, most recently updated first.
@@ -464,6 +470,59 @@ mod tests {
             store.list_summaries().await,
             Err(MemoryStoreError::Json(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn metadata_id_must_match_its_file_name() {
+        let (_dir, store) = temp_store();
+        std::fs::create_dir_all(store.metadata.path()).unwrap();
+        let misplaced = store.metadata.path().join(meta_name("stored"));
+        std::fs::write(
+            &misplaced,
+            serde_json::to_vec_pretty(&sample_meta("other", "Other")).unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read(&misplaced).unwrap();
+
+        assert!(matches!(
+            store.load_meta("stored").await,
+            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
+        ));
+        assert!(matches!(
+            store
+                .update_meta("stored", |meta| meta.title = "Changed".into())
+                .await,
+            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
+        ));
+        assert!(matches!(
+            store.create(sample_meta("stored", "New")).await,
+            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
+        ));
+        assert!(matches!(
+            store.list_summaries().await,
+            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
+        ));
+
+        assert_eq!(
+            std::fs::read(&misplaced).unwrap(),
+            before,
+            "failed operations must not alter the mismatched file"
+        );
+        assert!(
+            !store.metadata.path().join(meta_name("other")).exists(),
+            "no file is created under the stored id"
+        );
+
+        std::fs::remove_file(&misplaced).unwrap();
+        store.create(sample_meta("stored", "Title")).await.unwrap();
+        store
+            .update_meta("stored", |meta| meta.title = "Updated".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_meta("stored").await.unwrap().unwrap().title,
+            "Updated"
+        );
     }
 
     #[tokio::test]
