@@ -15,7 +15,6 @@ export interface ProviderFamily {
 	id: string;
 	name: string;
 	requires_api_key: boolean;
-	supports_base_url: boolean;
 	supports_model_listing: boolean;
 }
 

@@ -9,21 +9,18 @@ const FAMILIES = [
 		id: 'openai/openai',
 		name: 'OpenAI',
 		requires_api_key: true,
-		supports_base_url: true,
 		supports_model_listing: true,
 	},
 	{
 		id: 'ollama/openai',
 		name: 'Ollama',
 		requires_api_key: false,
-		supports_base_url: true,
 		supports_model_listing: true,
 	},
 	{
 		id: 'deepseek/openai',
 		name: 'DeepSeek',
 		requires_api_key: true,
-		supports_base_url: true,
 		supports_model_listing: false,
 	},
 ];
@@ -195,7 +192,7 @@ describe('ProviderSelector', () => {
 		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
 	});
 
-	it('shows a base URL input for families that support one', async () => {
+	it('shows a base URL input', async () => {
 		render(ProviderSelector);
 
 		const select = (await screen.findByLabelText(

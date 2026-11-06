@@ -147,7 +147,7 @@
 			await configureProvider({
 				family: selectedFamilyId,
 				apiKey: family?.requires_api_key ? apiKey.trim() : null,
-				baseUrl: family?.supports_base_url ? baseUrl.trim() || null : null,
+				baseUrl: baseUrl.trim() || null,
 				model: model.trim(),
 			});
 			onConfigured?.();
@@ -247,17 +247,15 @@
 		/>
 	{/if}
 
-	<!-- Base URL (only when the family supports one) -->
-	{#if family?.supports_base_url}
-		<Input
-			id="base-url-input"
-			type="text"
-			label="Base URL"
-			bind:value={baseUrl}
-			placeholder="https://api.example.com/v1"
-			disabled={status !== 'idle'}
-		/>
-	{/if}
+	<!-- Base URL (every provider accepts one) -->
+	<Input
+		id="base-url-input"
+		type="text"
+		label="Base URL"
+		bind:value={baseUrl}
+		placeholder="https://api.example.com/v1"
+		disabled={status !== 'idle'}
+	/>
 
 	<!-- Model: credentials first — listing-capable families load a dropdown
 	     once the key is in; others (or a failed load) use manual entry. -->

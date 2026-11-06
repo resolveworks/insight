@@ -16,21 +16,18 @@ const FAMILIES = [
 		id: 'openai/openai',
 		name: 'OpenAI',
 		requires_api_key: true,
-		supports_base_url: false,
 		supports_model_listing: true,
 	},
 	{
 		id: 'ollama/openai',
 		name: 'Ollama',
 		requires_api_key: false,
-		supports_base_url: true,
 		supports_model_listing: true,
 	},
 	{
 		id: 'custom',
 		name: 'Custom',
 		requires_api_key: false,
-		supports_base_url: true,
 		supports_model_listing: false,
 	},
 ];

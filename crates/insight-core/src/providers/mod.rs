@@ -17,9 +17,8 @@
 //! vendor used before the registry migration.
 //!
 //! Credential requirements and the required-endpoint case come from rig
-//! itself. Every rig provider configuration accepts a custom base URL, so
-//! [`ProviderFamily::supports_base_url`] is true for every family. Local-server
-//! selections (`llama.cpp`, Ollama) need no API key.
+//! itself. Every rig provider configuration accepts a custom base URL.
+//! Local-server selections (`llama.cpp`, Ollama) need no API key.
 
 use rig_core::catalog::Catalog;
 use rig_core::providers::registry::{ProviderConfig, ProviderId};
@@ -33,9 +32,9 @@ type ModelHandle = DynModel<Completion>;
 /// `family` selects an entry from the [`list_families`] table by its
 /// canonical rig selection string (e.g. `"openai/openai"`,
 /// `"anthropic/anthropic"`, `"ollama/openai"`); `model` is the provider's
-/// model identifier (e.g. `"gpt-4o-mini"`). `api_key` and `base_url` are
-/// optional per family — see [`ProviderFamily::requires_api_key`] and
-/// [`ProviderFamily::supports_base_url`].
+/// model identifier (e.g. `"gpt-4o-mini"`). `api_key` is required only by
+/// families whose [`ProviderFamily::requires_api_key`] says so; `base_url`
+/// is optional.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSettings {
     /// Canonical rig [`ProviderId`] selection string, one of
@@ -60,9 +59,6 @@ pub struct ProviderFamily {
     /// Whether the family requires an API key, from rig's credential
     /// requirements.
     pub requires_api_key: bool,
-    /// Whether the family accepts a custom base URL. Every rig provider
-    /// configuration does.
-    pub supports_base_url: bool,
     /// Whether the family's models can be listed remotely via [`list_models`].
     pub supports_model_listing: bool,
 }
@@ -175,8 +171,6 @@ impl From<&FamilySpec> for ProviderFamily {
             id: spec.id.to_string(),
             name: spec.name.to_string(),
             requires_api_key: id.requires_credential(),
-            // Every rig provider configuration accepts a custom base URL.
-            supports_base_url: true,
             supports_model_listing: spec.supports_model_listing,
         }
     }
@@ -316,7 +310,6 @@ mod tests {
                 "credential requirement comes from rig for {}",
                 family.id
             );
-            assert!(family.supports_base_url);
             assert!(!family.name.is_empty(), "name must not be empty");
         }
 
@@ -332,13 +325,9 @@ mod tests {
 
         // Spot-check representatives of each shape.
         let openai = families.iter().find(|f| f.id == "openai/openai").unwrap();
-        assert!(
-            openai.requires_api_key && openai.supports_base_url && openai.supports_model_listing
-        );
+        assert!(openai.requires_api_key && openai.supports_model_listing);
         let ollama = families.iter().find(|f| f.id == "ollama/openai").unwrap();
-        assert!(
-            !ollama.requires_api_key && ollama.supports_base_url && ollama.supports_model_listing
-        );
+        assert!(!ollama.requires_api_key && ollama.supports_model_listing);
         assert!(
             families.iter().any(|f| f.id == "opencode/openai"),
             "OpenCode Zen is exposed"
