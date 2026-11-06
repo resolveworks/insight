@@ -83,12 +83,11 @@ pub fn run() {
             // Chat provider status
             commands::models::get_provider_status,
             // Provider management
-            commands::providers::list_provider_families,
+            commands::providers::list_providers,
             commands::providers::list_provider_models,
             commands::providers::configure_provider,
             commands::providers::disable_provider,
             commands::providers::get_current_provider,
-            commands::providers::get_stored_api_keys,
             // Prediction commands (tab completion)
             commands::conversations::predict_next_message,
             commands::conversations::cancel_prediction,

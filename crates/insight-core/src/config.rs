@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -52,11 +52,6 @@ pub struct Settings {
     /// [`crate::providers::build_model`].
     #[serde(default)]
     pub provider: Option<ProviderSettings>,
-    /// Stored API keys per provider family (`family -> key`), persisted
-    /// separately from the active provider so switching families keeps the
-    /// previously entered key.
-    #[serde(default)]
-    pub api_keys: HashMap<String, String>,
 }
 
 /// Errors from loading persisted settings.
@@ -124,17 +119,6 @@ mod tests {
     fn settings_all_defaults_when_empty_object() {
         let parsed: Settings = serde_json::from_str("{}").unwrap();
         assert!(parsed.provider.is_none());
-        assert!(parsed.api_keys.is_empty());
-    }
-
-    #[test]
-    fn settings_defaults_when_fields_missing() {
-        let parsed: Settings = serde_json::from_str(r#"{"api_keys":{"openai":"sk-x"}}"#).unwrap();
-        assert_eq!(
-            parsed.api_keys.get("openai").map(String::as_str),
-            Some("sk-x")
-        );
-        assert!(parsed.provider.is_none());
     }
 
     #[test]
@@ -143,7 +127,6 @@ mod tests {
         let path = dir.path().join("settings.json");
         let settings = Settings::load(&path).expect("missing file is not an error");
         assert!(settings.provider.is_none());
-        assert!(settings.api_keys.is_empty());
     }
 
     #[test]
@@ -152,14 +135,13 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(
             &path,
-            r#"{"provider":{"family":"anthropic/anthropic","model":"claude","api_key":"k","base_url":null},"api_keys":{"anthropic/anthropic":"k"}}"#,
+            r#"{"provider":{"family":"anthropic/anthropic","model":"claude","api_key":"k","base_url":null}}"#,
         )
         .unwrap();
         let settings = Settings::load(&path).unwrap();
         let provider = settings.provider.expect("provider configured");
         assert_eq!(provider.family, "anthropic/anthropic");
         assert_eq!(provider.model, "claude");
-        assert_eq!(settings.api_keys.len(), 1);
     }
 
     #[test]
@@ -194,13 +176,9 @@ mod tests {
                 api_key: Some("k".into()),
                 base_url: None,
             }),
-            api_keys: [("anthropic/anthropic".to_string(), "k".to_string())]
-                .into_iter()
-                .collect(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.provider, original.provider);
-        assert_eq!(parsed.api_keys, original.api_keys);
     }
 }

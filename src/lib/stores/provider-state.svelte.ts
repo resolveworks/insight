@@ -1,9 +1,9 @@
 /**
- * Chat provider state store.
+ * Chat provider state.
  *
- * Wraps the backend's provider registry commands: the family list, the
- * currently configured provider, its runtime status, and stored API keys.
- * Chat is gated on `status.ready`.
+ * Wraps the backend's provider commands: rig's provider selections, the
+ * catalog models of the selected vendor, the configured provider, and why it
+ * cannot be used. Chat is gated on `isProviderReady()`.
  */
 import { invoke } from '@tauri-apps/api/core';
 
@@ -11,16 +11,10 @@ import { invoke } from '@tauri-apps/api/core';
 // Types (backend contract)
 // =============================================================================
 
-export interface ProviderFamily {
+/** A chat model rig's catalog lists for a provider, as the model field offers it. */
+export interface ModelChoice {
 	id: string;
 	name: string;
-	requires_api_key: boolean;
-	supports_model_listing: boolean;
-}
-
-export interface ProviderModel {
-	id: string;
-	display_name: string;
 }
 
 export interface CurrentProvider {
@@ -33,47 +27,56 @@ export interface CurrentProvider {
 export interface ProviderStatus {
 	family: string | null;
 	model: string | null;
-	ready: boolean;
+	/** Why the configured provider cannot be used, if it cannot. */
+	error: string | null;
 }
 
 // =============================================================================
 // State
 // =============================================================================
 
-let families = $state<ProviderFamily[]>([]);
+/** rig's provider selections, canonically spelled. */
+let selections = $state<string[]>([]);
 let currentProvider = $state<CurrentProvider | null>(null);
 let status = $state<ProviderStatus>({
 	family: null,
 	model: null,
-	ready: false,
+	error: null,
 });
-let storedKeys = $state<Record<string, string>>({});
 /** Why the last provider state query failed, if it did. */
 let providerStateError = $state<string | null>(null);
 let loaded = $state(false);
-let initializing = false;
 
 // =============================================================================
 // Internal helpers
 // =============================================================================
 
 /**
- * Query provider state from the backend. Safe to call repeatedly; call sites
- * that only need the current snapshot read the reactive getters instead.
+ * The message of an error thrown by a command.
+ *
+ * Command errors arrive as `{ code, message }` objects rather than `Error`
+ * instances.
  */
+export function describeError(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	if (typeof error === 'object' && error !== null && 'message' in error) {
+		return String((error as { message: unknown }).message);
+	}
+	return String(error);
+}
+
+/** Query provider state from the backend. */
 async function queryProviderState(): Promise<void> {
 	try {
-		const [current, statusRes, keys] = await Promise.all([
+		const [current, statusRes] = await Promise.all([
 			invoke<CurrentProvider | null>('get_current_provider'),
 			invoke<ProviderStatus>('get_provider_status'),
-			invoke<Record<string, string>>('get_stored_api_keys'),
 		]);
 		currentProvider = current;
 		status = statusRes;
-		storedKeys = keys ?? {};
 		providerStateError = null;
 	} catch (e) {
-		providerStateError = `Failed to load provider settings: ${e instanceof Error ? e.message : String(e)}`;
+		providerStateError = `Failed to load provider settings: ${describeError(e)}`;
 		throw e;
 	}
 }
@@ -93,29 +96,19 @@ if (typeof window !== 'undefined') {
 // Public API
 // =============================================================================
 
-/**
- * Resolve the initial provider state. Idempotent — safe to call from the app
- * layout boot flow. Resolves once the registry/status snapshot has loaded.
- */
-export async function ensureProviderStateLoaded(): Promise<void> {
-	if (loaded || initializing) return;
-	initializing = true;
+/** Load (or reload) the provider selection list. */
+export async function loadSelections(): Promise<string[]> {
 	try {
-		if (!loaded) await queryProviderState().catch(() => {});
-	} finally {
-		loaded = true;
-		initializing = false;
+		selections = await invoke<string[]>('list_providers');
+	} catch (e) {
+		console.error('Failed to list providers:', e);
 	}
+	return selections;
 }
 
-/** Load (or reload) the provider family registry. */
-export async function loadFamilies(): Promise<ProviderFamily[]> {
-	try {
-		families = await invoke<ProviderFamily[]>('list_provider_families');
-	} catch (e) {
-		console.error('Failed to list provider families:', e);
-	}
-	return families;
+/** The chat models rig's catalog lists for `family`'s vendor. */
+export async function loadModels(family: string): Promise<ModelChoice[]> {
+	return invoke<ModelChoice[]>('list_provider_models', { family });
 }
 
 /**
@@ -135,12 +128,6 @@ export async function configureProvider(opts: {
 		model: opts.model,
 	});
 	await queryProviderState();
-	// The key the backend stored is now available for re-selection.
-	try {
-		storedKeys = await invoke<Record<string, string>>('get_stored_api_keys');
-	} catch {
-		// Non-fatal: keys are a convenience for the settings UI.
-	}
 }
 
 /** Disable the configured provider. */
@@ -149,28 +136,12 @@ export async function disableProvider(): Promise<void> {
 	await queryProviderState();
 }
 
-/**
- * Fetch the models a family offers. The caller supplies the candidate key /
- * base URL so listing can run before the provider is configured.
- */
-export async function listProviderModels(opts: {
-	family: string;
-	apiKey?: string | null;
-	baseUrl?: string | null;
-}): Promise<ProviderModel[]> {
-	return invoke<ProviderModel[]>('list_provider_models', {
-		family: opts.family,
-		apiKey: opts.apiKey ?? null,
-		baseUrl: opts.baseUrl ?? null,
-	});
-}
-
 // =============================================================================
 // Reactive getters
 // =============================================================================
 
-export function getFamilies(): ProviderFamily[] {
-	return families;
+export function getSelections(): string[] {
+	return selections;
 }
 
 export function getCurrentProvider(): CurrentProvider | null {
@@ -181,17 +152,9 @@ export function getStatus(): ProviderStatus {
 	return status;
 }
 
-export function getStoredApiKeys(): Record<string, string> {
-	return storedKeys;
-}
-
-export function getStoredApiKey(family: string): string | null {
-	return storedKeys[family] ?? null;
-}
-
-/** Whether chat is enabled (a configured, ready provider exists). */
+/** Whether chat is enabled: a provider is configured and usable. */
 export function isProviderReady(): boolean {
-	return status.ready;
+	return status.family !== null && status.error === null;
 }
 
 /** Why the provider state query failed, if it did (malformed/inaccessible settings). */
@@ -202,13 +165,6 @@ export function getProviderStateError(): string | null {
 /** Whether the initial state snapshot has been fetched. */
 export function isLoaded(): boolean {
 	return loaded;
-}
-
-export function getFamily(
-	id: string | null | undefined,
-): ProviderFamily | undefined {
-	if (!id) return undefined;
-	return families.find((f) => f.id === id);
 }
 
 /**

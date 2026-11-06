@@ -4,22 +4,22 @@ A local-first research agent for evidence-based journalism. Think Claude Code, b
 
 ## Vision
 
-Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight keeps document storage, search, and sync entirely local — while chat runs on a user-configured remote LLM provider (27 vendors via the rig registry: OpenAI, Anthropic, Gemini, Groq, local servers like Ollama/llama.cpp, ...). Only the conversation goes to the provider; documents never leave your machine.
+Newsrooms have documents but no good way to search, analyze, and share them without relying on cloud services they don't trust. Insight keeps document storage, search, and sync entirely local — while chat runs on a user-configured remote LLM provider (any selection rig registers: OpenAI, Anthropic, Gemini, Groq, local servers like Ollama/llama.cpp, ...). Only the conversation goes to the provider; documents never leave your machine.
 
 ## Core Stack
 
-| Component       | Library     | Purpose                                                                          |
-| --------------- | ----------- | -------------------------------------------------------------------------------- |
-| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                                         |
-| UI              | Svelte 5    | Frontend                                                                         |
-| Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles)                               |
-| Chat inference  | [rig]       | LLM framework: 27 vendor selections via a registry, agent runtime, tools, memory |
-| P2P / Sync      | iroh        | Connections, NAT traversal, sync                                                 |
-| Content storage | iroh-blobs  | Content-addressed file storage                                                   |
-| Metadata sync   | iroh-docs   | CRDT key-value store for metadata                                                |
-| Real-time       | iroh-gossip | Pub/sub for live updates                                                         |
-| Search          | milli       | Full-text keyword search (BM25)                                                  |
-| PDF text        | lopdf       | Digital text extraction                                                          |
+| Component       | Library     | Purpose                                                                       |
+| --------------- | ----------- | ----------------------------------------------------------------------------- |
+| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                                      |
+| UI              | Svelte 5    | Frontend                                                                      |
+| Styling         | Tailwind 4  | Utility-first CSS (no theme() in component styles)                            |
+| Chat inference  | [rig]       | LLM framework: provider registry, model catalog, agent runtime, tools, memory |
+| P2P / Sync      | iroh        | Connections, NAT traversal, sync                                              |
+| Content storage | iroh-blobs  | Content-addressed file storage                                                |
+| Metadata sync   | iroh-docs   | CRDT key-value store for metadata                                             |
+| Real-time       | iroh-gossip | Pub/sub for live updates                                                      |
+| Search          | milli       | Full-text keyword search (BM25)                                               |
+| PDF text        | lopdf       | Digital text extraction                                                       |
 
 [rig]: https://github.com/0xPlaygrounds/rig
 
@@ -34,7 +34,7 @@ User Query
     ↓
 rig Agent (per request: preamble + tools + memory + max turns)
     ↓
-Registry-built Model (one of 27 curated rig vendor selections)
+Registry-built Model (the configured rig provider selection)
     ↓
 Tool Calling Loop (multi-turn)
     ↓
@@ -43,7 +43,7 @@ Synthesized Answer (with citations)
 
 Key pieces, all in `crates/insight-core/`:
 
-- **`providers/`** — a data-driven registry over 27 vendors, one curated canonical [`ProviderId`] selection each (rig currently registers 34 selections; Insight does not expose every one): `list_families()` (UI descriptors; local-server selections like `ollama/openai` and `llamacpp/openai` need no API key), `build_model()` (validates settings and returns a `DynModel<Completion>` built from the selection's `ProviderConfig` and catalog facts), and `list_models()` (the provider clients' inherent listing APIs, rig's `operation::ModelListing`, for selections that support remote model listing).
+- **`providers/`** — a thin surface over rig's registry and built-in model catalog; nothing vendor-specific lives here. `selections()` lists every selection rig registers (`openai/openai`, `ollama/openai`, …), `models()` lists the chat models rig's catalog files under a selection's vendor (deprecated and non-chat rows dropped, rig's display names), and `build_model()` resolves the selection, applies the credential/endpoint rules rig declares, and returns a `DynModel<Completion>` built from the selection's `ProviderConfig` and catalog facts. Model listing is offline: it reads the catalog, it does not call the provider.
 - **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools (manual `rig::tool::Tool` implementations) + `FileConversationMemory` + `default_max_turns(100)`. Each tool owns a clone of the per-run `ToolState` (index, storage, active collections); Insight keeps these live handles on the tool instances rather than in `ToolContext`. The conversation's active collections are attached as a run document with `AgentRunner::document` on every turn — non-sticky, so mid-conversation scope changes take effect on the next model call without touching stored history. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. Stream failures return as `Err`; the Tauri command emits the single terminal `streamError`. `generate_title` and `predict_next_message` are bare-model completions (no tools, no agent loop) over the same provider settings.
 - **`memory.rs`** — `FileConversationMemory` wraps rig_memory's directory-backed `DirStore` for conversation logs and a rig `DirFiles` namespace for metadata; it does not implement a `ConversationMemory` trait. A `ConversationMeta` sidecar holds app-facing data (title, linked collections, timestamps).
 - **`tools/`** — manual `rig::tool::Tool` implementations over milli search + iroh storage; each owns a clone of the per-run `ToolState` (index, storage, collection scope).
@@ -148,15 +148,11 @@ Settings v2 (`~/.local/share/insight/settings.json`):
 		"model": "gpt-4o-mini",
 		"api_key": "...",
 		"base_url": "..."
-	},
-	"api_keys": {
-		"openai/openai": "sk-...",
-		"anthropic/anthropic": "sk-ant-..."
 	}
 }
 ```
 
-`provider` is `null` when chat is unconfigured. `family` is a canonical `ProviderId` selection id. `api_keys` stores per-selection keys separately from the active provider so switching selections keeps previously entered keys. `api_key`/`base_url` are optional per selection (local-server selections like `ollama/openai` and `llamacpp/openai` need neither). There is intentionally no legacy migration — no users yet.
+`provider` is `null` when chat is unconfigured. `family` is a rig provider selection id; `api_key` is required only by selections rig says need a credential, and `base_url` overrides the selection's endpoint. The configured provider is the only place a key is stored. There is intentionally no migration of older settings files — no users yet.
 
 ## Development
 
@@ -204,8 +200,8 @@ Stack: Vitest + @testing-library/svelte + jsdom
 import { mockIPC } from '@tauri-apps/api/mocks';
 
 mockIPC((cmd, args) => {
-	if (cmd === 'list_provider_families') {
-		return [{ id: 'openai/openai', name: 'OpenAI' }];
+	if (cmd === 'list_providers') {
+		return ['openai/openai', 'ollama/openai'];
 	}
 });
 ```

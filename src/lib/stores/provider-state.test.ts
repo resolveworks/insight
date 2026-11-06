@@ -11,35 +11,21 @@ async function importStore() {
 	return await import('./provider-state.svelte');
 }
 
-const FAMILIES = [
-	{
-		id: 'openai/openai',
-		name: 'OpenAI',
-		requires_api_key: true,
-		supports_model_listing: true,
-	},
-	{
-		id: 'ollama/openai',
-		name: 'Ollama',
-		requires_api_key: false,
-		supports_model_listing: true,
-	},
-	{
-		id: 'custom',
-		name: 'Custom',
-		requires_api_key: false,
-		supports_model_listing: false,
-	},
-];
+const SELECTIONS = ['ollama/openai', 'openai/openai'];
+
+const MODELS: Record<string, Array<{ id: string; name: string }>> = {
+	'openai/openai': [{ id: 'gpt-4o', name: 'GPT-4o' }],
+	'ollama/openai': [{ id: 'llama3', name: 'Llama 3' }],
+};
 
 describe('provider-state store', () => {
 	beforeEach(() => {
 		clearMocks();
 	});
 
-	it('loads the family registry, stored keys, and current provider at boot', async () => {
+	it('loads the selections, the current provider and its status at boot', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'get_current_provider')
 				return {
 					family: 'openai/openai',
@@ -48,14 +34,13 @@ describe('provider-state store', () => {
 					base_url: null,
 				};
 			if (cmd === 'get_provider_status')
-				return { family: 'openai/openai', model: 'gpt-4o', ready: true };
-			if (cmd === 'get_stored_api_keys') return { 'openai/openai': 'sk-x' };
+				return { family: 'openai/openai', model: 'gpt-4o', error: null };
 		});
 
 		const store = await importStore();
-		await store.loadFamilies();
+		await store.loadSelections();
 
-		expect(store.getFamilies()).toEqual(FAMILIES);
+		expect(store.getSelections()).toEqual(SELECTIONS);
 		expect(store.getCurrentProvider()).toEqual({
 			family: 'openai/openai',
 			model: 'gpt-4o',
@@ -65,62 +50,78 @@ describe('provider-state store', () => {
 		expect(store.getStatus()).toEqual({
 			family: 'openai/openai',
 			model: 'gpt-4o',
-			ready: true,
+			error: null,
 		});
 		expect(store.isProviderReady()).toBe(true);
-		expect(store.getStoredApiKey('openai/openai')).toBe('sk-x');
+		expect(store.isLoaded()).toBe(true);
 	});
 
 	it('treats a missing provider as not ready', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'get_current_provider') return null;
 			if (cmd === 'get_provider_status')
-				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys') return {};
+				return { family: null, model: null, error: null };
 		});
 
 		const store = await importStore();
-		await store.ensureProviderStateLoaded();
+		await store.__resetForTests();
 
 		expect(store.getCurrentProvider()).toBeNull();
 		expect(store.isProviderReady()).toBe(false);
-		expect(store.isLoaded()).toBe(true);
+	});
+
+	it('treats a configured but unusable provider as not ready, keeping the reason', async () => {
+		const error = 'no registered provider is named `deepseek`';
+		mockIPC((cmd) => {
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'get_current_provider')
+				return {
+					family: 'deepseek',
+					model: 'deepseek-flash',
+					api_key: 'sk',
+					base_url: null,
+				};
+			if (cmd === 'get_provider_status')
+				return { family: 'deepseek', model: 'deepseek-flash', error };
+		});
+
+		const store = await importStore();
+		await store.__resetForTests();
+
+		expect(store.isProviderReady()).toBe(false);
+		expect(store.getStatus().error).toBe(error);
 	});
 
 	it('configures a provider and refreshes state from the backend', async () => {
 		let configuredFamily: string | null = null;
-		let configuredModel: string | null = null;
 		let configureArgs: Record<string, unknown> | null = null;
 
 		mockIPC((cmd, args) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
-			if (cmd === 'get_stored_api_keys')
-				return configuredFamily ? { [configuredFamily]: 'sk-new' } : {};
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'get_current_provider')
 				return configuredFamily
 					? {
 							family: configuredFamily,
-							model: configuredModel,
+							model: 'gpt-4o-mini',
 							api_key: 'sk-new',
 							base_url: null,
 						}
 					: null;
 			if (cmd === 'get_provider_status')
 				return configuredFamily
-					? { family: configuredFamily, model: configuredModel, ready: true }
-					: { family: null, model: null, ready: false };
+					? { family: configuredFamily, model: 'gpt-4o-mini', error: null }
+					: { family: null, model: null, error: null };
 			if (cmd === 'configure_provider') {
 				const a = args as Record<string, unknown>;
 				configureArgs = a;
 				configuredFamily = a.family as string;
-				configuredModel = a.model as string;
 				return null;
 			}
 		});
 
 		const store = await importStore();
-		await store.loadFamilies();
+		await store.loadSelections();
 
 		await store.configureProvider({
 			family: 'openai/openai',
@@ -134,14 +135,13 @@ describe('provider-state store', () => {
 			model: 'gpt-4o-mini',
 		});
 		expect(store.isProviderReady()).toBe(true);
-		expect(store.getStoredApiKey('openai/openai')).toBe('sk-new');
 		expect(store.getCurrentProvider()?.model).toBe('gpt-4o-mini');
 	});
 
 	it('disableProvider clears the ready state', async () => {
 		let disabled = false;
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'disable_provider') {
 				disabled = true;
 				return null;
@@ -157,9 +157,8 @@ describe('provider-state store', () => {
 						};
 			if (cmd === 'get_provider_status')
 				return disabled
-					? { family: null, model: null, ready: false }
-					: { family: 'openai/openai', model: 'gpt-4o', ready: true };
-			if (cmd === 'get_stored_api_keys') return {};
+					? { family: null, model: null, error: null }
+					: { family: 'openai/openai', model: 'gpt-4o', error: null };
 		});
 
 		const store = await importStore();
@@ -173,7 +172,7 @@ describe('provider-state store', () => {
 	it('exposes a failed state query and clears it after a successful configure', async () => {
 		let broken = true;
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'get_current_provider') {
 				if (broken) throw new Error('malformed settings file');
 				return {
@@ -184,13 +183,12 @@ describe('provider-state store', () => {
 				};
 			}
 			if (cmd === 'get_provider_status')
-				return { family: 'openai/openai', model: 'gpt-4o-mini', ready: true };
-			if (cmd === 'get_stored_api_keys') return {};
+				return { family: 'openai/openai', model: 'gpt-4o-mini', error: null };
 			if (cmd === 'configure_provider') return null;
 		});
 
 		const store = await importStore();
-		await store.ensureProviderStateLoaded();
+		await store.__resetForTests();
 
 		expect(store.getProviderStateError()).toContain('malformed settings file');
 		expect(store.isLoaded()).toBe(true);
@@ -206,32 +204,36 @@ describe('provider-state store', () => {
 		expect(store.isProviderReady()).toBe(true);
 	});
 
-	it('lists models for a family, forwarding key and base url', async () => {
+	it('lists the catalog models of a selection', async () => {
 		let listArgs: Record<string, unknown> | null = null;
 		mockIPC((cmd, args) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'list_provider_models') {
 				listArgs = args as Record<string, unknown>;
-				return [{ id: 'qwen3', display_name: 'Qwen 3' }];
+				return MODELS[(args as { family: string }).family];
 			}
 			if (cmd === 'get_current_provider') return null;
 			if (cmd === 'get_provider_status')
-				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys') return {};
+				return { family: null, model: null, error: null };
 		});
 
 		const store = await importStore();
-		const models = await store.listProviderModels({
-			family: 'ollama/openai',
-			apiKey: null,
-			baseUrl: 'http://localhost:11434',
-		});
+		const models = await store.loadModels('ollama/openai');
 
-		expect(models).toEqual([{ id: 'qwen3', display_name: 'Qwen 3' }]);
-		expect(listArgs).toMatchObject({
-			family: 'ollama/openai',
-			apiKey: null,
-			baseUrl: 'http://localhost:11434',
-		});
+		expect(models).toEqual([{ id: 'llama3', name: 'Llama 3' }]);
+		expect(listArgs).toMatchObject({ family: 'ollama/openai' });
+	});
+
+	it('reads the message of a structured command error', async () => {
+		mockIPC(() => null);
+		const store = await importStore();
+
+		expect(
+			store.describeError({
+				code: 'external_error',
+				message: "provider 'openai/openai' requires an API key",
+			}),
+		).toBe("provider 'openai/openai' requires an API key");
+		expect(store.describeError(new Error('plain'))).toBe('plain');
 	});
 });

@@ -385,7 +385,6 @@ mod tests {
                 api_key: Some("dummy".into()),
                 base_url: Some("https://example.invalid".into()),
             }),
-            api_keys: Default::default(),
         };
         settings.save(&state.config.settings_file).unwrap();
     }

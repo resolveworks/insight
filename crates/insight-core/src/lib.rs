@@ -47,7 +47,7 @@ pub struct CollectionInfo {
 pub use config::{Config, Settings, SettingsError};
 pub use memory::{ConversationMeta, ConversationSummary, FileConversationMemory};
 pub use pipeline::{Pipeline, PipelineProgress, StageProgress};
-pub use providers::{ProviderFamily, ProviderModel, ProviderSettings};
+pub use providers::{ModelChoice, ProviderSettings};
 pub use runtime::{predict_next_message, send_message, BASE_SYSTEM_PROMPT};
 pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::Storage;

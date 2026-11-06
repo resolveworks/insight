@@ -4,46 +4,34 @@ import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 import ProviderSelector from './ProviderSelector.svelte';
 import * as providerStore from '#lib/stores/provider-state.svelte.js';
 
-const FAMILIES = [
-	{
-		id: 'openai/openai',
-		name: 'OpenAI',
-		requires_api_key: true,
-		supports_model_listing: true,
-	},
-	{
-		id: 'ollama/openai',
-		name: 'Ollama',
-		requires_api_key: false,
-		supports_model_listing: true,
-	},
-	{
-		id: 'deepseek/openai',
-		name: 'DeepSeek',
-		requires_api_key: true,
-		supports_model_listing: false,
-	},
-];
+const SELECTIONS = ['ollama/openai', 'openai/openai'];
+
+const MODELS: Record<string, Array<{ id: string; name: string }>> = {
+	'openai/openai': [
+		{ id: 'gpt-4o', name: 'GPT-4o' },
+		{ id: 'gpt-4o-mini', name: 'GPT-4o mini' },
+	],
+	'ollama/openai': [{ id: 'llama3', name: 'Llama 3' }],
+};
+
+const idleStatus = { family: null, model: null, error: null };
 
 describe('ProviderSelector', () => {
 	beforeEach(async () => {
 		clearMocks();
 		// Reset the shared store so each test boots against its own mock.
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'get_current_provider') return null;
-			if (cmd === 'get_provider_status')
-				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys')
-				return { 'openai/openai': 'sk-stored' };
+			if (cmd === 'get_provider_status') return idleStatus;
 			return null;
 		});
 		await providerStore.__resetForTests();
 	});
 
-	it('renders the family select and preselects the current provider', async () => {
+	it('offers rig selections and preselects the configured provider and model', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'get_current_provider')
 				return {
 					family: 'openai/openai',
@@ -52,23 +40,27 @@ describe('ProviderSelector', () => {
 					base_url: null,
 				};
 			if (cmd === 'get_provider_status')
-				return { family: 'openai/openai', model: 'gpt-4o', ready: true };
-			if (cmd === 'get_stored_api_keys')
-				return { 'openai/openai': 'sk-stored' };
-			return null;
+				return { family: 'openai/openai', model: 'gpt-4o', error: null };
+			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
 		});
 		await providerStore.__resetForTests();
 
 		render(ProviderSelector);
 
-		const select = (await screen.findByLabelText(
+		const provider = (await screen.findByLabelText(
 			'Provider',
 		)) as HTMLSelectElement;
-		await waitFor(() => expect(select.value).toBe('openai/openai'));
-		expect(screen.getByText('OpenAI: gpt-4o')).toBeInTheDocument();
+		await waitFor(() => expect(provider.value).toBe('openai/openai'));
+		expect(Array.from(provider.options).map((o) => o.value)).toEqual(
+			SELECTIONS,
+		);
 
-		// Key-required family: API key input prefilled from stored keys, and
-		// every family accepts a custom base URL.
+		const model = screen.getByLabelText('Model') as HTMLSelectElement;
+		await waitFor(() => expect(model.value).toBe('gpt-4o'));
+		expect(
+			screen.getByRole('option', { name: 'GPT-4o mini' }),
+		).toBeInTheDocument();
+
 		expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe(
 			'sk-stored',
 		);
@@ -77,12 +69,10 @@ describe('ProviderSelector', () => {
 
 	it('shows the provider state error when the boot query fails', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'get_current_provider') throw new Error('malformed settings');
-			if (cmd === 'get_provider_status')
-				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys') return {};
-			return null;
+			if (cmd === 'get_provider_status') return idleStatus;
+			if (cmd === 'list_provider_models') return MODELS['ollama/openai'];
 		});
 		await providerStore.__resetForTests();
 
@@ -95,195 +85,202 @@ describe('ProviderSelector', () => {
 		expect(screen.getByLabelText('Provider')).toBeInTheDocument();
 	});
 
-	it('shows a fetched model dropdown for families with model listing', async () => {
+	it('says why a configured provider cannot be used', async () => {
+		const reason = 'no registered provider is named `deepseek`';
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
-			if (cmd === 'get_current_provider') return null;
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'get_current_provider')
+				return {
+					family: 'deepseek',
+					model: 'deepseek-flash',
+					api_key: 'sk',
+					base_url: null,
+				};
 			if (cmd === 'get_provider_status')
-				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys')
-				return { 'openai/openai': 'sk-stored' };
-			if (cmd === 'list_provider_models')
-				return [
-					{ id: 'gpt-4o', display_name: 'GPT-4o' },
-					{ id: 'gpt-4o-mini', display_name: 'GPT-4o mini' },
-				];
-			return null;
-		});
-
-		render(ProviderSelector);
-
-		await waitFor(() => {
-			const el = screen.getByLabelText('Model') as HTMLSelectElement;
-			expect(el.tagName).toBe('SELECT');
-			expect(el.value).toBe('gpt-4o');
-		});
-		const modelSelect = screen.getByLabelText('Model') as HTMLSelectElement;
-		const options = Array.from(modelSelect.options).map((o) => o.value);
-		expect(options).toContain('gpt-4o');
-		expect(options).toContain('gpt-4o-mini');
-	});
-
-	it('shows a locked placeholder until the API key unlocks model listing', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
-			if (cmd === 'get_stored_api_keys') return {};
-			if (cmd === 'list_provider_models')
-				return [
-					{ id: 'gpt-4o', display_name: 'GPT-4o' },
-					{ id: 'gpt-4o-mini', display_name: 'GPT-4o mini' },
-				];
-			return null;
+				return { family: 'deepseek', model: 'deepseek-flash', error: reason };
+			if (cmd === 'list_provider_models') return [];
 		});
 		await providerStore.__resetForTests();
 
 		render(ProviderSelector);
 
-		// No API key yet: the model control exists but is a disabled placeholder,
-		// never an editable free-text field.
-		await waitFor(() => {
-			const locked = screen.getByLabelText('Model') as HTMLSelectElement;
-			expect(locked.tagName).toBe('SELECT');
-			expect(locked.disabled).toBe(true);
-			expect(locked.options[0].textContent).toMatch(/enter your api key/i);
-		});
+		expect(await screen.findByText(reason)).toBeInTheDocument();
+	});
 
-		// Entering the key (re-)triggers the debounced listing automatically.
-		await fireEvent.input(screen.getByLabelText('API Key'), {
-			target: { value: 'sk-typed' },
+	it('swaps the model list when the provider changes', async () => {
+		mockIPC((cmd, args) => {
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'get_current_provider') return null;
+			if (cmd === 'get_provider_status') return idleStatus;
+			if (cmd === 'list_provider_models')
+				return MODELS[(args as { family: string }).family];
 		});
-		await waitFor(
-			() => {
-				const select = screen.getByLabelText('Model') as HTMLSelectElement;
-				expect(select.disabled).toBe(false);
-				expect(select.value).toBe('gpt-4o');
-			},
-			{ timeout: 3000 },
+		await providerStore.__resetForTests();
+
+		render(ProviderSelector);
+
+		const provider = (await screen.findByLabelText(
+			'Provider',
+		)) as HTMLSelectElement;
+		await waitFor(() => expect(provider.value).toBe('ollama/openai'));
+		await waitFor(() =>
+			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+				'llama3',
+			),
+		);
+
+		await fireEvent.change(provider, { target: { value: 'openai/openai' } });
+
+		await waitFor(() =>
+			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+				'gpt-4o',
+			),
 		);
 	});
 
-	it('offers retry and manual entry when listing fails', async () => {
+	it('keeps a configured model the catalog does not list', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'list_provider_families') return FAMILIES;
-			if (cmd === 'get_current_provider') return null;
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'get_current_provider')
+				return {
+					family: 'openai/openai',
+					model: 'my-private-deployment',
+					api_key: 'sk',
+					base_url: 'https://gateway.internal/v1',
+				};
 			if (cmd === 'get_provider_status')
-				return { family: null, model: null, ready: false };
-			if (cmd === 'get_stored_api_keys')
-				return { 'openai/openai': 'sk-stored' };
-			if (cmd === 'list_provider_models') throw new Error('listing failed');
-			return null;
+				return {
+					family: 'openai/openai',
+					model: 'my-private-deployment',
+					error: null,
+				};
+			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
 		});
+		await providerStore.__resetForTests();
 
 		render(ProviderSelector);
 
-		const alert = await screen.findByRole('alert');
-		expect(alert.textContent).toMatch(/could not load the model list/i);
-		screen.getByRole('button', { name: /enter a model id manually/i }).click();
-
-		const input = (await screen.findByLabelText('Model')) as HTMLInputElement;
-		expect(input.tagName).toBe('INPUT');
-		expect(input.disabled).toBe(false);
-	});
-
-	it('shows a free-text model input for families without model listing', async () => {
-		render(ProviderSelector);
-
-		const select = (await screen.findByLabelText(
-			'Provider',
-		)) as HTMLSelectElement;
-		await waitFor(() => expect(select.options.length).toBeGreaterThan(0));
-		select.value = 'deepseek/openai';
-		await fireEvent.change(select);
-
-		// DeepSeek requires an API key, so entry is locked until the key is
-		// present — same rule as the listing-capable families.
-		const locked = (await screen.findByLabelText('Model')) as HTMLSelectElement;
-		expect(locked.tagName).toBe('SELECT');
-		expect(locked.disabled).toBe(true);
-		await fireEvent.input(screen.getByLabelText('API Key'), {
-			target: { value: 'sk-deepseek' },
-		});
-		await waitFor(() => {
-			const input = screen.getByLabelText('Model') as HTMLInputElement;
-			expect(input.tagName).toBe('INPUT');
-			expect(input.disabled).toBe(false);
-		});
-		// Every family accepts a custom base URL.
-		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
-	});
-
-	it('shows a base URL input', async () => {
-		render(ProviderSelector);
-
-		const select = (await screen.findByLabelText(
-			'Provider',
-		)) as HTMLSelectElement;
-		await waitFor(() => expect(select.options.length).toBeGreaterThan(0));
-		select.value = 'ollama/openai';
-		await fireEvent.change(select);
-
-		expect(await screen.findByLabelText('Base URL')).toBeInTheDocument();
-		expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument();
+		const model = (await screen.findByLabelText('Model')) as HTMLSelectElement;
+		await waitFor(() => expect(model.value).toBe('my-private-deployment'));
+		expect(
+			screen.getByRole('option', { name: 'my-private-deployment' }),
+		).toBeInTheDocument();
 	});
 
 	it('invokes configure_provider on save', async () => {
 		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
-			if (cmd === 'list_provider_families') return FAMILIES;
-			if (cmd === 'get_stored_api_keys')
-				return { 'openai/openai': 'sk-stored' };
+			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'list_provider_models')
-				return [
-					{ id: 'gpt-4o', display_name: 'GPT-4o' },
-					{ id: 'gpt-4o-mini', display_name: 'GPT-4o mini' },
-				];
-			return null;
-		});
-
-		render(ProviderSelector);
-
-		await waitFor(() => {
-			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
-				'gpt-4o',
-			);
-		});
-
-		screen.getByRole('button', { name: /save & activate/i }).click();
-
-		await waitFor(() => {
-			const call = calls.find((c) => c.cmd === 'configure_provider');
-			expect(call?.args).toMatchObject({
-				family: 'openai/openai',
-				apiKey: 'sk-stored',
-				baseUrl: null,
-				model: 'gpt-4o',
-			});
-		});
-	});
-
-	it('invokes disable_provider from the current-provider indicator', async () => {
-		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
-		mockIPC((cmd, args) => {
-			calls.push({ cmd, args: args as Record<string, unknown> });
-			if (cmd === 'list_provider_families') return FAMILIES;
-			if (cmd === 'get_current_provider')
-				return {
-					family: 'openai/openai',
-					model: 'gpt-4o',
-					api_key: 'sk',
-					base_url: null,
-				};
-			if (cmd === 'get_provider_status')
-				return { family: 'openai/openai', model: 'gpt-4o', ready: true };
-			if (cmd === 'get_stored_api_keys') return {};
+				return MODELS[(args as { family: string }).family];
+			if (cmd === 'get_current_provider') return null;
+			if (cmd === 'get_provider_status') return idleStatus;
 			return null;
 		});
 		await providerStore.__resetForTests();
 
 		render(ProviderSelector);
 
-		await screen.findByTestId('current-provider');
+		const provider = (await screen.findByLabelText(
+			'Provider',
+		)) as HTMLSelectElement;
+		// Let the initial selection settle before changing it.
+		await waitFor(() =>
+			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+				'llama3',
+			),
+		);
+		await fireEvent.change(provider, { target: { value: 'openai/openai' } });
+		await fireEvent.input(screen.getByLabelText('API Key'), {
+			target: { value: ' sk-typed ' },
+		});
+
+		await waitFor(() => {
+			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+				'gpt-4o',
+			);
+		});
+		screen.getByRole('button', { name: 'Save' }).click();
+
+		await waitFor(() => {
+			const call = calls.find((c) => c.cmd === 'configure_provider');
+			expect(call?.args).toMatchObject({
+				family: 'openai/openai',
+				apiKey: 'sk-typed',
+				baseUrl: null,
+				model: 'gpt-4o',
+			});
+		});
+	});
+
+	it('shows the message of a rejected configure, not the error object', async () => {
+		const reason = "provider 'openai/openai' requires an API key";
+		mockIPC((cmd, args) => {
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'list_provider_models')
+				return MODELS[(args as { family: string }).family];
+			if (cmd === 'get_current_provider') return null;
+			if (cmd === 'get_provider_status') return idleStatus;
+			if (cmd === 'configure_provider')
+				throw { code: 'external_error', message: reason };
+			return null;
+		});
+		await providerStore.__resetForTests();
+
+		render(ProviderSelector);
+
+		const provider = (await screen.findByLabelText(
+			'Provider',
+		)) as HTMLSelectElement;
+		// Let the initial selection settle before changing it.
+		await waitFor(() =>
+			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+				'llama3',
+			),
+		);
+		await fireEvent.change(provider, { target: { value: 'openai/openai' } });
+		await waitFor(() =>
+			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+				'gpt-4o',
+			),
+		);
+
+		screen.getByRole('button', { name: 'Save' }).click();
+
+		expect(await screen.findByText(reason)).toBeInTheDocument();
+		expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+	});
+
+	it('invokes disable_provider for a configured provider', async () => {
+		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+		let disabled = false;
+		mockIPC((cmd, args) => {
+			calls.push({ cmd, args: args as Record<string, unknown> });
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'disable_provider') {
+				disabled = true;
+				return null;
+			}
+			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
+			if (cmd === 'get_current_provider')
+				return disabled
+					? null
+					: {
+							family: 'openai/openai',
+							model: 'gpt-4o',
+							api_key: 'sk',
+							base_url: null,
+						};
+			if (cmd === 'get_provider_status')
+				return disabled
+					? idleStatus
+					: { family: 'openai/openai', model: 'gpt-4o', error: null };
+		});
+		await providerStore.__resetForTests();
+
+		render(ProviderSelector);
+
 		screen.getByRole('button', { name: 'Disable' }).click();
 
 		await waitFor(() => {

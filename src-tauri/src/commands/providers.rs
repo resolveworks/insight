@@ -1,35 +1,28 @@
-//! Provider registry commands (family listing, model listing, configuration).
-
-use std::collections::HashMap;
+//! Chat provider commands: rig's provider selections and their catalog
+//! models, plus configuring and clearing the active provider.
 
 use tauri::State;
 
 use crate::core::{
-    providers::{self, ProviderFamily, ProviderModel, ProviderSettings},
+    providers::{self, ModelChoice, ProviderSettings},
     AppState, Settings,
 };
 use crate::error::{CommandResult, ResultExt};
 
-/// List every provider family in the registry.
+/// Every provider selection rig registers, canonically spelled.
 #[tauri::command]
-pub fn list_provider_families() -> Vec<ProviderFamily> {
-    providers::list_families()
+pub fn list_providers() -> Vec<String> {
+    providers::selections()
 }
 
-/// List the models a family offers, querying the provider remotely.
+/// The chat models rig's catalog lists for `family`'s vendor.
 #[tauri::command]
-pub async fn list_provider_models(
-    family: String,
-    api_key: Option<String>,
-    base_url: Option<String>,
-) -> CommandResult<Vec<ProviderModel>> {
-    providers::list_models(&family, api_key.as_deref(), base_url.as_deref())
-        .await
-        .external_err()
+pub fn list_provider_models(family: String) -> CommandResult<Vec<ModelChoice>> {
+    providers::models(&family).external_err()
 }
 
 /// Configure the chat provider: validate by constructing the model, then
-/// persist the provider settings and the family's API key.
+/// persist the settings.
 #[tauri::command]
 pub async fn configure_provider(
     family: String,
@@ -41,27 +34,23 @@ pub async fn configure_provider(
     tracing::info!(family = %family, model = %model, "Configuring chat provider");
 
     let provider = ProviderSettings {
-        family: family.clone(),
+        family,
         model,
-        api_key: api_key.clone(),
+        api_key,
         base_url,
     };
     // Construction performs no network I/O but validates key/URL inputs.
     providers::build_model(&provider).external_err()?;
 
     let mut settings = Settings::load(&state.config.settings_file).storage_err()?;
-    if let Some(key) = api_key {
-        settings.api_keys.insert(family.clone(), key);
-    }
     settings.provider = Some(provider);
     settings.save(&state.config.settings_file).storage_err()?;
 
-    tracing::info!(family = %family, "Chat provider configured");
+    tracing::info!("Chat provider configured");
     Ok(())
 }
 
-/// Disable the chat provider: persist `provider = None` (stored API keys are
-/// kept for easy switching back).
+/// Disable the chat provider: persist `provider = None`.
 #[tauri::command]
 pub async fn disable_provider(state: State<'_, AppState>) -> CommandResult<()> {
     tracing::info!("Disabling chat provider");
@@ -78,13 +67,4 @@ pub async fn get_current_provider(
 ) -> CommandResult<Option<ProviderSettings>> {
     let settings = Settings::load(&state.config.settings_file).storage_err()?;
     Ok(settings.provider)
-}
-
-/// Get stored API keys per family (for auto-populating the settings UI).
-#[tauri::command]
-pub async fn get_stored_api_keys(
-    state: State<'_, AppState>,
-) -> CommandResult<HashMap<String, String>> {
-    let settings = Settings::load(&state.config.settings_file).storage_err()?;
-    Ok(settings.api_keys)
 }
