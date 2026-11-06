@@ -54,10 +54,14 @@ pub enum MemoryStoreError {
 
     /// A conversation still uses the pre-rig-session on-disk layout.
     #[error(
-        "conversation {0} uses the legacy conversations/<id>/messages.json layout; \
-         remove it or convert it before using this version"
+        "conversation {0} uses the legacy conversations/<id>/messages.json or \
+         conversations/<id>/meta.json layout; remove it or convert it before using this version"
     )]
     LegacyLayout(String),
+
+    /// The conversations root holds an entry whose name is not UTF-8.
+    #[error("invalid conversations directory entry name: {0:?}")]
+    InvalidEntry(std::ffi::OsString),
 
     /// The metadata namespace holds a file that is not a conversation meta.
     #[error("invalid conversation metadata file: {0}")]
@@ -135,10 +139,11 @@ impl FileConversationMemory {
         self.store.clone()
     }
 
-    /// A conversation stored in the legacy pre-rig-session layout.
+    /// A conversation stored in the legacy pre-rig-session layout: a
+    /// per-conversation directory holding `messages.json` or `meta.json`.
     fn ensure_not_legacy(&self, id: &str) -> Result<(), MemoryStoreError> {
-        let legacy = self.root.join(id).join("messages.json");
-        if legacy.is_file() {
+        let dir = self.root.join(id);
+        if dir.join("messages.json").is_file() || dir.join("meta.json").is_file() {
             return Err(MemoryStoreError::LegacyLayout(id.to_owned()));
         }
         Ok(())
@@ -154,13 +159,13 @@ impl FileConversationMemory {
         };
         for entry in entries {
             let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return Err(MemoryStoreError::InvalidEntry(name));
+            };
             if !entry.file_type()?.is_dir() {
                 continue;
             }
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
             self.ensure_not_legacy(name)?;
         }
         Ok(())
@@ -221,20 +226,17 @@ impl FileConversationMemory {
     }
 
     /// List all conversation summaries, most recently updated first.
-    /// Malformed metadata is an error, never silently skipped.
+    /// Malformed metadata or a failing read is an error, never silently
+    /// skipped; listing is serialized with in-process metadata writes.
     pub async fn list_summaries(&self) -> Result<Vec<ConversationSummary>, MemoryStoreError> {
+        let _guard = self.metadata_lock.lock().await;
         self.ensure_no_legacy_conversations()?;
         let mut summaries = Vec::new();
         for name in self.metadata.files()? {
             let Some(id) = name.strip_suffix(".json") else {
                 return Err(MemoryStoreError::InvalidMetadata(name));
             };
-            let bytes = match self.metadata.read_file(&name) {
-                Ok(bytes) => bytes,
-                // Another process removed it between listing and reading.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
+            let bytes = self.metadata.read_file(&name)?;
             let meta: ConversationMeta = serde_json::from_slice(&bytes)?;
             if id != meta.id {
                 return Err(MemoryStoreError::InvalidMetadata(name));
@@ -249,6 +251,7 @@ impl FileConversationMemory {
     /// removing an unknown id succeeds.
     pub async fn delete(&self, id: &str) -> Result<(), MemoryStoreError> {
         let _guard = self.metadata_lock.lock().await;
+        self.ensure_not_legacy(id)?;
         self.remove_session_log(id).await?;
         self.metadata.remove_file(&meta_name(id))?;
         Ok(())
@@ -481,6 +484,50 @@ mod tests {
         assert!(matches!(
             store.load("old").await,
             Err(MemoryStoreError::LegacyLayout(_))
+        ));
+        assert!(matches!(
+            store.delete("old").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+        assert!(
+            legacy.join("messages.json").is_file(),
+            "refused delete must leave the legacy conversation untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_meta_only_layout_is_refused() {
+        let (dir, store) = temp_store();
+        let legacy = dir.path().join("old-empty");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("meta.json"), b"{}").unwrap();
+
+        assert!(matches!(
+            store.list_summaries().await,
+            Err(MemoryStoreError::LegacyLayout(id)) if id == "old-empty"
+        ));
+        assert!(matches!(
+            store.load_meta("old-empty").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+        assert!(matches!(
+            store.delete("old-empty").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_utf8_root_entry_is_refused() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let (dir, store) = temp_store();
+        let name = std::ffi::OsString::from_vec(vec![0xff]);
+        std::fs::create_dir(dir.path().join(name)).unwrap();
+
+        assert!(matches!(
+            store.list_summaries().await,
+            Err(MemoryStoreError::InvalidEntry(_))
         ));
     }
 
