@@ -30,8 +30,6 @@ async fn conversation_view(
     state: &AppState,
     meta: ConversationMeta,
 ) -> Result<ConversationView, CommandError> {
-    use rig::memory::ConversationMemory;
-
     let messages = state
         .memory
         .load(&meta.id)

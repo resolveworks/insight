@@ -96,7 +96,7 @@ impl AppState {
 
         let memory = Arc::new(FileConversationMemory::new(
             config.conversations_dir.clone(),
-        ));
+        )?);
 
         // Create event-driven pipeline for document processing
         let (pipeline, progress_rx) = Pipeline::new(storage.clone(), index_worker.clone());

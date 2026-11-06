@@ -9,25 +9,20 @@
 //!   listed remotely).
 //! - [`build_model`] constructs a [`ModelHandle`] for a persisted
 //!   [`ProviderSettings`], validating required key/URL inputs first.
-//! - [`list_models`] queries a listing-capable family via rig's
-//!   [`ModelListingClient`].
+//! - [`list_models`] queries a listing-capable family's client.
 //!
 //! The family table mirrors the provider modules in rig-core that declare a
 //! completion capability. Providers that are embeddings-only (e.g. voyageai)
-//! are intentionally absent. Construction is uniform: every family uses
-//! rig's builder pattern (`Client::builder().api_key(..).base_url(..)`)
-//! except Azure, whose OpenAI resource endpoint is set through
-//! [`azure_endpoint`](rig::providers::azure::ClientBuilder::azure_endpoint),
-//! and llamafile, whose builder takes no API key at all (it passes rig's
-//! `Nothing` auth marker).
+//! are intentionally absent. Construction uses each provider's configuration,
+//! then connects it to rig's shared HTTP client.
 //!
-//! Local-server families (`ollama`, `llamafile`) need no API key — rig treats
-//! an empty key as "no auth" for ollama, and the llamafile builder has no key
-//! slot; their clients default to the usual localhost endpoints.
+//! Local-server families (`ollama`, `llamafile`) need no API key; empty keys
+//! are accepted and their clients default to the usual localhost endpoints.
 
-use rig::agent::ModelHandle;
-use rig::client::{CompletionClient, ModelListingClient};
+use rig_core::{operation::Completion, DynModel};
 use serde::{Deserialize, Serialize};
+
+type ModelHandle = DynModel<Completion>;
 
 /// A provider configuration as persisted to `settings.json`.
 ///
@@ -86,24 +81,14 @@ pub enum ProviderRegistryError {
     #[error("provider family '{0}' requires a base URL")]
     MissingBaseUrl(String),
 
-    /// The provider client could not be constructed.
-    #[error("failed to construct '{family}' client: {source}")]
-    ClientConstruction {
-        /// Family that failed to build.
-        family: String,
-        /// Underlying rig transport error.
-        #[source]
-        source: rig::http_client::Error,
-    },
-
     /// Remote model listing failed.
     #[error("failed to list models for '{family}': {source}")]
     ListModels {
         /// Family whose listing endpoint failed.
         family: String,
-        /// Underlying rig listing error.
+        /// Underlying rig provider error.
         #[source]
-        source: rig::model::ModelListingError,
+        source: Box<rig::ProviderError>,
     },
 
     /// The family does not implement rig's model-listing capability.
@@ -200,95 +185,70 @@ fn lookup_family(id: &str) -> Result<&'static FamilySpec, ProviderRegistryError>
 }
 
 /// Construct a rig client for `family` and run `body` with it.
-///
-/// Every family builds through rig's uniform builder
-/// (`Client::builder().api_key(..)[.base_url(..)].build()`); Azure routes its
-/// endpoint through the provider-specific `azure_endpoint` builder method.
 /// The macro form keeps each arm's concrete client type local to that arm,
 /// so one expansion serves both model construction and model listing.
 macro_rules! with_client {
     ($family:expr, $key:expr, $url:expr, |$client:ident| $body:expr) => {
         match $family {
-            "anthropic" => with_client!(@arm anthropic, $key, $url, $family, $client, $body),
-            "azure" => {{
-                let $client = rig::providers::azure::Client::builder()
-                    .api_key(rig::providers::azure::AzureOpenAIAuth::ApiKey(
-                        $key.to_string(),
-                    ))
-                    // `validate` rejects an azure family without a base URL,
-                    // so this cannot fire for settings that passed it.
-                    .azure_endpoint($url.expect("azure requires a base URL").to_string())
-                    .build()
-                    .map_err(|source| ProviderRegistryError::ClientConstruction {
-                        family: $family.to_string(),
-                        source,
-                    })?;
-                $body
-            }},
-            "chatgpt" => with_client!(@arm chatgpt, $key, $url, $family, $client, $body),
-            "cohere" => with_client!(@arm cohere, $key, $url, $family, $client, $body),
-            "copilot" => with_client!(@arm copilot, $key, $url, $family, $client, $body),
-            "deepseek" => with_client!(@arm deepseek, $key, $url, $family, $client, $body),
-            "doubleword" => with_client!(@arm doubleword, $key, $url, $family, $client, $body),
-            "gemini" => with_client!(@arm gemini, $key, $url, $family, $client, $body),
-            "groq" => with_client!(@arm groq, $key, $url, $family, $client, $body),
-            "huggingface" => with_client!(@arm huggingface, $key, $url, $family, $client, $body),
-            "hyperbolic" => with_client!(@arm hyperbolic, $key, $url, $family, $client, $body),
-            // llamafile has no auth: its builder's key slot takes rig's
-            // `Nothing` marker instead of a credential.
-            "llamafile" => with_client!(@arm llamafile, rig::client::Nothing, $url, $family, $client, $body),
-            "minimax" => with_client!(@arm minimax, $key, $url, $family, $client, $body),
-            "mira" => with_client!(@arm mira, $key, $url, $family, $client, $body),
-            "mistral" => with_client!(@arm mistral, $key, $url, $family, $client, $body),
-            "moonshot" => with_client!(@arm moonshot, $key, $url, $family, $client, $body),
-            "ollama" => with_client!(@arm ollama, $key, $url, $family, $client, $body),
-            "openai" => with_client!(@arm openai, $key, $url, $family, $client, $body),
-            "openrouter" => with_client!(@arm openrouter, $key, $url, $family, $client, $body),
-            "perplexity" => with_client!(@arm perplexity, $key, $url, $family, $client, $body),
-            "together" => with_client!(@arm together, $key, $url, $family, $client, $body),
-            "venice" => with_client!(@arm venice, $key, $url, $family, $client, $body),
-            "xai" => with_client!(@arm xai, $key, $url, $family, $client, $body),
-            "xiaomimimo" => with_client!(@arm xiaomimimo, $key, $url, $family, $client, $body),
-            "zai" => with_client!(@arm zai, $key, $url, $family, $client, $body),
+            "anthropic" => with_client!(@config rig::providers::anthropic::AnthropicConfig::new($key), $url, $client, $body),
+            "azure" => with_client!(@config rig::providers::azure::new($key).config().clone(), $url, $client, $body),
+            "chatgpt" => with_client!(@openai chatgpt, $key, $url, $client, $body),
+            "cohere" => with_client!(@config rig::providers::cohere::CohereConfig::new($key), $url, $client, $body),
+            "copilot" => with_client!(@config rig::providers::openai::OpenAIConfig::with_key(&rig::providers::copilot::DIALECT, $key), $url, $client, $body),
+            "deepseek" => with_client!(@openai deepseek, $key, $url, $client, $body),
+            "doubleword" => with_client!(@openai doubleword, $key, $url, $client, $body),
+            "gemini" => with_client!(@config rig::providers::gemini::GeminiConfig::new($key), $url, $client, $body),
+            "groq" => with_client!(@openai groq, $key, $url, $client, $body),
+            "huggingface" => with_client!(@openai huggingface, $key, $url, $client, $body),
+            "hyperbolic" => with_client!(@openai hyperbolic, $key, $url, $client, $body),
+            "llamafile" => with_client!(@openai llamacpp, $key, $url, $client, $body),
+            "minimax" => with_client!(@openai minimax, $key, $url, $client, $body),
+            "mira" => with_client!(@openai mira, $key, $url, $client, $body),
+            "mistral" => with_client!(@openai mistral, $key, $url, $client, $body),
+            "moonshot" => with_client!(@openai moonshot, $key, $url, $client, $body),
+            "ollama" => with_client!(@config rig::providers::ollama::OllamaConfig::new().with_api_key($key), $url, $client, $body),
+            "openai" => with_client!(@config rig::providers::openai::OpenAIConfig::new($key), $url, $client, $body),
+            "openrouter" => with_client!(@openai openrouter, $key, $url, $client, $body),
+            "perplexity" => with_client!(@openai perplexity, $key, $url, $client, $body),
+            "together" => with_client!(@openai together, $key, $url, $client, $body),
+            "venice" => with_client!(@openai venice, $key, $url, $client, $body),
+            "xai" => with_client!(@openai xai, $key, $url, $client, $body),
+            "xiaomimimo" => with_client!(@openai xiaomimimo, $key, $url, $client, $body),
+            "zai" => with_client!(@openai zai, $key, $url, $client, $body),
             other => return Err(ProviderRegistryError::UnknownFamily(other.to_string())),
         }
     };
-    (@arm $module:ident, $key:expr, $url:expr, $family:expr, $client:ident, $body:expr) => {{
-        let mut builder = rig::providers::$module::Client::builder().api_key($key);
+    (@openai $module:ident, $key:expr, $url:expr, $client:ident, $body:expr) => {
+        with_client!(@config rig::providers::$module::new($key).config().clone(), $url, $client, $body)
+    };
+    (@config $config:expr, $url:expr, $client:ident, $body:expr) => {{
+        let mut config = $config;
         if let Some(url) = $url {
-            builder = builder.base_url(url);
+            config = config.with_base_url(url);
         }
-        let $client = builder
-            .build()
-            .map_err(|source| ProviderRegistryError::ClientConstruction {
-                family: $family.to_string(),
-                source,
-            })?;
+        let $client = config.client();
         $body
     }};
 }
 
-/// Like [`with_client`], restricted to the families whose rig clients
-/// implement [`ModelListingClient`]. A compile-time-filtered copy is needed
-/// because the shared macro would otherwise require the listing trait bound
-/// on clients that do not provide it.
+/// Like [`with_client`], restricted to the families whose rig clients list models.
 macro_rules! with_listing_client {
     ($family:expr, $key:expr, $url:expr, |$client:ident| $body:expr) => {
         match $family {
-            "anthropic" => with_client!(@arm anthropic, $key, $url, $family, $client, $body),
-            "copilot" => with_client!(@arm copilot, $key, $url, $family, $client, $body),
-            "deepseek" => with_client!(@arm deepseek, $key, $url, $family, $client, $body),
-            "gemini" => with_client!(@arm gemini, $key, $url, $family, $client, $body),
-            "groq" => with_client!(@arm groq, $key, $url, $family, $client, $body),
-            "minimax" => with_client!(@arm minimax, $key, $url, $family, $client, $body),
-            "mira" => with_client!(@arm mira, $key, $url, $family, $client, $body),
-            "mistral" => with_client!(@arm mistral, $key, $url, $family, $client, $body),
-            "moonshot" => with_client!(@arm moonshot, $key, $url, $family, $client, $body),
-            "ollama" => with_client!(@arm ollama, $key, $url, $family, $client, $body),
-            "openai" => with_client!(@arm openai, $key, $url, $family, $client, $body),
-            "openrouter" => with_client!(@arm openrouter, $key, $url, $family, $client, $body),
-            "venice" => with_client!(@arm venice, $key, $url, $family, $client, $body),
-            "xiaomimimo" => with_client!(@arm xiaomimimo, $key, $url, $family, $client, $body),
+            "anthropic" => with_client!(@config rig::providers::anthropic::AnthropicConfig::new($key), $url, $client, $body),
+            "copilot" => with_client!(@config rig::providers::openai::OpenAIConfig::with_key(&rig::providers::copilot::DIALECT, $key), $url, $client, $body),
+            "deepseek" => with_client!(@openai deepseek, $key, $url, $client, $body),
+            "gemini" => with_client!(@config rig::providers::gemini::GeminiConfig::new($key), $url, $client, $body),
+            "groq" => with_client!(@openai groq, $key, $url, $client, $body),
+            "minimax" => with_client!(@openai minimax, $key, $url, $client, $body),
+            "mira" => with_client!(@openai mira, $key, $url, $client, $body),
+            "mistral" => with_client!(@openai mistral, $key, $url, $client, $body),
+            "moonshot" => with_client!(@openai moonshot, $key, $url, $client, $body),
+            "ollama" => with_client!(@config rig::providers::ollama::OllamaConfig::new().with_api_key($key), $url, $client, $body),
+            "openai" => with_client!(@config rig::providers::openai::OpenAIConfig::new($key), $url, $client, $body),
+            "openrouter" => with_client!(@openai openrouter, $key, $url, $client, $body),
+            "venice" => with_client!(@openai venice, $key, $url, $client, $body),
+            "xiaomimimo" => with_client!(@openai xiaomimimo, $key, $url, $client, $body),
             other => return Err(ProviderRegistryError::UnknownFamily(other.to_string())),
         }
     };
@@ -331,9 +291,9 @@ pub fn build_model(settings: &ProviderSettings) -> Result<ModelHandle, ProviderR
         settings.api_key.as_deref(),
         settings.base_url.as_deref(),
     )?;
-    with_client!(settings.family.as_str(), key, url, |client| Ok(
-        ModelHandle::new(client.completion_model(&settings.model))
-    ))
+    with_client!(settings.family.as_str(), key, url, |client| Ok(client
+        .completion(&settings.model)
+        .erase()))
 }
 
 /// List the models a family offers, via rig's model-listing capability.
@@ -358,7 +318,7 @@ pub async fn list_models(
         .await
         .map_err(|source| ProviderRegistryError::ListModels {
             family: family.to_string(),
-            source,
+            source: Box::new(source),
         })?);
     Ok(models
         .iter()
