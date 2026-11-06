@@ -278,13 +278,70 @@ describe('applyItem — control items', () => {
 		});
 	});
 
-	it('modelTurnRetried resets to empty', () => {
+	it('modelTurnRetried drops only the rejected turn, keeping earlier segments', () => {
 		const run = fold([
 			start(0, 'text'),
-			textDelta(0, 'bye'),
+			textDelta(0, 'Searching.'),
+			endText(0, 'Searching.'),
+			startToolCall(1, 'search'),
+			endToolCall(1, 'call_1', 'search', { query: 'x' }),
+			committedToolCall('call_1', 'search', { query: 'x' }),
+			executedToolCall('call_1', 'search', { query: 'x' }),
+			toolResult('call_1', 'search', [{ type: 'text', text: 'hits' }]),
+			start(0, 'text'),
+			textDelta(0, 'draft'),
+			start(1, 'reasoning'),
+			reasoningDelta(1, 'thinking'),
 			{ type: 'modelTurnRetried', turn: 2 },
 		]);
-		expect(run).toEqual(emptyLiveRun());
+		expect(run).toEqual({
+			streamingText: false,
+			messages: [
+				{
+					role: 'assistant',
+					content: [
+						{ type: 'text', part: 0, text: 'Searching.' },
+						{
+							type: 'tool_call',
+							part: 1,
+							id: 'call_1',
+							name: 'search',
+							args: '{\n  "query": "x"\n}',
+							committed: true,
+							executed: true,
+						},
+					],
+				},
+				{
+					role: 'user',
+					content: [
+						{
+							type: 'tool_result',
+							call: 'call_1',
+							name: 'search',
+							text: 'hits',
+						},
+					],
+				},
+			],
+		});
+	});
+
+	it('modelTurnRetried keeps earlier turns when the rejected attempt streamed nothing', () => {
+		const run = fold([
+			start(0, 'text'),
+			textDelta(0, 'kept'),
+			{ type: 'modelTurnRetried', turn: 2 },
+		]);
+		expect(run).toEqual({
+			streamingText: false,
+			messages: [
+				{
+					role: 'assistant',
+					content: [{ type: 'text', part: 0, text: 'kept' }],
+				},
+			],
+		});
 	});
 
 	it('completionCall, finalResponse, and unknown payloads are no-ops', () => {

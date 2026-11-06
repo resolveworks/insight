@@ -169,7 +169,7 @@ export function applyItem(run: LiveRun, item: MultiTurnStreamItem): LiveRun {
 		}
 
 		case 'modelTurnRetried':
-			return emptyLiveRun();
+			return discardCurrentTurn(run, item.turn);
 
 		case 'completionCall':
 		case 'finalResponse':
@@ -177,6 +177,26 @@ export function applyItem(run: LiveRun, item: MultiTurnStreamItem): LiveRun {
 		default:
 			return run;
 	}
+}
+
+/** Drop the retried model turn's provisional output, keeping committed segments.
+ *
+ * `turn` is one-based, so it either equals the number of assistant segments
+ * (the rejected attempt streamed content) or exceeds it by one (it did not). */
+function discardCurrentTurn(run: LiveRun, turn: number): LiveRun {
+	const assistantTurns = run.messages.filter(
+		(message) => message.role === 'assistant',
+	).length;
+	if (turn === assistantTurns + 1) {
+		return { ...run, streamingText: false };
+	}
+	const last = lastMessage(run);
+	if (turn !== assistantTurns || last?.role !== 'assistant') {
+		throw new Error(
+			`model turn ${turn} retried with ${assistantTurns} assistant segments`,
+		);
+	}
+	return { messages: run.messages.slice(0, -1), streamingText: false };
 }
 
 /** Fold one `Item<StreamEvent>` payload into the run. */
