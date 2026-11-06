@@ -243,7 +243,6 @@ pub fn index_chunks_batch(
 }
 
 /// Index a batch of chunks
-#[allow(clippy::result_large_err)]
 fn index_chunk_batch(
     index: &Index,
     indexer_config: &IndexerConfig,
@@ -284,6 +283,24 @@ fn index_chunk_batch(
         })
         .collect();
 
+    index_documents(index, indexer_config, json_docs)
+}
+
+/// Index raw JSON documents. Test seam for rows that do not match [`IndexedChunk`].
+#[cfg(test)]
+pub(crate) fn index_documents_for_test(
+    index: &Index,
+    json_docs: Vec<Map<String, Value>>,
+) -> Result<()> {
+    index_documents(index, &IndexerConfig::default(), json_docs)
+}
+
+#[allow(clippy::result_large_err)]
+fn index_documents(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    json_docs: Vec<Map<String, Value>>,
+) -> Result<()> {
     let mmap = mmap_from_objects(json_docs);
 
     let rtxn = index.read_txn()?;

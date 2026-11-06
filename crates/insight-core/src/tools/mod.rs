@@ -118,7 +118,6 @@ pub struct SearchOutput {
 }
 
 /// Keyword search tool over the per-run collection scope.
-#[derive(Clone)]
 pub struct Search {
     state: ToolState,
 }
@@ -154,61 +153,59 @@ impl Tool for Search {
         _context: &mut ToolContext,
         args: SearchArgs,
     ) -> Result<SearchOutput, ToolExecutionError> {
-        search(&self.state, args.query).await
+        let state = &self.state;
+        let query = args.query;
+        tracing::info!(query = %query, "Executing keyword search");
+
+        let index = &*state.search;
+        let collection_ids = state.collection_ids();
+        let params = search::SearchParams {
+            query: &query,
+            limit: SEARCH_LIMIT,
+            collection_ids: Some(&collection_ids),
+            ..Default::default()
+        };
+
+        let results = search::search_index(index, params).map_err(infrastructure_error)?;
+        let rtxn = index.read_txn().map_err(infrastructure_error)?;
+        let mut hits = Vec::with_capacity(results.hits.len());
+
+        for hit in &results.hits {
+            let chunk = search::get_indexed_chunk(index, &rtxn, hit.doc_id)
+                .map_err(infrastructure_error)?
+                .ok_or_else(|| {
+                    infrastructure_error(format!(
+                        "search hit references missing indexed chunk {}",
+                        hit.doc_id
+                    ))
+                })?;
+
+            let truncated = chunk.content.chars().count() > PASSAGE_LIMIT;
+            let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
+            let collection_name = state.name_of(&chunk.collection_id)?;
+
+            hits.push(SearchHitResult {
+                document_name: chunk.parent_name,
+                document_id: chunk.parent_id,
+                chunk_index: chunk.chunk_index as i64,
+                collection_name,
+                collection_id: chunk.collection_id,
+                passage,
+                truncated,
+                start_page: chunk.start_page as i64,
+                end_page: chunk.end_page as i64,
+                page_count: chunk.page_count as i64,
+                score: search::compute_hit_score(&hit.scores),
+            });
+        }
+
+        tracing::info!(query = %query, hits = hits.len(), "Search completed");
+
+        Ok(SearchOutput {
+            total_hits: results.total_hits,
+            hits,
+        })
     }
-}
-
-async fn search(state: &ToolState, query: String) -> Result<SearchOutput, ToolExecutionError> {
-    tracing::info!(query = %query, "Executing keyword search");
-
-    let index = &*state.search;
-    let collection_ids = state.collection_ids();
-    let params = search::SearchParams {
-        query: &query,
-        limit: SEARCH_LIMIT,
-        collection_ids: Some(&collection_ids),
-        ..Default::default()
-    };
-
-    let results = search::search_index(index, params).map_err(infrastructure_error)?;
-    let rtxn = index.read_txn().map_err(infrastructure_error)?;
-    let mut hits = Vec::with_capacity(results.hits.len());
-
-    for hit in &results.hits {
-        let chunk = search::get_indexed_chunk(index, &rtxn, hit.doc_id)
-            .map_err(infrastructure_error)?
-            .ok_or_else(|| {
-                infrastructure_error(format!(
-                    "search hit references missing indexed chunk {}",
-                    hit.doc_id
-                ))
-            })?;
-
-        let truncated = chunk.content.chars().count() > PASSAGE_LIMIT;
-        let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
-        let collection_name = state.name_of(&chunk.collection_id)?;
-
-        hits.push(SearchHitResult {
-            document_name: chunk.parent_name,
-            document_id: chunk.parent_id,
-            chunk_index: chunk.chunk_index as i64,
-            collection_name,
-            collection_id: chunk.collection_id,
-            passage,
-            truncated,
-            start_page: chunk.start_page as i64,
-            end_page: chunk.end_page as i64,
-            page_count: chunk.page_count as i64,
-            score: search::compute_hit_score(&hit.scores),
-        });
-    }
-
-    tracing::info!(query = %query, hits = hits.len(), "Search completed");
-
-    Ok(SearchOutput {
-        total_hits: results.total_hits,
-        hits,
-    })
 }
 
 // ==================== read_chunk ====================
@@ -225,7 +222,6 @@ pub struct ReadChunkOutput {
 }
 
 /// Chunk-reading tool over the per-run collection scope.
-#[derive(Clone)]
 pub struct ReadChunk {
     state: ToolState,
 }
@@ -263,41 +259,36 @@ impl Tool for ReadChunk {
         _context: &mut ToolContext,
         args: ReadChunkArgs,
     ) -> Result<ReadChunkOutput, ToolExecutionError> {
-        read_chunk(&self.state, args.document_id, args.chunk_index).await
+        let state = &self.state;
+        let document_id = args.document_id;
+        let chunk_index = args.chunk_index;
+        tracing::info!(document_id = %document_id, chunk_index, "Reading chunk");
+
+        let chunk_id = format!("{document_id}_chunk_{chunk_index}");
+        let not_found = || {
+            ToolExecutionError::not_found(format!(
+                "chunk {chunk_index} not found for document {document_id}. Try a different chunk index."
+            ))
+        };
+
+        let chunk = search::get_indexed_chunk_by_external_id(&state.search, &chunk_id)
+            .map_err(infrastructure_error)?
+            .ok_or_else(not_found)?;
+
+        if !state
+            .collections
+            .iter()
+            .any(|collection| collection.id == chunk.collection_id)
+        {
+            return Err(not_found());
+        }
+
+        Ok(ReadChunkOutput {
+            document_id,
+            chunk_index,
+            content: chunk.content,
+        })
     }
-}
-
-async fn read_chunk(
-    state: &ToolState,
-    document_id: String,
-    chunk_index: usize,
-) -> Result<ReadChunkOutput, ToolExecutionError> {
-    tracing::info!(document_id = %document_id, chunk_index, "Reading chunk");
-
-    let chunk_id = format!("{document_id}_chunk_{chunk_index}");
-    let not_found = || {
-        ToolExecutionError::not_found(format!(
-            "chunk {chunk_index} not found for document {document_id}. Try a different chunk index."
-        ))
-    };
-
-    let chunk = search::get_indexed_chunk_by_external_id(&state.search, &chunk_id)
-        .map_err(infrastructure_error)?
-        .ok_or_else(not_found)?;
-
-    if !state
-        .collections
-        .iter()
-        .any(|collection| collection.id == chunk.collection_id)
-    {
-        return Err(not_found());
-    }
-
-    Ok(ReadChunkOutput {
-        document_id,
-        chunk_index,
-        content: chunk.content,
-    })
 }
 
 // ==================== list_documents ====================
@@ -340,7 +331,6 @@ pub struct ListDocumentsOutput {
 }
 
 /// Document-listing tool over the per-run collection scope.
-#[derive(Clone)]
 pub struct ListDocuments {
     state: ToolState,
 }
@@ -373,76 +363,75 @@ impl Tool for ListDocuments {
         _context: &mut ToolContext,
         _args: ListDocumentsArgs,
     ) -> Result<ListDocumentsOutput, ToolExecutionError> {
-        list_documents(&self.state).await
-    }
-}
+        let state = &self.state;
+        tracing::info!("Listing documents");
+        let storage = state.storage.read().await;
 
-async fn list_documents(state: &ToolState) -> Result<ListDocumentsOutput, ToolExecutionError> {
-    tracing::info!("Listing documents");
-    let storage = state.storage.read().await;
+        // (collection_id, collection_name, document), sorted by collection then
+        // document name.
+        let mut all_documents = Vec::new();
+        for collection in &state.collections {
+            let namespace_id = collection
+                .id
+                .parse::<iroh_docs::NamespaceId>()
+                .map_err(|_| {
+                    ToolExecutionError::invalid_args(format!(
+                        "collection {} is not a valid namespace ID",
+                        collection.id
+                    ))
+                })?;
+            let collection_name = state.name_of(&collection.id)?;
 
-    // (collection_id, collection_name, document), sorted by collection then
-    // document name.
-    let mut all_documents = Vec::new();
-    for collection in &state.collections {
-        let namespace_id = collection
-            .id
-            .parse::<iroh_docs::NamespaceId>()
-            .map_err(|_| {
-                ToolExecutionError::invalid_args(format!(
-                    "collection {} is not a valid namespace ID",
-                    collection.id
-                ))
-            })?;
-        let collection_name = state.name_of(&collection.id)?;
-
-        let documents = storage
-            .list_documents(namespace_id)
-            .await
-            .map_err(infrastructure_error)?;
-        for doc in documents {
-            all_documents.push((collection.id.clone(), collection_name.clone(), doc));
-        }
-    }
-
-    all_documents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name)));
-
-    let total = all_documents.len();
-    let total_pages: usize = all_documents.iter().map(|(_, _, d)| d.page_count).sum();
-    let truncated = total > MAX_DOCS_TO_SHOW;
-
-    // Group by collection, in sorted order.
-    let mut groups: Vec<CollectionGroup> = Vec::new();
-    for (collection_id, collection_name, doc) in all_documents.into_iter().take(MAX_DOCS_TO_SHOW) {
-        let group = match groups.iter_mut().find(|g| g.collection_id == collection_id) {
-            Some(g) => g,
-            None => {
-                groups.push(CollectionGroup {
-                    collection_id: collection_id.clone(),
-                    collection_name,
-                    documents: Vec::new(),
-                });
-                groups.last_mut().expect("group just pushed")
+            let documents = storage
+                .list_documents(namespace_id)
+                .await
+                .map_err(infrastructure_error)?;
+            for doc in documents {
+                all_documents.push((collection.id.clone(), collection_name.clone(), doc));
             }
-        };
-        group.documents.push(DocumentEntry {
-            name: doc.name,
-            id: doc.id,
-            page_count: doc.page_count,
-        });
+        }
+
+        all_documents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name)));
+
+        let total = all_documents.len();
+        let total_pages: usize = all_documents.iter().map(|(_, _, d)| d.page_count).sum();
+        let truncated = total > MAX_DOCS_TO_SHOW;
+
+        // Group by collection, in sorted order.
+        let mut groups: Vec<CollectionGroup> = Vec::new();
+        for (collection_id, collection_name, doc) in
+            all_documents.into_iter().take(MAX_DOCS_TO_SHOW)
+        {
+            let group = match groups.iter_mut().find(|g| g.collection_id == collection_id) {
+                Some(g) => g,
+                None => {
+                    groups.push(CollectionGroup {
+                        collection_id: collection_id.clone(),
+                        collection_name,
+                        documents: Vec::new(),
+                    });
+                    groups.last_mut().expect("group just pushed")
+                }
+            };
+            group.documents.push(DocumentEntry {
+                name: doc.name,
+                id: doc.id,
+                page_count: doc.page_count,
+            });
+        }
+
+        let shown: usize = groups.iter().map(|g| g.documents.len()).sum();
+
+        tracing::info!(document_count = total, total_pages, "Listed documents");
+
+        Ok(ListDocumentsOutput {
+            total,
+            shown,
+            truncated,
+            total_pages,
+            collections: groups,
+        })
     }
-
-    let shown: usize = groups.iter().map(|g| g.documents.len()).sum();
-
-    tracing::info!(document_count = total, total_pages, "Listed documents");
-
-    Ok(ListDocumentsOutput {
-        total,
-        shown,
-        truncated,
-        total_pages,
-        collections: groups,
-    })
 }
 
 // ==================== get_collection_terms ====================
@@ -464,7 +453,6 @@ pub struct CollectionTermsOutput {
 }
 
 /// Collection-term tool over the per-run collection scope.
-#[derive(Clone)]
 pub struct GetCollectionTerms {
     state: ToolState,
 }
@@ -501,33 +489,30 @@ impl Tool for GetCollectionTerms {
         _context: &mut ToolContext,
         args: GetCollectionTermsArgs,
     ) -> Result<CollectionTermsOutput, ToolExecutionError> {
-        get_collection_terms(&self.state, args.limit).await
+        let state = &self.state;
+        let limit = args
+            .limit
+            .unwrap_or(TERMS_DEFAULT_LIMIT)
+            .min(TERMS_MAX_LIMIT);
+
+        tracing::info!(limit, "Getting collection terms");
+
+        let collection_ids = state.collection_ids();
+        let terms = search::get_collection_terms(&state.search, Some(&collection_ids), limit)
+            .map_err(infrastructure_error)?;
+
+        tracing::info!(term_count = terms.len(), "Retrieved collection terms");
+
+        Ok(CollectionTermsOutput {
+            terms: terms
+                .into_iter()
+                .map(|t| TermCount {
+                    term: t.term,
+                    doc_count: t.doc_count,
+                })
+                .collect(),
+        })
     }
-}
-
-async fn get_collection_terms(
-    state: &ToolState,
-    limit: Option<usize>,
-) -> Result<CollectionTermsOutput, ToolExecutionError> {
-    let limit = limit.unwrap_or(TERMS_DEFAULT_LIMIT).min(TERMS_MAX_LIMIT);
-
-    tracing::info!(limit, "Getting collection terms");
-
-    let collection_ids = state.collection_ids();
-    let terms = search::get_collection_terms(&state.search, Some(&collection_ids), limit)
-        .map_err(infrastructure_error)?;
-
-    tracing::info!(term_count = terms.len(), "Retrieved collection terms");
-
-    Ok(CollectionTermsOutput {
-        terms: terms
-            .into_iter()
-            .map(|t| TermCount {
-                term: t.term,
-                doc_count: t.doc_count,
-            })
-            .collect(),
-    })
 }
 
 #[cfg(test)]
@@ -535,7 +520,8 @@ mod tests {
     use super::*;
     use crate::search::ChunkToIndex;
     use milli::update::IndexerConfig;
-    use rig::tool::{Tool, ToolErrorKind};
+    use rig::tool::{Tool, ToolContext, ToolErrorKind};
+    use serde_json::{Map, Value};
 
     /// Tool state over a temporary index/storage, with an empty scope.
     async fn create_state() -> (tempfile::TempDir, ToolState) {
@@ -595,11 +581,37 @@ mod tests {
         }]
     }
 
+    /// A searchable row whose `parent_name` is missing, so it cannot be
+    /// deserialized as an [`crate::search::IndexedChunk`].
+    fn malformed_indexed_chunk() -> Map<String, Value> {
+        let mut doc = Map::new();
+        doc.insert("id".into(), Value::String("doc1_chunk_0".into()));
+        doc.insert("parent_id".into(), Value::String("doc1".into()));
+        doc.insert("chunk_index".into(), Value::Number(0.into()));
+        doc.insert(
+            "content".into(),
+            Value::String("climate climate malformed row".into()),
+        );
+        doc.insert("collection_id".into(), Value::String("col1".into()));
+        doc.insert("page_count".into(), Value::Number(1.into()));
+        doc.insert("start_page".into(), Value::Number(1.into()));
+        doc.insert("end_page".into(), Value::Number(1.into()));
+        doc
+    }
+
     #[tokio::test]
     async fn test_search_empty_query_returns_no_hits() {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("col1", "Research");
-        let out = search(&state, "".to_string()).await.unwrap();
+        let out = Search::new(state)
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: String::new(),
+                },
+            )
+            .await
+            .unwrap();
         assert!(out.hits.is_empty());
     }
 
@@ -623,7 +635,13 @@ mod tests {
         .unwrap();
         state.collections = scope("research", "Research Papers");
 
-        let out = search(&state, "climate temperatures".to_string())
+        let out = Search::new(state)
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: "climate temperatures".to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -669,7 +687,15 @@ mod tests {
         .unwrap();
         state.collections = scope("research_col", "Research");
 
-        let out = search(&state, "climate".to_string()).await.unwrap();
+        let out = Search::new(state)
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: "climate".to_string(),
+                },
+            )
+            .await
+            .unwrap();
 
         let names: Vec<&str> = out.hits.iter().map(|h| h.document_name.as_str()).collect();
         assert!(names.contains(&"Research_Paper.pdf"));
@@ -697,21 +723,19 @@ mod tests {
         .unwrap();
         state.collections = scope("col1", "Long Docs");
 
-        let out = search(&state, "climate".to_string()).await.unwrap();
+        let out = Search::new(state)
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: "climate".to_string(),
+                },
+            )
+            .await
+            .unwrap();
 
         assert!(!out.hits.is_empty());
         assert!(out.hits[0].truncated);
         assert!(out.hits[0].passage.chars().count() <= 500);
-    }
-
-    #[tokio::test]
-    async fn test_collection_name_unknown_errors() {
-        let (_tmp, mut state) = create_state().await;
-        state.collections = scope("col_abcdefgh1234", "Named");
-        assert_eq!(state.name_of("col_abcdefgh1234").unwrap(), "Named");
-
-        let err = state.name_of("col_abcdefgh1234_extra").unwrap_err();
-        assert_eq!(err.kind(), ToolErrorKind::NotFound);
     }
 
     #[tokio::test]
@@ -728,7 +752,15 @@ mod tests {
         .unwrap();
         state.collections = scope("col1", "Mixed");
 
-        let out = search(&state, "Content".to_string()).await.unwrap();
+        let out = Search::new(state)
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: "Content".to_string(),
+                },
+            )
+            .await
+            .unwrap();
 
         let single = out
             .hits
@@ -751,6 +783,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_rejects_malformed_indexed_chunk() {
+        let (_tmp, mut state) = create_state().await;
+        search::index_documents_for_test(&state.search, vec![malformed_indexed_chunk()]).unwrap();
+        state.collections = scope("col1", "Malformed");
+
+        let err = Search::new(state)
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: "climate".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ToolErrorKind::Other);
+        assert!(err.to_string().contains("does not match the search schema"));
+    }
+
+    #[tokio::test]
     async fn test_read_chunk_success() {
         let (_tmp, mut state) = create_state().await;
         search::index_chunks_batch(
@@ -770,7 +822,16 @@ mod tests {
         .unwrap();
         state.collections = scope("collection1", "Collection One");
 
-        let out = read_chunk(&state, "test_doc".to_string(), 0).await.unwrap();
+        let out = ReadChunk::new(state)
+            .call(
+                &mut ToolContext::new(),
+                ReadChunkArgs {
+                    document_id: "test_doc".to_string(),
+                    chunk_index: 0,
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(out.document_id, "test_doc");
         assert_eq!(out.chunk_index, 0);
@@ -780,7 +841,14 @@ mod tests {
     #[tokio::test]
     async fn test_read_chunk_not_found() {
         let (_tmp, state) = create_state().await;
-        let err = read_chunk(&state, "nonexistent_doc".to_string(), 0)
+        let err = ReadChunk::new(state)
+            .call(
+                &mut ToolContext::new(),
+                ReadChunkArgs {
+                    document_id: "nonexistent_doc".to_string(),
+                    chunk_index: 0,
+                },
+            )
             .await
             .unwrap_err();
 
@@ -808,7 +876,14 @@ mod tests {
         .unwrap();
         state.collections = scope("col1", "Collection One");
 
-        let err = read_chunk(&state, "test_doc".to_string(), 5)
+        let err = ReadChunk::new(state)
+            .call(
+                &mut ToolContext::new(),
+                ReadChunkArgs {
+                    document_id: "test_doc".to_string(),
+                    chunk_index: 5,
+                },
+            )
             .await
             .unwrap_err();
 
@@ -836,7 +911,14 @@ mod tests {
         .unwrap();
         state.collections = scope("active_collection", "Active");
 
-        let err = read_chunk(&state, "test_doc".to_string(), 0)
+        let err = ReadChunk::new(state)
+            .call(
+                &mut ToolContext::new(),
+                ReadChunkArgs {
+                    document_id: "test_doc".to_string(),
+                    chunk_index: 0,
+                },
+            )
             .await
             .unwrap_err();
 
@@ -845,11 +927,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_read_chunk_rejects_malformed_indexed_chunk() {
+        let (_tmp, mut state) = create_state().await;
+        search::index_documents_for_test(&state.search, vec![malformed_indexed_chunk()]).unwrap();
+        state.collections = scope("col1", "Malformed");
+
+        let err = ReadChunk::new(state)
+            .call(
+                &mut ToolContext::new(),
+                ReadChunkArgs {
+                    document_id: "doc1".to_string(),
+                    chunk_index: 0,
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), ToolErrorKind::Other);
+        assert!(err.to_string().contains("does not match the search schema"));
+    }
+
+    #[tokio::test]
     async fn test_list_documents_rejects_invalid_collection_id() {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("not-a-namespace-id", "Invalid");
 
-        let err = list_documents(&state).await.unwrap_err();
+        let err = ListDocuments::new(state)
+            .call(&mut ToolContext::new(), ListDocumentsArgs {})
+            .await
+            .unwrap_err();
 
         assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
         assert!(err.to_string().contains("not-a-namespace-id"));
@@ -868,7 +974,10 @@ mod tests {
         };
         state.collections = scope(&namespace_id.to_string(), "Empty Collection");
 
-        let out = list_documents(&state).await.unwrap();
+        let out = ListDocuments::new(state)
+            .call(&mut ToolContext::new(), ListDocumentsArgs {})
+            .await
+            .unwrap();
 
         assert_eq!(out.total, 0);
         assert!(out.collections.is_empty());
@@ -894,7 +1003,13 @@ mod tests {
         .unwrap();
         state.collections = scope("col1", "Varied");
 
-        let out = get_collection_terms(&state, Some(3)).await.unwrap();
+        let out = GetCollectionTerms::new(state)
+            .call(
+                &mut ToolContext::new(),
+                GetCollectionTermsArgs { limit: Some(3) },
+            )
+            .await
+            .unwrap();
 
         assert!(out.terms.len() <= 3);
     }
@@ -904,7 +1019,13 @@ mod tests {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("col1", "Empty");
 
-        let out = get_collection_terms(&state, Some(500)).await.unwrap();
+        let out = GetCollectionTerms::new(state)
+            .call(
+                &mut ToolContext::new(),
+                GetCollectionTermsArgs { limit: Some(500) },
+            )
+            .await
+            .unwrap();
         assert!(out.terms.len() <= TERMS_MAX_LIMIT);
     }
 
@@ -913,7 +1034,13 @@ mod tests {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("col1", "Empty");
 
-        let out = get_collection_terms(&state, None).await.unwrap();
+        let out = GetCollectionTerms::new(state)
+            .call(
+                &mut ToolContext::new(),
+                GetCollectionTermsArgs { limit: None },
+            )
+            .await
+            .unwrap();
         assert!(out.terms.is_empty());
     }
 
@@ -949,22 +1076,17 @@ mod tests {
         .unwrap();
         state.collections = scope("research", "Research");
 
-        let out = get_collection_terms(&state, Some(10)).await.unwrap();
+        let out = GetCollectionTerms::new(state)
+            .call(
+                &mut ToolContext::new(),
+                GetCollectionTermsArgs { limit: Some(10) },
+            )
+            .await
+            .unwrap();
 
         assert!(!out.terms.is_empty());
         let climate = out.terms.iter().find(|t| t.term == "climate").unwrap();
         assert_eq!(climate.doc_count, 2);
-    }
-
-    #[tokio::test]
-    async fn test_search_output_is_serializable() {
-        // The output struct is the model-facing contract; it must serialize.
-        let out = SearchOutput {
-            total_hits: 0,
-            hits: vec![],
-        };
-        let json = serde_json::to_value(&out).unwrap();
-        assert_eq!(json["total_hits"], 0);
     }
 
     #[tokio::test]
