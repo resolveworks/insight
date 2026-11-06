@@ -48,7 +48,12 @@ pub fn run() {
             let state_clone = state.inner().clone();
 
             tauri::async_runtime::spawn(async move {
-                state_clone.restore_configs_from_settings().await;
+                if let Err(e) = state_clone.restore_configs_from_settings().await {
+                    tracing::error!(
+                        error = %e,
+                        "Failed to restore provider configuration from settings"
+                    );
+                }
             });
 
             Ok(())

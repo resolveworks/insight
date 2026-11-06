@@ -49,7 +49,7 @@ pub async fn configure_provider(
     // Construction performs no network I/O but validates key/URL inputs.
     providers::build_model(&provider).external_err()?;
 
-    let mut settings = Settings::load(&state.config.settings_file);
+    let mut settings = Settings::load(&state.config.settings_file).storage_err()?;
     if let Some(key) = api_key {
         settings.api_keys.insert(family.clone(), key);
     }
@@ -65,7 +65,7 @@ pub async fn configure_provider(
 #[tauri::command]
 pub async fn disable_provider(state: State<'_, AppState>) -> CommandResult<()> {
     tracing::info!("Disabling chat provider");
-    let mut settings = Settings::load(&state.config.settings_file);
+    let mut settings = Settings::load(&state.config.settings_file).storage_err()?;
     settings.provider = None;
     settings.save(&state.config.settings_file).storage_err()?;
     Ok(())
@@ -76,7 +76,7 @@ pub async fn disable_provider(state: State<'_, AppState>) -> CommandResult<()> {
 pub async fn get_current_provider(
     state: State<'_, AppState>,
 ) -> CommandResult<Option<ProviderSettings>> {
-    let settings = Settings::load(&state.config.settings_file);
+    let settings = Settings::load(&state.config.settings_file).storage_err()?;
     Ok(settings.provider)
 }
 
@@ -85,6 +85,6 @@ pub async fn get_current_provider(
 pub async fn get_stored_api_keys(
     state: State<'_, AppState>,
 ) -> CommandResult<HashMap<String, String>> {
-    let settings = Settings::load(&state.config.settings_file);
+    let settings = Settings::load(&state.config.settings_file).storage_err()?;
     Ok(settings.api_keys)
 }

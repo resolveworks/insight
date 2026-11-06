@@ -149,7 +149,8 @@ pub async fn send_message(
 
 /// Read provider settings and construct the configured model handle.
 fn build_configured_model(state: &AppState) -> Result<DynModel<Completion>> {
-    let settings = Settings::load(&state.config.settings_file);
+    let settings =
+        Settings::load(&state.config.settings_file).context("failed to load settings")?;
     let provider = settings
         .provider
         .ok_or_else(|| anyhow!("no chat provider configured"))?;

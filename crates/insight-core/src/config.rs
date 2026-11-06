@@ -59,25 +59,53 @@ pub struct Settings {
     pub api_keys: HashMap<String, String>,
 }
 
+/// Errors from loading persisted settings.
+#[derive(Debug, thiserror::Error)]
+pub enum SettingsError {
+    /// The settings file exists but could not be read.
+    #[error("failed to read settings file {}: {source}", path.display())]
+    Read {
+        /// Settings file that could not be read.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The settings file content is not valid settings JSON.
+    #[error("failed to parse settings file {}: {source}", path.display())]
+    Parse {
+        /// Settings file that could not be parsed.
+        path: PathBuf,
+        /// Underlying JSON error.
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
 impl Settings {
-    /// Load settings from file, or return defaults if not found.
-    pub fn load(path: &PathBuf) -> Self {
+    /// Load settings from file.
+    ///
+    /// A missing file means no settings have been persisted yet and yields
+    /// defaults. Any other failure — an unreadable file or malformed JSON — is
+    /// returned as a [`SettingsError`]; invalid persisted state never silently
+    /// degrades to defaults.
+    pub fn load(path: &PathBuf) -> Result<Self, SettingsError> {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => {
-                tracing::warn!("Failed to read settings file, using defaults: {}", e);
-                return Self::default();
+                return Err(SettingsError::Read {
+                    path: path.clone(),
+                    source: e,
+                })
             }
         };
 
-        match serde_json::from_str::<Self>(&contents) {
-            Ok(settings) => settings,
-            Err(e) => {
-                tracing::warn!("Failed to parse settings file, using defaults: {}", e);
-                Self::default()
-            }
-        }
+        serde_json::from_str(&contents).map_err(|e| SettingsError::Parse {
+            path: path.clone(),
+            source: e,
+        })
     }
 
     /// Save settings to file
@@ -107,6 +135,54 @@ mod tests {
             Some("sk-x")
         );
         assert!(parsed.provider.is_none());
+    }
+
+    #[test]
+    fn load_missing_file_returns_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = Settings::load(&path).expect("missing file is not an error");
+        assert!(settings.provider.is_none());
+        assert!(settings.api_keys.is_empty());
+    }
+
+    #[test]
+    fn load_valid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":{"family":"anthropic/anthropic","model":"claude","api_key":"k","base_url":null},"api_keys":{"anthropic/anthropic":"k"}}"#,
+        )
+        .unwrap();
+        let settings = Settings::load(&path).unwrap();
+        let provider = settings.provider.expect("provider configured");
+        assert_eq!(provider.family, "anthropic/anthropic");
+        assert_eq!(provider.model, "claude");
+        assert_eq!(settings.api_keys.len(), 1);
+    }
+
+    #[test]
+    fn load_malformed_json_is_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        match Settings::load(&path) {
+            Err(SettingsError::Parse { path: err_path, .. }) => assert_eq!(err_path, path),
+            other => panic!("expected parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_read_failure_is_read_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory at the settings path exists but cannot be read as a file.
+        let path = dir.path().join("settings.json");
+        std::fs::create_dir(&path).unwrap();
+        match Settings::load(&path) {
+            Err(SettingsError::Read { path: err_path, .. }) => assert_eq!(err_path, path),
+            other => panic!("expected read error, got {other:?}"),
+        }
     }
 
     #[test]

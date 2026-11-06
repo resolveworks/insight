@@ -19,6 +19,7 @@ pub mod search;
 pub mod storage;
 pub mod tools;
 
+use anyhow::Context;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -43,7 +44,7 @@ pub struct CollectionInfo {
     pub created_at: Option<String>,
 }
 
-pub use config::{Config, Settings};
+pub use config::{Config, Settings, SettingsError};
 pub use memory::{ConversationMeta, ConversationSummary, FileConversationMemory};
 pub use pipeline::{Pipeline, PipelineProgress, StageProgress};
 pub use providers::{ProviderFamily, ProviderModel, ProviderSettings};
@@ -122,11 +123,16 @@ impl AppState {
     /// chat provider is configured — validates that it still constructs
     /// (logging a warning instead of failing startup otherwise). Provider
     /// models are built per request; nothing long-lived is installed here.
-    pub async fn restore_configs_from_settings(&self) {
+    ///
+    /// Fails when the persisted settings cannot be read or parsed; invalid
+    /// settings are never silently treated as an unconfigured provider.
+    pub async fn restore_configs_from_settings(&self) -> anyhow::Result<()> {
         // Start watching existing collections for indexing events.
         self.watch_existing_collections().await;
 
-        let settings = Settings::load(&self.config.settings_file);
+        let settings = Settings::load(&self.config.settings_file)
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("failed to load settings")?;
         if let Some(ref provider) = settings.provider {
             match providers::build_model(provider) {
                 Ok(_) => tracing::info!(
@@ -141,6 +147,8 @@ impl AppState {
                 ),
             }
         }
+
+        Ok(())
     }
 
     /// Start watching all existing collections for pipeline events.

@@ -8,7 +8,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::core::{providers, AppState, Settings};
-use crate::error::CommandResult;
+use crate::error::{CommandResult, ResultExt};
 
 /// Snapshot of the chat provider's state for the UI.
 #[derive(Debug, Clone, Serialize)]
@@ -22,7 +22,7 @@ pub struct ProviderStatus {
 /// configured AND its settings pass `build_model` validation.
 #[tauri::command]
 pub async fn get_provider_status(state: State<'_, AppState>) -> CommandResult<ProviderStatus> {
-    let settings = Settings::load(&state.config.settings_file);
+    let settings = Settings::load(&state.config.settings_file).storage_err()?;
     let (family, model, ready) = match settings.provider {
         Some(provider) => {
             let ready = providers::build_model(&provider).is_ok();

@@ -103,12 +103,12 @@ async fn enrich_collections(
 }
 
 /// Whether the configured chat provider passes validation.
-async fn provider_ready(state: &AppState) -> bool {
-    let settings = Settings::load(&state.config.settings_file);
-    settings
+async fn provider_ready(state: &AppState) -> CommandResult<bool> {
+    let settings = Settings::load(&state.config.settings_file).storage_err()?;
+    Ok(settings
         .provider
         .as_ref()
-        .is_some_and(|p| providers::build_model(p).is_ok())
+        .is_some_and(|p| providers::build_model(p).is_ok()))
 }
 
 /// Start a new chat conversation.
@@ -119,7 +119,7 @@ pub async fn start_chat(
     collections: Option<Vec<CollectionInfo>>,
     state: State<'_, AppState>,
 ) -> CommandResult<ConversationView> {
-    if !provider_ready(&state).await {
+    if !provider_ready(&state).await? {
         return Err(CommandError::provider_not_configured());
     }
 
