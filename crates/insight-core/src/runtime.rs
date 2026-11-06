@@ -15,13 +15,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures::StreamExt;
-use rig::agent::{
-    AgentBuilder, AgentHook, CompletionCallAction, HookContext, ModelHandle, RequestPatch,
-};
-use rig::completion::{CompletionModel, Document, Message};
-use rig::memory::ConversationMemory;
-use rig::streaming::StreamingPrompt;
-use rig::tool::ToolContext;
+use rig::agent::{AgentBuilder, AgentHook, CompletionCallAction, HookContext, RequestPatch};
+use rig::completion::{CompletionRequest, Document, Message};
+use rig_core::{operation::Completion, DynModel};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Settings;
@@ -29,6 +25,8 @@ use crate::memory::ConversationMeta;
 use crate::providers;
 use crate::tools::{self, ToolState};
 use crate::{AppState, CollectionInfo};
+
+type ModelHandle = DynModel<Completion>;
 
 /// System prompt for the research agent. Stable across the life of the app —
 /// the per-conversation collection scope arrives as an `extra_context`
@@ -118,7 +116,7 @@ impl AgentHook for ScopeHook {
     async fn on_completion_call(
         &self,
         _ctx: &HookContext,
-        _event: rig::agent::hook::CompletionCall<'_>,
+        _event: rig::agent::hook::CompletionCallEvent<'_>,
     ) -> CompletionCallAction {
         CompletionCallAction::patch(RequestPatch::new().extra_context([Document {
             id: "active_collections".to_string(),
@@ -198,17 +196,17 @@ fn build_configured_model(state: &AppState) -> Result<ModelHandle> {
 
 /// Build the fully-configured agent for one conversation run.
 ///
-/// The tools are stateless `#[rig_tool]` units; the per-run state (index,
-/// storage, collection scope) reaches them through the [`ToolContext`]
-/// attached to the stream in [`run_agent`].
+/// The tools own live handles to the index and storage plus the run's
+/// collection scope.
 fn build_agent(state: &AppState, meta: &ConversationMeta, model: ModelHandle) -> rig::Agent {
-    AgentBuilder::from_model_handle(model)
+    let tool_state = ToolState::new(state, meta.collections.clone());
+    AgentBuilder::new(model)
         .preamble(BASE_SYSTEM_PROMPT)
-        .tool(tools::Search)
-        .tool(tools::ReadChunk)
-        .tool(tools::ListDocuments)
-        .tool(tools::GetCollectionTerms)
-        .memory(state.memory.clone())
+        .tool(tools::Search::new(tool_state.clone()))
+        .tool(tools::ReadChunk::new(tool_state.clone()))
+        .tool(tools::ListDocuments::new(tool_state.clone()))
+        .tool(tools::GetCollectionTerms::new(tool_state))
+        .memory(state.memory.store())
         .default_max_turns(MAX_TURNS)
         .add_hook(ScopeHook {
             collections: meta.collections.clone(),
@@ -232,13 +230,10 @@ async fn run_agent(
     if cancel.is_cancelled() {
         return Ok(());
     }
-    let mut tool_context = ToolContext::new();
-    tool_context.insert(ToolState::new(state, meta.collections.clone()));
     let mut stream = agent
-        .stream_prompt(message)
+        .prompt(message)
         .conversation(conversation_id.to_string())
-        .tool_context(tool_context)
-        .await;
+        .stream();
 
     loop {
         tokio::select! {
@@ -310,9 +305,7 @@ async fn generate_title_with(
         .ok_or_else(|| anyhow!("conversation not found: {conversation_id}"))?;
 
     let generated = model
-        .completion_request(Message::user(TITLE_PROMPT))
-        .messages(history.iter().cloned())
-        .send()
+        .call(CompletionRequest::new(Message::user(TITLE_PROMPT)).messages(history.iter().cloned()))
         .await
         .ok()
         .map(|response| response_text(&response.choice))
@@ -364,9 +357,7 @@ pub async fn predict_next_message(
     let history = load_history(state, conversation_id).await?;
     // Need at least one user + one assistant message for a meaningful
     // prediction.
-    let has_assistant = history
-        .iter()
-        .any(|m| matches!(m, Message::Assistant { .. }));
+    let has_assistant = history.iter().any(|m| matches!(m, Message::Assistant(_)));
     if history.len() < 2 || !has_assistant {
         return Ok(None);
     }
@@ -382,13 +373,11 @@ async fn predict_with(
     history: Vec<Message>,
     cancel: CancellationToken,
 ) -> Result<Option<String>> {
-    let request = model
-        .completion_request(Message::user(PREDICTION_PROMPT))
-        .messages(history);
+    let request = CompletionRequest::new(Message::user(PREDICTION_PROMPT)).messages(history);
 
     let response = tokio::select! {
         _ = cancel.cancelled() => return Ok(None),
-        result = tokio::time::timeout(PREDICTION_TIMEOUT, request.send()) => match result {
+        result = tokio::time::timeout(PREDICTION_TIMEOUT, model.call(request)) => match result {
             Ok(Ok(response)) => response,
             Ok(Err(e)) => {
                 tracing::debug!(error = %e, "prediction completion failed");
@@ -473,7 +462,7 @@ mod tests {
     }
 
     fn handle(model: MockCompletionModel) -> ModelHandle {
-        ModelHandle::new(model)
+        model.erase()
     }
 
     #[tokio::test]
@@ -516,7 +505,7 @@ mod tests {
             "expected user + assistant, got {history:?}"
         );
         assert!(matches!(history.first(), Some(Message::User { .. })));
-        assert!(matches!(history.last(), Some(Message::Assistant { .. })));
+        assert!(matches!(history.last(), Some(Message::Assistant(_))));
 
         // Meta was touched and the default title replaced (fallback: the
         // first user message, truncated).
@@ -581,17 +570,17 @@ mod tests {
 
         let requests = probe.requests();
         let request = requests.first().expect("one completion request");
-        let scope_doc = request
-            .documents
+        let documents = rig::test_utils::sent_documents(request);
+        let scope_doc = documents
             .iter()
-            .find(|d| d.id == "active_collections")
+            .find(|(id, _)| id == "active_collections")
             .expect("scope document injected via extra_context");
         assert!(
             scope_doc
-                .text
+                .1
                 .contains("Climate Reports (3 documents, 42 pages)"),
             "scope text describes the active collections: {}",
-            scope_doc.text
+            scope_doc.1
         );
     }
 

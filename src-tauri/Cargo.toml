@@ -18,7 +18,7 @@ tauri-build = { version = "2", features = [] }
 insight-core = { path = "../crates/insight-core" }
 
 # rig (chat message types appear in the conversation command API)
-rig = "0.42"
+rig = "0.46"
 
 # Tauri
 tauri = { version = "2", features = ["devtools"] }

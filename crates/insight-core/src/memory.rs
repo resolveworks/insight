@@ -1,40 +1,33 @@
 //! File-backed conversation memory for the rig agent runtime.
 //!
-//! [`FileConversationMemory`] implements rig's [`rig::memory::ConversationMemory`]
-//! trait on top of a directory tree, one subdirectory per conversation:
+//! [`FileConversationMemory`] combines rig's directory-backed session store
+//! with one metadata subdirectory per conversation:
 //!
 //! ```text
 //! {root}/
-//! ├── {conversation_id}/
-//! │   ├── messages.json   # Vec<rig::completion::Message> — the agent history
-//! │   └── meta.json       # ConversationMeta — app-facing sidecar (title, collections)
+//! ├── logs/{conversation_id}.jsonl  # rig conversation history
+//! └── {conversation_id}/
+//!     └── meta.json                 # title, collections, timestamps
 //! ```
 //!
 //! Rig stores only messages; the metadata sidecar carries what the app needs
 //! on top (title, linked collections, timestamps). `load`/`append`/`clear`
-//! operate on `messages.json`; the `create`/`load_meta`/`update_meta`/
+//! operate on rig's session log; the `create`/`load_meta`/`update_meta`/
 //! `list_summaries`/`delete`/`touch` methods operate on `meta.json`.
 //!
-//! All writes go through a write-temp-then-rename helper, so a crash mid-write
-//! never leaves a truncated `messages.json` or `meta.json` behind.
+//! Rig atomically appends session records; metadata writes use
+//! write-temp-then-rename, so a crash mid-write never truncates `meta.json`.
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-};
+use std::path::{Path, PathBuf};
 
-use rig::{
-    completion::Message,
-    memory::{ConversationMemory, MemoryError},
-};
+use rig::completion::Message;
+use rig_memory::{DirStore, SessionError};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
 use crate::CollectionInfo;
 
-/// Errors produced by [`FileConversationMemory`] beyond the plain rig
-/// message operations (which surface these wrapped in rig's `MemoryError`).
+/// Errors produced by [`FileConversationMemory`].
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryStoreError {
     /// Filesystem I/O failure.
@@ -45,6 +38,10 @@ pub enum MemoryStoreError {
     #[error("memory store JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// Rig could not load or save a conversation session.
+    #[error("conversation session error: {0}")]
+    Session(#[from] SessionError),
+
     /// A conversation with the given id already exists.
     #[error("conversation already exists: {0}")]
     AlreadyExists(String),
@@ -52,12 +49,6 @@ pub enum MemoryStoreError {
     /// A conversation with the given id does not exist.
     #[error("conversation not found: {0}")]
     NotFound(String),
-}
-
-impl From<MemoryStoreError> for MemoryError {
-    fn from(err: MemoryStoreError) -> Self {
-        MemoryError::backend(err)
-    }
 }
 
 /// App-facing conversation metadata, stored alongside the rig message
@@ -99,47 +90,32 @@ fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// A [`ConversationMemory`] implementation persisted as JSON files under a
-/// root directory, plus an app-facing metadata sidecar per conversation.
-///
-/// Rig invokes [`ConversationMemory::load`] before each prompt and
-/// [`ConversationMemory::append`] after each turn, so both are cheap
-/// single-file reads/writes. Appends are read-modify-write and serialized
-/// per conversation id with an in-process lock, so concurrent appends from
-/// the same process cannot interleave and corrupt the file.
-#[derive(Debug)]
+/// Rig session storage under a root directory, plus an app-facing metadata
+/// sidecar per conversation.
 pub struct FileConversationMemory {
     root: PathBuf,
-    locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    store: DirStore,
 }
 
 impl FileConversationMemory {
     /// Create a store rooted at `root` (e.g. `Config::conversations_dir`).
     /// The directory itself is created lazily on first write.
-    pub fn new(root: PathBuf) -> Self {
-        Self {
-            root,
-            locks: Mutex::new(HashMap::new()),
-        }
+    pub fn new(root: PathBuf) -> Result<Self, MemoryStoreError> {
+        let store = DirStore::open(&root)?;
+        Ok(Self { root, store })
+    }
+
+    /// Clone rig's session store for an agent builder.
+    pub fn store(&self) -> DirStore {
+        self.store.clone()
     }
 
     fn dir(&self, id: &str) -> PathBuf {
         self.root.join(id)
     }
 
-    fn messages_path(&self, id: &str) -> PathBuf {
-        self.dir(id).join("messages.json")
-    }
-
     fn meta_path(&self, id: &str) -> PathBuf {
         self.dir(id).join("meta.json")
-    }
-
-    /// Per-conversation in-process lock, making read-modify-write appends
-    /// atomic within this process.
-    fn lock_for(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut locks = self.locks.lock().expect("memory lock map not poisoned");
-        locks.entry(id.to_owned()).or_default().clone()
     }
 
     /// Write `bytes` to `path` durably: serialize to a sibling temp file,
@@ -149,25 +125,6 @@ impl FileConversationMemory {
         let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
         fs::write(&tmp, bytes).await?;
         fs::rename(&tmp, path).await?;
-        Ok(())
-    }
-
-    /// Read and parse the stored messages for `id`, or an empty `Vec` if
-    /// none are stored (the trait contract for unknown ids).
-    async fn read_messages(&self, id: &str) -> Result<Vec<Message>, MemoryStoreError> {
-        let path = self.messages_path(id);
-        match fs::read(&path).await {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Persist the full message history for `id` atomically.
-    async fn write_messages(&self, id: &str, messages: &[Message]) -> Result<(), MemoryStoreError> {
-        fs::create_dir_all(self.dir(id)).await?;
-        let bytes = serde_json::to_vec_pretty(messages)?;
-        Self::write_atomic(&self.messages_path(id), &bytes).await?;
         Ok(())
     }
 
@@ -244,6 +201,7 @@ impl FileConversationMemory {
     /// Delete a conversation entirely (messages and metadata). Idempotent:
     /// removing an unknown id succeeds.
     pub async fn delete(&self, id: &str) -> Result<(), MemoryStoreError> {
+        self.clear(id).await?;
         match fs::remove_dir_all(self.dir(id)).await {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -263,49 +221,33 @@ impl FileConversationMemory {
     }
 }
 
-impl ConversationMemory for FileConversationMemory {
-    fn load<'a>(
-        &'a self,
-        conversation_id: &'a str,
-    ) -> rig::wasm_compat::WasmBoxedFuture<'a, Result<Vec<Message>, MemoryError>> {
-        Box::pin(async move {
-            self.read_messages(conversation_id)
-                .await
-                .map_err(MemoryError::from)
-        })
+impl FileConversationMemory {
+    /// Load a conversation's messages, or an empty vector for an unknown id.
+    pub async fn load(&self, id: &str) -> Result<Vec<Message>, MemoryStoreError> {
+        let conversation = rig_memory::load_async(&self.store, id).await?;
+        Ok(conversation
+            .into_messages()
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
-    fn append<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        messages: Vec<Message>,
-    ) -> rig::wasm_compat::WasmBoxedFuture<'a, Result<(), MemoryError>> {
-        Box::pin(async move {
-            let lock = self.lock_for(conversation_id);
-            // Hold the per-conversation lock across the whole read-modify-write
-            // so concurrent appends serialize instead of interleaving.
-            let _guard = lock.lock().await;
-            let mut history = self.read_messages(conversation_id).await?;
-            history.extend(messages);
-            self.write_messages(conversation_id, &history).await?;
-            Ok(())
-        })
+    /// Append messages to a conversation.
+    pub async fn append(&self, id: &str, messages: Vec<Message>) -> Result<(), MemoryStoreError> {
+        let mut conversation = rig_memory::load_async(&self.store, id).await?;
+        conversation.extend(messages);
+        rig_memory::save_async(&self.store, id, &mut conversation).await?;
+        Ok(())
     }
 
-    fn clear<'a>(
-        &'a self,
-        conversation_id: &'a str,
-    ) -> rig::wasm_compat::WasmBoxedFuture<'a, Result<(), MemoryError>> {
-        Box::pin(async move {
-            // Remove only the stored messages; the directory and metadata
-            // sidecar are kept so a cleared conversation stays listed.
-            let path = self.messages_path(conversation_id);
-            match fs::remove_file(&path).await {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(MemoryError::from(MemoryStoreError::from(e))),
-            }
-        })
+    /// Remove a conversation's messages while retaining its metadata.
+    pub async fn clear(&self, id: &str) -> Result<(), MemoryStoreError> {
+        let path = self.root.join("logs").join(format!("{id}.jsonl"));
+        match fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -316,7 +258,7 @@ mod tests {
 
     fn temp_store() -> (tempfile::TempDir, FileConversationMemory) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = FileConversationMemory::new(dir.path().to_path_buf());
+        let store = FileConversationMemory::new(dir.path().to_path_buf()).unwrap();
         (dir, store)
     }
 
@@ -339,15 +281,18 @@ mod tests {
     fn messages_with_tools() -> Vec<Message> {
         vec![
             Message::user("What is in the collection?"),
-            Message::Assistant {
-                id: None,
-                content: vec![AssistantContent::tool_call(
+            Message::Assistant(rig::completion::AssistantMessage::new(vec![
+                AssistantContent::tool_call(
                     "call-1",
-                    "search_documents",
+                    rig::message::ToolName::new("search_documents").unwrap(),
                     serde_json::json!({"query": "climate"}),
-                )],
-            },
-            Message::tool_result("call-1", "search_documents", "3 hits"),
+                ),
+            ])),
+            Message::tool_result(
+                rig::message::CallId::from_wire("call-1"),
+                rig::message::ToolName::new("search_documents").unwrap(),
+                "3 hits",
+            ),
             Message::assistant("The collection holds 3 documents."),
         ]
     }

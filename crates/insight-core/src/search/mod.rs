@@ -132,7 +132,7 @@ pub fn open_index(path: &Path) -> Result<Index> {
         ]);
         settings.execute(
             &MustStopProcessing::default(),
-            &Progress::default(),
+            &Progress::quiet(),
             &IpPolicy::danger_always_allow(),
             Arc::new(EmbedderStats::default()),
         )?;
@@ -267,7 +267,7 @@ fn index_chunk_batch(
         None,
         &mut new_fields_ids_map,
         &must_stop,
-        Progress::default(),
+        Progress::quiet(),
         None,
     )?;
 
@@ -291,7 +291,7 @@ fn index_chunk_batch(
                 &document_changes,
                 RuntimeEmbedders::default(), // no embedders: keyword-only index
                 &must_stop,
-                &Progress::default(),
+                &Progress::quiet(),
                 &IpPolicy::danger_always_allow(),
                 &EmbedderStats::default(),
             )
@@ -356,7 +356,7 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
 
     let rtxn = index.read_txn()?;
     let fields_ids_map = index.fields_ids_map(&rtxn)?;
-    let progress = Progress::default();
+    let progress = Progress::quiet();
     let mut search = milli::Search::new(
         &rtxn,
         index,
@@ -441,7 +441,7 @@ pub fn delete_document_chunks(
 
     // Build filter for parent_id
     let filter_str = format!("parent_id = \"{}\"", parent_id);
-    let progress = Progress::default();
+    let progress = Progress::quiet();
     let fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut search = milli::Search::new(
         &rtxn,
@@ -517,7 +517,7 @@ pub fn get_collection_terms(
         let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
         let filter_str = format!("collection_id IN [{}]", quoted.join(", "));
 
-        let progress = Progress::default();
+        let progress = Progress::quiet();
         let fields_ids_map = index.fields_ids_map(&rtxn)?;
         let mut search = milli::Search::new(
             &rtxn,
@@ -609,7 +609,7 @@ fn delete_chunks_by_id(
         None,
         &mut new_fields_ids_map,
         &must_stop,
-        Progress::default(),
+        Progress::quiet(),
         None,
     )?;
 
@@ -633,7 +633,7 @@ fn delete_chunks_by_id(
                 &document_changes,
                 RuntimeEmbedders::default(),
                 &must_stop,
-                &Progress::default(),
+                &Progress::quiet(),
                 &IpPolicy::danger_always_allow(),
                 &EmbedderStats::default(),
             )

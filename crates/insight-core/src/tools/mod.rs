@@ -1,14 +1,11 @@
 //! Document tools for the Insight agent.
 //!
-//! Each tool is a `#[rig_tool]` function: the derive generates the rig
-//! [`Tool`](rig::tool::Tool) implementation, the JSON-schema for the arguments
-//! (from the parameter doc comments), and the model-facing description (from
-//! the function doc comment).
+//! Each tool implements rig's [`Tool`](rig::tool::Tool) trait with typed
+//! arguments and model-facing JSON schemas.
 //!
-//! Shared state travels in [`ToolState`], which the runtime inserts into the
-//! agent's [`ToolContext`] for each request — so tools never capture anything
-//! at agent-build time and a scope change simply arrives with the next
-//! request.
+//! Each tool owns a clone of its per-run [`ToolState`]. Rig's tool context is
+//! reserved for serializable values, while the search index and iroh storage
+//! are live handles shared with the rest of the app.
 //!
 //! Outputs are typed serializable structs; errors are
 //! [`ToolExecutionError`] with precise kinds (e.g. `not_found`) so the runtime
@@ -16,17 +13,16 @@
 
 use std::sync::Arc;
 
-use rig::rig_tool;
-use rig::tool::ToolExecutionError;
-use serde::Serialize;
+use rig::tool::{Tool, ToolContext, ToolExecutionError};
+use rig_core::tool::args_schema;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::search;
 use crate::storage::Storage;
 use crate::CollectionInfo;
 
-/// Per-run state shared by the document tools, inserted into the agent's
-/// [`ToolContext`] by the runtime before each request.
+/// Per-run state shared by the document tools.
 #[derive(Clone)]
 pub struct ToolState {
     /// milli search index (shared for reads; LMDB handles concurrency)
@@ -113,16 +109,48 @@ pub struct SearchOutput {
     pub hits: Vec<SearchHitResult>,
 }
 
-/// Keyword (BM25) full-text search over indexed document chunks. Returns up
-/// to 15 passages with document IDs, chunk indices, and page references. Use
-/// read_chunk with the document_id and chunk_index to read a full passage.
-#[rig_tool]
-pub async fn search(
-    /// The keyword search query
-    query: String,
-    context: &mut rig::tool::ToolContext,
-) -> Result<SearchOutput, ToolExecutionError> {
-    let state = context.require::<ToolState>()?;
+/// Keyword search tool over the per-run collection scope.
+#[derive(Clone)]
+pub struct Search {
+    state: ToolState,
+}
+
+impl Search {
+    pub fn new(state: ToolState) -> Self {
+        Self { state }
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SearchArgs {
+    /// The keyword search query.
+    pub query: String,
+}
+
+impl Tool for Search {
+    const NAME: &'static str = "search";
+    type Args = SearchArgs;
+    type Output = SearchOutput;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "Keyword (BM25) full-text search over indexed document chunks. Returns up to 15 passages with document IDs, chunk indices, and page references. Use read_chunk with the document_id and chunk_index to read a full passage.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        args_schema::<SearchArgs>()
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: SearchArgs,
+    ) -> Result<SearchOutput, ToolExecutionError> {
+        search(&self.state, args.query).await
+    }
+}
+
+async fn search(state: &ToolState, query: String) -> Result<SearchOutput, ToolExecutionError> {
     tracing::info!(query = %query, "Executing keyword search");
 
     let index = &*state.search;
@@ -198,17 +226,54 @@ pub struct ReadChunkOutput {
     pub content: String,
 }
 
-/// Read the full text of a document chunk by document ID and chunk index, as
-/// returned by the search tool.
-#[rig_tool]
-pub async fn read_chunk(
-    /// The document ID from a search hit
+/// Chunk-reading tool over the per-run collection scope.
+#[derive(Clone)]
+pub struct ReadChunk {
+    state: ToolState,
+}
+
+impl ReadChunk {
+    pub fn new(state: ToolState) -> Self {
+        Self { state }
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ReadChunkArgs {
+    /// The document ID from a search hit.
+    pub document_id: String,
+    /// The chunk index within the document.
+    pub chunk_index: usize,
+}
+
+impl Tool for ReadChunk {
+    const NAME: &'static str = "read_chunk";
+    type Args = ReadChunkArgs;
+    type Output = ReadChunkOutput;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "Read the full text of a document chunk by document ID and chunk index, as returned by the search tool.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        args_schema::<ReadChunkArgs>()
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: ReadChunkArgs,
+    ) -> Result<ReadChunkOutput, ToolExecutionError> {
+        read_chunk(&self.state, args.document_id, args.chunk_index).await
+    }
+}
+
+async fn read_chunk(
+    state: &ToolState,
     document_id: String,
-    /// The chunk index within the document
     chunk_index: usize,
-    context: &mut rig::tool::ToolContext,
 ) -> Result<ReadChunkOutput, ToolExecutionError> {
-    let state = context.require::<ToolState>()?;
     tracing::info!(document_id = %document_id, chunk_index, "Reading chunk");
 
     let chunk_id = format!("{document_id}_chunk_{chunk_index}");
@@ -265,14 +330,45 @@ pub struct ListDocumentsOutput {
     pub collections: Vec<CollectionGroup>,
 }
 
-/// List all documents in the selected collections, grouped by collection,
-/// with document IDs and page counts. At most 25 entries are returned; use
-/// search to find specific documents beyond that.
-#[rig_tool]
-pub async fn list_documents(
-    context: &mut rig::tool::ToolContext,
-) -> Result<ListDocumentsOutput, ToolExecutionError> {
-    let state = context.require::<ToolState>()?;
+/// Document-listing tool over the per-run collection scope.
+#[derive(Clone)]
+pub struct ListDocuments {
+    state: ToolState,
+}
+
+impl ListDocuments {
+    pub fn new(state: ToolState) -> Self {
+        Self { state }
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListDocumentsArgs {}
+
+impl Tool for ListDocuments {
+    const NAME: &'static str = "list_documents";
+    type Args = ListDocumentsArgs;
+    type Output = ListDocumentsOutput;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "List all documents in the selected collections, grouped by collection, with document IDs and page counts. At most 25 entries are returned; use search to find specific documents beyond that.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        args_schema::<ListDocumentsArgs>()
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: ListDocumentsArgs,
+    ) -> Result<ListDocumentsOutput, ToolExecutionError> {
+        list_documents(&self.state).await
+    }
+}
+
+async fn list_documents(state: &ToolState) -> Result<ListDocumentsOutput, ToolExecutionError> {
     if state.collections.is_empty() {
         return Err(ToolExecutionError::other(
             "no collections selected. Please select collections to list documents from.",
@@ -363,16 +459,52 @@ pub struct CollectionTermsOutput {
     pub terms: Vec<TermCount>,
 }
 
-/// Get the most common terms in the selected collections by document
-/// frequency, to understand what topics are covered. Returns up to `limit`
-/// terms (default 50, max 200).
-#[rig_tool]
-pub async fn get_collection_terms(
-    /// Maximum number of terms to return (default 50, max 200)
+/// Collection-term tool over the per-run collection scope.
+#[derive(Clone)]
+pub struct GetCollectionTerms {
+    state: ToolState,
+}
+
+impl GetCollectionTerms {
+    pub fn new(state: ToolState) -> Self {
+        Self { state }
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GetCollectionTermsArgs {
+    /// Maximum number of terms to return (default 50, max 200).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+impl Tool for GetCollectionTerms {
+    const NAME: &'static str = "get_collection_terms";
+    type Args = GetCollectionTermsArgs;
+    type Output = CollectionTermsOutput;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "Get the most common terms in the selected collections by document frequency, to understand what topics are covered. Returns up to `limit` terms (default 50, max 200).".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        args_schema::<GetCollectionTermsArgs>()
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: GetCollectionTermsArgs,
+    ) -> Result<CollectionTermsOutput, ToolExecutionError> {
+        get_collection_terms(&self.state, args.limit).await
+    }
+}
+
+async fn get_collection_terms(
+    state: &ToolState,
     limit: Option<usize>,
-    context: &mut rig::tool::ToolContext,
 ) -> Result<CollectionTermsOutput, ToolExecutionError> {
-    let state = context.require::<ToolState>()?;
     let limit = limit.unwrap_or(TERMS_DEFAULT_LIMIT).min(TERMS_MAX_LIMIT);
 
     tracing::info!(limit, "Getting collection terms");
@@ -399,7 +531,7 @@ mod tests {
     use super::*;
     use crate::search::ChunkToIndex;
     use milli::update::IndexerConfig;
-    use rig::tool::{Tool, ToolContext, ToolErrorKind};
+    use rig::tool::{Tool, ToolErrorKind};
 
     /// Tool state over a temporary index/storage, with an empty scope.
     async fn create_state() -> (tempfile::TempDir, ToolState) {
@@ -422,13 +554,6 @@ mod tests {
                 collections: Vec::new(),
             },
         )
-    }
-
-    /// A `ToolContext` carrying `state`.
-    fn context(state: &ToolState) -> ToolContext {
-        let mut context = ToolContext::new();
-        context.insert(state.clone());
-        context
     }
 
     /// Helper to create a chunk for indexing.
@@ -470,7 +595,7 @@ mod tests {
     async fn test_search_empty_query_returns_no_hits() {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("col1", "Research");
-        let out = search("".to_string(), &mut context(&state)).await.unwrap();
+        let out = search(&state, "".to_string()).await.unwrap();
         assert!(out.hits.is_empty());
     }
 
@@ -494,7 +619,7 @@ mod tests {
         .unwrap();
         state.collections = scope("research", "Research Papers");
 
-        let out = search("climate temperatures".to_string(), &mut context(&state))
+        let out = search(&state, "climate temperatures".to_string())
             .await
             .unwrap();
 
@@ -540,9 +665,7 @@ mod tests {
         .unwrap();
         state.collections = scope("research_col", "Research");
 
-        let out = search("climate".to_string(), &mut context(&state))
-            .await
-            .unwrap();
+        let out = search(&state, "climate".to_string()).await.unwrap();
 
         let names: Vec<&str> = out.hits.iter().map(|h| h.document_name.as_str()).collect();
         assert!(names.contains(&"Research_Paper.pdf"));
@@ -570,9 +693,7 @@ mod tests {
         .unwrap();
         state.collections = scope("col1", "Long Docs");
 
-        let out = search("climate".to_string(), &mut context(&state))
-            .await
-            .unwrap();
+        let out = search(&state, "climate".to_string()).await.unwrap();
 
         assert!(!out.hits.is_empty());
         assert!(out.hits[0].truncated);
@@ -604,9 +725,7 @@ mod tests {
         .unwrap();
         state.collections = scope("col1", "Mixed");
 
-        let out = search("Content".to_string(), &mut context(&state))
-            .await
-            .unwrap();
+        let out = search(&state, "Content".to_string()).await.unwrap();
 
         let single = out
             .hits
@@ -647,9 +766,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = read_chunk("test_doc".to_string(), 0, &mut context(&state))
-            .await
-            .unwrap();
+        let out = read_chunk(&state, "test_doc".to_string(), 0).await.unwrap();
 
         assert_eq!(out.document_id, "test_doc");
         assert_eq!(out.chunk_index, 0);
@@ -659,7 +776,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_chunk_not_found() {
         let (_tmp, state) = create_state().await;
-        let err = read_chunk("nonexistent_doc".to_string(), 0, &mut context(&state))
+        let err = read_chunk(&state, "nonexistent_doc".to_string(), 0)
             .await
             .unwrap_err();
 
@@ -686,7 +803,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = read_chunk("test_doc".to_string(), 5, &mut context(&state))
+        let err = read_chunk(&state, "test_doc".to_string(), 5)
             .await
             .unwrap_err();
 
@@ -697,7 +814,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_documents_errors_without_scope() {
         let (_tmp, state) = create_state().await;
-        let err = list_documents(&mut context(&state)).await.unwrap_err();
+        let err = list_documents(&state).await.unwrap_err();
         assert!(err
             .to_string()
             .to_lowercase()
@@ -711,7 +828,7 @@ mod tests {
         let ns: iroh_docs::NamespaceId = (&rand::random::<[u8; 32]>()).into();
         state.collections = scope(&ns.to_string(), "Empty Collection");
 
-        let out = list_documents(&mut context(&state)).await.unwrap();
+        let out = list_documents(&state).await.unwrap();
 
         assert_eq!(out.total, 0);
         assert!(out.collections.is_empty());
@@ -737,9 +854,7 @@ mod tests {
         .unwrap();
         state.collections = scope("col1", "Varied");
 
-        let out = get_collection_terms(Some(3), &mut context(&state))
-            .await
-            .unwrap();
+        let out = get_collection_terms(&state, Some(3)).await.unwrap();
 
         assert!(out.terms.len() <= 3);
     }
@@ -749,9 +864,7 @@ mod tests {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("col1", "Empty");
 
-        let out = get_collection_terms(Some(500), &mut context(&state))
-            .await
-            .unwrap();
+        let out = get_collection_terms(&state, Some(500)).await.unwrap();
         assert!(out.terms.len() <= TERMS_MAX_LIMIT);
     }
 
@@ -760,9 +873,7 @@ mod tests {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("col1", "Empty");
 
-        let out = get_collection_terms(None, &mut context(&state))
-            .await
-            .unwrap();
+        let out = get_collection_terms(&state, None).await.unwrap();
         assert!(out.terms.is_empty());
     }
 
@@ -798,9 +909,7 @@ mod tests {
         .unwrap();
         state.collections = scope("research", "Research");
 
-        let out = get_collection_terms(Some(10), &mut context(&state))
-            .await
-            .unwrap();
+        let out = get_collection_terms(&state, Some(10)).await.unwrap();
 
         assert!(!out.terms.is_empty());
         let climate = out.terms.iter().find(|t| t.term == "climate").unwrap();
@@ -818,20 +927,18 @@ mod tests {
         assert_eq!(json["total_hits"], 0);
     }
 
-    #[test]
-    fn generated_tool_definitions_expose_names_and_required_params() {
-        // Guards the derive wiring: names match the wire protocol the
-        // frontend already knows, and doc-comment parameters land in the
-        // schema's `required` array.
+    #[tokio::test]
+    async fn tool_definitions_expose_names_and_required_params() {
+        let (_tmp, state) = create_state().await;
         assert_eq!(<Search as Tool>::NAME, "search");
         assert_eq!(
-            Search.parameters()["required"],
+            Search::new(state.clone()).parameters()["required"],
             serde_json::json!(["query"])
         );
 
         assert_eq!(<ReadChunk as Tool>::NAME, "read_chunk");
         assert_eq!(
-            ReadChunk.parameters()["required"],
+            ReadChunk::new(state.clone()).parameters()["required"],
             serde_json::json!(["document_id", "chunk_index"])
         );
 

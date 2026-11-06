@@ -15,17 +15,16 @@ iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = "0.101"
 
-# PDF processing (default features off: the `time` feature of 0.44.0 is broken
-# upstream, see lopdf issue #518 — we don't use PDF date conversion)
-lopdf = { version = "0.44", default-features = false, features = ["rayon"] }
+# PDF processing (default features off: we don't use PDF date conversion)
+lopdf = { version = "0.47", default-features = false, features = ["rayon"] }
 
 # milli from meilisearch — full-text keyword search
-milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.53.1" }
+milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.56.1" }
 # milli's Settings::execute / indexer::index take &IpPolicy even without embedders
-http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.53.1", package = "http-client" }
+http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.56.1", package = "http-client" }
 bumpalo = "3"
 fst = "0.4.7"
-roaring = "0.10.7"
+roaring = "0.11.5"
 # milli serializes SmartString but relies on rhai's feature flags to enable
 # smartstring/serde; declare it explicitly so it doesn't depend on unification
 smartstring = { version = "1", features = ["serde"] }
@@ -37,25 +36,29 @@ chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
 
 # Random
-rand = "0.9"
+rand = "0.10"
 
 # Remote LLM providers — rig (LLM framework: providers, agent runtime, tools, memory)
 # Tracks released crates.io versions. The local ../rig checkout (at the
 # matching tag) is the API reference for this dependency.
-rig = "0.42"
+rig = "0.46"
+# Direct companion-crate access for DynModel, directory sessions, and tool schemas.
+rig-core = "0.46"
+rig-memory = { version = "0.46", features = ["fs"] }
+schemars = "1"
 
 # Text chunking for search indexing
-text-splitter = "0.32"
+text-splitter = "0.33"
 
 # Utilities
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
-dirs = "6"
+dirs = "7"
 uuid = { version = "1", features = ["v4"] }
 tokio-util = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
 # Test-only rig features (mock completion models for runtime tests).
-rig = { version = "0.42", features = ["test-utils"] }
+rig = { version = "0.46", features = ["test-utils"] }
