@@ -427,7 +427,7 @@ mod tests {
     fn configure_dummy_provider(state: &AppState) {
         let settings = Settings {
             provider: Some(ProviderSettings {
-                family: "openai".into(),
+                family: "openai/openai".into(),
                 model: "gpt-test".into(),
                 api_key: Some("dummy".into()),
                 base_url: Some("https://example.invalid".into()),

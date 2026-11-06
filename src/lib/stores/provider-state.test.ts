@@ -13,24 +13,21 @@ async function importStore() {
 
 const FAMILIES = [
 	{
-		id: 'openai',
+		id: 'openai/openai',
 		name: 'OpenAI',
 		requires_api_key: true,
-		supports_base_url: false,
 		supports_model_listing: true,
 	},
 	{
-		id: 'ollama',
+		id: 'ollama/openai',
 		name: 'Ollama',
 		requires_api_key: false,
-		supports_base_url: true,
 		supports_model_listing: true,
 	},
 	{
 		id: 'custom',
 		name: 'Custom',
 		requires_api_key: false,
-		supports_base_url: true,
 		supports_model_listing: false,
 	},
 ];
@@ -45,14 +42,14 @@ describe('provider-state store', () => {
 			if (cmd === 'list_provider_families') return FAMILIES;
 			if (cmd === 'get_current_provider')
 				return {
-					family: 'openai',
+					family: 'openai/openai',
 					model: 'gpt-4o',
 					api_key: 'sk-x',
 					base_url: null,
 				};
 			if (cmd === 'get_provider_status')
-				return { family: 'openai', model: 'gpt-4o', ready: true };
-			if (cmd === 'get_stored_api_keys') return { openai: 'sk-x' };
+				return { family: 'openai/openai', model: 'gpt-4o', ready: true };
+			if (cmd === 'get_stored_api_keys') return { 'openai/openai': 'sk-x' };
 		});
 
 		const store = await importStore();
@@ -60,18 +57,18 @@ describe('provider-state store', () => {
 
 		expect(store.getFamilies()).toEqual(FAMILIES);
 		expect(store.getCurrentProvider()).toEqual({
-			family: 'openai',
+			family: 'openai/openai',
 			model: 'gpt-4o',
 			api_key: 'sk-x',
 			base_url: null,
 		});
 		expect(store.getStatus()).toEqual({
-			family: 'openai',
+			family: 'openai/openai',
 			model: 'gpt-4o',
 			ready: true,
 		});
 		expect(store.isProviderReady()).toBe(true);
-		expect(store.getStoredApiKey('openai')).toBe('sk-x');
+		expect(store.getStoredApiKey('openai/openai')).toBe('sk-x');
 	});
 
 	it('treats a missing provider as not ready', async () => {
@@ -126,18 +123,18 @@ describe('provider-state store', () => {
 		await store.loadFamilies();
 
 		await store.configureProvider({
-			family: 'openai',
+			family: 'openai/openai',
 			apiKey: 'sk-new',
 			model: 'gpt-4o-mini',
 		});
 
 		expect(configureArgs).toMatchObject({
-			family: 'openai',
+			family: 'openai/openai',
 			apiKey: 'sk-new',
 			model: 'gpt-4o-mini',
 		});
 		expect(store.isProviderReady()).toBe(true);
-		expect(store.getStoredApiKey('openai')).toBe('sk-new');
+		expect(store.getStoredApiKey('openai/openai')).toBe('sk-new');
 		expect(store.getCurrentProvider()?.model).toBe('gpt-4o-mini');
 	});
 
@@ -153,7 +150,7 @@ describe('provider-state store', () => {
 				return disabled
 					? null
 					: {
-							family: 'openai',
+							family: 'openai/openai',
 							model: 'gpt-4o',
 							api_key: 'sk',
 							base_url: null,
@@ -161,7 +158,7 @@ describe('provider-state store', () => {
 			if (cmd === 'get_provider_status')
 				return disabled
 					? { family: null, model: null, ready: false }
-					: { family: 'openai', model: 'gpt-4o', ready: true };
+					: { family: 'openai/openai', model: 'gpt-4o', ready: true };
 			if (cmd === 'get_stored_api_keys') return {};
 		});
 
@@ -189,14 +186,14 @@ describe('provider-state store', () => {
 
 		const store = await importStore();
 		const models = await store.listProviderModels({
-			family: 'ollama',
+			family: 'ollama/openai',
 			apiKey: null,
 			baseUrl: 'http://localhost:11434',
 		});
 
 		expect(models).toEqual([{ id: 'qwen3', display_name: 'Qwen 3' }]);
 		expect(listArgs).toMatchObject({
-			family: 'ollama',
+			family: 'ollama/openai',
 			apiKey: null,
 			baseUrl: 'http://localhost:11434',
 		});
