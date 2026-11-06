@@ -9,6 +9,7 @@
 		getCurrentProvider,
 		getFamilies,
 		getFamily,
+		getProviderStateError,
 		getStoredApiKey,
 		listProviderModels,
 		loadFamilies,
@@ -29,6 +30,7 @@
 
 	const families = $derived(getFamilies());
 	const current = $derived(getCurrentProvider());
+	const stateError = $derived(getProviderStateError());
 
 	let selectedFamilyId = $state<string>('');
 	let apiKey = $state('');
@@ -183,6 +185,10 @@
 </script>
 
 <div class="space-y-4">
+	{#if stateError}
+		<ErrorAlert>{stateError}</ErrorAlert>
+	{/if}
+
 	<!-- Current provider indicator -->
 	{#if current}
 		<div

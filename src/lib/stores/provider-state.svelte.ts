@@ -48,6 +48,8 @@ let status = $state<ProviderStatus>({
 	ready: false,
 });
 let storedKeys = $state<Record<string, string>>({});
+/** Why the last provider state query failed, if it did. */
+let providerStateError = $state<string | null>(null);
 let loaded = $state(false);
 let initializing = false;
 
@@ -60,14 +62,20 @@ let initializing = false;
  * that only need the current snapshot read the reactive getters instead.
  */
 async function queryProviderState(): Promise<void> {
-	const [current, statusRes, keys] = await Promise.all([
-		invoke<CurrentProvider | null>('get_current_provider'),
-		invoke<ProviderStatus>('get_provider_status'),
-		invoke<Record<string, string>>('get_stored_api_keys'),
-	]);
-	currentProvider = current;
-	status = statusRes;
-	storedKeys = keys ?? {};
+	try {
+		const [current, statusRes, keys] = await Promise.all([
+			invoke<CurrentProvider | null>('get_current_provider'),
+			invoke<ProviderStatus>('get_provider_status'),
+			invoke<Record<string, string>>('get_stored_api_keys'),
+		]);
+		currentProvider = current;
+		status = statusRes;
+		storedKeys = keys ?? {};
+		providerStateError = null;
+	} catch (e) {
+		providerStateError = `Failed to load provider settings: ${e instanceof Error ? e.message : String(e)}`;
+		throw e;
+	}
 }
 
 // Initialize on module load (browser only — the Tauri IPC bridge).
@@ -184,6 +192,11 @@ export function getStoredApiKey(family: string): string | null {
 /** Whether chat is enabled (a configured, ready provider exists). */
 export function isProviderReady(): boolean {
 	return status.ready;
+}
+
+/** Why the provider state query failed, if it did (malformed/inaccessible settings). */
+export function getProviderStateError(): string | null {
+	return providerStateError;
 }
 
 /** Whether the initial state snapshot has been fetched. */
