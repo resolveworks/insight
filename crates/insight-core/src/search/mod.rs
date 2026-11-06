@@ -22,6 +22,7 @@ use milli::{
     IndexFilterCondition, MustStopProcessing, TermsMatchingStrategy,
 };
 use roaring::RoaringBitmap;
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 
@@ -172,6 +173,40 @@ pub struct ChunkToIndex {
     pub start_page: usize,
     /// Last page this chunk appears on (1-indexed)
     pub end_page: usize,
+}
+
+/// A chunk as stored in the search index.
+///
+/// This mirrors the fields written by [`ChunkToIndex`], so a malformed or
+/// stale row fails deserialization instead of yielding default values.
+#[derive(Debug, Deserialize)]
+pub struct IndexedChunk {
+    /// Unique chunk ID: "{parent_id}_chunk_{chunk_index}"
+    pub id: String,
+    /// Original document ID.
+    pub parent_id: String,
+    /// Document filename.
+    pub parent_name: String,
+    /// Position of this chunk in the document (0-indexed).
+    pub chunk_index: usize,
+    /// The chunk text content.
+    pub content: String,
+    /// Collection this chunk belongs to.
+    pub collection_id: String,
+    /// Number of pages in the parent document.
+    pub page_count: usize,
+    /// First page this chunk appears on (1-indexed).
+    pub start_page: usize,
+    /// Last page this chunk appears on (1-indexed).
+    pub end_page: usize,
+}
+
+impl IndexedChunk {
+    /// Deserialize an indexed chunk from its stored JSON fields.
+    pub fn from_document(document: Map<String, Value>) -> Result<Self> {
+        serde_json::from_value(Value::Object(document))
+            .context("indexed chunk does not match the search schema")
+    }
 }
 
 /// Maximum chunks per indexing batch
@@ -415,17 +450,28 @@ pub fn get_document(
     }
 }
 
-/// Get the content of a document by its external ID
-pub fn get_document_by_external_id(index: &Index, external_id: &str) -> Result<Option<String>> {
+/// Get a typed indexed chunk using an existing transaction.
+pub fn get_indexed_chunk(
+    index: &Index,
+    rtxn: &milli::heed::RoTxn,
+    doc_id: u32,
+) -> Result<Option<IndexedChunk>> {
+    get_document(index, rtxn, doc_id)?
+        .map(IndexedChunk::from_document)
+        .transpose()
+}
+
+/// Get a typed indexed chunk by its external ID.
+pub fn get_indexed_chunk_by_external_id(
+    index: &Index,
+    external_id: &str,
+) -> Result<Option<IndexedChunk>> {
     let rtxn = index.read_txn()?;
 
     // O(1) lookup: external ID -> internal ID via B-tree
     let external_ids = index.external_documents_ids();
     match external_ids.get(&rtxn, external_id)? {
-        Some(internal_id) => {
-            let doc = get_document(index, &rtxn, internal_id)?;
-            Ok(doc.and_then(|d| d.get("content").and_then(|v| v.as_str()).map(String::from)))
-        }
+        Some(internal_id) => get_indexed_chunk(index, &rtxn, internal_id),
         None => Ok(None),
     }
 }
