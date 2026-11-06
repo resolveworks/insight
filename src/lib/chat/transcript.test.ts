@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { MultiTurnStreamItem, RigMessage } from '#lib/types/rig.js';
+import type {
+	MultiTurnStreamItem,
+	RigCallId,
+	RigMessage,
+	RigStreamEvent,
+	RigToolResultContent,
+} from '#lib/types/rig.js';
 import {
 	applyItem,
 	buildTranscript,
@@ -13,85 +19,137 @@ function fold(items: MultiTurnStreamItem[]) {
 	return items.reduce(applyItem, emptyLiveRun());
 }
 
-const textDelta = (text: string): MultiTurnStreamItem => ({
+const callId = (id: string): RigCallId => ({ provider: id });
+
+const streamItem = (value: RigStreamEvent): MultiTurnStreamItem => ({
 	type: 'streamAssistantItem',
-	text,
+	item: 'event',
+	value,
 });
 
-const toolCallDelta = (
-	internal_call_id: string,
-	content: { Name?: string; Delta?: string },
-): MultiTurnStreamItem => ({
-	type: 'streamAssistantItem',
-	internal_call_id,
-	content,
-});
+const start = (part: number, kind: 'text' | 'reasoning') =>
+	streamItem({ event: 'start', part, kind });
 
-const completeToolCall = (
-	internal_call_id: string,
-	name: string,
-	arguments_?: unknown,
-	id = 'call_1',
-): MultiTurnStreamItem => ({
-	type: 'streamAssistantItem',
-	internal_call_id,
-	tool_call: { id, function: { name, arguments: arguments_ ?? {} } },
-});
+const textDelta = (part: number, text: string): MultiTurnStreamItem =>
+	streamItem({ event: 'text', part, text });
 
-const reasoningDelta = (id: string, text: string): MultiTurnStreamItem => ({
-	type: 'streamAssistantItem',
-	id,
-	reasoning: text,
-});
+const endText = (part: number, text: string): MultiTurnStreamItem =>
+	streamItem({ event: 'end', part, content: { type: 'text', text } });
 
-const completeReasoning = (
+const startToolCall = (part: number, name: string): MultiTurnStreamItem =>
+	streamItem({ event: 'start', part, kind: 'tool_call', name });
+
+const argumentsDelta = (part: number, json: string): MultiTurnStreamItem =>
+	streamItem({ event: 'arguments', part, json });
+
+const endToolCall = (
+	part: number,
 	id: string,
-	parts: { type: string; [k: string]: unknown }[],
+	name: string,
+	args: Record<string, unknown>,
+): MultiTurnStreamItem =>
+	streamItem({
+		event: 'end',
+		part,
+		content: {
+			type: 'tool_call',
+			id: callId(id),
+			function: { name, arguments: args },
+		},
+	});
+
+const reasoningDelta = (part: number, text: string): MultiTurnStreamItem =>
+	streamItem({ event: 'reasoning', part, text });
+
+const endReasoning = (part: number, text: string): MultiTurnStreamItem =>
+	streamItem({
+		event: 'end',
+		part,
+		content: { type: 'reasoning', text },
+	});
+
+const committedToolCall = (
+	id: string,
+	name: string,
+	args: Record<string, unknown> = {},
 ): MultiTurnStreamItem => ({
-	type: 'streamAssistantItem',
-	id,
-	reasoning: { id: null, content: parts as never },
+	type: 'toolCall',
+	tool_call: { id: callId(id), function: { name, arguments: args } },
 });
 
-const streamUserItem = (
+const executedToolCall = (
+	id: string,
 	name: string,
-	content: { type: string; [k: string]: unknown }[],
-	call = 'call_1',
+	args: Record<string, unknown> = {},
 ): MultiTurnStreamItem => ({
-	type: 'streamUserItem',
-	internal_call_id: call,
-	tool_result: { call, name, content: content as never },
+	type: 'toolExecutionCommitted',
+	tool_call: { id: callId(id), function: { name, arguments: args } },
+});
+
+const toolResult = (
+	id: string,
+	name: string,
+	content: RigToolResultContent[],
+): MultiTurnStreamItem => ({
+	type: 'toolResult',
+	tool_result: { call: callId(id), name, content },
 });
 
 describe('applyItem — text', () => {
-	it('accumulates consecutive text deltas into one block', () => {
-		const run = fold([textDelta('Hello '), textDelta('world')]);
-		expect(run.streamingText).toBe(true);
+	it('accumulates text deltas and finalizes on end', () => {
+		const streaming = fold([
+			start(0, 'text'),
+			textDelta(0, 'Hello '),
+			textDelta(0, 'world'),
+		]);
+		expect(streaming.streamingText).toBe(true);
+		expect(streaming.messages).toEqual([
+			{
+				role: 'assistant',
+				content: [{ type: 'text', part: 0, text: 'Hello world' }],
+			},
+		]);
+
+		const run = fold([
+			start(0, 'text'),
+			textDelta(0, 'Hello '),
+			textDelta(0, 'world'),
+			endText(0, 'Hello world'),
+		]);
+		expect(run.streamingText).toBe(false);
 		expect(run.messages).toEqual([
-			{ role: 'assistant', content: [{ type: 'text', text: 'Hello world' }] },
+			{
+				role: 'assistant',
+				content: [{ type: 'text', part: 0, text: 'Hello world' }],
+			},
 		]);
 	});
 
-	it('starts a new text block after a non-text block', () => {
+	it('starts a new text block after a non-text part', () => {
 		const run = fold([
-			textDelta('first'),
-			toolCallDelta('a', { Name: 'search' }),
-			textDelta('second'),
+			start(0, 'text'),
+			textDelta(0, 'first'),
+			endText(0, 'first'),
+			startToolCall(1, 'search'),
+			argumentsDelta(1, '{}'),
+			endToolCall(1, 'call_1', 'search', {}),
+			start(2, 'text'),
+			textDelta(2, 'second'),
 		]);
 		expect(run.messages[0]).toEqual({
 			role: 'assistant',
 			content: [
-				{ type: 'text', text: 'first' },
+				{ type: 'text', part: 0, text: 'first' },
 				{
 					type: 'tool_call',
-					internal_call_id: 'a',
-					id: '',
+					part: 1,
+					id: 'call_1',
 					name: 'search',
-					args: '',
+					args: '{}',
 					committed: false,
 					executed: false,
 				},
-				{ type: 'text', text: 'second' },
+				{ type: 'text', part: 2, text: 'second' },
 			],
 		});
 	});
@@ -100,10 +158,17 @@ describe('applyItem — text', () => {
 describe('applyItem — chronological interleaving', () => {
 	it('text → tool call → tool result → text lands in that order with segmented text', () => {
 		const run = fold([
-			textDelta('before'),
-			completeToolCall('a', 'search'),
-			streamUserItem('search', [{ type: 'text', text: 'hits' }]),
-			textDelta('after'),
+			start(0, 'text'),
+			textDelta(0, 'before'),
+			endText(0, 'before'),
+			startToolCall(1, 'search'),
+			argumentsDelta(1, '{}'),
+			endToolCall(1, 'call_1', 'search', {}),
+			committedToolCall('call_1', 'search'),
+			executedToolCall('call_1', 'search'),
+			toolResult('call_1', 'search', [{ type: 'text', text: 'hits' }]),
+			start(0, 'text'),
+			textDelta(0, 'after'),
 		]);
 		expect(run.messages).toHaveLength(3);
 		expect(run.messages[0].role).toBe('assistant');
@@ -127,42 +192,37 @@ describe('applyItem — chronological interleaving', () => {
 });
 
 describe('applyItem — tool calls', () => {
-	it('stitches name/args fragments by internal_call_id', () => {
+	it('stitches argument fragments by part', () => {
 		const run = fold([
-			toolCallDelta('a', { Name: 'sea' }),
-			toolCallDelta('b', { Name: 'other' }),
-			toolCallDelta('a', { Delta: '{"q"' }),
-			toolCallDelta('a', { Delta: ': 1}' }),
+			startToolCall(0, 'search'),
+			startToolCall(1, 'other'),
+			argumentsDelta(0, '{"q"'),
+			argumentsDelta(0, ': 1}'),
 		]);
 		const calls = (
 			run.messages[0] as {
 				content: { type: string; name?: string; args?: string }[];
 			}
 		).content;
-		expect(calls[0]).toMatchObject({ name: 'sea', args: '{"q": 1}' });
+		expect(calls[0]).toMatchObject({ name: 'search', args: '{"q": 1}' });
 		expect(calls[1]).toMatchObject({ name: 'other', args: '' });
 		expect(run.streamingText).toBe(false);
 	});
 
-	it('complete call overwrites and sets committed; execution sets executed', () => {
+	it('end supersedes streamed fragments; commit and execution set flags', () => {
 		const run = fold([
-			toolCallDelta('a', { Name: 'sea', Delta: '{"q"' }),
-			completeToolCall('a', 'search', { q: 'hi' }),
-			{
-				type: 'toolExecutionCommitted',
-				internal_call_id: 'a',
-				tool_call: {
-					id: 'call_1',
-					function: { name: 'search', arguments: {} },
-				},
-			},
+			startToolCall(0, 'sea'),
+			argumentsDelta(0, '{"q"'),
+			endToolCall(0, 'call_1', 'search', { q: 'hi' }),
+			committedToolCall('call_1', 'search', { q: 'hi' }),
+			executedToolCall('call_1', 'search', { q: 'hi' }),
 		]);
 		const block = (
 			run.messages[0] as unknown as { content: Record<string, unknown>[] }
 		).content[0];
 		expect(block).toMatchObject({
 			type: 'tool_call',
-			internal_call_id: 'a',
+			part: 0,
 			id: 'call_1',
 			name: 'search',
 			args: '{\n  "q": "hi"\n}',
@@ -173,27 +233,34 @@ describe('applyItem — tool calls', () => {
 });
 
 describe('applyItem — reasoning', () => {
-	it('accumulates deltas keyed by id and replaces on complete', () => {
+	it('accumulates deltas by part and replaces them on end', () => {
+		const streaming = fold([
+			start(0, 'reasoning'),
+			reasoningDelta(0, 'think '),
+			reasoningDelta(0, 'more'),
+		]);
+		expect(streaming.messages[0]).toEqual({
+			role: 'assistant',
+			content: [{ type: 'reasoning', part: 0, text: 'think more' }],
+		});
+
 		const run = fold([
-			reasoningDelta('r1', 'think '),
-			reasoningDelta('r1', 'more'),
-			completeReasoning('r1', [
-				{ type: 'text', content: { text: 'final' } },
-				{ type: 'summary', content: 'sum' },
-				{ type: 'encrypted', content: 'xxx' },
-			]),
+			start(0, 'reasoning'),
+			reasoningDelta(0, 'think '),
+			reasoningDelta(0, 'more'),
+			endReasoning(0, 'final'),
 		]);
 		expect(run.messages[0]).toEqual({
 			role: 'assistant',
-			content: [{ type: 'reasoning', key: 'r1', text: 'final\nsum' }],
+			content: [{ type: 'reasoning', part: 0, text: 'final' }],
 		});
 	});
 });
 
 describe('applyItem — control items', () => {
-	it('streamUserItem flattens text and json content', () => {
+	it('toolResult flattens text and json content', () => {
 		const run = fold([
-			streamUserItem('search', [
+			toolResult('call_1', 'search', [
 				{ type: 'text', text: 'hits' },
 				{ type: 'json', value: { n: 1 } },
 			]),
@@ -212,12 +279,16 @@ describe('applyItem — control items', () => {
 	});
 
 	it('modelTurnRetried resets to empty', () => {
-		const run = fold([textDelta('bye'), { type: 'modelTurnRetried', turn: 2 }]);
+		const run = fold([
+			start(0, 'text'),
+			textDelta(0, 'bye'),
+			{ type: 'modelTurnRetried', turn: 2 },
+		]);
 		expect(run).toEqual(emptyLiveRun());
 	});
 
-	it('completionCall, StreamFinal-shaped payloads, and unknown payloads are no-ops', () => {
-		const base = fold([textDelta('keep')]);
+	it('completionCall, finalResponse, and unknown payloads are no-ops', () => {
+		const base = fold([start(0, 'text'), textDelta(0, 'keep')]);
 		const noop = (item: MultiTurnStreamItem) => {
 			const clone = structuredClone(base);
 			const next = applyItem(base, item);
@@ -227,72 +298,51 @@ describe('applyItem — control items', () => {
 		noop({
 			type: 'completionCall',
 			call_index: 0,
-			usage: {
-				input_tokens: 1,
-				output_tokens: 1,
-				total_tokens: 2,
-				cached_input_tokens: 0,
-				cache_creation_input_tokens: 0,
-				reasoning_tokens: 0,
-			},
+			usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+			raw: null,
+		});
+		noop({
+			type: 'finalResponse',
+			usage: {},
+			messages: [],
+			content: [],
 		});
 		noop({
 			type: 'streamAssistantItem',
-			kind: 'final',
-			usage: {
-				input_tokens: 1,
-				output_tokens: 1,
-				total_tokens: 2,
-				cached_input_tokens: 0,
-				cache_creation_input_tokens: 0,
-				reasoning_tokens: 0,
-			},
-			provider: 'openai',
+			item: 'unknown',
+			value: { whatever: true },
 		});
-		noop({
-			type: 'streamAssistantItem',
-			whatever: true,
-		} as unknown as MultiTurnStreamItem);
 	});
 });
 
 describe('applyItem — immutability', () => {
 	it('does not mutate the run argument', () => {
-		const run = fold([textDelta('a'), toolCallDelta('x', { Name: 't' })]);
+		const run = fold([
+			start(0, 'text'),
+			textDelta(0, 'a'),
+			startToolCall(1, 't'),
+		]);
 		const clone = structuredClone(run);
-		applyItem(run, textDelta('b'));
-		applyItem(run, completeToolCall('x', 't'));
-		applyItem(run, {
-			type: 'toolExecutionCommitted',
-			internal_call_id: 'x',
-			tool_call: { id: 'call_1', function: { name: 't', arguments: {} } },
-		});
-		applyItem(run, streamUserItem('t', [{ type: 'text', text: 'r' }]));
+		applyItem(run, textDelta(0, 'b'));
+		applyItem(run, endToolCall(1, 'call_1', 't', {}));
+		applyItem(run, committedToolCall('call_1', 't'));
+		applyItem(run, executedToolCall('call_1', 't'));
+		applyItem(run, toolResult('call_1', 't', [{ type: 'text', text: 'r' }]));
 		applyItem(run, { type: 'modelTurnRetried', turn: 1 });
 		expect(run).toEqual(clone);
 	});
 });
 
 describe('flattening helpers', () => {
-	it('flattenReasoning maps text/summary and skips others', () => {
-		expect(
-			flattenReasoning({
-				id: null,
-				content: [
-					{ type: 'text', content: { text: 'a' } },
-					{ type: 'encrypted', content: 'x' },
-					{ type: 'redacted', content: { data: 'y' } },
-					{ type: 'summary', content: 'b' },
-				],
-			}),
-		).toBe('a\nb');
+	it('flattenReasoning returns the reasoning text', () => {
+		expect(flattenReasoning({ text: 'a\nb' })).toBe('a\nb');
 	});
 
 	it('flattenToolResult maps text/json and skips others', () => {
 		expect(
 			flattenToolResult([
 				{ type: 'text', text: 'hi' },
-				{ type: 'image', url: 'u' },
+				{ type: 'image', data: 'u' },
 				{ type: 'json', value: [1] },
 			]),
 		).toBe('hi\n[\n  1\n]');
@@ -304,23 +354,18 @@ describe('buildTranscript', () => {
 		{ role: 'user', content: [{ type: 'text', text: 'hi' }] },
 		{
 			role: 'assistant',
-			id: null,
 			content: [
-				{
-					type: 'reasoning',
-					id: null,
-					content: [{ type: 'text', content: { text: 'think' } }],
-				},
+				{ type: 'reasoning', text: 'think' },
 				{ type: 'text', text: 'hello' },
 				{
 					type: 'tool_call',
-					id: 'c1',
+					id: callId('c1'),
 					function: { name: 'search', arguments: { q: 'x' } },
 				},
 				{
 					type: 'tool_call',
-					id: 'c2',
-					function: { name: 'read', arguments: '{"id": 1}' },
+					id: callId('c2'),
+					function: { name: 'read', arguments: { id: 1 } },
 				},
 			],
 		},
@@ -329,7 +374,7 @@ describe('buildTranscript', () => {
 			content: [
 				{
 					type: 'tool_result',
-					call: 'c1',
+					call: callId('c1'),
 					name: 'search',
 					content: [{ type: 'text', text: 'result' }],
 				},
@@ -337,7 +382,7 @@ describe('buildTranscript', () => {
 		},
 	];
 
-	it('maps all stored block kinds with stringified vs passthrough args', () => {
+	it('maps all stored block kinds with stringified args', () => {
 		const items = buildTranscript(stored, emptyLiveRun());
 		expect(items).toHaveLength(6);
 		expect(items.map((i) => i.key)).toEqual([
@@ -363,7 +408,10 @@ describe('buildTranscript', () => {
 			name: 'search',
 			args: '{\n  "q": "x"\n}',
 		});
-		expect(items[4]).toMatchObject({ name: 'read', args: '{"id": 1}' });
+		expect(items[4]).toMatchObject({
+			name: 'read',
+			args: '{\n  "id": 1\n}',
+		});
 		expect(items[5]).toMatchObject({
 			role: 'user',
 			name: 'search',
@@ -378,18 +426,18 @@ describe('buildTranscript', () => {
 
 	it('maps live blocks with provisional/executing flags', () => {
 		const live = fold([
-			textDelta('live '),
-			textDelta('text'),
-			completeToolCall('a', 'search', { q: 1 }),
-			{
-				type: 'toolExecutionCommitted',
-				internal_call_id: 'a',
-				tool_call: {
-					id: 'call_1',
-					function: { name: 'search', arguments: {} },
-				},
-			},
-			completeToolCall('b', 'read', {}),
+			start(0, 'text'),
+			textDelta(0, 'live '),
+			textDelta(0, 'text'),
+			startToolCall(1, 'search'),
+			argumentsDelta(1, '{}'),
+			endToolCall(1, 'call_1', 'search', { q: 1 }),
+			committedToolCall('call_1', 'search', { q: 1 }),
+			executedToolCall('call_1', 'search', { q: 1 }),
+			startToolCall(2, 'read'),
+			argumentsDelta(2, '{}'),
+			endToolCall(2, 'call_2', 'read', {}),
+			committedToolCall('call_2', 'read'),
 		]);
 		const items = buildTranscript([], live);
 		expect(items.map((i) => i.key)).toEqual(['0-0', '0-1', '0-2']);
@@ -408,12 +456,17 @@ describe('buildTranscript', () => {
 	it('places the streaming cursor on the last assistantText item only', () => {
 		const stored2: RigMessage[] = [
 			{ role: 'user', content: [{ type: 'text', text: 'q' }] },
-			{ role: 'assistant', id: null, content: [{ type: 'text', text: 'old' }] },
+			{ role: 'assistant', content: [{ type: 'text', text: 'old' }] },
 		];
 		const live = fold([
-			textDelta('first'),
-			toolCallDelta('a', { Name: 'search' }),
-			textDelta('second'),
+			start(0, 'text'),
+			textDelta(0, 'first'),
+			endText(0, 'first'),
+			startToolCall(1, 'search'),
+			argumentsDelta(1, '{}'),
+			endToolCall(1, 'call_1', 'search', {}),
+			start(2, 'text'),
+			textDelta(2, 'second'),
 		]);
 		const items = buildTranscript(stored2, live);
 		const streaming = items.filter((i) => i.streaming);
@@ -429,10 +482,9 @@ describe('buildTranscript', () => {
 	it('renders nothing for unknown stored block kinds', () => {
 		const message = {
 			role: 'assistant',
-			id: null,
 			content: [
 				{ type: 'text', text: 'before' },
-				{ type: 'image', image_url: 'https://example.invalid/x.png' },
+				{ type: 'image', data: 'https://example.invalid/x.png' },
 			],
 		} as unknown as RigMessage;
 		const items = buildTranscript([message], emptyLiveRun());

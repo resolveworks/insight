@@ -2,65 +2,76 @@
  * TypeScript mirrors of the rig serde payloads the backend forwards to the
  * frontend (conversations and the `agent-event-{id}` stream).
  *
- * Sources (rig v0.42.0, from crates.io):
- * - rig-core `completion/message.rs` — `Message`, `AssistantContent`,
- *   `UserContent`, `ToolCall`, `ToolResult`, `Reasoning`
- * - rig-core `streaming/mod.rs` — `StreamedAssistantContent`,
- *   `StreamedUserContent`, `ToolCallDeltaContent`, `StreamFinal`
- *   (all `#[serde(untagged)]`, so their variants flatten into the enclosing
- *   `MultiTurnStreamItem` map)
- * - rig-agent `agent/prompt_request/streaming.rs` — `MultiTurnStreamItem`
+ * Sources (rig v0.46.0, from crates.io):
+ * - rig-core `completion/message.rs` — `Message`, `AssistantMessage`,
+ *   `AssistantContent`, `UserContent`, `ToolCall`, `ToolResult`, `Reasoning`
+ * - rig-core `completion/message/identity.rs` — `CallId`, `ProviderCallId`
+ * - rig-core `completion/message/native.rs` — `Origin`, `StopReason`, `Native`
+ * - rig-core `completion/request.rs` — `Usage`, `FinishReason`
+ * - rig-core `streaming/event.rs` — `Item<StreamEvent>`, `StreamEvent`,
+ *   `Part`, `PartKind` (both serde-tagged by `item` / `event`)
+ * - rig-agent `agent/streaming.rs` — `MultiTurnStreamItem`
  *   (`#[serde(tag = "type", rename_all = "camelCase")]`)
- * - rig-agent `agent/prompt_request` — `PromptResponse`, `CompletionCall`
- *   (snake_case keys)
+ * - rig-agent `run/response.rs` — `PromptResponse`, `CompletionCall`
  *
  * Key serde facts encoded here:
- * - `Message` is tagged on `role` (lowercase); assistant messages also carry
- *   an `id` that serializes even when `null`.
+ * - `Message` is tagged on `role` (lowercase); the assistant variant is an
+ *   `AssistantMessage` whose fields inline beside the role (`content`, plus
+ *   optional `origin` / `stop`).
  * - `AssistantContent`/`UserContent`/`ToolResultContent` are tagged on
  *   `"type"` (lowercase) with struct fields inlined.
- * - `ToolCallDeltaContent` has NO serde tag: externally tagged, i.e.
- *   `{"Name": "search"}` / `{"Delta": "{\"q\""}`.
- * - `ReasoningContent` is adjacently tagged: `{"type": "text", "content": …}`.
- * - `PromptResponse`/`CompletionCall`/`Usage` use snake_case keys (no
- *   `rename_all` on those types).
+ * - `CallId` is externally tagged: `{"provider": "call_1"}` or
+ *   `{"local": "<uuid>"}`.
+ * - `Item<StreamEvent>` is adjacently tagged: `{"item": "event", "value": …}`
+ *   or `{"item": "unknown", "value": …}`; `StreamEvent` is tagged on `event`.
+ * - `Usage` only serializes counters the provider reported; unreported ones
+ *   are absent rather than zero.
+ * - `PromptResponse`/`CompletionCall` use snake_case keys (no `rename_all`
+ *   on those types).
  */
 
 // =============================================================================
 // Content primitives
 // =============================================================================
 
-export interface RigText {
-	text: string;
-	additional_params?: Record<string, unknown>;
+/** The provider item an assistant block was decoded from (rig `Native`). */
+export interface RigNative {
+	item: unknown;
+	fingerprint: string;
+	baseline?: unknown;
+	edited?: boolean;
+	blob_slot?: string;
 }
 
-/** rig `ProviderCallId` (struct, plain fields). */
-export interface RigProviderCallId {
-	call_id: string;
-	item_id?: string;
+/** rig `Text` (struct). */
+export interface RigText {
+	text: string;
+	citations?: unknown;
+	native?: RigNative;
+}
+
+/** rig `CallId` — externally tagged provider or rig-issued identity. */
+export type RigCallId = { provider: string } | { local: string };
+
+/** rig `ToolFunction` (struct; arguments are always a JSON object). */
+export interface RigToolFunction {
+	name: string;
+	arguments: Record<string, unknown>;
+	invalid_arguments?: string;
 }
 
 /** rig `ToolCall` (struct). */
 export interface RigToolCall {
-	id: string;
-	provider?: RigProviderCallId;
-	function: { name: string; arguments: unknown };
-	signature?: string | null;
-	additional_params?: unknown;
+	id: RigCallId;
+	function: RigToolFunction;
+	native?: RigNative;
 }
 
-/** rig `ReasoningContent` — adjacently tagged (`type` + `content`). */
-export type RigReasoningContent =
-	| { type: 'text'; content: { text: string; signature?: string } }
-	| { type: 'encrypted'; content: string }
-	| { type: 'redacted'; content: { data: string } }
-	| { type: 'summary'; content: string };
-
-/** rig `Reasoning` (struct). */
+/** rig `Reasoning` (struct: text, redaction flag and provider item). */
 export interface RigReasoning {
-	id: string | null;
-	content: RigReasoningContent[];
+	text: string;
+	redacted?: boolean;
+	native?: RigNative;
 }
 
 /** rig `ToolResultContent` — tagged on `"type"` (lowercase). */
@@ -71,11 +82,25 @@ export type RigToolResultContent =
 
 /** rig `ToolResult` (struct). */
 export interface RigToolResult {
-	call: string;
-	provider?: RigProviderCallId;
+	call: RigCallId;
 	name: string;
 	content: RigToolResultContent[];
+	is_error?: boolean;
 }
+
+/** rig `Origin` — where an assistant turn came from. */
+export interface RigOrigin {
+	api: string;
+	provider: string;
+	model: string;
+	response_model?: string;
+	response_id?: string;
+	context?: string;
+}
+
+/** rig `StopReason` — how an assistant turn ended. */
+export type RigStopReason =
+	'stop' | 'length' | 'tool_use' | { error: string } | { aborted: string };
 
 // =============================================================================
 // Messages (conversation history)
@@ -83,61 +108,95 @@ export interface RigToolResult {
 
 /** rig `AssistantContent` — tagged on `"type"` (lowercase). */
 export type AssistantContentBlock =
-	| { type: 'text'; text: string; additional_params?: Record<string, unknown> }
+	| ({ type: 'text' } & RigText)
+	| ({ type: 'tool_call' } & RigToolCall)
+	| ({ type: 'reasoning' } & RigReasoning)
 	| {
-			type: 'tool_call';
-			id: string;
-			function: { name: string; arguments: unknown };
-			provider?: RigProviderCallId;
-			signature?: string | null;
+			type: 'image';
+			data: unknown;
+			media_type?: string;
+			detail?: string;
+			native?: RigNative;
 	  }
-	| { type: 'reasoning'; id: string | null; content: RigReasoningContent[] }
-	| { type: 'image'; [key: string]: unknown };
+	| { type: 'opaque'; item: unknown; replay: boolean };
 
 /** rig `UserContent` — tagged on `"type"` (lowercase). */
 export type UserContentBlock =
-	| { type: 'text'; text: string; additional_params?: Record<string, unknown> }
+	| ({ type: 'text' } & RigText)
+	| ({ type: 'tool_result' } & RigToolResult)
 	| {
-			type: 'tool_result';
-			call: string;
-			name: string;
-			content: RigToolResultContent[];
+			type: 'image';
+			data: unknown;
+			media_type?: string;
+			detail?: string;
+			native?: RigNative;
 	  }
-	| { type: 'image' | 'audio' | 'video' | 'document'; [key: string]: unknown };
+	| { type: 'audio'; data: unknown; media_type?: string }
+	| {
+			type: 'video';
+			data: unknown;
+			media_type?: string;
+			additional_params?: unknown;
+	  }
+	| {
+			type: 'document';
+			data: unknown;
+			media_type?: string;
+			additional_params?: unknown;
+	  };
 
 /**
  * rig `Message` — tagged on `role`. The frontend contract only surfaces
- * user/assistant roles; assistant messages carry `id` (serialized even when
- * null).
+ * user/assistant roles; the assistant variant is an `AssistantMessage`
+ * whose content and optional origin/stop inline beside the role.
  */
 export type RigMessage =
 	| { role: 'user'; content: UserContentBlock[] }
-	| { role: 'assistant'; id: string | null; content: AssistantContentBlock[] };
+	| {
+			role: 'assistant';
+			content: AssistantContentBlock[];
+			origin?: RigOrigin;
+			stop?: RigStopReason;
+	  };
 
 // =============================================================================
 // Usage / completion calls
 // =============================================================================
 
-/** rig `Usage` (snake_case struct fields). */
-export interface RigUsage {
-	input_tokens: number;
-	output_tokens: number;
-	total_tokens: number;
-	cached_input_tokens: number;
-	cache_creation_input_tokens: number;
-	tool_use_prompt_tokens?: number;
-	reasoning_tokens: number;
+/** rig `Cost` (struct; unreported parts are absent). */
+export interface RigCost {
+	input?: number;
+	output?: number;
+	cache_read?: number;
+	cache_write?: number;
+	total: number;
+	incomplete?: boolean;
 }
+
+/** rig `Usage` (snake_case struct fields; unreported counters are absent). */
+export interface RigUsage {
+	input_tokens?: number;
+	output_tokens?: number;
+	total_tokens?: number;
+	cached_input_tokens?: number;
+	cache_creation_input_tokens?: number;
+	tool_use_prompt_tokens?: number;
+	reasoning_tokens?: number;
+	cost?: RigCost;
+}
+
+/** rig `FinishReason` — snake_case unit variants, or a provider-specific one. */
+export type RigFinishReason =
+	'stop' | 'length' | 'tool_calls' | 'content_filter' | { other: string };
 
 /** rig `CompletionCall` (snake_case struct fields). */
 export interface RigCompletionCall {
 	call_index: number;
 	usage: RigUsage;
-	message_id?: string;
 	response_id?: string;
 	provider_request_id?: string;
-	finish_reason?: { [key: string]: unknown };
-	raw?: unknown;
+	finish_reason?: RigFinishReason;
+	raw: unknown;
 }
 
 // =============================================================================
@@ -146,68 +205,61 @@ export interface RigCompletionCall {
 
 /** rig `PromptResponse` — snake_case keys. */
 export interface PromptResponse {
-	output: string;
 	usage: RigUsage;
 	completion_calls?: RigCompletionCall[];
-	messages: RigMessage[] | null;
+	messages: RigMessage[];
 	content: AssistantContentBlock[];
 }
+
+// =============================================================================
+// Provider stream events (`StreamAssistantItem` payloads)
+// =============================================================================
+
+/** rig `PartKind` — what kind of part a `start` event opened. */
+export type RigPartKind =
+	'text' | 'reasoning' | 'tool_call' | 'image' | 'opaque';
+
+/** rig `StreamEvent` — tagged on `"event"` (snake_case). */
+export type RigStreamEvent =
+	| {
+			event: 'start';
+			part: number;
+			kind: RigPartKind;
+			name?: string;
+	  }
+	| { event: 'text'; part: number; text: string }
+	| { event: 'reasoning'; part: number; text: string }
+	| { event: 'arguments'; part: number; json: string }
+	| { event: 'end'; part: number; content: AssistantContentBlock };
+
+/** rig `Item<StreamEvent>` — adjacently tagged on `item` / `value`. */
+export type RigStreamItem =
+	| { item: 'event'; value: RigStreamEvent }
+	| { item: 'unknown'; value: unknown };
 
 // =============================================================================
 // MultiTurnStreamItem (the `agent-event-{conversationId}` payloads)
 // =============================================================================
 
-/**
- * The provider's normalized terminal record (`StreamFinal`), flattened into
- * the stream assistant item map by the untagged serde encoding.
- */
-export interface StreamFinalItem {
-	kind: 'final';
-	usage: RigUsage;
-	finish_reason?: { [key: string]: unknown } | null;
-	message_id?: string | null;
-	response_id?: string | null;
-	provider_request_id?: string;
-	provider: string;
-	model?: string | null;
-	raw?: unknown;
-}
+export type StreamAssistantItem = {
+	type: 'streamAssistantItem';
+} & RigStreamItem;
 
-/**
- * `MultiTurnStreamItem::StreamAssistantItem` — the payload is the untagged
- * `StreamedAssistantContent`, so its fields flatten beside `type`. The
- * variants are discriminated by key shape; use the guards below.
- */
-export type StreamAssistantItemPayload =
-	| { text: string } // Text delta
-	| { tool_call: RigToolCall; internal_call_id: string } // Complete tool call
-	| { internal_call_id: string; content: { Name?: string; Delta?: string } } // Tool call delta
-	| { reasoning: RigReasoning; id: string } // Complete reasoning block
-	| { id: string; reasoning: string; provider_id?: string } // Reasoning delta
-	| StreamFinalItem // Provider terminal record (usage etc.)
-	// UnknownPayload — provider-native item rig does not model
-	| Record<string, unknown>;
-
-export type StreamAssistantItem = { type: 'streamAssistantItem' } & (
-	| { text: string }
-	| { tool_call: RigToolCall; internal_call_id: string }
-	| { internal_call_id: string; content: { Name?: string; Delta?: string } }
-	| { reasoning: RigReasoning; id: string }
-	| { id: string; reasoning: string; provider_id?: string }
-	| StreamFinalItem
-	| Record<string, unknown>
-);
-
-export type StreamUserItem = {
-	type: 'streamUserItem';
-	tool_result: RigToolResult;
-	internal_call_id: string;
+/** A tool call committed to the run's history. */
+export type ToolCallItem = {
+	type: 'toolCall';
+	tool_call: RigToolCall;
 };
 
 export type ToolExecutionCommitted = {
 	type: 'toolExecutionCommitted';
 	tool_call: RigToolCall;
-	internal_call_id: string;
+};
+
+/** A tool result committed to the run's history. */
+export type ToolResultItem = {
+	type: 'toolResult';
+	tool_result: RigToolResult;
 };
 
 export type CompletionCallItem = {
@@ -231,63 +283,10 @@ export type StreamErrorItem = {
 
 export type MultiTurnStreamItem =
 	| StreamAssistantItem
+	| ToolCallItem
 	| ToolExecutionCommitted
-	| StreamUserItem
+	| ToolResultItem
 	| CompletionCallItem
 	| ModelTurnRetried
 	| FinalResponseItem
 	| StreamErrorItem;
-
-// =============================================================================
-// Guards for the untagged stream assistant payload
-// =============================================================================
-
-export function isTextDelta(
-	item: StreamAssistantItem,
-): item is StreamAssistantItem & { text: string } {
-	return 'text' in item && typeof item.text === 'string';
-}
-
-export function isCompleteToolCall(
-	item: StreamAssistantItem,
-): item is StreamAssistantItem & {
-	tool_call: RigToolCall;
-	internal_call_id: string;
-} {
-	return 'tool_call' in item && typeof item.internal_call_id === 'string';
-}
-
-export function isToolCallDelta(
-	item: StreamAssistantItem,
-): item is StreamAssistantItem & {
-	internal_call_id: string;
-	content: { Name?: string; Delta?: string };
-} {
-	return (
-		'content' in item &&
-		typeof item.internal_call_id === 'string' &&
-		!('tool_call' in item)
-	);
-}
-
-export function isReasoningDelta(
-	item: StreamAssistantItem,
-): item is StreamAssistantItem & { id: string; reasoning: string } {
-	return 'reasoning' in item && typeof item.reasoning === 'string';
-}
-
-export function isCompleteReasoning(
-	item: StreamAssistantItem,
-): item is StreamAssistantItem & { reasoning: RigReasoning; id: string } {
-	return (
-		'reasoning' in item &&
-		typeof item.reasoning === 'object' &&
-		item.reasoning !== null
-	);
-}
-
-export function isStreamFinal(
-	item: StreamAssistantItem,
-): item is StreamAssistantItem & StreamFinalItem {
-	return 'kind' in item && (item as StreamFinalItem).kind === 'final';
-}

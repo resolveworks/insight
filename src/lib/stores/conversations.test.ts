@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
-import type { MultiTurnStreamItem, RigMessage } from '#lib/types/rig.js';
+import type {
+	MultiTurnStreamItem,
+	RigMessage,
+	RigStreamEvent,
+	RigToolResultContent,
+} from '#lib/types/rig.js';
 import { emptyLiveRun } from '#lib/chat/transcript.js';
 
 type EventListener = (event: { payload: unknown }) => void;
@@ -26,6 +31,82 @@ async function importStore() {
 function emit(conversationId: string, payload: MultiTurnStreamItem) {
 	listeners.get(`agent-event-${conversationId}`)?.({ payload });
 }
+
+const callId = (id: string) => ({ provider: id });
+
+const streamEvent = (value: RigStreamEvent): MultiTurnStreamItem => ({
+	type: 'streamAssistantItem',
+	item: 'event',
+	value,
+});
+
+const start = (part: number, kind: 'text' | 'reasoning') =>
+	streamEvent({ event: 'start', part, kind });
+
+const textDelta = (part: number, text: string): MultiTurnStreamItem =>
+	streamEvent({ event: 'text', part, text });
+
+const endText = (part: number, text: string): MultiTurnStreamItem =>
+	streamEvent({ event: 'end', part, content: { type: 'text', text } });
+
+const startToolCall = (part: number, name: string): MultiTurnStreamItem =>
+	streamEvent({ event: 'start', part, kind: 'tool_call', name });
+
+const argumentsDelta = (part: number, json: string): MultiTurnStreamItem =>
+	streamEvent({ event: 'arguments', part, json });
+
+const endToolCall = (
+	part: number,
+	id: string,
+	name: string,
+	args: Record<string, unknown>,
+): MultiTurnStreamItem =>
+	streamEvent({
+		event: 'end',
+		part,
+		content: {
+			type: 'tool_call',
+			id: callId(id),
+			function: { name, arguments: args },
+		},
+	});
+
+const reasoningDelta = (part: number, text: string): MultiTurnStreamItem =>
+	streamEvent({ event: 'reasoning', part, text });
+
+const endReasoning = (part: number, text: string): MultiTurnStreamItem =>
+	streamEvent({
+		event: 'end',
+		part,
+		content: { type: 'reasoning', text },
+	});
+
+const committedToolCall = (
+	id: string,
+	name: string,
+	args: Record<string, unknown> = {},
+): MultiTurnStreamItem => ({
+	type: 'toolCall',
+	tool_call: { id: callId(id), function: { name, arguments: args } },
+});
+
+const executedToolCall = (
+	id: string,
+	name: string,
+	args: Record<string, unknown> = {},
+): MultiTurnStreamItem => ({
+	type: 'toolExecutionCommitted',
+	tool_call: { id: callId(id), function: { name, arguments: args } },
+});
+
+const toolResult = (
+	id: string,
+	name: string,
+	content: RigToolResultContent[],
+): MultiTurnStreamItem => ({
+	type: 'toolResult',
+	tool_result: { call: callId(id), name, content },
+});
 
 const USAGE = {
 	input_tokens: 0,
@@ -60,17 +141,12 @@ describe('conversations store event handling', () => {
 			{ role: 'user', content: [{ type: 'text', text: 'find papers' }] },
 			{
 				role: 'assistant',
-				id: null,
 				content: [
-					{
-						type: 'reasoning',
-						id: null,
-						content: [{ type: 'text', content: { text: 'Thinking' } }],
-					},
+					{ type: 'reasoning', text: 'Thinking' },
 					{ type: 'text', text: 'Let me search the index.' },
 					{
 						type: 'tool_call',
-						id: 'call1',
+						id: callId('call1'),
 						function: { name: 'search', arguments: { q: 'papers' } },
 					},
 				],
@@ -80,7 +156,7 @@ describe('conversations store event handling', () => {
 				content: [
 					{
 						type: 'tool_result',
-						call: 'call1',
+						call: callId('call1'),
 						name: 'search',
 						content: [{ type: 'text', text: '3 results' }],
 					},
@@ -88,7 +164,6 @@ describe('conversations store event handling', () => {
 			},
 			{
 				role: 'assistant',
-				id: null,
 				content: [{ type: 'text', text: 'Found 3 results.' }],
 			},
 		];
@@ -129,15 +204,14 @@ describe('conversations store event handling', () => {
 			{ role: 'user', content: [{ type: 'text', text: 'find papers' }] },
 		]);
 
-		// Stream: reasoning delta, text deltas, tool-call deltas, complete call,
+		// Stream: reasoning, text, tool-call arguments, complete call,
 		// committed execution, tool result, usage record.
-		emit('conv1', {
-			type: 'streamAssistantItem',
-			id: 'r1',
-			reasoning: 'Thinking',
-		});
-		emit('conv1', { type: 'streamAssistantItem', text: 'Let me search' });
-		emit('conv1', { type: 'streamAssistantItem', text: ' the index.' });
+		emit('conv1', start(0, 'reasoning'));
+		emit('conv1', reasoningDelta(0, 'Thinking'));
+		emit('conv1', endReasoning(0, 'Thinking'));
+		emit('conv1', start(1, 'text'));
+		emit('conv1', textDelta(1, 'Let me search'));
+		emit('conv1', textDelta(1, ' the index.'));
 
 		const items = store.getTranscript().map((item) => item.kind);
 		expect(items).toEqual(['userText', 'reasoning', 'assistantText']);
@@ -147,30 +221,12 @@ describe('conversations store event handling', () => {
 			store.getTranscript().find((item) => item.kind === 'assistantText'),
 		).toMatchObject({ text: 'Let me search the index.', streaming: true });
 
-		emit('conv1', {
-			type: 'streamAssistantItem',
-			internal_call_id: 'ic1',
-			content: { Name: 'search' },
-		});
-		emit('conv1', {
-			type: 'streamAssistantItem',
-			internal_call_id: 'ic1',
-			content: { Delta: '{"q": "pap' },
-		});
-		emit('conv1', {
-			type: 'streamAssistantItem',
-			internal_call_id: 'ic1',
-			content: { Delta: 'ers"}' },
-		});
-
-		emit('conv1', {
-			type: 'streamAssistantItem',
-			tool_call: {
-				id: 'call1',
-				function: { name: 'search', arguments: { q: 'papers' } },
-			},
-			internal_call_id: 'ic1',
-		});
+		emit('conv1', endText(1, 'Let me search the index.'));
+		emit('conv1', startToolCall(2, 'search'));
+		emit('conv1', argumentsDelta(2, '{"q": "pap'));
+		emit('conv1', argumentsDelta(2, 'ers"}'));
+		emit('conv1', endToolCall(2, 'call1', 'search', { q: 'papers' }));
+		emit('conv1', committedToolCall('call1', 'search', { q: 'papers' }));
 
 		const callItem = () =>
 			store.getTranscript().find((item) => item.kind === 'toolCall')!;
@@ -181,23 +237,19 @@ describe('conversations store event handling', () => {
 			executing: true,
 		});
 
-		emit('conv1', {
-			type: 'toolExecutionCommitted',
-			tool_call: { id: 'call1', function: { name: 'search', arguments: {} } },
-			internal_call_id: 'ic1',
-		});
+		emit('conv1', executedToolCall('call1', 'search', { q: 'papers' }));
 		expect(callItem().executing).toBe(false);
 
+		emit(
+			'conv1',
+			toolResult('call1', 'search', [{ type: 'text', text: '3 results' }]),
+		);
 		emit('conv1', {
-			type: 'streamUserItem',
-			tool_result: {
-				call: 'call1',
-				name: 'search',
-				content: [{ type: 'text', text: '3 results' }],
-			},
-			internal_call_id: 'ic1',
+			type: 'completionCall',
+			call_index: 0,
+			usage: USAGE,
+			raw: null,
 		});
-		emit('conv1', { type: 'completionCall', call_index: 0, usage: USAGE });
 
 		expect(store.getTranscript().map((item) => item.kind)).toEqual([
 			'userText',
@@ -219,7 +271,6 @@ describe('conversations store event handling', () => {
 		currentView = views.final;
 		emit('conv1', {
 			type: 'finalResponse',
-			output: 'Found 3 results.',
 			usage: USAGE,
 			messages: finalMessages,
 			content: [{ type: 'text', text: 'Found 3 results.' }],
@@ -253,24 +304,10 @@ describe('conversations store event handling', () => {
 
 	it('replaces accumulated reasoning when the complete block arrives', async () => {
 		const store = await importStore();
-		store.applyStreamItem({
-			type: 'streamAssistantItem',
-			id: 'r1',
-			reasoning: 'partial',
-		});
-		store.applyStreamItem({
-			type: 'streamAssistantItem',
-			id: 'r1',
-			reasoning: ' more',
-		});
-		store.applyStreamItem({
-			type: 'streamAssistantItem',
-			reasoning: {
-				id: null,
-				content: [{ type: 'text', content: { text: 'final text' } }],
-			},
-			id: 'r1',
-		});
+		store.applyStreamItem(start(0, 'reasoning'));
+		store.applyStreamItem(reasoningDelta(0, 'partial'));
+		store.applyStreamItem(reasoningDelta(0, ' more'));
+		store.applyStreamItem(endReasoning(0, 'final text'));
 		const reasoning = store
 			.getTranscript()
 			.find((item) => item.kind === 'reasoning');
@@ -279,31 +316,27 @@ describe('conversations store event handling', () => {
 
 	it('discards provisional live output on modelTurnRetried', async () => {
 		const store = await importStore();
-		store.applyStreamItem({ type: 'streamAssistantItem', text: 'draft' });
-		store.applyStreamItem({
-			type: 'streamAssistantItem',
-			id: 'r1',
-			reasoning: 'thinking',
-		});
+		store.applyStreamItem(start(0, 'text'));
+		store.applyStreamItem(textDelta(0, 'draft'));
+		store.applyStreamItem(start(1, 'reasoning'));
+		store.applyStreamItem(reasoningDelta(1, 'thinking'));
 		store.applyStreamItem({ type: 'modelTurnRetried', turn: 1 });
 		expect(store.getTranscript()).toEqual([]);
 		expect(store.getLiveState()).toEqual(emptyLiveRun());
 	});
 
-	it('ignores the provider terminal record (StreamFinal) and unknown payloads', async () => {
+	it('ignores unknown provider payloads and usage records', async () => {
 		const store = await importStore();
 		store.applyStreamItem({
 			type: 'streamAssistantItem',
-			kind: 'final',
-			usage: USAGE,
-			finish_reason: null,
-			message_id: null,
-			response_id: null,
-			provider: 'openai',
+			item: 'unknown',
+			value: { web_search_call: { id: 'x' } },
 		});
 		store.applyStreamItem({
-			type: 'streamAssistantItem',
-			web_search_call: { id: 'x' },
+			type: 'completionCall',
+			call_index: 0,
+			usage: USAGE,
+			raw: null,
 		});
 		expect(store.getTranscript()).toEqual([]);
 	});
@@ -330,7 +363,9 @@ describe('conversations store event handling', () => {
 			total_pages: 0,
 		});
 		await store.sendMessage('hello');
-		emit('conv2', { type: 'streamAssistantItem', text: 'partial' });
+		emit('conv2', start(0, 'text'));
+		emit('conv2', textDelta(0, 'partial'));
+		emit('conv2', endText(0, 'partial'));
 		emit('conv2', { type: 'streamError', message: 'provider exploded' });
 
 		await vi.waitFor(() => {

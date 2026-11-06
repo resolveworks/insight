@@ -131,10 +131,9 @@ async function attachListener(convId: string) {
 /**
  * Apply one streamed item to the live run (pure fold over `LiveRun`).
  *
- * Unknown payloads (provider-native items rig preserves verbatim) and usage
- * records are ignored: they carry nothing the transcript view needs.
- * `finalResponse`/`streamError` are terminal and handled by
- * `handleAgentEvent`, not the fold.
+ * Unknown provider payloads and usage records are ignored: they carry
+ * nothing the transcript view needs. `finalResponse`/`streamError` are
+ * terminal and handled by `handleAgentEvent`, not the fold.
  */
 export function applyStreamItem(item: MultiTurnStreamItem): void {
 	live = applyItem(live, item);
@@ -151,15 +150,11 @@ async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
 			// provisional -> committed without a blank frame. The silent reload
 			// afterwards is pure reconciliation (meta/title/authority).
 			isGenerating = false;
-			if (Array.isArray(payload.messages)) {
-				activeMessages = [
-					...activeMessages.slice(0, runBase),
-					...payload.messages,
-				];
-				live = emptyLiveRun();
-			} else {
-				live = emptyLiveRun();
-			}
+			activeMessages = [
+				...activeMessages.slice(0, runBase),
+				...payload.messages,
+			];
+			live = emptyLiveRun();
 			await loadById(convId, { silent: true });
 			refreshList();
 			break;

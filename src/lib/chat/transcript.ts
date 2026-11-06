@@ -8,27 +8,26 @@
  * rendering share a single view model. No runes, no IPC, no side effects.
  */
 import type {
+	AssistantContentBlock,
 	MultiTurnStreamItem,
+	RigCallId,
 	RigMessage,
 	RigReasoning,
+	RigStreamEvent,
+	RigStreamItem,
+	RigToolCall,
+	RigToolFunction,
 	RigToolResultContent,
 	StreamAssistantItem,
-} from '#lib/types/rig.js';
-import {
-	isCompleteReasoning,
-	isCompleteToolCall,
-	isReasoningDelta,
-	isTextDelta,
-	isToolCallDelta,
 } from '#lib/types/rig.js';
 
 // --- Live (provisional) run state -----------------------------------------
 
-/** A tool call being assembled from stream deltas inside a live assistant turn. */
+/** A tool call being assembled from stream events inside a live assistant turn. */
 export interface LiveToolCallBlock {
 	type: 'tool_call';
-	/** rig's per-run correlation id: links deltas -> committed call -> result. */
-	internal_call_id: string;
+	/** The part position rig streams the call under. */
+	part: number;
 	/** Provider call id; '' until the complete call arrives. */
 	id: string;
 	name: string;
@@ -39,13 +38,14 @@ export interface LiveToolCallBlock {
 
 export interface LiveTextBlock {
 	type: 'text';
+	part: number;
 	text: string;
 }
 
-/** Reasoning accumulated from stream deltas, keyed by the stream item's `id`. */
+/** Reasoning accumulated from stream events, identified by part position. */
 export interface LiveReasoningBlock {
 	type: 'reasoning';
-	key: string;
+	part: number;
 	text: string;
 }
 
@@ -111,38 +111,53 @@ function replaceContent(
 	return copy;
 }
 
+/** The display key of a rig call identity. */
+function callIdString(id: RigCallId): string {
+	if ('provider' in id) return id.provider;
+	if ('local' in id) return id.local;
+	throw new Error(`invalid rig call id: ${JSON.stringify(id)}`);
+}
+
 /**
  * Pure fold: apply one stream item to the run, returning a new run.
  *
- * Unknown payloads (provider-native items rig preserves verbatim), usage
- * records, terminal records, and `finalResponse`/`streamError` (handled by
- * the store) leave the run unchanged.
+ * Unknown provider payloads, usage records, and `finalResponse`/`streamError`
+ * (handled by the store) leave the run unchanged.
  */
 export function applyItem(run: LiveRun, item: MultiTurnStreamItem): LiveRun {
 	switch (item.type) {
 		case 'streamAssistantItem':
-			return applyAssistantItem(run, item);
+			return applyStreamItem(run, item);
 
-		case 'toolExecutionCommitted': {
-			const messages = run.messages.map((message) => {
-				if (message.role !== 'assistant') return message;
-				return {
-					...message,
-					content: message.content.map((block) =>
-						block.type === 'tool_call' &&
-						block.internal_call_id === item.internal_call_id
-							? { ...block, executed: true }
-							: block,
-					),
-				};
-			});
-			return { ...run, messages };
-		}
+		case 'toolCall':
+			return {
+				...upsertToolCall(run, item.tool_call, (block) => ({
+					...block,
+					id: callIdString(item.tool_call.id),
+					name: item.tool_call.function.name,
+					args: toolCallArgs(item.tool_call.function),
+					committed: true,
+				})),
+				streamingText: false,
+			};
 
-		case 'streamUserItem': {
+		case 'toolExecutionCommitted':
+			return {
+				...upsertToolCall(run, item.tool_call, (block) => ({
+					...block,
+					id: callIdString(item.tool_call.id),
+					name: item.tool_call.function.name,
+					args: toolCallArgs(item.tool_call.function),
+					committed: true,
+					executed: true,
+				})),
+				streamingText: false,
+			};
+
+		case 'toolResult': {
 			const block: LiveToolResultBlock = {
 				type: 'tool_result',
-				call: item.tool_result.call,
+				call: callIdString(item.tool_result.call),
 				name: item.tool_result.name,
 				text: flattenToolResult(item.tool_result.content),
 			};
@@ -164,168 +179,167 @@ export function applyItem(run: LiveRun, item: MultiTurnStreamItem): LiveRun {
 	}
 }
 
-/** Fold one untagged `StreamAssistantItem` payload into the run. */
-function applyAssistantItem(run: LiveRun, item: StreamAssistantItem): LiveRun {
-	const it = item as StreamAssistantItem;
-
-	if (isTextDelta(it)) {
-		const { messages, content } = assistantSegment(run);
-		const lastBlock = content[content.length - 1];
-		const next: LiveBlock[] =
-			lastBlock !== undefined && lastBlock.type === 'text'
-				? [
-						...content.slice(0, -1),
-						{ type: 'text', text: lastBlock.text + it.text },
-					]
-				: [...content, { type: 'text', text: it.text }];
-		return {
-			messages: replaceContent(messages, content, next),
-			streamingText: true,
-		};
-	}
-
-	if (isToolCallDelta(it)) {
-		const { messages, content } = assistantSegment(run);
-		const next = upsertLiveBlock(
-			content,
-			(block) => {
-				const call = block as LiveToolCallBlock;
-				return {
-					...call,
-					name:
-						it.content.Name !== undefined
-							? call.name + it.content.Name
-							: call.name,
-					args:
-						it.content.Delta !== undefined
-							? call.args + it.content.Delta
-							: call.args,
-				};
-			},
-			(block) =>
-				block.type === 'tool_call' &&
-				block.internal_call_id === it.internal_call_id,
-			() => ({
-				type: 'tool_call' as const,
-				internal_call_id: it.internal_call_id,
-				id: '',
-				name: it.content.Name ?? '',
-				args: it.content.Delta ?? '',
-				committed: false,
-				executed: false,
-			}),
-		);
-		return {
-			messages: replaceContent(messages, content, next),
-			streamingText: false,
-		};
-	}
-
-	if (isCompleteToolCall(it)) {
-		const { messages, content } = assistantSegment(run);
-		const args =
-			typeof it.tool_call.function.arguments === 'string'
-				? it.tool_call.function.arguments
-				: JSON.stringify(it.tool_call.function.arguments, null, 2);
-		const next = upsertLiveBlock(
-			content,
-			(block) => ({
-				...(block as LiveToolCallBlock),
-				id: it.tool_call.id,
-				name: it.tool_call.function.name,
-				args,
-				committed: true,
-			}),
-			(block) =>
-				block.type === 'tool_call' &&
-				block.internal_call_id === it.internal_call_id,
-			() => ({
-				type: 'tool_call' as const,
-				internal_call_id: it.internal_call_id,
-				id: it.tool_call.id,
-				name: it.tool_call.function.name,
-				args,
-				committed: true,
-				executed: false,
-			}),
-		);
-		return {
-			messages: replaceContent(messages, content, next),
-			streamingText: false,
-		};
-	}
-
-	if (isReasoningDelta(it)) {
-		const { messages, content } = assistantSegment(run);
-		const next = upsertLiveBlock(
-			content,
-			(block) => ({
-				...block,
-				text: (block as LiveReasoningBlock).text + it.reasoning,
-			}),
-			(block) =>
-				block.type === 'reasoning' &&
-				(block as LiveReasoningBlock).key === it.id,
-			() => ({
-				type: 'reasoning' as const,
-				key: it.id,
-				text: it.reasoning,
-			}),
-		);
-		return {
-			messages: replaceContent(messages, content, next),
-			streamingText: false,
-		};
-	}
-
-	if (isCompleteReasoning(it)) {
-		// A complete block supersedes the accumulated deltas for its id.
-		const text = flattenReasoning(it.reasoning);
-		const { messages, content } = assistantSegment(run);
-		const next = upsertLiveBlock(
-			content,
-			() => ({ type: 'reasoning' as const, key: it.id, text }),
-			(block) =>
-				block.type === 'reasoning' &&
-				(block as LiveReasoningBlock).key === it.id,
-			() => ({ type: 'reasoning' as const, key: it.id, text }),
-		);
-		return {
-			messages: replaceContent(messages, content, next),
-			streamingText: false,
-		};
-	}
-
-	// StreamFinal-shaped terminal records and unknown provider payloads.
-	return run;
+/** Fold one `Item<StreamEvent>` payload into the run. */
+function applyStreamItem(run: LiveRun, item: StreamAssistantItem): LiveRun {
+	const streamItem: RigStreamItem = item;
+	if (streamItem.item === 'unknown') return run;
+	return applyStreamEvent(run, streamItem.value);
 }
 
-/** Upsert a live block within `content` (immutable), matched by `matches`. */
-function upsertLiveBlock(
-	content: LiveBlock[],
-	mutate: (block: LiveBlock) => LiveBlock,
-	matches: (block: LiveBlock) => boolean,
-	create: () => LiveBlock,
-): LiveBlock[] {
-	const idx = content.findIndex(matches);
-	if (idx === -1) return [...content, create()];
-	const next = content.slice();
-	next[idx] = mutate(next[idx]);
-	return next;
+/** Fold one provider stream event into the run. */
+function applyStreamEvent(run: LiveRun, event: RigStreamEvent): LiveRun {
+	switch (event.event) {
+		case 'start': {
+			if (event.kind === 'image' || event.kind === 'opaque') return run;
+			const { messages, content } = assistantSegment(run);
+			let block: LiveBlock;
+			if (event.kind === 'text') {
+				block = { type: 'text', part: event.part, text: '' };
+			} else if (event.kind === 'reasoning') {
+				block = { type: 'reasoning', part: event.part, text: '' };
+			} else {
+				if (event.name === undefined) {
+					throw new Error(
+						`tool call part ${event.part} started without a tool name`,
+					);
+				}
+				block = {
+					type: 'tool_call',
+					part: event.part,
+					id: '',
+					name: event.name,
+					args: '',
+					committed: false,
+					executed: false,
+				};
+			}
+			return {
+				...run,
+				messages: replaceContent(messages, content, [...content, block]),
+			};
+		}
+
+		case 'text':
+			return updateBlock(
+				run,
+				event.part,
+				'text',
+				(block) => ({
+					...block,
+					text: block.text + event.text,
+				}),
+				true,
+			);
+
+		case 'reasoning':
+			return updateBlock(run, event.part, 'reasoning', (block) => ({
+				...block,
+				text: block.text + event.text,
+			}));
+
+		case 'arguments':
+			return updateBlock(run, event.part, 'tool_call', (block) => ({
+				...block,
+				args: block.args + event.json,
+			}));
+
+		case 'end':
+			return applyEndEvent(run, event.part, event.content);
+	}
+}
+
+/** Fold a part's finalized content, which supersedes its streamed fragments. */
+function applyEndEvent(
+	run: LiveRun,
+	part: number,
+	content: AssistantContentBlock,
+): LiveRun {
+	switch (content.type) {
+		case 'text':
+			return updateBlock(run, part, 'text', (block) => ({
+				...block,
+				text: content.text,
+			}));
+		case 'reasoning':
+			return updateBlock(run, part, 'reasoning', (block) => ({
+				...block,
+				text: flattenReasoning(content),
+			}));
+		case 'tool_call':
+			return updateBlock(run, part, 'tool_call', (block) => ({
+				...block,
+				id: callIdString(content.id),
+				name: content.function.name,
+				args: toolCallArgs(content.function),
+			}));
+		default:
+			return { ...run, streamingText: false };
+	}
+}
+
+/** Update the live block at `part`, which must be of `type`. */
+function updateBlock<T extends LiveBlock['type']>(
+	run: LiveRun,
+	part: number,
+	type: T,
+	mutate: (block: Extract<LiveBlock, { type: T }>) => LiveBlock,
+	streamingText = false,
+): LiveRun {
+	const last = lastMessage(run);
+	if (last === undefined || last.role !== 'assistant') {
+		throw new Error(`stream part ${part} arrived without an assistant turn`);
+	}
+	const idx = last.content.findIndex(
+		(block) => block.part === part && block.type === type,
+	);
+	if (idx === -1) {
+		throw new Error(`stream part ${part} is not an open ${type} block`);
+	}
+	const next = last.content.slice();
+	next[idx] = mutate(last.content[idx] as Extract<LiveBlock, { type: T }>);
+	return {
+		...run,
+		messages: replaceContent(run.messages, last.content, next),
+		streamingText,
+	};
+}
+
+/** Mark the live call with `call.id` as committed/executed, creating it if absent. */
+function upsertToolCall(
+	run: LiveRun,
+	call: RigToolCall,
+	mutate: (block: LiveToolCallBlock) => LiveToolCallBlock,
+): LiveRun {
+	const id = callIdString(call.id);
+	const { messages, content } = assistantSegment(run);
+	const idx = content.findIndex(
+		(block) => block.type === 'tool_call' && block.id === id,
+	);
+	if (idx !== -1) {
+		const next = content.slice();
+		next[idx] = mutate(content[idx] as LiveToolCallBlock);
+		return { ...run, messages: replaceContent(messages, content, next) };
+	}
+	const block = mutate({
+		type: 'tool_call',
+		part: content.length,
+		id,
+		name: call.function.name,
+		args: '',
+		committed: false,
+		executed: false,
+	});
+	return {
+		...run,
+		messages: replaceContent(messages, content, [...content, block]),
+	};
 }
 
 // --- Flattening helpers -----------------------------------------------------
 
-/** Flatten a complete reasoning block's content parts into display text. */
+/** Flatten a reasoning block into display text. */
 export function flattenReasoning(reasoning: RigReasoning): string {
-	return reasoning.content
-		.map((part) => {
-			if (part.type === 'text') return part.content.text;
-			if (part.type === 'summary') return part.content;
-			return '';
-		})
-		.filter(Boolean)
-		.join('\n');
+	return reasoning.text;
 }
 
 /** Flatten tool result content parts into display text. */
@@ -340,9 +354,9 @@ export function flattenToolResult(content: RigToolResultContent[]): string {
 		.join('\n');
 }
 
-/** Stringify tool-call arguments: pass strings through, format objects. */
-function toolCallArgs(args: unknown): string {
-	return typeof args === 'string' ? args : JSON.stringify(args, null, 2);
+/** Stringify tool-call arguments, preserving malformed raw arguments. */
+function toolCallArgs(fn: RigToolFunction): string {
+	return fn.invalid_arguments ?? JSON.stringify(fn.arguments, null, 2);
 }
 
 // --- Unified view model -----------------------------------------------------
@@ -409,16 +423,12 @@ function storedItems(
 		if (block.type === 'text')
 			return [item(i, 'assistantText', { text: block.text })];
 		if (block.type === 'reasoning')
-			return [
-				item(i, 'reasoning', {
-					text: flattenReasoning({ id: block.id, content: block.content }),
-				}),
-			];
+			return [item(i, 'reasoning', { text: flattenReasoning(block) })];
 		if (block.type === 'tool_call') {
 			return [
 				item(i, 'toolCall', {
 					name: block.function.name,
-					args: toolCallArgs(block.function.arguments),
+					args: toolCallArgs(block.function),
 				}),
 			];
 		}
