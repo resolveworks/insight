@@ -1,29 +1,31 @@
 //! File-backed conversation memory for the rig agent runtime.
 //!
 //! [`FileConversationMemory`] combines rig's directory-backed session store
-//! with one metadata subdirectory per conversation:
+//! with app-owned metadata in a dedicated namespace:
 //!
 //! ```text
 //! {root}/
 //! ├── logs/{conversation_id}.jsonl  # rig conversation history
-//! └── {conversation_id}/
-//!     └── meta.json                 # title, collections, timestamps
+//! ├── metadata/{conversation_id}.json # title, collections, timestamps
+//! └── files/...                     # rig blobs
 //! ```
 //!
 //! Rig stores only messages; the metadata sidecar carries what the app needs
-//! on top (title, linked collections, timestamps). `load`/`append`/`clear`
-//! operate on rig's session log; the `create`/`load_meta`/`update_meta`/
-//! `list_summaries`/`delete`/`touch` methods operate on `meta.json`.
+//! on top (title, linked collections, timestamps). `load` reads rig's session
+//! log; `create`/`load_meta`/`update_meta`/`list_summaries`/`delete`/`touch`
+//! operate on metadata.
 //!
-//! Rig atomically appends session records; metadata writes use
-//! write-temp-then-rename, so a crash mid-write never truncates `meta.json`.
+//! Metadata changes are read-modify-write transactions serialized by one
+//! process-wide lock, so concurrent updates of different fields cannot lose
+//! each other. Both stores write atomically: a crash mid-write leaves the
+//! previous file intact.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rig::completion::Message;
-use rig_memory::{DirStore, SessionError};
+use rig_memory::{DirFiles, DirStore, Files, SessionError};
 use serde::{Deserialize, Serialize};
-use tokio::fs;
+use tokio::sync::Mutex;
 
 use crate::CollectionInfo;
 
@@ -49,13 +51,27 @@ pub enum MemoryStoreError {
     /// A conversation with the given id does not exist.
     #[error("conversation not found: {0}")]
     NotFound(String),
+
+    /// A conversation still uses the pre-rig-session on-disk layout.
+    #[error(
+        "conversation {0} uses the legacy conversations/<id>/messages.json or \
+         conversations/<id>/meta.json layout; remove it or convert it before using this version"
+    )]
+    LegacyLayout(String),
+
+    /// The conversations root holds an entry whose name is not UTF-8.
+    #[error("invalid conversations directory entry name: {0:?}")]
+    InvalidEntry(std::ffi::OsString),
+
+    /// The metadata namespace holds a file that is not a conversation meta.
+    #[error("invalid conversation metadata file: {0}")]
+    InvalidMetadata(String),
 }
 
-/// App-facing conversation metadata, stored alongside the rig message
-/// history at `{root}/{id}/meta.json`.
+/// App-facing conversation metadata, stored at `{root}/metadata/{id}.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationMeta {
-    /// Conversation id (also the directory name).
+    /// Conversation id (also the metadata file name).
     pub id: String,
     /// Human-readable title shown in the UI.
     pub title: String,
@@ -90,19 +106,32 @@ fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Rig session storage under a root directory, plus an app-facing metadata
-/// sidecar per conversation.
+/// The metadata file name for a conversation id.
+fn meta_name(id: &str) -> String {
+    format!("{id}.json")
+}
+
+/// Rig session storage under a root directory, plus app-facing metadata.
 pub struct FileConversationMemory {
     root: PathBuf,
     store: DirStore,
+    metadata: DirFiles,
+    /// Serializes every metadata read-modify-write transaction.
+    metadata_lock: Mutex<()>,
 }
 
 impl FileConversationMemory {
     /// Create a store rooted at `root` (e.g. `Config::conversations_dir`).
-    /// The directory itself is created lazily on first write.
+    /// The directories themselves are created lazily on first write.
     pub fn new(root: PathBuf) -> Result<Self, MemoryStoreError> {
         let store = DirStore::open(&root)?;
-        Ok(Self { root, store })
+        let metadata = DirFiles::new(root.join("metadata"));
+        Ok(Self {
+            root,
+            store,
+            metadata,
+            metadata_lock: Mutex::new(()),
+        })
     }
 
     /// Clone rig's session store for an agent builder.
@@ -110,21 +139,49 @@ impl FileConversationMemory {
         self.store.clone()
     }
 
-    fn dir(&self, id: &str) -> PathBuf {
-        self.root.join(id)
+    /// A conversation stored in the legacy pre-rig-session layout: a
+    /// per-conversation directory holding `messages.json` or `meta.json`.
+    fn ensure_not_legacy(&self, id: &str) -> Result<(), MemoryStoreError> {
+        let dir = self.root.join(id);
+        if dir.join("messages.json").is_file() || dir.join("meta.json").is_file() {
+            return Err(MemoryStoreError::LegacyLayout(id.to_owned()));
+        }
+        Ok(())
     }
 
-    fn meta_path(&self, id: &str) -> PathBuf {
-        self.dir(id).join("meta.json")
+    /// Refuse a root directory holding any legacy conversation, so listing
+    /// surfaces the old layout instead of silently omitting it.
+    fn ensure_no_legacy_conversations(&self) -> Result<(), MemoryStoreError> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return Err(MemoryStoreError::InvalidEntry(name));
+            };
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            self.ensure_not_legacy(name)?;
+        }
+        Ok(())
     }
 
-    /// Write `bytes` to `path` durably: serialize to a sibling temp file,
-    /// then atomically rename it into place. A crash mid-write leaves the
-    /// previous contents intact and at most one stale temp file.
-    async fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
-        fs::write(&tmp, bytes).await?;
-        fs::rename(&tmp, path).await?;
+    fn read_metadata(&self, id: &str) -> Result<Option<ConversationMeta>, MemoryStoreError> {
+        match self.metadata.read_file(&meta_name(id)) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn write_metadata(&self, meta: &ConversationMeta) -> Result<(), MemoryStoreError> {
+        let bytes = serde_json::to_vec_pretty(meta)?;
+        self.metadata.write_file(&meta_name(&meta.id), &bytes)?;
         Ok(())
     }
 
@@ -133,66 +190,58 @@ impl FileConversationMemory {
         &self,
         meta: ConversationMeta,
     ) -> Result<ConversationMeta, MemoryStoreError> {
-        if self.meta_path(&meta.id).exists() {
+        let _guard = self.metadata_lock.lock().await;
+        self.ensure_not_legacy(&meta.id)?;
+        if self.read_metadata(&meta.id)?.is_some() {
             return Err(MemoryStoreError::AlreadyExists(meta.id));
         }
         let now = now_iso8601();
         let mut meta = meta;
         meta.created_at = now.clone();
         meta.updated_at = now;
-        fs::create_dir_all(self.dir(&meta.id)).await?;
-        let bytes = serde_json::to_vec_pretty(&meta)?;
-        Self::write_atomic(&self.meta_path(&meta.id), &bytes).await?;
+        self.write_metadata(&meta)?;
         Ok(meta)
     }
 
     /// Load the metadata sidecar for `id`, or `None` if unknown.
     pub async fn load_meta(&self, id: &str) -> Result<Option<ConversationMeta>, MemoryStoreError> {
-        let path = self.meta_path(id);
-        match fs::read(&path).await {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        self.ensure_not_legacy(id)?;
+        self.read_metadata(id)
     }
 
-    /// Overwrite the metadata sidecar for `id`. Fails if the conversation
-    /// does not exist.
+    /// Apply `update` to the metadata sidecar for `id` in one serialized
+    /// transaction. Fails if the conversation does not exist.
     pub async fn update_meta(
         &self,
         id: &str,
-        meta: ConversationMeta,
+        update: impl FnOnce(&mut ConversationMeta),
     ) -> Result<(), MemoryStoreError> {
-        let path = self.meta_path(id);
-        if !path.exists() {
-            return Err(MemoryStoreError::NotFound(id.to_owned()));
-        }
-        let bytes = serde_json::to_vec_pretty(&meta)?;
-        Self::write_atomic(&path, &bytes).await?;
-        Ok(())
+        let _guard = self.metadata_lock.lock().await;
+        self.ensure_not_legacy(id)?;
+        let mut meta = self
+            .read_metadata(id)?
+            .ok_or_else(|| MemoryStoreError::NotFound(id.to_owned()))?;
+        update(&mut meta);
+        self.write_metadata(&meta)
     }
 
     /// List all conversation summaries, most recently updated first.
-    /// Conversations whose sidecar fails to parse are skipped (warned).
+    /// Malformed metadata or a failing read is an error, never silently
+    /// skipped; listing is serialized with in-process metadata writes.
     pub async fn list_summaries(&self) -> Result<Vec<ConversationSummary>, MemoryStoreError> {
+        let _guard = self.metadata_lock.lock().await;
+        self.ensure_no_legacy_conversations()?;
         let mut summaries = Vec::new();
-        let mut entries = match fs::read_dir(&self.root).await {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(summaries),
-            Err(e) => return Err(e.into()),
-        };
-        while let Some(entry) = entries.next_entry().await? {
-            if !entry.file_type().await?.is_dir() {
-                continue;
-            }
-            let Some(name) = entry.file_name().into_string().ok() else {
-                continue;
+        for name in self.metadata.files()? {
+            let Some(id) = name.strip_suffix(".json") else {
+                return Err(MemoryStoreError::InvalidMetadata(name));
             };
-            match self.load_meta(&name).await {
-                Ok(Some(meta)) => summaries.push(ConversationSummary::from(&meta)),
-                Ok(None) => {}
-                Err(e) => tracing::warn!("Skipping conversation {name}: {e}"),
+            let bytes = self.metadata.read_file(&name)?;
+            let meta: ConversationMeta = serde_json::from_slice(&bytes)?;
+            if id != meta.id {
+                return Err(MemoryStoreError::InvalidMetadata(name));
             }
+            summaries.push(ConversationSummary::from(&meta));
         }
         summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(summaries)
@@ -201,53 +250,43 @@ impl FileConversationMemory {
     /// Delete a conversation entirely (messages and metadata). Idempotent:
     /// removing an unknown id succeeds.
     pub async fn delete(&self, id: &str) -> Result<(), MemoryStoreError> {
-        self.clear(id).await?;
-        match fs::remove_dir_all(self.dir(id)).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        let _guard = self.metadata_lock.lock().await;
+        self.ensure_not_legacy(id)?;
+        self.remove_session_log(id).await?;
+        self.metadata.remove_file(&meta_name(id))?;
+        Ok(())
     }
 
     /// Bump `updated_at` on the metadata sidecar to now. Fails if the
     /// conversation does not exist.
     pub async fn touch(&self, id: &str) -> Result<(), MemoryStoreError> {
-        let mut meta = self
-            .load_meta(id)
-            .await?
-            .ok_or_else(|| MemoryStoreError::NotFound(id.to_owned()))?;
-        meta.updated_at = now_iso8601();
-        self.update_meta(id, meta).await
+        self.update_meta(id, |meta| meta.updated_at = now_iso8601())
+            .await
+    }
+
+    /// rig-memory exposes no per-log removal, so this is the only place that
+    /// knows its `logs/{id}.jsonl` layout.
+    async fn remove_session_log(&self, id: &str) -> Result<(), MemoryStoreError> {
+        let path = self.root.join("logs").join(format!("{id}.jsonl"));
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
 impl FileConversationMemory {
-    /// Load a conversation's messages, or an empty vector for an unknown id.
+    /// Load a conversation's messages, or an empty vector for a conversation
+    /// that has not recorded a message yet.
     pub async fn load(&self, id: &str) -> Result<Vec<Message>, MemoryStoreError> {
+        self.ensure_not_legacy(id)?;
         let conversation = rig_memory::load_async(&self.store, id).await?;
         Ok(conversation
             .into_messages()
             .into_iter()
             .map(Into::into)
             .collect())
-    }
-
-    /// Append messages to a conversation.
-    pub async fn append(&self, id: &str, messages: Vec<Message>) -> Result<(), MemoryStoreError> {
-        let mut conversation = rig_memory::load_async(&self.store, id).await?;
-        conversation.extend(messages);
-        rig_memory::save_async(&self.store, id, &mut conversation).await?;
-        Ok(())
-    }
-
-    /// Remove a conversation's messages while retaining its metadata.
-    pub async fn clear(&self, id: &str) -> Result<(), MemoryStoreError> {
-        let path = self.root.join("logs").join(format!("{id}.jsonl"));
-        match fs::remove_file(path).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
-        }
     }
 }
 
@@ -278,6 +317,16 @@ mod tests {
         }
     }
 
+    fn collection(id: &str) -> CollectionInfo {
+        CollectionInfo {
+            id: id.to_owned(),
+            name: format!("Collection {id}"),
+            document_count: 1,
+            total_pages: 2,
+            created_at: None,
+        }
+    }
+
     fn messages_with_tools() -> Vec<Message> {
         vec![
             Message::user("What is in the collection?"),
@@ -297,6 +346,15 @@ mod tests {
         ]
     }
 
+    /// Persist messages the way the agent runtime does.
+    async fn save_messages(store: &FileConversationMemory, id: &str, messages: Vec<Message>) {
+        let mut conversation = rig_memory::load_async(&store.store(), id).await.unwrap();
+        conversation.extend(messages);
+        rig_memory::save_async(&store.store(), id, &mut conversation)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn unknown_id_loads_empty() {
         let (_dir, store) = temp_store();
@@ -308,7 +366,7 @@ mod tests {
     async fn message_round_trip_with_tool_blocks() {
         let (_dir, store) = temp_store();
         let expected = messages_with_tools();
-        store.append("c1", expected.clone()).await.unwrap();
+        save_messages(&store, "c1", expected.clone()).await;
 
         let loaded = store.load("c1").await.unwrap();
         assert_eq!(loaded, expected);
@@ -321,30 +379,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_accumulates_across_calls() {
-        let (_dir, store) = temp_store();
-        store
-            .append("c2", vec![Message::user("one")])
-            .await
-            .unwrap();
-        store
-            .append("c2", vec![Message::assistant("two")])
-            .await
-            .unwrap();
-        assert_eq!(store.load("c2").await.unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn clear_empties_history_but_keeps_meta() {
+    async fn delete_removes_history_and_meta() {
         let (_dir, store) = temp_store();
         store.create(sample_meta("c3", "T")).await.unwrap();
-        store.append("c3", vec![Message::user("hi")]).await.unwrap();
-        store.clear("c3").await.unwrap();
+        save_messages(&store, "c3", vec![Message::user("hi")]).await;
+        store.delete("c3").await.unwrap();
 
         assert!(store.load("c3").await.unwrap().is_empty());
-        assert!(store.load_meta("c3").await.unwrap().is_some());
-        // Clearing again is fine (trait contract: idempotent).
-        store.clear("c3").await.unwrap();
+        assert!(store.load_meta("c3").await.unwrap().is_none());
+        // Deleting again is fine.
+        store.delete("c3").await.unwrap();
     }
 
     #[tokio::test]
@@ -365,7 +409,7 @@ mod tests {
         // Updating a missing conversation fails.
         assert!(matches!(
             store
-                .update_meta("missing", sample_meta("missing", "x"))
+                .update_meta("missing", |meta| meta.title = "x".into())
                 .await,
             Err(MemoryStoreError::NotFound(_))
         ));
@@ -378,14 +422,16 @@ mod tests {
         let ids: Vec<_> = summaries.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["b", "a"]);
 
-        // update_meta overwrites fields.
-        let mut meta = store.load_meta("a").await.unwrap().unwrap();
-        meta.title = "Alpha 2".to_owned();
-        store.update_meta("a", meta).await.unwrap();
-        assert_eq!(
-            store.load_meta("a").await.unwrap().unwrap().title,
-            "Alpha 2"
-        );
+        // update_meta mutates only the fields it is given.
+        store
+            .update_meta("a", |meta| meta.title = "Alpha 2".to_owned())
+            .await
+            .unwrap();
+        let meta = store.load_meta("a").await.unwrap().unwrap();
+        assert_eq!(meta.title, "Alpha 2");
+        assert_eq!(meta.collections.len(), loaded.collections.len());
+        assert_eq!(meta.collections[0].id, loaded.collections[0].id);
+        assert_eq!(meta.updated_at, loaded.updated_at);
 
         // Delete is idempotent and removes metadata.
         store.delete("a").await.unwrap();
@@ -395,70 +441,115 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atomic_write_leaves_no_temp_litter() {
+    async fn metadata_writes_leave_no_temp_litter() {
         let (_dir, store) = temp_store();
-        store.append("c4", vec![Message::user("hi")]).await.unwrap();
         store.create(sample_meta("c4", "T")).await.unwrap();
 
-        for entry in std::fs::read_dir(store.dir("c4")).unwrap() {
+        for entry in std::fs::read_dir(store.metadata.path()).unwrap() {
             let name = entry.unwrap().file_name();
             assert!(
-                !name.to_string_lossy().contains(".tmp"),
-                "stray temp file: {name:?}"
+                !name.to_string_lossy().contains("rig-part"),
+                "stray part file: {name:?}"
             );
         }
     }
 
-    /// First text of each user message, for asserting on stored history.
-    fn user_texts(messages: &[Message]) -> Vec<String> {
-        messages
-            .iter()
-            .filter_map(|m| match m {
-                Message::User { content } => content.iter().find_map(|c| match c {
-                    UserContent::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                }),
-                _ => None,
-            })
-            .collect()
+    #[tokio::test]
+    async fn corrupt_metadata_fails_listing() {
+        let (_dir, store) = temp_store();
+        store.create(sample_meta("good", "Good")).await.unwrap();
+        std::fs::write(store.metadata.path().join("bad.json"), b"{not json").unwrap();
+
+        assert!(matches!(
+            store.list_summaries().await,
+            Err(MemoryStoreError::Json(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn legacy_layout_is_refused() {
+        let (dir, store) = temp_store();
+        let legacy = dir.path().join("old");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("messages.json"), b"[]").unwrap();
+
+        assert!(matches!(
+            store.list_summaries().await,
+            Err(MemoryStoreError::LegacyLayout(id)) if id == "old"
+        ));
+        assert!(matches!(
+            store.load_meta("old").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+        assert!(matches!(
+            store.load("old").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+        assert!(matches!(
+            store.delete("old").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+        assert!(
+            legacy.join("messages.json").is_file(),
+            "refused delete must leave the legacy conversation untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_meta_only_layout_is_refused() {
+        let (dir, store) = temp_store();
+        let legacy = dir.path().join("old-empty");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("meta.json"), b"{}").unwrap();
+
+        assert!(matches!(
+            store.list_summaries().await,
+            Err(MemoryStoreError::LegacyLayout(id)) if id == "old-empty"
+        ));
+        assert!(matches!(
+            store.load_meta("old-empty").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+        assert!(matches!(
+            store.delete("old-empty").await,
+            Err(MemoryStoreError::LegacyLayout(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_utf8_root_entry_is_refused() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let (dir, store) = temp_store();
+        let name = std::ffi::OsString::from_vec(vec![0xff]);
+        std::fs::create_dir(dir.path().join(name)).unwrap();
+
+        assert!(matches!(
+            store.list_summaries().await,
+            Err(MemoryStoreError::InvalidEntry(_))
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn concurrent_appends_do_not_corrupt() {
+    async fn concurrent_touch_and_collection_update_keep_both() {
         let (_dir, store) = temp_store();
+        store.create(sample_meta("c5", "T")).await.unwrap();
 
-        let batch = |n: usize| {
-            (0..n)
-                .map(|i| Message::user(format!("msg-{i}")))
-                .collect::<Vec<_>>()
-        };
-        let a = batch(10);
-        let b = batch(20);
+        for _ in 0..20 {
+            let (touched, updated) = tokio::join!(async { store.touch("c5").await }, async {
+                store
+                    .update_meta("c5", |meta| {
+                        meta.collections = vec![collection("col-2")];
+                    })
+                    .await
+            },);
+            touched.unwrap();
+            updated.unwrap();
 
-        let s1 = &store;
-        let s2 = &store;
-        let (ra, rb) = tokio::join!(async move { s1.append("c5", a).await }, async move {
-            s2.append("c5", b).await
-        },);
-        ra.unwrap();
-        rb.unwrap();
-
-        // Final state must be one of the two complete writes: with the
-        // per-id lock, either all 10 first then all 20, or all 20 then all 10.
-        let texts = user_texts(&store.load("c5").await.unwrap());
-        assert!(
-            texts.len() == 30 || texts.len() == 10 || texts.len() == 20,
-            "unexpected length {}",
-            texts.len()
-        );
-        if texts.len() == 30 {
-            // No torn write: each batch appears contiguously in some order.
-            let a_first = (0..10).all(|i| texts[i] == format!("msg-{i}"));
-            let b_first = (0..20).all(|i| texts[i] == format!("msg-{i}"));
-            assert!(
-                a_first || b_first,
-                "batches are interleaved, not serialized"
-            );
+            let meta = store.load_meta("c5").await.unwrap().unwrap();
+            assert_eq!(meta.collections.len(), 1);
+            assert_eq!(meta.collections[0].id, "col-2");
         }
     }
 }

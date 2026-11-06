@@ -150,7 +150,7 @@ pub async fn set_conversation_collections(
     collections: Vec<CollectionInfo>,
     state: State<'_, AppState>,
 ) -> CommandResult<ConversationView> {
-    let mut meta = state
+    let meta = state
         .memory
         .load_meta(&conversation_id)
         .await
@@ -165,10 +165,10 @@ pub async fn set_conversation_collections(
             .iter()
             .all(|c| existing_ids.contains(c.id.as_str()));
     if !unchanged {
-        meta.collections = enrich_collections(&state, collections).await?;
+        let enriched = enrich_collections(&state, collections).await?;
         state
             .memory
-            .update_meta(&conversation_id, meta)
+            .update_meta(&conversation_id, |meta| meta.collections = enriched)
             .await
             .storage_err()?;
     }

@@ -297,13 +297,6 @@ async fn generate_title_with(
     history: &[Message],
     model: &ModelHandle,
 ) -> Result<()> {
-    let mut meta = state
-        .memory
-        .load_meta(conversation_id)
-        .await
-        .map_err(|e| anyhow!("failed to load conversation meta: {e}"))?
-        .ok_or_else(|| anyhow!("conversation not found: {conversation_id}"))?;
-
     let generated = model
         .call(CompletionRequest::new(Message::user(TITLE_PROMPT)).messages(history.iter().cloned()))
         .await
@@ -319,10 +312,10 @@ async fn generate_title_with(
     if title.is_empty() {
         return Ok(());
     }
-    meta.title = truncate_chars(&title, TITLE_MAX_CHARS);
+    let title = truncate_chars(&title, TITLE_MAX_CHARS);
     state
         .memory
-        .update_meta(conversation_id, meta)
+        .update_meta(conversation_id, |meta| meta.title = title)
         .await
         .map_err(|e| anyhow!("failed to update conversation meta: {e}"))
 }
@@ -680,9 +673,11 @@ mod tests {
         state.memory.create(test_meta(id)).await.unwrap();
 
         // Only a user message: no prediction.
-        state
-            .memory
-            .append(id, vec![Message::user("hello")])
+        let mut conversation = rig_memory::load_async(&state.memory.store(), id)
+            .await
+            .unwrap();
+        conversation.extend([Message::user("hello")]);
+        rig_memory::save_async(&state.memory.store(), id, &mut conversation)
             .await
             .unwrap();
         assert_eq!(
