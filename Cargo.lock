@@ -5534,7 +5534,7 @@ dependencies = [
  "anyhow",
  "insight-core",
  "iroh-docs",
- "rig",
+ "rig-core",
  "serde",
  "serde_json",
  "tauri",

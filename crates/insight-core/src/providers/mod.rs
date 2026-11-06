@@ -7,8 +7,8 @@
 //! - [`list_families`] describes the provider selections Insight offers for
 //!   the UI (whether an API key is required, whether models can be listed
 //!   remotely).
-//! - [`build_model`] constructs a [`ModelHandle`] for a persisted
-//!   [`ProviderSettings`], validating required key/URL inputs first.
+//! - [`build_model`] constructs a [`DynModel<Completion>`](DynModel) for a
+//!   persisted [`ProviderSettings`], validating required key/URL inputs first.
 //! - [`list_models`] queries a listing-capable selection's client.
 //!
 //! A family id is rig's canonical [`ProviderId`] selection string, such as
@@ -24,8 +24,6 @@ use rig_core::catalog::Catalog;
 use rig_core::providers::registry::{ProviderConfig, ProviderId};
 use rig_core::{operation::Completion, DynModel};
 use serde::{Deserialize, Serialize};
-
-type ModelHandle = DynModel<Completion>;
 
 /// A provider configuration as persisted to `settings.json`.
 ///
@@ -218,14 +216,16 @@ fn build_config(
     Ok((id, config))
 }
 
-/// Build a rig [`ModelHandle`] for the given settings.
+/// Build a rig [`DynModel<Completion>`] for the given settings.
 ///
 /// Validates the key/base URL requirements of the family first, then
 /// constructs the provider's completion model with rig's catalog facts so
 /// model-dependent routing and catalog pricing apply. Construction performs
 /// no network I/O; the first completion request pays any
 /// authentication/verification cost.
-pub fn build_model(settings: &ProviderSettings) -> Result<ModelHandle, ProviderRegistryError> {
+pub fn build_model(
+    settings: &ProviderSettings,
+) -> Result<DynModel<Completion>, ProviderRegistryError> {
     let family = lookup_family(&settings.family)?;
     let (id, config) = build_config(
         family,
@@ -433,7 +433,7 @@ mod tests {
             base_url: None,
         };
         let handle = build_model(&settings).expect("ollama client builds without key");
-        let _ = handle; // opaque ModelHandle
+        let _ = handle; // opaque model handle
 
         let settings = ProviderSettings {
             family: "llamacpp/openai".into(),

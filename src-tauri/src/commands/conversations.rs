@@ -3,7 +3,7 @@
 //! prediction.
 
 use iroh_docs::NamespaceId;
-use rig::completion::Message;
+use rig_core::completion::Message;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
@@ -131,7 +131,7 @@ pub async fn start_chat(
     let id = uuid::Uuid::new_v4().to_string();
     let meta = ConversationMeta {
         id: id.clone(),
-        title: "New conversation".to_string(),
+        title: runtime::DEFAULT_TITLE.to_string(),
         collections,
         created_at: String::new(),
         updated_at: String::new(),
@@ -226,20 +226,6 @@ pub async fn send_message(
         conversation_id,
         message
     );
-
-    let meta = state
-        .memory
-        .load_meta(&conversation_id)
-        .await
-        .storage_err()?
-        .ok_or_else(CommandError::conversation_not_found)?;
-
-    if !provider_ready(&state).await {
-        return Err(CommandError::provider_not_configured());
-    }
-    if meta.collections.is_empty() {
-        return Err(CommandError::no_collection_scope());
-    }
 
     let cancel_token = CancellationToken::new();
     state

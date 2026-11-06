@@ -4,9 +4,9 @@
 //! ([`crate::tools`]) with [`crate::memory::FileConversationMemory`] persistence,
 //! streaming every [`MultiTurnStreamItem`](rig::agent::MultiTurnStreamItem)
 //! to the caller as JSON. The conversation's
-//! collection scope is injected per turn as an `extra_context` document via
-//! an [`AgentHook`] — non-sticky, so a mid-conversation scope change takes
-//! effect on the very next model call without touching stored history.
+//! collection scope is injected as a run document — non-sticky, so a
+//! mid-conversation scope change takes effect on the very next model call
+//! without touching stored history.
 //!
 //! [`predict_next_message`] is a bare-model completion (no tools, no agent loop)
 //! over the same provider settings.
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures::StreamExt;
-use rig::agent::{AgentBuilder, AgentHook, CompletionCallAction, HookContext, RequestPatch};
+use rig::agent::AgentBuilder;
 use rig::completion::{CompletionRequest, Document, Message};
 use rig_core::{operation::Completion, DynModel};
 use tokio_util::sync::CancellationToken;
@@ -26,11 +26,9 @@ use crate::providers;
 use crate::tools::{self, ToolState};
 use crate::{AppState, CollectionInfo};
 
-type ModelHandle = DynModel<Completion>;
-
 /// System prompt for the research agent. Stable across the life of the app —
-/// the per-conversation collection scope arrives as an `extra_context`
-/// document on every turn, not baked into the preamble.
+/// the per-conversation collection scope arrives as a run document on every
+/// turn, not baked into the preamble.
 pub const BASE_SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists investigate document collections.
 
 Your search and list tools are filtered to a user-selected set of collections — the "active collections" described in the context documents. Results outside those collections do not exist for you.
@@ -45,7 +43,7 @@ When answering questions:
 
 /// The title a conversation starts with; still having it means no title has
 /// been generated yet.
-const DEFAULT_TITLE: &str = "New conversation";
+pub const DEFAULT_TITLE: &str = "New conversation";
 
 /// Prompt used to summarize a conversation into a short title.
 const TITLE_PROMPT: &str = "Summarize this conversation in a short title of at most 50 characters. Output ONLY the title, nothing else.";
@@ -89,7 +87,7 @@ fn format_collection_entry(c: &CollectionInfo) -> String {
     )
 }
 
-/// The text of the per-turn scope document injected by [`ScopeHook`].
+/// The text of the scope document attached to every agent run.
 fn format_scope_document(collections: &[CollectionInfo]) -> String {
     let list = collections
         .iter()
@@ -100,42 +98,6 @@ fn format_scope_document(collections: &[CollectionInfo]) -> String {
         "Active collections: {}. Your search and list tools only cover these collections.",
         list
     )
-}
-
-/// Injects the conversation's active collection scope into every model call.
-///
-/// Registered before any other run logic so it applies to every turn of the
-/// multi-turn loop. The patch is per-request and non-sticky: the scope
-/// document never lands in stored memory, so a scope change mid-conversation
-/// is picked up by the next call without contradicting earlier turns.
-struct ScopeHook {
-    collections: Vec<CollectionInfo>,
-}
-
-impl AgentHook for ScopeHook {
-    async fn on_completion_call(
-        &self,
-        _ctx: &HookContext,
-        _event: rig::agent::hook::CompletionCallEvent<'_>,
-    ) -> CompletionCallAction {
-        CompletionCallAction::patch(RequestPatch::new().extra_context([Document {
-            id: "active_collections".to_string(),
-            text: format_scope_document(&self.collections),
-            additional_props: Default::default(),
-        }]))
-    }
-}
-
-/// Extract the concatenated text of an assistant response's text parts.
-fn response_text(choice: &[rig::completion::AssistantContent]) -> String {
-    choice
-        .iter()
-        .filter_map(|c| match c {
-            rig::completion::AssistantContent::Text(t) => Some(t.text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
 }
 
 /// Truncate a string to `max` characters, appending "..." when cut.
@@ -151,10 +113,10 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// Send a user message to a conversation and stream the agent's response.
 ///
 /// Every stream item is forwarded to `on_event` as the serialized
-/// [`MultiTurnStreamItem`](rig::agent::MultiTurnStreamItem); a stream error is surfaced as
-/// `{"type":"streamError","message":...}` through the same channel and ends
-/// the run. Cancelling `cancel` aborts the run (dropping the stream) and
-/// returns `Ok(())`.
+/// [`MultiTurnStreamItem`](rig::agent::MultiTurnStreamItem). A stream error
+/// ends the run and is returned as `Err`, so the caller owns the single
+/// error event on the channel. Cancelling `cancel` aborts the run (dropping
+/// the stream) and returns `Ok(())`.
 pub async fn send_message(
     state: &AppState,
     conversation_id: &str,
@@ -186,7 +148,7 @@ pub async fn send_message(
 }
 
 /// Read provider settings and construct the configured model handle.
-fn build_configured_model(state: &AppState) -> Result<ModelHandle> {
+fn build_configured_model(state: &AppState) -> Result<DynModel<Completion>> {
     let settings = Settings::load(&state.config.settings_file);
     let provider = settings
         .provider
@@ -198,7 +160,11 @@ fn build_configured_model(state: &AppState) -> Result<ModelHandle> {
 ///
 /// The tools own live handles to the index and storage plus the run's
 /// collection scope.
-fn build_agent(state: &AppState, meta: &ConversationMeta, model: ModelHandle) -> rig::Agent {
+fn build_agent(
+    state: &AppState,
+    meta: &ConversationMeta,
+    model: DynModel<Completion>,
+) -> rig::Agent {
     let tool_state = ToolState::new(state, meta.collections.clone());
     AgentBuilder::new(model)
         .preamble(BASE_SYSTEM_PROMPT)
@@ -208,9 +174,6 @@ fn build_agent(state: &AppState, meta: &ConversationMeta, model: ModelHandle) ->
         .tool(tools::GetCollectionTerms::new(tool_state))
         .memory(state.memory.store())
         .default_max_turns(MAX_TURNS)
-        .add_hook(ScopeHook {
-            collections: meta.collections.clone(),
-        })
         .build()
 }
 
@@ -222,21 +185,25 @@ async fn run_agent(
     conversation_id: &str,
     meta: &ConversationMeta,
     message: String,
-    model: ModelHandle,
+    model: DynModel<Completion>,
     on_event: impl Fn(serde_json::Value) + Send + 'static,
     cancel: CancellationToken,
 ) -> Result<()> {
     let agent = build_agent(state, meta, model.clone());
-    if cancel.is_cancelled() {
-        return Ok(());
-    }
+    let scope_document = Document {
+        id: "active_collections".to_string(),
+        text: format_scope_document(&meta.collections),
+        additional_props: Default::default(),
+    };
     let mut stream = agent
         .prompt(message)
+        .document(scope_document)
         .conversation(conversation_id.to_string())
         .stream();
 
     loop {
         tokio::select! {
+            biased;
             _ = cancel.cancelled() => {
                 // Dropping the stream aborts the run.
                 return Ok(());
@@ -247,15 +214,7 @@ async fn run_agent(
                     Ok(item) => {
                         on_event(serde_json::to_value(&item).context("serializing stream item")?)
                     }
-                    Err(e) => {
-                        // A stream error is terminal for the run; surface it
-                        // through the event channel and stop.
-                        on_event(serde_json::json!({
-                            "type": "streamError",
-                            "message": e.to_string(),
-                        }));
-                        return Ok(());
-                    }
+                    Err(e) => return Err(anyhow!("agent stream failed: {e}")),
                 }
             }
         }
@@ -295,13 +254,13 @@ async fn generate_title_with(
     state: &AppState,
     conversation_id: &str,
     history: &[Message],
-    model: &ModelHandle,
+    model: &DynModel<Completion>,
 ) -> Result<()> {
     let generated = model
         .call(CompletionRequest::new(Message::user(TITLE_PROMPT)).messages(history.iter().cloned()))
         .await
         .ok()
-        .map(|response| response_text(&response.choice))
+        .map(|response| response.text())
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
 
@@ -362,7 +321,7 @@ pub async fn predict_next_message(
 
 /// Prediction over an explicit model and history.
 async fn predict_with(
-    model: &ModelHandle,
+    model: &DynModel<Completion>,
     history: Vec<Message>,
     cancel: CancellationToken,
 ) -> Result<Option<String>> {
@@ -383,7 +342,7 @@ async fn predict_with(
         },
     };
 
-    let prediction = response_text(&response.choice).trim().to_string();
+    let prediction = response.text().trim().to_string();
     if prediction.is_empty() {
         return Ok(None);
     }
@@ -454,7 +413,7 @@ mod tests {
         ]
     }
 
-    fn handle(model: MockCompletionModel) -> ModelHandle {
+    fn handle(model: MockCompletionModel) -> DynModel<Completion> {
         model.erase()
     }
 
@@ -508,7 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_message_cancelled_before_first_poll_records_nothing() {
+    async fn cancelled_before_first_poll_is_deterministic() {
         let (_tmp, state) = test_state().await;
         let id = "conv-cancel";
         state.memory.create(test_meta(id)).await.unwrap();
@@ -541,7 +500,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scope_hook_injects_collection_document() {
+    async fn stream_error_returns_err_without_emitting() {
+        let (_tmp, state) = test_state().await;
+        let id = "conv-stream-error";
+        state.memory.create(test_meta(id)).await.unwrap();
+
+        let events: std::sync::Arc<Mutex<Vec<serde_json::Value>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let model = handle(MockCompletionModel::from_stream_turns([vec![
+            MockStreamEvent::error("provider exploded"),
+        ]]));
+
+        let err = run_agent(
+            &state,
+            id,
+            &test_meta(id),
+            "hello".into(),
+            model,
+            move |event| sink.lock().unwrap().push(event),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("provider exploded"));
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_injects_scope_document() {
         let (_tmp, state) = test_state().await;
         let id = "conv-scope";
         state.memory.create(test_meta(id)).await.unwrap();
@@ -567,7 +555,7 @@ mod tests {
         let scope_doc = documents
             .iter()
             .find(|(id, _)| id == "active_collections")
-            .expect("scope document injected via extra_context");
+            .expect("scope document injected as run context");
         assert!(
             scope_doc
                 .1
