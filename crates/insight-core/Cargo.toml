@@ -39,8 +39,8 @@ time = "0.3"
 rand = "0.10"
 
 # Remote LLM providers — rig (LLM framework: providers, agent runtime, tools, memory)
-# Tracks released crates.io versions. The local ../rig checkout (at the
-# matching tag) is the API reference for this dependency.
+# Tracks released crates.io versions. The local ~/Projects/rig checkout (tag
+# v0.46.0) is the API reference for this dependency.
 rig = "0.46"
 # Direct companion-crate access for DynModel, directory sessions, and tool schemas.
 rig-core = "0.46"
