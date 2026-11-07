@@ -1,34 +1,31 @@
 <script lang="ts">
-	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
+	import { listen } from '@tauri-apps/api/event';
 	import { open } from '@tauri-apps/plugin-dialog';
+	import { onMount } from 'svelte';
 	import Button from '#lib/components/Button.svelte';
-	import Alert from '#lib/components/Alert.svelte';
-	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
-	import * as collections from '#lib/stores/collections.svelte.js';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import type { Document } from '#lib/stores/collections.svelte.js';
+	import {
+		deleteDocument,
+		getPipelineProgress,
+		startImport,
+	} from '#lib/api/document.js';
+	import type {
+		Document,
+		PipelineProgress,
+		StageProgress,
+	} from '#lib/types/documents.js';
+	import type { PageProps } from './$types';
+
+	let { data }: PageProps = $props();
 
 	let deletingDocument = $state<Document | null>(null);
+	let pipelineProgress = $state<PipelineProgress>();
 
-	const collectionId = $derived(page.params.collectionId);
-	const documents = $derived(
-		collectionId ? collections.getDocuments(collectionId) : [],
-	);
-	const documentsLoaded = $derived(
-		collectionId ? collections.hasLoadedDocuments(collectionId) : false,
-	);
-	const documentsError = $derived(
-		collectionId ? collections.getDocumentsError(collectionId) : null,
-	);
+	const collectionId = $derived(data.collection.id);
+	const documents = $derived(data.documents);
+	const processing = $derived(pipelineProgress !== undefined);
 
-	// Pipeline progress from global store (persists across navigation)
-	const processing = $derived(
-		collectionId ? collections.isProcessing(collectionId) : false,
-	);
-	const pipelineProgress = $derived(
-		collectionId ? collections.getPipelineProgress(collectionId) : undefined,
-	);
 	const stages = $derived(
 		pipelineProgress
 			? [
@@ -39,22 +36,48 @@
 			: [],
 	);
 
-	// Load this collection's documents on first view; the store keeps them
-	// current afterwards via invalidation.
-	$effect(() => {
-		if (collectionId) collections.ensureDocuments(collectionId);
-	});
-
-	function retryDocuments() {
-		if (collectionId) collections.ensureDocuments(collectionId);
+	function stageIsActive(stage: StageProgress): boolean {
+		return stage.pending > 0 || stage.active > 0;
 	}
 
-	async function importPdf() {
-		if (!collectionId) {
-			console.error('No collection selected');
-			return;
-		}
+	function pipelineIsActive(progress: PipelineProgress): boolean {
+		return (
+			stageIsActive(progress.store) ||
+			stageIsActive(progress.extract) ||
+			stageIsActive(progress.index)
+		);
+	}
 
+	onMount(() => {
+		void getPipelineProgress().then((active) => {
+			pipelineProgress = active.find(
+				(progress) => progress.collection_id === collectionId,
+			);
+		});
+	});
+
+	$effect(() => {
+		const id = collectionId;
+		let unlisten: (() => void) | undefined;
+		let disposed = false;
+
+		void listen<PipelineProgress>('pipeline-progress', (event) => {
+			if (event.payload.collection_id !== id) return;
+			pipelineProgress = pipelineIsActive(event.payload)
+				? event.payload
+				: undefined;
+		}).then((stop) => {
+			if (disposed) stop();
+			else unlisten = stop;
+		});
+
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	});
+
+	async function importPdf() {
 		const files = await open({
 			multiple: true,
 			filters: [{ name: 'PDF', extensions: ['pdf'] }],
@@ -63,14 +86,18 @@
 		if (!files) return;
 
 		const paths = Array.isArray(files) ? files : [files];
-		await collections.startImport(collectionId, paths);
+		try {
+			await startImport(collectionId, paths);
+		} catch (e) {
+			console.error('Failed to start import:', e);
+		}
 	}
 
 	function confirmDeleteDocument() {
-		if (!deletingDocument || !collectionId) return;
+		if (!deletingDocument) return;
 		const documentId = deletingDocument.id;
 		deletingDocument = null;
-		collections.deleteDocument(collectionId, documentId).catch((e) => {
+		deleteDocument(collectionId, documentId).catch((e) => {
 			console.error('Failed to delete document:', e);
 		});
 	}
@@ -105,20 +132,7 @@
 			</div>
 		{/if}
 
-		{#if !documentsLoaded && documentsError}
-			<div class="flex flex-col items-start gap-3 py-12">
-				<Alert>Failed to load documents: {documentsError}</Alert>
-				<Button variant="secondary" onclick={retryDocuments}>Retry</Button>
-			</div>
-		{:else if !documentsLoaded}
-			<div
-				class="flex flex-col items-center justify-center py-12"
-				role="status"
-			>
-				<LoadingSpinner size="lg" />
-				<p class="sr-only">Loading documents…</p>
-			</div>
-		{:else if documents.length === 0 && processing}
+		{#if documents.length === 0 && processing}
 			<div class="flex flex-col items-center justify-center py-12 text-center">
 				<p class="text-neutral-500">Processing documents…</p>
 				<p class="mt-1 max-w-sm text-sm text-neutral-400">

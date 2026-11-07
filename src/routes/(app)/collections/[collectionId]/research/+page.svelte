@@ -3,7 +3,6 @@
 	import Chat from '#lib/components/Chat.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
-	import * as collections from '#lib/stores/collections.svelte.js';
 	import {
 		isLoaded,
 		isProviderReady,
@@ -11,7 +10,7 @@
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
 	const collectionId = $derived(page.params.collectionId ?? '');
-	const collection = $derived(collections.getCollection(collectionId));
+	const collection = $derived(page.data.collection);
 	const loaded = $derived(isLoaded());
 	const providerReady = $derived(isProviderReady());
 	const activeCollectionId = $derived(chat.getActiveCollectionId());

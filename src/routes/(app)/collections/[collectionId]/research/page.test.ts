@@ -22,9 +22,6 @@ beforeAll(async () => {
 		if (cmd === 'get_provider_status') {
 			return { family: null, model: null, error: null };
 		}
-		if (cmd === 'get_collections') return [collection];
-		if (cmd === 'get_documents') return [];
-		if (cmd === 'get_pipeline_progress') return [];
 		if (cmd === 'list_conversations') {
 			return [{ id: 'c1', title: 'Local history' }];
 		}
@@ -45,6 +42,7 @@ beforeAll(async () => {
 	});
 	page.url = new URL('http://localhost/collections/col1/research');
 	page.params = { collectionId: 'col1' };
+	page.data = { collection };
 	Page = (await import('./+page.svelte')).default;
 });
 

@@ -3,7 +3,7 @@
 	import { resolve } from '$app/paths';
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
-	import type { Document } from '#lib/stores/collections.svelte.js';
+	import type { Document } from '#lib/types/documents.js';
 
 	let document = $state<Document | null>(null);
 	let content = $state<string | null>(null);

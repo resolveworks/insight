@@ -104,16 +104,6 @@ pub async fn get_pipeline_progress(
     Ok(state.pipeline.get_all_progress().await)
 }
 
-/// Get pipeline progress for a specific collection
-#[tauri::command]
-pub async fn get_collection_pipeline_progress(
-    collection_id: CollectionId,
-    state: State<'_, AppState>,
-) -> CommandResult<Option<PipelineProgress>> {
-    let key = collection_id.namespace().to_string();
-    Ok(state.pipeline.get_progress(&key).await)
-}
-
 /// Get all documents in a collection
 #[tauri::command]
 pub async fn get_documents(
