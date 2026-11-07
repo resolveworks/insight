@@ -44,11 +44,15 @@ Synthesized Answer (with citations)
 Key pieces, all in `crates/insight-core/`:
 
 - **`providers/`** — a thin surface over rig's registry and built-in model catalog; nothing vendor-specific lives here. `selections()` lists every selection rig registers (`openai/openai`, `ollama/openai`, …), `models()` lists the chat models rig's catalog files under a selection's vendor (deprecated and non-chat rows dropped, rig's display names), and `build_model()` resolves the selection, applies the credential/endpoint rules rig declares, and returns a `DynModel<Completion>` built from the selection's `ProviderConfig` and catalog facts. Model listing is offline: it reads the catalog, it does not call the provider.
-- **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools (manual `rig::tool::Tool` implementations) + `FileConversationMemory` + `default_max_turns(100)`. Each tool owns a clone of the per-run `ToolState` (index, storage, active collections); Insight keeps these live handles on the tool instances rather than in `ToolContext`. The conversation's active collections are attached as a run document with `AgentRunner::document` on every turn — non-sticky, so mid-conversation scope changes take effect on the next model call without touching stored history. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. Stream failures return as `Err`; the Tauri command emits the single terminal `streamError`. `generate_title` and `predict_next_message` are bare-model completions (no tools, no agent loop) over the same provider settings.
-- **`memory.rs`** — `FileConversationMemory` wraps rig_memory's directory-backed `DirStore` for conversation logs and a rig `DirFiles` namespace for metadata; it does not implement a `ConversationMemory` trait. A `ConversationMeta` sidecar holds app-facing data (title, linked collections, timestamps).
-- **`tools/`** — manual `rig::tool::Tool` implementations over milli search + iroh storage; each owns a clone of the per-run `ToolState` (index, storage, collection scope).
+- **`runtime.rs`** — `send_message` builds a fresh rig agent **per request**: a stable preamble (`BASE_SYSTEM_PROMPT`) + the 4 document tools (manual `rig::tool::Tool` implementations) + `FileConversationMemory` + `default_max_turns(100)`. Each tool owns a clone of the per-run `ToolState` (index, storage, the conversation's collection); Insight keeps these live handles on the tool instances rather than in `ToolContext`. The conversation's collection is attached as an `active_collection` run document naming it on every turn; the preamble and tools are scoped to that one collection. The multi-turn stream is forwarded to the frontend as JSON `MultiTurnStreamItem` events on `agent-event-{conversation_id}`; cancellation drops the stream via a `CancellationToken`. Stream failures return as `Err`; the Tauri command emits the single terminal `streamError`. Title generation runs after the first successful turn, falling back to rig-memory's `title_of` of the first user message. `predict_next_message` is a bare-model completion (no tools, no agent loop) over the same provider settings.
+- **`memory.rs`** — `FileConversationMemory` keeps one rig_memory `DirStore` per conversation, under its collection: `conversations/{collection_id}/{conversation_id}/` holds the rig session log at `logs/{conversation_id}.jsonl` and `files/meta.json`. It does not implement a `ConversationMemory` trait. `rig_memory::SessionMeta` is the only conversation metadata: title and updated (milliseconds since the epoch).
+- **`tools/`** — manual `rig::tool::Tool` implementations over milli search + iroh storage; each owns a clone of the per-run `ToolState` (index, storage, the conversation's collection).
 
 Inference is remote-only: the chat provider is configured in Settings. Documents never leave the machine — only the conversation (queries and retrieved excerpts) is sent to the configured provider.
+
+### Conversation Commands
+
+The Tauri command layer (`src-tauri/src/commands/conversations.rs`) scopes every conversation command by collection: `start_chat(collectionId)`, `list_conversations(collectionId)`, `load_conversation(collectionId, conversationId)`, `send_message(collectionId, conversationId, message)`, `predict_next_message(collectionId, conversationId)`, and `delete_conversation(collectionId, conversationId)`. Deleting a collection also deletes its conversations.
 
 ### Event Flow
 
@@ -58,18 +62,22 @@ The frontend renders ONE view model for both stored history and the live run. A 
 
 ## Agent Tools
 
-The agent has 4 manual `rig::tool::Tool` implementations in `crates/insight-core/src/tools/` to search and read documents from indexed collections. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search — all document retrieval happens through the agent:
+The agent has 4 manual `rig::tool::Tool` implementations in `crates/insight-core/src/tools/` to search and read documents in the conversation's collection. It iteratively gathers evidence to answer user questions, citing sources. There is no direct user-facing search — all document retrieval happens through the agent:
 
-- **search** — keyword search (BM25 via milli), scoped to active collections
-- **read_chunk** — read an indexed text chunk by document + chunk id
-- **list_documents** — list documents in the active collections
-- **get_collection_terms** — frequent/representative terms of a collection
+- **search** — keyword search (BM25 via milli), over the conversation's collection
+- **read_chunk** — read an indexed text chunk by document + chunk id; refuses chunks outside the conversation's collection
+- **list_documents** — flat list of the documents in the collection, with no per-collection grouping
+- **get_collection_terms** — frequent/representative terms of the collection
 
-A search hit carries the passage and the document/chunk identity. Resolving a passage to source units is not the search tool's job; that belongs to the citation layer. Page counts in tool output are optional because the source may have no recorded unit structure.
+A search hit carries the passage and the document/chunk identity; it has no collection id or name. Resolving a passage to source units is not the search tool's job; that belongs to the citation layer. Page counts in tool output are optional because the source may have no recorded unit structure.
 
 Tool outputs are typed serializable structs and errors are `ToolExecutionError` with precise kinds (`not_found`, …) — rig converts them into structured model output at dispatch time.
 
 ## Data Model
+
+### Conversation = One Collection
+
+A conversation belongs to exactly one evidence collection, fixed at creation. There is no multi-collection scope and no mid-conversation scope change: a different collection means a different conversation. Conversations are local to the device and do not sync — sharing a collection shares its documents, not its chats. Deleting a collection deletes its conversations.
 
 ### Collection = Namespace
 
@@ -127,6 +135,7 @@ A source is immutable. Text is a derivation: a document may have many extraction
 | File metadata   | Yes                            | iroh-docs  |
 | Collection info | Yes                            | iroh-docs  |
 | Search index    | No (built from synced text)    | milli      |
+| Conversations   | No                             | local disk |
 
 Search is local keyword indexing over the canonical extraction's text: each peer builds its own milli index from the synced extraction text. Nothing beyond the raw document data is derived or replicated.
 
@@ -252,13 +261,13 @@ mockIPC((cmd, args) => {
 ├── search/                        # milli index
 ├── settings.json                  # settings v2 (provider + API keys)
 └── conversations/
-    ├── logs/
-    │   └── {conversation_id}.jsonl   # rig conversation history
-    └── metadata/
-        └── {conversation_id}.json    # title, collections, timestamps
+    └── {collection_id}/
+        └── {conversation_id}/
+            ├── logs/{conversation_id}.jsonl   # rig session log
+            └── files/meta.json                # rig SessionMeta (title, updated ms)
 ```
 
-The old `conversations/{id}/messages.json` + `meta.json` layout is rejected, not migrated. Both stores write atomically: a crash mid-write leaves the previous file intact.
+Collection ids are canonical `iroh_docs::NamespaceId` strings, so the directory names cannot escape the conversations root. Each conversation is one rig `DirStore`; `SessionMeta` is the only conversation metadata, with no separate `metadata/*.json` sidecar and no `logs/` at the root. The old `conversations/{id}/messages.json` + `meta.json` layout is rejected, not migrated.
 
 ## Conventions
 
