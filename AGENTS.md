@@ -175,13 +175,28 @@ This ensures version accuracy and works offline.
 
 ## Testing
 
+Test behaviour, not implementation. Assert what a caller observes — return
+values, files written, events emitted, what the user sees — through public
+interfaces; never private helpers, internal state, or call order.
+
+- A refactor that changes no behaviour changes no test. If it does, the test
+  was pinning implementation.
+- Mock at the boundary, never our own code: rig's test-utils model for
+  inference, temp directories for iroh/milli, `mockIPC` for Tauri commands.
+- Prefer integration: drive a module the way its real caller does. Unit tests
+  are for pure logic — the transcript fold, chunking, page boundaries.
+- No test-only APIs or hooks in production code. No smoke tests.
+- A test must be able to fail: assert an outcome, not that a fake was called or
+  a line was logged.
+
 ### Backend (Rust)
 
 ```bash
 cd src-tauri && cargo test
 ```
 
-Focus on core modules, Tauri commands, and critical paths.
+Use `#[tokio::test]` for async tests; give each test its own temporary data
+directory.
 
 ### Frontend (Svelte)
 
@@ -205,13 +220,6 @@ mockIPC((cmd, args) => {
 	}
 });
 ```
-
-Focus on:
-
-- Test behavior, not implementation details
-- Use `#[tokio::test]` for async Rust tests
-- Temporary directories for test data (avoid polluting real data)
-- Mock iroh/milli only when necessary for isolation
 
 ## Data Storage
 
