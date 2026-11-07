@@ -364,7 +364,7 @@ impl RunTranscript {
                 let mut item = self.new_item(
                     key,
                     TranscriptKind::ToolCall,
-                    &call.function.name.to_string(),
+                    call.function.name.as_ref(),
                     &tool_call_text(call),
                 );
                 item.executing = true;
