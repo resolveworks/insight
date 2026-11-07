@@ -4,39 +4,18 @@
 	interface Props extends Omit<HTMLInputAttributes, 'value'> {
 		label?: string;
 		value?: string;
-		ghostText?: string;
-		onAcceptGhost?: () => void;
 	}
 
 	let {
 		label,
 		id,
 		value = $bindable(''),
-		ghostText = '',
-		onAcceptGhost,
 		class: className = '',
-		onkeydown,
 		placeholder,
 		...rest
 	}: Props = $props();
 
-	let effectivePlaceholder = $derived(ghostText || placeholder);
-
 	const inputClasses = 'field';
-
-	function handleKeyDown(
-		e: KeyboardEvent & { currentTarget: HTMLInputElement },
-	) {
-		// Tab accepts ghost text only while the input is still empty.
-		if (e.key === 'Tab' && ghostText && !value) {
-			e.preventDefault();
-			value = ghostText;
-			onAcceptGhost?.();
-			return;
-		}
-
-		onkeydown?.(e);
-	}
 </script>
 
 {#if label}
@@ -47,8 +26,7 @@
 		<input
 			{id}
 			bind:value
-			onkeydown={handleKeyDown}
-			placeholder={effectivePlaceholder}
+			{placeholder}
 			class="{inputClasses} {className}"
 			{...rest}
 		/>
@@ -57,8 +35,7 @@
 	<input
 		{id}
 		bind:value
-		onkeydown={handleKeyDown}
-		placeholder={effectivePlaceholder}
+		{placeholder}
 		class="{inputClasses} {className}"
 		{...rest}
 	/>

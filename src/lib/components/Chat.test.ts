@@ -178,11 +178,7 @@ describe('Chat', () => {
 		});
 
 		await chat.initialize('tools', [{ id: 'c1', title: 'Existing chat' }]);
-		// Provider setup (not the composer) below the transcript keeps the
-		// prediction timer out of the test.
-		render(Chat, {
-			props: { ...props, collectionId: 'tools', providerReady: false },
-		});
+		render(Chat, { props: { ...props, collectionId: 'tools' } });
 
 		const titles = await Promise.all([
 			screen.findByText('Reasoning'),
@@ -196,34 +192,5 @@ describe('Chat', () => {
 		expect(titles[2].closest('details')?.className).toContain(
 			'border-error/50',
 		);
-	});
-
-	it('does not request a next-message prediction without documents', async () => {
-		const calls: string[] = [];
-		mockIPC((cmd) => {
-			calls.push(cmd);
-			if (cmd === 'load_conversation') {
-				return {
-					id: 'c1',
-					collection_id: 'no-prediction',
-					title: 'Existing chat',
-					messages: [
-						{
-							role: 'user',
-							content: [{ type: 'text', text: 'Earlier question' }],
-						},
-					],
-				};
-			}
-		});
-
-		await chat.initialize('no-prediction', [
-			{ id: 'c1', title: 'Existing chat' },
-		]);
-		render(Chat, { props: { ...props, documentCount: 0 } });
-
-		await screen.findByText('Earlier question');
-		await new Promise((resolve) => setTimeout(resolve, 600));
-		expect(calls).not.toContain('predict_next_message');
 	});
 });

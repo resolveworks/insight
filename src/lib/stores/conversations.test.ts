@@ -499,24 +499,6 @@ describe('conversations store event handling', () => {
 		expect(store.getActiveMessages()).toEqual([]);
 	});
 
-	it('predicts the next message within the active collection', async () => {
-		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
-		mockIPC((cmd, args) => {
-			calls.push({ cmd, args: args as Record<string, unknown> });
-			if (cmd === 'load_conversation') return conversationView('c1', 'col1');
-			if (cmd === 'predict_next_message') return 'next words';
-		});
-
-		const store = await importStore();
-		await store.initialize('col1', [summary('c1')]);
-
-		expect(await store.predictNextMessage()).toBe('next words');
-		expect(calls.find((c) => c.cmd === 'predict_next_message')?.args).toEqual({
-			collectionId: 'col1',
-			conversationId: 'c1',
-		});
-	});
-
 	it('refreshes the conversation list when a run terminates', async () => {
 		const view = conversationView('c1', 'col1');
 		mockIPC((cmd, args) => {

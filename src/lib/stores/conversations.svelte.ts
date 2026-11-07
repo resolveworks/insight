@@ -354,31 +354,6 @@ export async function cancelGeneration(): Promise<void> {
 	}
 }
 
-/** Ask the backend for a tab-completion prediction of the user's next message. */
-export async function predictNextMessage(): Promise<string | null> {
-	const collectionId = activeCollectionId;
-	if (!activeId || !collectionId) return null;
-	try {
-		return await invoke<string | null>('predict_next_message', {
-			collectionId,
-			conversationId: activeId,
-		});
-	} catch (e) {
-		console.error('Prediction failed:', e);
-		return null;
-	}
-}
-
-/** Cancel any in-flight prediction request. */
-export async function cancelPrediction(): Promise<void> {
-	if (!activeId) return;
-	try {
-		await invoke('cancel_prediction', { conversationId: activeId });
-	} catch {
-		// Ignore cancellation errors
-	}
-}
-
 /** Dismiss the current error banner. */
 export function clearError(): void {
 	error = null;

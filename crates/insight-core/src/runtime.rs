@@ -6,12 +6,8 @@
 //! to the caller as JSON. A conversation belongs to one collection, fixed at
 //! creation; that collection's name is attached as a run document on every
 //! turn so the model knows what its tools cover.
-//!
-//! [`predict_next_message`] is a bare-model completion (no tools, no agent loop)
-//! over the same provider settings.
 
 use std::str::FromStr;
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
@@ -44,40 +40,14 @@ When answering questions:
 /// Prompt used to summarize a conversation into a short title.
 const TITLE_PROMPT: &str = "Summarize this conversation in a short title of at most 50 characters. Output ONLY the title, nothing else.";
 
-/// Prompt used for tab-completion style next-message prediction.
-const PREDICTION_PROMPT: &str = r#"Based on the conversation above, predict what the user is most likely to ask or say next.
-
-Rules:
-- Output ONLY the predicted message, nothing else
-- Keep it concise (1-2 sentences max)
-- Make it a natural follow-up question or statement
-- If the assistant just answered a question, predict a likely follow-up
-- If unsure, output nothing"#;
-
 /// Maximum tool-call iterations per user message.
 const MAX_TURNS: usize = 100;
-
-/// Maximum characters of a predicted next message.
-const PREDICTION_MAX_CHARS: usize = 150;
-
-/// How long a prediction may run before being abandoned.
-const PREDICTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The text of the scope document attached to every agent run.
 fn format_scope_document(collection_name: &str) -> String {
     format!(
         "You are working in collection \"{collection_name}\". Your search and list tools only cover this collection."
     )
-}
-
-/// Truncate a string to `max` characters, appending "..." when cut.
-fn truncate_chars(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max - 3).collect();
-        format!("{}...", cut)
-    }
 }
 
 /// Send a user message to a conversation and stream the agent's response.
@@ -286,65 +256,9 @@ fn first_user_text(history: &[Message]) -> Option<String> {
         _ => None,
     })
 }
-
-/// Predict what the user might say next, for inline tab completion.
-///
-/// Returns `None` when there is not enough history, no provider is
-/// configured, the request is cancelled, or it exceeds the 5s budget.
-/// Non-fatal by design: a failed prediction simply completes nothing.
-pub async fn predict_next_message(
-    state: &AppState,
-    collection_id: &str,
-    conversation_id: &str,
-    cancel: CancellationToken,
-) -> Result<Option<String>> {
-    let history = load_history(state, collection_id, conversation_id).await?;
-    // Need at least one user + one assistant message for a meaningful
-    // prediction.
-    let has_assistant = history.iter().any(|m| matches!(m, Message::Assistant(_)));
-    if history.len() < 2 || !has_assistant {
-        return Ok(None);
-    }
-    let Ok(model) = build_configured_model(state) else {
-        return Ok(None);
-    };
-    predict_with(&model, history, cancel).await
-}
-
-/// Prediction over an explicit model and history.
-async fn predict_with(
-    model: &DynModel<Completion>,
-    history: Vec<Message>,
-    cancel: CancellationToken,
-) -> Result<Option<String>> {
-    let request = CompletionRequest::new(Message::user(PREDICTION_PROMPT)).messages(history);
-
-    let response = tokio::select! {
-        _ = cancel.cancelled() => return Ok(None),
-        result = tokio::time::timeout(PREDICTION_TIMEOUT, model.call(request)) => match result {
-            Ok(Ok(response)) => response,
-            Ok(Err(e)) => {
-                tracing::debug!(error = %e, "prediction completion failed");
-                return Ok(None);
-            }
-            Err(_) => {
-                tracing::debug!("prediction timed out");
-                return Ok(None);
-            }
-        },
-    };
-
-    let prediction = response.text().trim().to_string();
-    if prediction.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(truncate_chars(&prediction, PREDICTION_MAX_CHARS)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::ProviderSettings;
     use rig::completion::Usage;
     use rig::test_utils::{mock_final, MockCompletionModel, MockStreamEvent};
     use std::sync::Mutex;
@@ -364,19 +278,6 @@ mod tests {
         std::fs::create_dir_all(&config.search_dir).unwrap();
         let (state, _rx) = AppState::new(config).await.unwrap();
         (temp_dir, state)
-    }
-
-    /// Persist provider settings so `build_configured_model` succeeds offline.
-    fn configure_dummy_provider(state: &AppState) {
-        let settings = Settings {
-            provider: Some(ProviderSettings {
-                family: "openai/openai".into(),
-                model: "gpt-test".into(),
-                api_key: Some("dummy".into()),
-                base_url: Some("https://example.invalid".into()),
-            }),
-        };
-        settings.save(&state.config.settings_file).unwrap();
     }
 
     /// Create a real collection and a conversation belonging to it.
@@ -665,41 +566,5 @@ mod tests {
         assert_eq!(meta.title.chars().count(), 60);
         assert!(meta.title.ends_with('…'));
         assert!(long_question.starts_with(meta.title.trim_end_matches('…')));
-    }
-
-    #[tokio::test]
-    async fn predict_truncates_long_output() {
-        let long = "x".repeat(PREDICTION_MAX_CHARS + 50);
-        let model = handle(MockCompletionModel::text(long));
-        let history = vec![Message::user("hi"), Message::assistant("hello")];
-
-        let prediction = predict_with(&model, history, CancellationToken::new())
-            .await
-            .unwrap()
-            .expect("prediction returned");
-        assert_eq!(prediction.chars().count(), PREDICTION_MAX_CHARS);
-        assert!(prediction.ends_with("..."));
-    }
-
-    #[tokio::test]
-    async fn predict_requires_assistant_history() {
-        let (_tmp, state) = test_state().await;
-        configure_dummy_provider(&state);
-        let id = "conv-predict";
-        let (collection_id, _) = setup_conversation(&state, id, "Climate Reports").await;
-
-        // Only a user message: no prediction.
-        let store = state.memory.store(&collection_id, id).unwrap();
-        let mut conversation = rig_memory::load_async(&store, id).await.unwrap();
-        conversation.extend([Message::user("hello")]);
-        rig_memory::save_async(&store, id, &mut conversation)
-            .await
-            .unwrap();
-        assert_eq!(
-            predict_next_message(&state, &collection_id, id, CancellationToken::new())
-                .await
-                .unwrap(),
-            None
-        );
     }
 }

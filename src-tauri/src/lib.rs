@@ -98,9 +98,6 @@ pub fn run() {
             commands::providers::configure_provider,
             commands::providers::disable_provider,
             commands::providers::get_current_provider,
-            // Prediction commands (tab completion)
-            commands::conversations::predict_next_message,
-            commands::conversations::cancel_prediction,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

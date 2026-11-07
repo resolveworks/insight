@@ -59,7 +59,7 @@ pub use config::{Config, Settings, SettingsError};
 pub use memory::{ConversationSummary, FileConversationMemory, DEFAULT_TITLE};
 pub use pipeline::{AppEvent, Pipeline, PipelineProgress, StageProgress};
 pub use providers::{ModelChoice, ProviderSettings};
-pub use runtime::{predict_next_message, send_message, BASE_SYSTEM_PROMPT};
+pub use runtime::{send_message, BASE_SYSTEM_PROMPT};
 pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::Storage;
 
@@ -78,8 +78,6 @@ pub struct AppState {
     pub memory: Arc<FileConversationMemory>,
     /// Cancellation tokens for active generations
     pub active_generations: Arc<RwLock<std::collections::HashMap<String, CancellationToken>>>,
-    /// Cancellation tokens for active predictions (tab completion)
-    pub active_predictions: Arc<RwLock<std::collections::HashMap<String, CancellationToken>>>,
     /// Event-driven document processing pipeline
     pub pipeline: Arc<Pipeline>,
 }
@@ -122,7 +120,6 @@ impl AppState {
                 index_worker,
                 memory,
                 active_generations: Arc::new(RwLock::new(Default::default())),
-                active_predictions: Arc::new(RwLock::new(Default::default())),
                 pipeline: Arc::new(pipeline),
             },
             events_rx,

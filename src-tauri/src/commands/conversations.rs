@@ -1,6 +1,6 @@
-//! Conversation commands: lifecycle (list/load/start/delete), message
-//! sending with streamed agent events, and next-message prediction. Each
-//! conversation belongs to exactly one collection.
+//! Conversation commands: lifecycle (list/load/start/delete) and message
+//! sending with streamed agent events. Each conversation belongs to exactly
+//! one collection.
 
 use rig_core::completion::Message;
 use serde::Serialize;
@@ -116,8 +116,8 @@ pub async fn start_chat(
     conversation_view(&state, &collection_id, &id, meta.title).await
 }
 
-/// Delete a conversation: cancel any in-flight generation or prediction,
-/// then remove it from disk. Idempotent.
+/// Delete a conversation: cancel any in-flight generation, then remove it
+/// from disk. Idempotent.
 #[tauri::command]
 pub async fn delete_conversation(
     collection_id: CollectionId,
@@ -132,14 +132,6 @@ pub async fn delete_conversation(
 
     if let Some(token) = state
         .active_generations
-        .write()
-        .await
-        .remove(&conversation_id)
-    {
-        token.cancel();
-    }
-    if let Some(token) = state
-        .active_predictions
         .write()
         .await
         .remove(&conversation_id)
@@ -240,65 +232,6 @@ pub async fn cancel_generation(
     if let Some(token) = generations.get(&conversation_id) {
         token.cancel();
         tracing::info!("Cancelled generation for conversation {}", conversation_id);
-    }
-    Ok(())
-}
-
-/// Predict what the user might say next (tab completion). Supersedes any
-/// in-flight prediction for the same conversation.
-#[tauri::command]
-pub async fn predict_next_message(
-    collection_id: CollectionId,
-    conversation_id: String,
-    state: State<'_, AppState>,
-) -> CommandResult<Option<String>> {
-    // Supersede any in-flight prediction for this conversation.
-    {
-        let predictions = state.active_predictions.read().await;
-        if let Some(token) = predictions.get(&conversation_id) {
-            token.cancel();
-        }
-    }
-
-    let cancel_token = CancellationToken::new();
-    state
-        .active_predictions
-        .write()
-        .await
-        .insert(conversation_id.clone(), cancel_token.clone());
-
-    let state_clone = state.inner().clone();
-    let collection_id = collection_id.namespace().to_string();
-    let result =
-        runtime::predict_next_message(&state_clone, &collection_id, &conversation_id, cancel_token)
-            .await;
-
-    state
-        .active_predictions
-        .write()
-        .await
-        .remove(&conversation_id);
-
-    // A failed prediction completes nothing; surface it as `None` like the
-    // other non-fatal outcomes.
-    match result {
-        Ok(prediction) => Ok(prediction),
-        Err(e) => {
-            tracing::debug!("Prediction failed: {}", e);
-            Ok(None)
-        }
-    }
-}
-
-/// Cancel any pending prediction for a conversation.
-#[tauri::command]
-pub async fn cancel_prediction(
-    conversation_id: String,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    let predictions = state.active_predictions.read().await;
-    if let Some(token) = predictions.get(&conversation_id) {
-        token.cancel();
     }
     Ok(())
 }

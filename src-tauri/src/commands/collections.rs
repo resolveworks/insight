@@ -88,9 +88,6 @@ pub async fn delete_collection(
         if let Some(token) = state.active_generations.write().await.remove(&summary.id) {
             token.cancel();
         }
-        if let Some(token) = state.active_predictions.write().await.remove(&summary.id) {
-            token.cancel();
-        }
     }
 
     // Delete from storage first

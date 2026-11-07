@@ -23,17 +23,12 @@
 	const hasDocuments = $derived(documentCount > 0);
 
 	// Reactive reads from the conversations store
-	const activeId = $derived(chat.getActiveId());
 	const transcript = $derived(chat.getTranscript());
 	const isGenerating = $derived(chat.getIsGenerating());
-	const isLoading = $derived(chat.getIsLoading());
 	const error = $derived(chat.getError());
 
 	// View-local state
 	let inputValue = $state('');
-	let prediction = $state<string>('');
-	let isPredicting = $state(false);
-	let predictionTimeout: ReturnType<typeof setTimeout> | undefined;
 	let messagesContainer: HTMLElement | undefined;
 
 	// Auto-scroll to bottom whenever chat content changes. Reading the
@@ -66,50 +61,6 @@
 	async function cancelGeneration() {
 		await chat.cancelGeneration();
 	}
-
-	// Prediction (tab completion)
-	async function requestPrediction() {
-		if (!activeId || isPredicting || isGenerating || inputValue) return;
-		isPredicting = true;
-		try {
-			const result = await chat.predictNextMessage();
-			if (result && !inputValue) prediction = result;
-		} finally {
-			isPredicting = false;
-		}
-	}
-
-	async function cancelPrediction() {
-		clearTimeout(predictionTimeout);
-		await chat.cancelPrediction();
-	}
-
-	function handleAcceptPrediction() {
-		prediction = '';
-	}
-
-	$effect(() => {
-		if (inputValue) {
-			prediction = '';
-			cancelPrediction();
-			return;
-		}
-		if (
-			isGenerating ||
-			isLoading ||
-			!activeId ||
-			transcript.length === 0 ||
-			!hasDocuments ||
-			!providerReady
-		) {
-			prediction = '';
-			return;
-		}
-		clearTimeout(predictionTimeout);
-		predictionTimeout = setTimeout(() => {
-			requestPrediction();
-		}, 500);
-	});
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey) {
@@ -233,9 +184,7 @@
 					type="text"
 					bind:value={inputValue}
 					class="flex-1"
-					ghostText={prediction}
 					onkeydown={handleKeydown}
-					onAcceptGhost={handleAcceptPrediction}
 					placeholder={hasDocuments
 						? 'Ask about your documents...'
 						: 'Add documents to start asking questions'}
