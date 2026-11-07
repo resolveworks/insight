@@ -1,0 +1,8 @@
+# One shared build dir per project under CARGO_HOME, so every git worktree
+# reuses the compiled dependency graph instead of rebuilding it. Final
+# artifacts still land in each checkout's target/.
+#
+# {cargo-cache-home} is the only template that resolves the same for all
+# worktrees on a machine; a literal absolute path would only work for one user.
+[build]
+build-dir = "{cargo-cache-home}/build/insight"
