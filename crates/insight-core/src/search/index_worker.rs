@@ -209,9 +209,8 @@ mod tests {
             chunk_index: 0,
             content: "Test content".to_string(),
             collection_id: "col1".to_string(),
-            page_count: 1,
-            start_page: 1,
-            end_page: 1,
+            text_offset_start: 0,
+            text_offset_end: 12,
         }];
         handle.index_chunks(chunks).await.unwrap();
 

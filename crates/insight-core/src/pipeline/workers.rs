@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use crate::search::{ChunkToIndex, IndexWorkerHandle};
 use crate::storage::Storage;
 
-use super::chunk::{chunk_text, find_chunk_offsets};
+use super::chunk::chunk_text;
 use super::progress::ProgressTracker;
 use super::types::{ExtractJob, IndexJob, ProgressUpdate, Stage};
 
@@ -195,8 +195,6 @@ pub fn spawn_index_worker(
                         tracing::warn!(doc_id = %job.doc_id, "Document has no text to index");
                         Ok(())
                     } else {
-                        let offsets = find_chunk_offsets(&text, &chunks);
-
                         // Delete old chunks first
                         if let Err(e) = index_worker
                             .delete_document_chunks(job.doc_id.clone())
@@ -210,32 +208,17 @@ pub fn spawn_index_worker(
                         }
 
                         let to_index: Vec<ChunkToIndex> = chunks
-                            .iter()
+                            .into_iter()
                             .enumerate()
-                            .map(|(i, content)| {
-                                let chunk_start_offset = offsets.get(i).copied().unwrap_or(0);
-                                let chunk_end_offset = chunk_start_offset + content.len();
-                                let start_page =
-                                    metadata.page_at_offset(chunk_start_offset).expect(
-                                        "text is indexed only after extraction records its pages",
-                                    );
-                                let end_page = metadata.page_at_offset(chunk_end_offset).expect(
-                                    "text is indexed only after extraction records its pages",
-                                );
-
-                                ChunkToIndex {
-                                    id: format!("{}_chunk_{}", metadata.id, i),
-                                    parent_id: metadata.id.clone(),
-                                    parent_name: metadata.name.clone(),
-                                    chunk_index: i,
-                                    content: format!("[{}]\n\n{}", metadata.name, content),
-                                    collection_id: collection_id.clone(),
-                                    page_count: metadata.page_count().expect(
-                                        "text is indexed only after extraction records its pages",
-                                    ),
-                                    start_page,
-                                    end_page,
-                                }
+                            .map(|(i, chunk)| ChunkToIndex {
+                                id: format!("{}_chunk_{}", metadata.id, i),
+                                parent_id: metadata.id.clone(),
+                                parent_name: metadata.name.clone(),
+                                chunk_index: i,
+                                content: format!("[{}]\n\n{}", metadata.name, chunk.text),
+                                collection_id: collection_id.clone(),
+                                text_offset_start: chunk.start,
+                                text_offset_end: chunk.end,
                             })
                             .collect();
 

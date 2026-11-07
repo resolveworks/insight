@@ -205,7 +205,10 @@ pub async fn get_document_chunks(
             let text = String::from_utf8(bytes).map_err(|e| CommandError::InvalidUtf8 {
                 message: format!("Invalid UTF-8 in text content: {}", e),
             })?;
-            Ok(insight_core::pipeline::chunk_text(&text))
+            Ok(insight_core::pipeline::chunk_text(&text)
+                .into_iter()
+                .map(|chunk| chunk.text)
+                .collect())
         }
         None => Ok(vec![]), // No text stored yet
     }

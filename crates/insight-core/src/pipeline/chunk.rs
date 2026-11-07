@@ -18,37 +18,35 @@ static SPLITTER: LazyLock<text_splitter::TextSplitter<text_splitter::Characters>
         )
     });
 
+/// A chunk of a document's extracted text.
+pub struct Chunk {
+    /// The chunk text.
+    pub text: String,
+    /// UTF-8 byte offset in the input text where the chunk starts.
+    pub start: usize,
+    /// Byte offset one past the chunk's end.
+    pub end: usize,
+}
+
 /// Split text into overlapping chunks.
 ///
 /// Trims the input first; empty (or whitespace-only) input yields no
-/// chunks.
-pub fn chunk_text(text: &str) -> Vec<String> {
+/// chunks. Offsets index into the untrimmed input, so
+/// `&text[chunk.start..chunk.end] == chunk.text`.
+pub fn chunk_text(text: &str) -> Vec<Chunk> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Vec::new();
     }
-    SPLITTER.chunks(trimmed).map(str::to_string).collect()
-}
-
-/// Find the starting byte offset of each chunk in the original text.
-pub(crate) fn find_chunk_offsets(text: &str, chunks: &[String]) -> Vec<usize> {
-    let mut offsets = Vec::with_capacity(chunks.len());
-    let mut search_start_byte = 0;
-
-    for chunk in chunks {
-        if let Some(pos) = text[search_start_byte..].find(chunk.as_str()) {
-            let absolute_byte = search_start_byte + pos;
-            offsets.push(absolute_byte);
-            search_start_byte = absolute_byte + chunk.len().saturating_sub(100);
-            while search_start_byte < text.len() && !text.is_char_boundary(search_start_byte) {
-                search_start_byte += 1;
-            }
-        } else {
-            offsets.push(search_start_byte);
-        }
-    }
-
-    offsets
+    let base = text.len() - text.trim_start().len();
+    SPLITTER
+        .chunk_indices(trimmed)
+        .map(|(start, chunk)| Chunk {
+            text: chunk.to_string(),
+            start: base + start,
+            end: base + start + chunk.len(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -200,7 +198,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_index_worker_maps_chunks_to_pages() {
+    async fn test_index_worker_records_chunk_spans() {
         let mut harness = IndexHarness::new().await;
         // Three pages of equal length, so chunk boundaries fall inside pages
         // and at least one chunk spans a page boundary.
@@ -209,42 +207,31 @@ mod tests {
         let p1 = page.len();
         let p2 = page.len() * 2;
         let p3 = text.len();
+        let name = "pages.pdf";
         harness
-            .index_document(document("pages.pdf", vec![p1, p2, p3]), &text)
+            .index_document(document(name, vec![p1, p2, p3]), &text)
             .await;
 
         let mut chunks: Vec<IndexedChunk> = harness.search("report");
         chunks.sort_by_key(|c| c.chunk_index);
 
         assert!(chunks.len() > 1, "text must produce multiple chunks");
-        assert_eq!(chunks.first().unwrap().start_page, 1);
-        assert_eq!(chunks.last().unwrap().end_page, 3);
-        assert!(
-            chunks.iter().any(|c| c.start_page == 1 && c.end_page == 2),
-            "expected a chunk spanning pages 1-2: {:?}",
-            chunks
-                .iter()
-                .map(|c| (c.start_page, c.end_page))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            chunks.iter().any(|c| c.start_page == 2 && c.end_page == 3),
-            "expected a chunk spanning pages 2-3: {:?}",
-            chunks
-                .iter()
-                .map(|c| (c.start_page, c.end_page))
-                .collect::<Vec<_>>()
-        );
+        let prefix = format!("[{name}]\n\n");
         for chunk in &chunks {
-            assert!(chunk.start_page <= chunk.end_page);
+            let raw = chunk
+                .content
+                .strip_prefix(&prefix)
+                .expect("indexed content must carry the document-name prefix");
+            assert_eq!(&text[chunk.text_offset_start..chunk.text_offset_end], raw);
         }
+        assert_eq!(chunks.first().unwrap().text_offset_start, 0);
     }
 
     #[test]
     fn test_chunk_text_short() {
         let chunks = chunk_text("Hello world. This is a test.");
         assert_eq!(chunks.len(), 1);
-        assert!(chunks[0].contains("Hello world"));
+        assert!(chunks[0].text.contains("Hello world"));
     }
 
     #[test]
@@ -261,17 +248,13 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_text_utf8_safety() {
-        let input = "日本語のテキストです。".repeat(500);
-        let trimmed = input.trim();
+    fn test_chunk_spans_slice_input_text() {
+        let input = format!("  \n{}\n\n  ", "日本語のテキストです。".repeat(500));
         let chunks = chunk_text(&input);
         assert!(chunks.len() > 1);
         for chunk in &chunks {
-            assert!(!chunk.is_empty());
-            assert!(
-                trimmed.contains(chunk.as_str()),
-                "chunk is not a substring of the input: {chunk:?}"
-            );
+            assert!(!chunk.text.is_empty());
+            assert_eq!(&input[chunk.start..chunk.end], chunk.text);
         }
     }
 }
