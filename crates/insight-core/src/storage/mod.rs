@@ -743,8 +743,8 @@ impl Storage {
 
     /// Delete a document from a collection
     ///
-    /// Sweeps every entry under `files/{id}/`: meta, source, extractions and
-    /// anything added later.
+    /// Deletes the whole `files/{id}/` prefix in one tombstone: meta, source,
+    /// extractions and anything added later.
     pub async fn delete_document(
         &self,
         namespace_id: NamespaceId,
@@ -758,17 +758,7 @@ impl Storage {
             .context("Collection not found")?;
 
         let prefix = format!("{}{}/", FILES_PREFIX, document_id);
-        let stream = doc.get_many(Query::key_prefix(prefix.as_bytes())).await?;
-        tokio::pin!(stream);
-
-        let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
-        while let Some(result) = stream.next().await {
-            keys_to_delete.push(result?.key().to_vec());
-        }
-
-        for key in keys_to_delete {
-            doc.del(self.author_id, key).await?;
-        }
+        doc.del(self.author_id, prefix).await?;
 
         doc.close().await?;
 
@@ -1345,13 +1335,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_document_removes_extractions() {
+    async fn test_delete_document_removes_all_document_entries() {
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp_dir.path()).await.unwrap();
 
         let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
 
-        let doc_id = add_document(&storage, collection_id, "first.pdf", b"source1").await;
+        let source = b"source1";
+        let doc_id = add_document(&storage, collection_id, "first.pdf", source).await;
         add_document(&storage, collection_id, "second.pdf", b"source2").await;
 
         let worked = extraction(parser("worked"), "doc one", vec![7]);
@@ -1364,17 +1355,54 @@ mod tests {
             .await
             .unwrap();
 
-        // Should have 2 documents
-        let docs = storage.list_documents(collection_id).await.unwrap();
-        assert_eq!(docs.len(), 2);
-
-        // Delete first document
         storage
             .delete_document(collection_id, &doc_id)
             .await
             .unwrap();
 
-        // Its extraction is gone with it.
+        // Every entry under the document prefix is gone: metadata, source
+        // and extractions.
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage
+                .get_document_source(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .get_extraction(collection_id, &doc_id, &worked.parser)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .get_canonical_extraction(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.page_count(collection_id, &doc_id).await.unwrap(),
+            None
+        );
+
+        // The document disappears from the collection's listing.
+        let docs = storage.list_documents(collection_id).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].name, "second.pdf");
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);
+
+        // Its source can be imported again as a fresh document, without the
+        // deleted document's extractions.
+        let re_added = add_document(&storage, collection_id, "first.pdf", source).await;
+        assert_eq!(re_added, doc_id);
         assert_eq!(
             storage
                 .get_extraction(collection_id, &doc_id, &worked.parser)
@@ -1386,11 +1414,7 @@ mod tests {
             storage.page_count(collection_id, &doc_id).await.unwrap(),
             None
         );
-
-        // Should have 1 document left
-        let docs = storage.list_documents(collection_id).await.unwrap();
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].name, "second.pdf");
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 2);
     }
 
     #[tokio::test]
