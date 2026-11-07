@@ -82,7 +82,6 @@ pub fn run() {
             commands::documents::get_document_chunks,
             commands::documents::start_import,
             commands::documents::get_pipeline_progress,
-            commands::documents::get_collection_pipeline_progress,
             commands::documents::delete_document,
             // Conversation commands
             commands::conversations::list_conversations,

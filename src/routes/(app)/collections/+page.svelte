@@ -6,10 +6,18 @@
 	import Button from '#lib/components/Button.svelte';
 	import Input from '#lib/components/Input.svelte';
 	import Alert from '#lib/components/Alert.svelte';
-	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import * as collections from '#lib/stores/collections.svelte.js';
+	import {
+		createCollection,
+		deleteCollection,
+		documentCountLabel,
+		importCollection,
+		shareCollection,
+	} from '#lib/api/collection.js';
+	import type { PageProps } from './$types';
+
+	let { data }: PageProps = $props();
 
 	// Create collection state
 	let newCollectionName = $state('');
@@ -29,17 +37,16 @@
 	// Delete confirmation state
 	let deletingCollection = $state<{ id: string; name: string } | null>(null);
 
-	const collectionList = $derived(collections.getCollections());
-	const loading = $derived(collections.isLoading());
-	const loaded = $derived(collections.hasLoadedCollections());
-	const loadError = $derived(collections.getError());
+	const collectionList = $derived(data.collections);
 
 	async function handleCreateCollection() {
 		if (!newCollectionName.trim()) return;
-		const collection = await collections.createCollection(newCollectionName);
-		if (collection) {
+		try {
+			const collection = await createCollection(newCollectionName);
 			newCollectionName = '';
 			goto(resolve(`collections/${collection.id}`));
+		} catch (e) {
+			console.error('Failed to create collection:', e);
 		}
 	}
 
@@ -49,11 +56,13 @@
 		shareError = null;
 		ticketCopied = false;
 
-		const ticket = await collections.shareCollection(collectionId);
-		if (sharingCollectionId !== collectionId) return; // modal was closed meanwhile
-		if (ticket) {
+		try {
+			const ticket = await shareCollection(collectionId);
+			if (sharingCollectionId !== collectionId) return; // modal was closed meanwhile
 			shareTicket = ticket;
-		} else {
+		} catch (e) {
+			if (sharingCollectionId !== collectionId) return;
+			console.error('Failed to share collection:', e);
 			shareError = 'Failed to generate share ticket';
 		}
 	}
@@ -81,22 +90,28 @@
 		importingCollection = true;
 		importError = null;
 
-		const collection = await collections.importCollection(importTicket);
-		if (collection) {
+		try {
+			const collection = await importCollection(importTicket);
 			importTicket = '';
 			showImportModal = false;
 			goto(resolve(`collections/${collection.id}`));
-		} else {
+		} catch (e) {
+			console.error('Failed to import collection:', e);
 			importError = 'Failed to import collection';
+		} finally {
+			importingCollection = false;
 		}
-		importingCollection = false;
 	}
 
 	async function handleDeleteCollection() {
 		if (!deletingCollection) return;
 		const id = deletingCollection.id;
 		deletingCollection = null;
-		await collections.deleteCollection(id);
+		try {
+			await deleteCollection(id);
+		} catch (e) {
+			console.error('Failed to delete collection:', e);
+		}
 	}
 </script>
 
@@ -124,68 +139,53 @@
 		</div>
 
 		<!-- Collections grid -->
-		{#if !loaded}
-			{#if loading}
-				<div class="flex justify-center py-12">
-					<LoadingSpinner size="lg" ariaLabel="Loading collections" />
-				</div>
-			{:else if loadError}
-				<Alert>Failed to load collections: {loadError}</Alert>
-			{/if}
+		{#if collectionList.length === 0}
+			<EmptyState
+				title="No collections yet"
+				description="Create one above to start organizing your documents."
+			/>
 		{:else}
-			{#if loadError}
-				<div class="mb-4">
-					<Alert>Failed to load collections: {loadError}</Alert>
-				</div>
-			{/if}
-			{#if collectionList.length === 0}
-				<EmptyState
-					title="No collections yet"
-					description="Create one above to start organizing your documents."
-				/>
-			{:else}
-				<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-					{#each collectionList as collection (collection.id)}
-						<article
-							class="card flex flex-col p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
-						>
-							<a href={resolve(`collections/${collection.id}`)} class="block">
-								<h3 class="font-medium text-neutral-800">
-									{collection.name}
-								</h3>
-								<p class="mt-1 text-sm text-muted">
-									{collections.documentCountLabel(collection.document_count)}
-								</p>
-								<p class="mt-3 text-sm font-medium text-primary-600">
-									Open research workspace
-									<span aria-hidden="true">→</span>
-								</p>
-							</a>
+			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+				{#each collectionList as collection (collection.id)}
+					<article
+						class="card flex flex-col p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
+					>
+						<a href={resolve(`collections/${collection.id}`)} class="block">
+							<h3 class="font-medium text-neutral-800">
+								{collection.name}
+							</h3>
+							<p class="mt-1 text-sm text-muted">
+								{documentCountLabel(collection.document_count)}
+							</p>
+							<p class="mt-3 text-sm font-medium text-primary-600">
+								Open research workspace
+								<span aria-hidden="true">→</span>
+							</p>
+						</a>
 
-							<div class="mt-4 flex gap-2 border-t border-line pt-3">
-								<Button
-									variant="secondary"
-									size="sm"
-									onclick={() => openShareModal(collection.id)}
-								>
-									Share
-								</Button>
-								<Button
-									variant="danger"
-									size="sm"
-									onclick={() =>
-										(deletingCollection = {
-											id: collection.id,
-											name: collection.name,
-										})}
-								>
-									Delete
-								</Button>
-							</div>
-						</article>
-					{/each}
-				</div>
-			{/if}
+						<div class="mt-4 flex gap-2 border-t border-line pt-3">
+							<Button
+								variant="secondary"
+								size="sm"
+								onclick={() => openShareModal(collection.id)}
+							>
+								Share
+							</Button>
+							<Button
+								variant="danger"
+								size="sm"
+								onclick={() =>
+									(deletingCollection = {
+										id: collection.id,
+										name: collection.name,
+									})}
+							>
+								Delete
+							</Button>
+						</div>
+					</article>
+				{/each}
+			</div>
 		{/if}
 	</div>
 </div>

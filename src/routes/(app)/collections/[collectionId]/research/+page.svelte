@@ -3,12 +3,11 @@
 	import Chat from '#lib/components/Chat.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
-	import * as collections from '#lib/stores/collections.svelte.js';
 	import { isProviderReady } from '#lib/api/provider.js';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
 	const collectionId = $derived(page.params.collectionId ?? '');
-	const collection = $derived(collections.getCollection(collectionId));
+	const collection = $derived(page.data.collection);
 	const providerReady = $derived(isProviderReady(page.data.provider));
 	const activeCollectionId = $derived(chat.getActiveCollectionId());
 
@@ -24,7 +23,7 @@
 <div class="flex h-full overflow-hidden">
 	<!-- Left sidebar: this collection's conversation history, always local -->
 	<aside
-		class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-neutral-200 bg-surface-dim"
+		class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface-dim"
 	>
 		{#if activeCollectionId === collectionId}
 			<ConversationSidebar
@@ -33,7 +32,7 @@
 			/>
 		{:else}
 			<div class="flex h-full items-center justify-center">
-				<LoadingSpinner />
+				<LoadingSpinner ariaLabel="Loading conversations" />
 			</div>
 		{/if}
 	</aside>
@@ -42,7 +41,7 @@
 	<main class="min-w-0 flex-1 overflow-hidden">
 		{#if activeCollectionId !== collectionId || !collection}
 			<div class="flex h-full items-center justify-center bg-surface">
-				<LoadingSpinner size="lg" />
+				<LoadingSpinner size="lg" ariaLabel="Loading collection" />
 			</div>
 		{:else}
 			<Chat

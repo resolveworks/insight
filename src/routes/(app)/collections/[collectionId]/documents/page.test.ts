@@ -1,10 +1,22 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { screen, waitFor, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
+import { page } from '$app/state';
+import Page from './+page.svelte';
+
+type EventListener = (event: { payload: unknown }) => void;
+const listeners = new Map<string, EventListener>();
 
 vi.mock('@tauri-apps/api/event', () => ({
-	listen: vi.fn(async () => () => {}),
+	listen: vi.fn(async (name: string, cb: EventListener) => {
+		listeners.set(name, cb);
+		return () => listeners.delete(name);
+	}),
 }));
+
+function emit(name: string, payload: unknown) {
+	listeners.get(name)?.({ payload });
+}
 
 const collection = {
 	id: 'col1',
@@ -12,6 +24,8 @@ const collection = {
 	document_count: 1,
 	total_pages: 12,
 };
+
+const providerStatus = { family: null, model: null, error: null };
 
 const document = {
 	id: 'doc1',
@@ -22,118 +36,49 @@ const document = {
 	created_at: '2024-01-15T10:30:00Z',
 };
 
-let cleanupFresh: (() => void) | undefined;
+const activeProgress = {
+	collection_id: 'col1',
+	store: { pending: 0, active: 0, completed: 1, failed: 0 },
+	extract: { pending: 1, active: 1, completed: 0, failed: 0 },
+	index: { pending: 0, active: 0, completed: 0, failed: 0 },
+};
 
-/**
- * The collections store self-initializes on import, so each test re-imports
- * the page with a fresh module graph after installing its IPC mock.
- */
-async function renderPage() {
-	vi.resetModules();
-	const [{ default: Page }, { render, cleanup }, { page }] = await Promise.all([
-		import('./+page.svelte'),
-		import('@testing-library/svelte'),
-		import('$app/state'),
-	]);
-	page.url = new URL('http://localhost/collections/col1/documents');
-	page.params = { collectionId: 'col1' };
-	cleanupFresh = cleanup;
-	render(Page);
-}
+const idleProgress = {
+	collection_id: 'col1',
+	store: { pending: 0, active: 0, completed: 1, failed: 0 },
+	extract: { pending: 0, active: 0, completed: 2, failed: 0 },
+	index: { pending: 0, active: 0, completed: 2, failed: 0 },
+};
 
-afterEach(() => {
-	cleanupFresh?.();
-	cleanupFresh = undefined;
+beforeEach(() => {
+	listeners.clear();
+	mockIPC((cmd) => {
+		if (cmd === 'get_pipeline_progress') return [];
+	});
 });
 
+function renderPage(documents = [document]) {
+	page.url = new URL('http://localhost/collections/col1/documents');
+	page.params = { collectionId: 'col1' };
+	render(Page, {
+		props: {
+			params: { collectionId: 'col1' },
+			data: {
+				collections: [collection],
+				collection,
+				documents,
+				provider: { current: null, status: providerStatus },
+				providerError: null,
+			},
+		},
+	});
+}
+
 describe('Collection documents page', () => {
-	it('shows loading instead of the empty state until documents arrive', async () => {
-		let resolveDocuments: (value: unknown[]) => void = () => {};
-		mockIPC((cmd) => {
-			if (cmd === 'get_collections') return [collection];
-			if (cmd === 'get_documents')
-				return new Promise((resolve) => {
-					resolveDocuments = resolve;
-				});
-			if (cmd === 'get_pipeline_progress') return [];
-		});
+	it('explains the empty collection and offers importing a PDF', () => {
+		renderPage([]);
 
-		await renderPage();
-
-		expect(
-			await screen.findByRole('status', { name: 'Loading documents' }),
-		).toBeInTheDocument();
-		expect(screen.queryByText('No documents yet')).not.toBeInTheDocument();
-
-		resolveDocuments([]);
-		await waitFor(() => {
-			expect(screen.getByText('No documents yet')).toBeInTheDocument();
-		});
-	});
-
-	it('replaces the spinner with the load error and retries into the empty state', async () => {
-		let attempts = 0;
-		mockIPC((cmd) => {
-			if (cmd === 'get_collections') return [collection];
-			if (cmd === 'get_documents') {
-				attempts += 1;
-				if (attempts === 1) throw new Error('storage unavailable');
-				return [];
-			}
-			if (cmd === 'get_pipeline_progress') return [];
-		});
-
-		await renderPage();
-
-		expect(
-			await screen.findByText('Failed to load documents: storage unavailable'),
-		).toBeInTheDocument();
-		expect(screen.queryByRole('status')).not.toBeInTheDocument();
-
-		await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-
-		expect(await screen.findByText('No documents yet')).toBeInTheDocument();
-		expect(
-			screen.queryByText(/Failed to load documents/),
-		).not.toBeInTheDocument();
-		expect(attempts).toBe(2);
-	});
-
-	it('retries a failed load into the document list', async () => {
-		let attempts = 0;
-		mockIPC((cmd) => {
-			if (cmd === 'get_collections') return [collection];
-			if (cmd === 'get_documents') {
-				attempts += 1;
-				if (attempts === 1) throw new Error('storage unavailable');
-				return [document];
-			}
-			if (cmd === 'get_pipeline_progress') return [];
-		});
-
-		await renderPage();
-
-		await screen.findByText('Failed to load documents: storage unavailable');
-		await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-
-		expect(
-			await screen.findByRole('link', { name: /report\.pdf/ }),
-		).toHaveAttribute('href', '/collections/col1/documents/doc1');
-		expect(
-			screen.queryByText(/Failed to load documents/),
-		).not.toBeInTheDocument();
-	});
-
-	it('explains the empty collection and offers importing a PDF', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'get_collections') return [collection];
-			if (cmd === 'get_documents') return [];
-			if (cmd === 'get_pipeline_progress') return [];
-		});
-
-		await renderPage();
-
-		expect(await screen.findByText('No documents yet')).toBeInTheDocument();
+		expect(screen.getByText('No documents yet')).toBeInTheDocument();
 		expect(
 			screen.getByText(
 				'The research agent answers from documents in this collection. Import a PDF to give it sources.',
@@ -145,15 +90,9 @@ describe('Collection documents page', () => {
 	});
 
 	it('shows each document as a link with a labeled delete action', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'get_collections') return [collection];
-			if (cmd === 'get_documents') return [document];
-			if (cmd === 'get_pipeline_progress') return [];
-		});
+		renderPage();
 
-		await renderPage();
-
-		const link = await screen.findByRole('link', { name: /report\.pdf/ });
+		const link = screen.getByRole('link', { name: /report\.pdf/ });
 		expect(link).toHaveAttribute('href', '/collections/col1/documents/doc1');
 		expect(screen.getByText('12 pages')).toBeInTheDocument();
 
@@ -165,7 +104,26 @@ describe('Collection documents page', () => {
 
 		await fireEvent.click(del);
 		expect(
-			await screen.findByRole('dialog', { name: 'Delete document' }),
+			screen.getByRole('dialog', { name: 'Delete document' }),
 		).toHaveTextContent('from this collection');
+	});
+
+	it('shows pipeline progress and returns to the empty state when it goes idle', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_pipeline_progress') return [activeProgress];
+		});
+
+		renderPage([]);
+
+		expect(
+			await screen.findByText('Processing documents…'),
+		).toBeInTheDocument();
+		expect(screen.getByText('Extract')).toBeInTheDocument();
+		expect(screen.getByText('0/2')).toBeInTheDocument();
+
+		emit('pipeline-progress', idleProgress);
+
+		expect(await screen.findByText('No documents yet')).toBeInTheDocument();
+		expect(screen.queryByText('Extract')).not.toBeInTheDocument();
 	});
 });

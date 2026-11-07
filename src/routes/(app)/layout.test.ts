@@ -1,8 +1,12 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import { createRawSnippet } from 'svelte';
 import { page } from '$app/state';
 import Layout from './+layout.svelte';
+
+vi.mock('@tauri-apps/api/event', () => ({
+	listen: vi.fn(async () => () => {}),
+}));
 
 describe('App layout navigation', () => {
 	afterEach(() => {

@@ -6,7 +6,7 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import BackLink from '#lib/components/BackLink.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
-	import type { Document } from '#lib/stores/collections.svelte.js';
+	import type { Document } from '#lib/types/documents.js';
 
 	let document = $state<Document | null>(null);
 	let content = $state<string | null>(null);
@@ -135,7 +135,7 @@
 		</div>
 
 		{#if loading}
-			<LoadingSpinner size="sm" ariaLabel="Loading document" />
+			<LoadingSpinner size="lg" ariaLabel="Loading document" />
 		{:else if error}
 			<Alert>{error}</Alert>
 		{:else if document}

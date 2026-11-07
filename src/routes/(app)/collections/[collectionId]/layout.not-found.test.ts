@@ -1,41 +1,67 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
-import { createRawSnippet } from 'svelte';
 import { page } from '$app/state';
+import { invalidate } from '$app/navigation';
+import ErrorPage from './+error.svelte';
+import { load } from './+layout';
 
 vi.mock('@tauri-apps/api/event', () => ({
 	listen: vi.fn(async () => () => {}),
 }));
 
-let Layout: typeof import('./+layout.svelte').default;
+describe('Collection workspace load for an unknown collection', () => {
+	it('fails with 404 instead of rendering a generic collection title', async () => {
+		mockIPC(() => []);
 
-beforeAll(async () => {
-	mockIPC((cmd) => {
-		if (cmd === 'get_collections') return [];
-		if (cmd === 'get_pipeline_progress') return [];
+		let failure: unknown;
+		try {
+			await load({
+				params: { collectionId: 'missing' },
+				depends: vi.fn(),
+				parent: async () => ({ collections: [] }),
+			} as unknown as Parameters<typeof load>[0]);
+		} catch (e) {
+			failure = e;
+		}
+
+		expect(failure).toMatchObject({
+			status: 404,
+			body: { message: 'Collection not found' },
+		});
 	});
-	Layout = (await import('./+layout.svelte')).default;
-});
 
-describe('Collection workspace shell for an unknown collection', () => {
-	it('shows a not-found state instead of a generic collection title', async () => {
+	it('shows a not-found state with a way back to collections', () => {
 		page.url = new URL('http://localhost/collections/missing/research');
 		page.route.id = '/(app)/collections/[collectionId]/research';
 		page.params = { collectionId: 'missing' };
+		page.status = 404;
+		page.error = { message: 'Collection not found', status: 404 };
 
-		render(Layout, {
-			props: {
-				children: createRawSnippet(() => ({ render: () => '<span></span>' })),
-			},
-		});
+		render(ErrorPage);
 
-		await waitFor(() => {
-			expect(screen.getByText('Collection not found')).toBeInTheDocument();
-		});
+		expect(screen.getByText('Collection not found')).toBeInTheDocument();
 		expect(
 			screen.getByRole('link', { name: 'Back to collections' }),
 		).toHaveAttribute('href', '/collections');
-		expect(screen.queryByText('Collection')).not.toBeInTheDocument();
+	});
+
+	it('shows a failed load and retries the collection', async () => {
+		page.url = new URL('http://localhost/collections/missing/documents');
+		page.params = { collectionId: 'missing' };
+		page.status = 500;
+		page.error = { message: 'storage unavailable', status: 500 };
+
+		render(ErrorPage);
+
+		expect(
+			screen.getByText('Failed to load documents: storage unavailable'),
+		).toBeInTheDocument();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith('app:collection:missing'),
+		);
 	});
 });
