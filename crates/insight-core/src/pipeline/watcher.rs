@@ -1,6 +1,7 @@
-//! Collection watcher for event-driven pipeline.
+//! Collection watcher for remote pipeline changes.
 //!
-//! Watches iroh-docs events and dispatches to worker pools based on key patterns.
+//! Local imports hand work to the workers explicitly. The watcher only reacts
+//! to remote `files/` entries, queuing index reconciliation for their document.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,32 +12,16 @@ use iroh_docs::{ContentStatus, NamespaceId};
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::{is_doc_meta_key, LiveEvent, Storage};
+use crate::storage::{LiveEvent, Storage};
 
 use super::progress::ProgressTracker;
-use super::types::{ExtractJob, IndexJob, Stage};
+use super::types::{IndexJob, Stage};
 use super::AppEvent;
 
-/// Grouped job dispatch channels for pipeline stages.
+/// Dispatch channels for watcher-originated work.
 pub struct JobSenders {
-    pub extract: mpsc::UnboundedSender<ExtractJob>,
     pub index: mpsc::UnboundedSender<IndexJob>,
     pub events: mpsc::UnboundedSender<AppEvent>,
-}
-
-/// Check if key is an extraction entry: files/{doc_id}/extractions/{parser_key}
-fn is_extraction_key(key: &str) -> bool {
-    let Some(rest) = key.strip_prefix("files/") else {
-        return false;
-    };
-    let mut parts = rest.split('/');
-    let _doc_id = parts.next();
-    parts.next() == Some("extractions")
-}
-
-/// Check if key is a document source entry: files/{doc_id}/source
-fn is_source_key(key: &str) -> bool {
-    key.starts_with("files/") && key.ends_with("/source")
 }
 
 /// Extract doc_id from a files/{doc_id}/... key
@@ -53,10 +38,8 @@ pub struct CollectionWatcher {
 impl CollectionWatcher {
     /// Spawn a watcher for a collection.
     ///
-    /// The watcher subscribes to iroh-docs events and dispatches jobs
-    /// to the appropriate worker pools based on key patterns:
-    /// - files/*/source (InsertLocal only) → Extract
-    /// - files/*/meta or files/*/extractions/* (local or remote) → Index
+    /// The watcher subscribes to iroh-docs events. Local inserts are ignored;
+    /// remote `files/` entries queue index reconciliation for their document.
     pub fn spawn(
         namespace_id: NamespaceId,
         storage: Arc<RwLock<Storage>>,
@@ -113,7 +96,7 @@ async fn run_watcher(
     tokio::pin!(stream);
 
     let collection_id = namespace_id.to_string();
-    let mut pending_extractions: HashMap<Hash, String> = HashMap::new();
+    let mut pending_content: HashMap<Hash, String> = HashMap::new();
     tracing::info!(namespace = %namespace_id, "CollectionWatcher started");
 
     loop {
@@ -134,7 +117,7 @@ async fn run_watcher(
                             &collection_id,
                             &senders,
                             &progress,
-                            &mut pending_extractions,
+                            &mut pending_content,
                         )
                         .await;
                     }
@@ -164,22 +147,19 @@ async fn handle_event(
     collection_id: &str,
     senders: &JobSenders,
     progress: &ProgressTracker,
-    pending_extractions: &mut HashMap<Hash, String>,
+    pending_content: &mut HashMap<Hash, String>,
 ) {
-    let (key_bytes, is_local, content_status, content_hash) = match event {
-        LiveEvent::InsertLocal { entry } => (
-            entry.key(),
-            true,
-            ContentStatus::Complete,
-            entry.content_hash(),
-        ),
+    let (key_bytes, content_status, content_hash) = match event {
+        // A local import hands its work off explicitly; local entries never
+        // drive the pipeline through the watcher.
+        LiveEvent::InsertLocal { .. } => return,
         LiveEvent::InsertRemote {
             entry,
             content_status,
             ..
-        } => (entry.key(), false, *content_status, entry.content_hash()),
+        } => (entry.key(), *content_status, entry.content_hash()),
         LiveEvent::ContentReady { hash } => {
-            if let Some(doc_id) = pending_extractions.remove(hash) {
+            if let Some(doc_id) = pending_content.remove(hash) {
                 queue_index(namespace_id, collection_id, &doc_id, senders, progress).await;
             }
             return;
@@ -193,35 +173,21 @@ async fn handle_event(
     };
 
     let key = String::from_utf8_lossy(key_bytes);
-    if !key.starts_with("files/") {
+    let Some(doc_id) = extract_doc_id(&key) else {
         return;
-    }
-
-    let doc_id = match extract_doc_id(&key) {
-        Some(id) => id.to_string(),
-        None => return,
     };
+    let doc_id = doc_id.to_string();
 
-    if is_source_key(&key) && is_local {
-        // Local source stored → queue extract
-        tracing::debug!(doc_id = %doc_id, "Source stored, queuing extract");
-        progress.queue(collection_id, Stage::Extract).await;
-        let _ = senders.extract.send(ExtractJob {
-            namespace_id,
-            doc_id,
-        });
-    } else if is_doc_meta_key(&key) || is_extraction_key(&key) {
-        if is_extraction_key(&key) && !is_local && content_status != ContentStatus::Complete {
-            // The entry arrived before its record blob. Wait for the
-            // matching ContentReady before queueing the index job.
-            tracing::debug!(
-                doc_id = %doc_id,
-                "Extraction entry pending content; waiting for ContentReady"
-            );
-            pending_extractions.insert(content_hash, doc_id);
-        } else {
-            queue_index(namespace_id, collection_id, &doc_id, senders, progress).await;
-        }
+    if content_status != ContentStatus::Complete {
+        // The entry arrived before its content blob. Wait for the matching
+        // ContentReady before queueing the index job.
+        tracing::debug!(
+            doc_id = %doc_id,
+            "Remote entry pending content; waiting for ContentReady"
+        );
+        pending_content.insert(content_hash, doc_id);
+    } else {
+        queue_index(namespace_id, collection_id, &doc_id, senders, progress).await;
     }
 }
 
@@ -254,10 +220,11 @@ fn invalidate(namespace_id: NamespaceId, senders: &JobSenders) {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use iroh::SecretKey;
+    use iroh_docs::{AuthorId, Entry, Record, RecordIdentifier};
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::storage::CollectionMetadata;
 
     /// Receive the next item, or `None` if nothing arrives within `budget`.
     async fn recv_within<T>(rx: &mut mpsc::UnboundedReceiver<T>, budget: Duration) -> Option<T> {
@@ -305,151 +272,119 @@ mod tests {
         }
     }
 
-    /// Write one entry through the docs API, the way collection metadata is written.
-    async fn set_entry(storage: &RwLock<Storage>, namespace: NamespaceId, key: &str, value: &[u8]) {
-        let storage = storage.read().await;
-        let doc = storage
-            .docs()
-            .open(namespace)
-            .await
-            .unwrap()
-            .expect("collection missing");
-        doc.set_bytes(storage.author_id(), key.to_string(), value.to_vec())
-            .await
-            .unwrap();
-        doc.close().await.unwrap();
+    fn entry(namespace: NamespaceId, key: &str) -> Entry {
+        Entry::new(
+            RecordIdentifier::new(namespace, AuthorId::default(), key.as_bytes()),
+            Record::new(Hash::new(key.as_bytes()), key.len() as u64, 0),
+        )
     }
 
-    /// A stored source routes to an extract job, metadata and extraction
-    /// entries route to an index job, and keys outside `files/` route nowhere.
-    #[tokio::test]
-    async fn routes_stored_entries_to_pipeline_jobs() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let storage = Arc::new(RwLock::new(Storage::open(temp_dir.path()).await.unwrap()));
-        let (namespace, _) = storage
-            .read()
-            .await
-            .create_collection("Watcher Test")
-            .await
-            .unwrap();
+    fn insert_local(namespace: NamespaceId, key: &str) -> LiveEvent {
+        LiveEvent::InsertLocal {
+            entry: entry(namespace, key),
+        }
+    }
 
-        let (extract_tx, mut extract_rx) = mpsc::unbounded_channel();
+    fn insert_remote(
+        namespace: NamespaceId,
+        key: &str,
+        content_status: ContentStatus,
+    ) -> LiveEvent {
+        LiveEvent::InsertRemote {
+            from: SecretKey::generate().public(),
+            entry: entry(namespace, key),
+            content_status,
+        }
+    }
+
+    /// Local entries are handed off explicitly by the import and extract
+    /// stages; the watcher must not queue work or invalidate for them.
+    #[tokio::test]
+    async fn ignores_local_pipeline_entries() {
+        let namespace = NamespaceId::default();
         let (index_tx, mut index_rx) = mpsc::unbounded_channel();
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let progress = ProgressTracker::new(events_tx.clone());
-        let watcher = CollectionWatcher::spawn(
-            namespace,
-            storage.clone(),
-            JobSenders {
-                extract: extract_tx,
-                index: index_tx,
-                events: events_tx,
-            },
-            progress,
-            CancellationToken::new(),
-        );
-
-        // The watcher subscribes from its own task, so probe with a metadata
-        // entry until its index job arrives; distinct values guarantee a fresh
-        // InsertLocal event per attempt.
-        let live = tokio::time::timeout(Duration::from_secs(30), async {
-            for attempt in 0.. {
-                set_entry(
-                    &storage,
-                    namespace,
-                    "files/probe/meta",
-                    format!("probe {attempt}").as_bytes(),
-                )
-                .await;
-                if let Some(job) = recv_within(&mut index_rx, Duration::from_millis(500)).await {
-                    assert_eq!(job.doc_id, "probe");
-                    return;
-                }
-            }
-        })
-        .await;
-        assert!(live.is_ok(), "watcher never subscribed to the collection");
-
-        // A non-files/ key must not dispatch a job or invalidate the collection.
-        let metadata = CollectionMetadata {
-            name: "Watcher Test".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
+        let senders = JobSenders {
+            index: index_tx,
+            events: events_tx.clone(),
         };
-        set_entry(
-            &storage,
-            namespace,
+        let progress = ProgressTracker::new(events_tx);
+        let mut pending = HashMap::new();
+
+        for key in [
+            "files/doc1/source",
+            "files/doc1/meta",
+            "files/doc1/extractions/test@1",
             "_collection",
-            &serde_json::to_vec(&metadata).unwrap(),
+        ] {
+            handle_event(
+                &insert_local(namespace, key),
+                namespace,
+                &namespace.to_string(),
+                &senders,
+                &progress,
+                &mut pending,
+            )
+            .await;
+        }
+
+        assert!(recv_within(&mut index_rx, Duration::from_millis(200))
+            .await
+            .is_none());
+        assert_quiet(&mut events_rx, namespace, Duration::from_millis(200)).await;
+        assert!(pending.is_empty());
+        assert!(progress.get(&namespace.to_string()).await.is_none());
+    }
+
+    /// Remote `files/` entries queue index reconciliation for their document;
+    /// keys outside a document prefix route nowhere.
+    #[tokio::test]
+    async fn queues_remote_files_entries_for_indexing() {
+        let namespace = NamespaceId::default();
+        let (index_tx, mut index_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let senders = JobSenders {
+            index: index_tx,
+            events: events_tx.clone(),
+        };
+        let progress = ProgressTracker::new(events_tx);
+        let mut pending = HashMap::new();
+
+        for key in [
+            "files/doc1/meta",
+            "files/doc1/source",
+            "files/doc1/extractions/test@1",
+        ] {
+            handle_event(
+                &insert_remote(namespace, key, ContentStatus::Complete),
+                namespace,
+                &namespace.to_string(),
+                &senders,
+                &progress,
+                &mut pending,
+            )
+            .await;
+            let job = recv_within(&mut index_rx, Duration::from_secs(1))
+                .await
+                .expect("remote files entry was not queued for indexing");
+            assert_eq!(job.doc_id, "doc1");
+            assert_eq!(job.namespace_id, namespace);
+        }
+
+        handle_event(
+            &insert_remote(namespace, "_collection", ContentStatus::Complete),
+            namespace,
+            &namespace.to_string(),
+            &senders,
+            &progress,
+            &mut pending,
         )
         .await;
-        assert!(recv_within(&mut extract_rx, Duration::from_millis(500))
+        assert!(recv_within(&mut index_rx, Duration::from_millis(200))
             .await
             .is_none());
-        assert!(recv_within(&mut index_rx, Duration::from_millis(500))
-            .await
-            .is_none());
-        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
-
-        // Writing document metadata must queue indexing for its document,
-        // with no invalidation: the local command reports its own outcome.
-        set_entry(&storage, namespace, "files/meta-doc/meta", b"{}").await;
-        let job = recv_within(&mut index_rx, Duration::from_secs(10))
-            .await
-            .expect("metadata insert was not queued for indexing");
-        assert_eq!(job.doc_id, "meta-doc");
-        assert_eq!(job.namespace_id, namespace);
-        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
-
-        // Storing a source file must queue extraction for its document.
-        let pdf_path = temp_dir.path().join("paper.pdf");
-        tokio::fs::write(&pdf_path, b"%PDF-1.4 watcher test")
-            .await
-            .unwrap();
-        let document = storage
-            .read()
-            .await
-            .store_pdf_source(&pdf_path, namespace)
-            .await
-            .unwrap();
-        let doc_id = document.id;
-        let job = recv_within(&mut extract_rx, Duration::from_secs(10))
-            .await
-            .expect("stored source was not queued for extraction");
-        assert_eq!(job.doc_id, doc_id);
-        assert_eq!(job.namespace_id, namespace);
-        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
-
-        // Writing an extraction must queue indexing for the same document.
-        let text = "page one text";
-        let extraction = crate::text::Extraction {
-            parser: crate::text::ParserId {
-                name: "test-parser".to_string(),
-                version: "1".to_string(),
-            },
-            text: text.to_string(),
-            unit_kind: Some(crate::text::UnitKind::Page),
-            units: vec![crate::text::Unit {
-                number: 1,
-                spans: vec![crate::text::TextSpan {
-                    start: 0,
-                    end: text.len(),
-                }],
-            }],
-        };
-        storage
-            .read()
-            .await
-            .write_extraction(namespace, &doc_id, &extraction)
-            .await
-            .unwrap();
-        let job = recv_within(&mut index_rx, Duration::from_secs(10))
-            .await
-            .expect("stored extraction was not queued for indexing");
-        assert_eq!(job.doc_id, doc_id);
-        assert_eq!(job.namespace_id, namespace);
-        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
-
-        watcher.stop();
+        assert_quiet(&mut events_rx, namespace, Duration::from_millis(200)).await;
+        assert!(pending.is_empty());
     }
 
     /// A finished peer sync changes a collection's listing with no local
@@ -459,15 +394,12 @@ mod tests {
     async fn reports_collection_changed_only_for_peer_sync() {
         use std::time::SystemTime;
 
-        use iroh::SecretKey;
         use iroh_docs::engine::{Origin, SyncEvent};
 
         let namespace = NamespaceId::default();
-        let (extract_tx, _extract_rx) = mpsc::unbounded_channel();
         let (index_tx, _index_rx) = mpsc::unbounded_channel();
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let senders = JobSenders {
-            extract: extract_tx,
             index: index_tx,
             events: events_tx.clone(),
         };
@@ -518,34 +450,28 @@ mod tests {
         assert_quiet(&mut events_rx, namespace, Duration::from_millis(300)).await;
     }
 
-    /// A remote extraction entry whose content is not local yet waits for
-    /// the matching ContentReady event before queueing an index job.
+    /// A remote entry whose content is not local yet waits for the matching
+    /// ContentReady event before queueing an index job.
     #[tokio::test]
-    async fn waits_for_content_ready_before_indexing_remote_extraction() {
-        use iroh::SecretKey;
-        use iroh_docs::{AuthorId, Entry, Record, RecordIdentifier};
-
+    async fn waits_for_content_ready_before_indexing_remote_entry() {
         let namespace = NamespaceId::default();
-        let content_hash = Hash::new(b"extraction record");
-        let entry = Entry::new(
-            RecordIdentifier::new(
-                namespace,
-                AuthorId::default(),
-                b"files/doc1/extractions/p@1",
-            ),
-            Record::new(content_hash, 17, 0),
-        );
+        let content_hash = Hash::new(b"remote record");
         let event = LiveEvent::InsertRemote {
             from: SecretKey::generate().public(),
-            entry,
+            entry: Entry::new(
+                RecordIdentifier::new(
+                    namespace,
+                    AuthorId::default(),
+                    b"files/doc1/extractions/p@1",
+                ),
+                Record::new(content_hash, 17, 0),
+            ),
             content_status: ContentStatus::Missing,
         };
 
-        let (extract_tx, mut extract_rx) = mpsc::unbounded_channel();
         let (index_tx, mut index_rx) = mpsc::unbounded_channel();
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
         let senders = JobSenders {
-            extract: extract_tx,
             index: index_tx,
             events: events_tx.clone(),
         };
@@ -566,9 +492,6 @@ mod tests {
         assert!(recv_within(&mut index_rx, Duration::from_millis(200))
             .await
             .is_none());
-        assert!(recv_within(&mut extract_rx, Duration::from_millis(200))
-            .await
-            .is_none());
 
         handle_event(
             &LiveEvent::ContentReady { hash: content_hash },
@@ -582,7 +505,7 @@ mod tests {
 
         let job = recv_within(&mut index_rx, Duration::from_secs(1))
             .await
-            .expect("content-ready extraction was not queued for indexing");
+            .expect("content-ready entry was not queued for indexing");
         assert_eq!(job.doc_id, "doc1");
         assert_eq!(job.namespace_id, namespace);
         assert!(pending.is_empty());

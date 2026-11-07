@@ -60,12 +60,15 @@ mod tests {
     use super::super::workers::{spawn_index_worker, SharedReceiver};
     use super::*;
     use crate::pipeline::{AppEvent, IndexJob, ProgressTracker, Stage};
-    use crate::search::{get_indexed_chunk, search_index, IndexedChunk, SearchParams};
+    use crate::search::{
+        chunk_external_id, get_indexed_chunk, index_chunks_batch, search_index, ChunkToIndex,
+        IndexedChunk, SearchParams,
+    };
     use crate::storage::Storage;
     use crate::text::{Extraction, ParserId, TextSpan, Unit, UnitKind};
 
     /// Drives the real pipeline index worker over a temporary storage and
-    /// search index, the way the pipeline's watcher does.
+    /// search index, queuing jobs the way the pipeline does.
     struct IndexHarness {
         storage: Arc<RwLock<Storage>>,
         index: Arc<milli::Index>,
@@ -200,6 +203,39 @@ mod tests {
             self.run_index(&doc_id).await;
         }
 
+        /// Put a stale chunk for a document into the search index, as if an
+        /// earlier canonical extraction had been indexed.
+        fn seed_stale_chunk(&self, doc_id: &str, content: &str) {
+            let collection_id = self.namespace_id.to_string();
+            index_chunks_batch(
+                &self.index,
+                &IndexerConfig::default(),
+                vec![ChunkToIndex {
+                    id: chunk_external_id(&collection_id, doc_id, 0),
+                    parent_id: doc_id.to_string(),
+                    parent_name: format!("{doc_id}.pdf"),
+                    chunk_index: 0,
+                    content: content.to_string(),
+                    collection_id,
+                    text_offset_start: 0,
+                    text_offset_end: content.len(),
+                }],
+            )
+            .unwrap();
+        }
+
+        /// Assert the index stage has no outstanding work.
+        async fn assert_index_terminal(&self) {
+            let progress = self
+                .progress
+                .get(&self.namespace_id.to_string())
+                .await
+                .expect("collection progress");
+            assert_eq!(progress.index.active, 0);
+            assert_eq!(progress.index.failed, 0);
+            assert!(!progress.index.is_active());
+        }
+
         fn search(&self, query: &str) -> Vec<IndexedChunk> {
             let results = search_index(
                 &self.index,
@@ -332,6 +368,35 @@ mod tests {
         let progress = harness.progress.get(&collection_id).await.unwrap();
         assert_eq!(progress.index.active, 0);
         assert!(!progress.index.is_active());
+    }
+
+    #[tokio::test]
+    async fn test_index_worker_evicts_chunks_when_canonical_extraction_is_missing() {
+        let mut harness = IndexHarness::new().await;
+        let doc_id = harness.store_document("Missing_Canonical.pdf").await;
+        harness.seed_stale_chunk(&doc_id, "stalequux findings");
+        assert_eq!(harness.search("stalequux").len(), 1);
+
+        harness.run_index(&doc_id).await;
+
+        assert!(harness.search("stalequux").is_empty());
+        harness.assert_index_terminal().await;
+    }
+
+    #[tokio::test]
+    async fn test_index_worker_evicts_chunks_when_canonical_text_is_empty() {
+        let mut harness = IndexHarness::new().await;
+        let doc_id = harness.store_document("Empty_Canonical.pdf").await;
+        let empty = extraction(parser("empty"), "  \n\t ", vec![0]);
+        harness.write_extraction(&doc_id, &empty).await;
+        harness.set_canonical(&doc_id, &empty.parser).await;
+        harness.seed_stale_chunk(&doc_id, "stalequux findings");
+        assert_eq!(harness.search("stalequux").len(), 1);
+
+        harness.run_index(&doc_id).await;
+
+        assert!(harness.search("stalequux").is_empty());
+        harness.assert_index_terminal().await;
     }
 
     #[tokio::test]

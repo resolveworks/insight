@@ -40,16 +40,19 @@ impl<T> Clone for SharedReceiver<T> {
 /// Spawn extract workers.
 ///
 /// Workers extract text from stored PDFs and write an extraction to iroh.
-/// The InsertLocal event for the extraction entry triggers the next stage.
+/// A written extraction is queued for index reconciliation; terminal
+/// outcomes with no extraction to index are not.
 pub fn spawn_extract_workers(
     count: usize,
     rx: SharedReceiver<ExtractJob>,
     storage: Arc<RwLock<Storage>>,
+    index_tx: mpsc::UnboundedSender<IndexJob>,
     progress: ProgressTracker,
 ) {
     for i in 0..count {
         let rx = rx.clone();
         let storage = storage.clone();
+        let index_tx = index_tx.clone();
         let progress = progress.clone();
 
         tokio::spawn(async move {
@@ -115,15 +118,20 @@ pub fn spawn_extract_workers(
                         );
                         progress
                             .apply(ProgressUpdate::Completed {
-                                collection_id,
+                                collection_id: collection_id.clone(),
                                 stage: Stage::Extract,
                             })
                             .await;
-                        // InsertLocal(extraction entry) will trigger index via watcher
+                        progress.queue(&collection_id, Stage::Index).await;
+                        let _ = index_tx.send(IndexJob {
+                            namespace_id: job.namespace_id,
+                            doc_id: job.doc_id,
+                        });
                     }
                     Ok(None) => {
                         // The job is still terminal: the document vanished or
-                        // already had a canonical extraction.
+                        // already had a canonical extraction. Neither leaves
+                        // anything new to index.
                         progress
                             .apply(ProgressUpdate::Completed {
                                 collection_id,
@@ -151,8 +159,9 @@ pub fn spawn_extract_workers(
 
 /// Spawn index worker.
 ///
-/// Single worker that chunks document text and indexes it into milli
-/// for search.
+/// Single worker that reconciles a document's chunks in milli with its
+/// current canonical extraction. A document that is gone or has no local
+/// canonical text loses its stale chunks.
 pub fn spawn_index_worker(
     rx: SharedReceiver<IndexJob>,
     storage: Arc<RwLock<Storage>>,
@@ -173,105 +182,17 @@ pub fn spawn_index_worker(
                 })
                 .await;
 
-            // Get the document and its canonical extraction from storage
-            let storage_guard = storage.read().await;
-            let metadata_result = storage_guard
-                .get_document(job.namespace_id, &job.doc_id)
-                .await;
-            let metadata = match metadata_result {
-                Ok(Some(m)) => m,
-                Ok(None) => {
-                    // Document deleted before the job ran — skip cleanly.
-                    tracing::debug!(
-                        doc_id = %job.doc_id,
-                        "Document deleted before index; skipping"
-                    );
-                    drop(storage_guard);
-                    progress
-                        .apply(ProgressUpdate::Completed {
-                            collection_id,
-                            stage: Stage::Index,
-                        })
-                        .await;
-                    continue;
-                }
-                Err(e) => {
-                    tracing::error!(doc_id = %job.doc_id, error = %e, "Index failed");
-                    progress
-                        .apply(ProgressUpdate::Failed {
-                            collection_id,
-                            stage: Stage::Index,
-                            error: e.to_string(),
-                        })
-                        .await;
-                    drop(storage_guard);
-                    continue;
-                }
-            };
-
-            let extraction_result = storage_guard
-                .get_canonical_extraction(job.namespace_id, &job.doc_id)
-                .await;
-            drop(storage_guard);
-
-            let result = match extraction_result {
-                Ok(Some(extraction)) => {
-                    let chunks = chunk_text(&extraction.text);
-                    if chunks.is_empty() {
-                        tracing::warn!(doc_id = %job.doc_id, "Document has no text to index");
-                        Ok(())
-                    } else {
-                        // Delete old chunks first
-                        if let Err(e) = index_worker
-                            .delete_document_chunks(collection_id.clone(), job.doc_id.clone())
-                            .await
-                        {
-                            tracing::warn!(
-                                doc_id = %job.doc_id,
-                                error = %e,
-                                "Failed to delete old chunks"
-                            );
-                        }
-
-                        let to_index: Vec<ChunkToIndex> = chunks
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, chunk)| ChunkToIndex {
-                                id: chunk_external_id(&collection_id, &metadata.id, i),
-                                parent_id: metadata.id.clone(),
-                                parent_name: metadata.name.clone(),
-                                chunk_index: i,
-                                content: format!("[{}]\n\n{}", metadata.name, chunk.text),
-                                collection_id: collection_id.clone(),
-                                text_offset_start: chunk.start,
-                                text_offset_end: chunk.end,
-                            })
-                            .collect();
-
-                        index_worker.index_chunks(to_index).await
-                    }
-                }
-                Ok(None) => {
-                    // No canonical extraction, or its text is not local yet.
-                    // A later event (meta/extraction insert or ContentReady)
-                    // queues another job.
-                    tracing::debug!(
-                        doc_id = %job.doc_id,
-                        "Canonical extraction unavailable; skipping index"
-                    );
-                    progress
-                        .apply(ProgressUpdate::Completed {
-                            collection_id,
-                            stage: Stage::Index,
-                        })
-                        .await;
-                    continue;
-                }
-                Err(e) => Err(e),
-            };
+            let result = reconcile_document(
+                &storage,
+                &index_worker,
+                job.namespace_id,
+                &collection_id,
+                &job.doc_id,
+            )
+            .await;
 
             match result {
-                Ok(_) => {
+                Ok(()) => {
                     tracing::info!(doc_id = %job.doc_id, "Document indexed");
                     progress
                         .apply(ProgressUpdate::Completed {
@@ -295,6 +216,67 @@ pub fn spawn_index_worker(
 
         tracing::debug!("Index worker stopped");
     });
+}
+
+/// Bring one document's chunks in one collection in line with storage.
+///
+/// Missing documents and missing or not-yet-local canonical text evict stale
+/// chunks. Empty canonical text evicts them too; non-empty text replaces them.
+async fn reconcile_document(
+    storage: &RwLock<Storage>,
+    index_worker: &IndexWorkerHandle,
+    namespace_id: iroh_docs::NamespaceId,
+    collection_id: &str,
+    doc_id: &str,
+) -> anyhow::Result<()> {
+    let (metadata, extraction) = {
+        let storage = storage.read().await;
+        let metadata = storage.get_document(namespace_id, doc_id).await?;
+        let extraction = match metadata.as_ref() {
+            Some(_) => {
+                storage
+                    .get_canonical_extraction(namespace_id, doc_id)
+                    .await?
+            }
+            None => None,
+        };
+        (metadata, extraction)
+    };
+
+    index_worker
+        .delete_document_chunks(collection_id.to_string(), doc_id.to_string())
+        .await?;
+
+    let (Some(metadata), Some(extraction)) = (metadata, extraction) else {
+        tracing::debug!(
+            doc_id = %doc_id,
+            "Document gone or canonical extraction unavailable; evicted stale chunks"
+        );
+        return Ok(());
+    };
+
+    let chunks = chunk_text(&extraction.text);
+    if chunks.is_empty() {
+        tracing::debug!(doc_id = %doc_id, "Document has no text to index");
+        return Ok(());
+    }
+
+    let to_index: Vec<ChunkToIndex> = chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| ChunkToIndex {
+            id: chunk_external_id(collection_id, &metadata.id, i),
+            parent_id: metadata.id.clone(),
+            parent_name: metadata.name.clone(),
+            chunk_index: i,
+            content: format!("[{}]\n\n{}", metadata.name, chunk.text),
+            collection_id: collection_id.to_string(),
+            text_offset_start: chunk.start,
+            text_offset_end: chunk.end,
+        })
+        .collect();
+
+    index_worker.index_chunks(to_index).await
 }
 
 #[cfg(test)]
@@ -334,12 +316,14 @@ mod tests {
             .unwrap();
 
         let (extract_tx, extract_rx) = mpsc::unbounded_channel();
+        let (index_tx, mut index_rx) = mpsc::unbounded_channel();
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
         let progress = ProgressTracker::new(events_tx);
         spawn_extract_workers(
             1,
             SharedReceiver::new_unbounded(extract_rx),
             storage.clone(),
+            index_tx,
             progress.clone(),
         );
 
@@ -369,6 +353,8 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+
+        assert!(index_rx.try_recv().is_err(), "deleted document was indexed");
 
         let storage = storage.read().await;
         assert!(storage
