@@ -12,6 +12,7 @@ const props = {
 	collectionId: 'col1',
 	collectionName: 'Climate Research',
 	documentCount: 2,
+	providerReady: true,
 };
 
 type RenderOptions = {
@@ -45,6 +46,7 @@ async function renderChat(
 				messages: opts.messages ?? [],
 			};
 		}
+		if (cmd === 'list_providers') return [];
 	});
 
 	await chat.initialize(collectionId);
@@ -100,6 +102,33 @@ describe('Chat', () => {
 			screen.queryByText('No documents in Climate Research'),
 		).not.toBeInTheDocument();
 		expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+	});
+
+	it('shows stored message bodies with provider setup below and no input', async () => {
+		await renderChat(
+			'no-provider',
+			{ providerReady: false },
+			{
+				conversations: [{ id: 'c1', title: 'Existing chat' }],
+				messages: [
+					{
+						role: 'user',
+						content: [{ type: 'text', text: 'Earlier question' }],
+					},
+				],
+			},
+		);
+
+		expect(await screen.findByText('Earlier question')).toBeInTheDocument();
+		expect(
+			screen.getByRole('heading', { name: 'Set up your language model' }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByPlaceholderText('Ask about your documents...'),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole('button', { name: 'Send' }),
+		).not.toBeInTheDocument();
 	});
 
 	it('does not request a next-message prediction without documents', async () => {

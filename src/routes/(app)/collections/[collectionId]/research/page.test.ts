@@ -33,7 +33,12 @@ beforeAll(async () => {
 				id: 'c1',
 				collection_id: 'col1',
 				title: 'Local history',
-				messages: [],
+				messages: [
+					{
+						role: 'user',
+						content: [{ type: 'text', text: 'Earlier question' }],
+					},
+				],
 			};
 		}
 		if (cmd === 'list_providers') return [];
@@ -51,13 +56,14 @@ describe('Research workspace without a chat provider', () => {
 		expect(
 			screen.getByRole('button', { name: 'New Chat' }),
 		).toBeInTheDocument();
+		expect(await screen.findByText('Earlier question')).toBeInTheDocument();
 		expect(
 			await screen.findByRole('heading', {
 				name: 'Set up your language model',
 			}),
 		).toBeInTheDocument();
 		expect(
-			screen.queryByText('Ask questions about Climate Research'),
+			screen.queryByPlaceholderText('Ask about your documents...'),
 		).not.toBeInTheDocument();
 	});
 });

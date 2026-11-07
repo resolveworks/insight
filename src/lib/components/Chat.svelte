@@ -5,15 +5,18 @@
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
+	import SetupScreen from './SetupScreen.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
 	type Props = {
 		collectionId: string;
 		collectionName: string;
 		documentCount: number;
+		providerReady: boolean;
 	};
 
-	let { collectionId, collectionName, documentCount }: Props = $props();
+	let { collectionId, collectionName, documentCount, providerReady }: Props =
+		$props();
 
 	const hasDocuments = $derived(documentCount > 0);
 
@@ -52,7 +55,8 @@
 	});
 
 	async function sendMessage() {
-		if (!inputValue.trim() || isGenerating || !hasDocuments) return;
+		if (!inputValue.trim() || isGenerating || !hasDocuments || !providerReady)
+			return;
 		const text = inputValue;
 		inputValue = '';
 		await chat.sendMessage(text);
@@ -94,7 +98,8 @@
 			isLoading ||
 			!activeId ||
 			messages.length === 0 ||
-			!hasDocuments
+			!hasDocuments ||
+			!providerReady
 		) {
 			prediction = '';
 			return;
@@ -239,30 +244,39 @@
 		<ErrorAlert variant="banner">{error}</ErrorAlert>
 	{/if}
 
-	<!-- Input Area -->
-	<div class="border-t border-neutral-300 bg-surface-bright p-4">
-		<div class="flex gap-2">
-			<GhostInput
-				type="text"
-				bind:value={inputValue}
-				ghostText={prediction}
-				onkeydown={handleKeydown}
-				onAcceptGhost={handleAcceptPrediction}
-				placeholder={hasDocuments
-					? 'Ask about your documents...'
-					: 'Add documents to start asking questions'}
-				disabled={isGenerating || !hasDocuments}
-			/>
-			{#if isGenerating}
-				<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
-			{:else}
-				<Button
-					onclick={sendMessage}
-					disabled={!hasDocuments || !inputValue.trim()}
-				>
-					Send
-				</Button>
-			{/if}
+	{#if providerReady}
+		<!-- Input Area -->
+		<div class="border-t border-neutral-300 bg-surface-bright p-4">
+			<div class="flex gap-2">
+				<GhostInput
+					type="text"
+					bind:value={inputValue}
+					ghostText={prediction}
+					onkeydown={handleKeydown}
+					onAcceptGhost={handleAcceptPrediction}
+					placeholder={hasDocuments
+						? 'Ask about your documents...'
+						: 'Add documents to start asking questions'}
+					disabled={isGenerating || !hasDocuments}
+				/>
+				{#if isGenerating}
+					<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
+				{:else}
+					<Button
+						onclick={sendMessage}
+						disabled={!hasDocuments || !inputValue.trim()}
+					>
+						Send
+					</Button>
+				{/if}
+			</div>
 		</div>
-	</div>
+	{:else}
+		<!-- Provider setup lives below the transcript so local history stays readable -->
+		<div
+			class="h-80 max-h-[55%] shrink-0 overflow-y-auto border-t border-neutral-300"
+		>
+			<SetupScreen />
+		</div>
+	{/if}
 </div>

@@ -3,7 +3,6 @@
 	import Chat from '#lib/components/Chat.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
-	import SetupScreen from '#lib/components/SetupScreen.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
 	import {
 		isLoaded,
@@ -43,14 +42,12 @@
 		{/if}
 	</aside>
 
-	<!-- Main pane: provider setup or chat -->
+	<!-- Main pane: chat, with provider setup in its lower region if needed -->
 	<main class="min-w-0 flex-1 overflow-hidden">
 		{#if !loaded}
 			<div class="flex h-full items-center justify-center bg-surface">
 				<LoadingSpinner size="lg" />
 			</div>
-		{:else if !providerReady}
-			<SetupScreen />
 		{:else if activeCollectionId !== collectionId || !collection}
 			<div class="flex h-full items-center justify-center bg-surface">
 				<LoadingSpinner size="lg" />
@@ -60,6 +57,7 @@
 				{collectionId}
 				collectionName={collection.name}
 				documentCount={collection.document_count}
+				{providerReady}
 			/>
 		{/if}
 	</main>
