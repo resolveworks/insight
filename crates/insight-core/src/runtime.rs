@@ -3,35 +3,35 @@
 //! [`send_message`] drives a rig agent over the document tools
 //! ([`crate::tools`]) with [`crate::memory::FileConversationMemory`] persistence,
 //! streaming every [`MultiTurnStreamItem`](rig::agent::MultiTurnStreamItem)
-//! to the caller as JSON. The conversation's
-//! collection scope is injected as a run document — non-sticky, so a
-//! mid-conversation scope change takes effect on the very next model call
-//! without touching stored history.
+//! to the caller as JSON. A conversation belongs to one collection, fixed at
+//! creation; that collection's name is attached as a run document on every
+//! turn so the model knows what its tools cover.
 //!
 //! [`predict_next_message`] is a bare-model completion (no tools, no agent loop)
 //! over the same provider settings.
 
+use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
+use iroh_docs::NamespaceId;
 use rig::agent::AgentBuilder;
 use rig::completion::{CompletionRequest, Document, Message};
 use rig_core::{operation::Completion, DynModel};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Settings;
-use crate::memory::ConversationMeta;
 use crate::providers;
 use crate::tools::{self, ToolState};
-use crate::{AppState, CollectionInfo};
+use crate::AppState;
 
 /// System prompt for the research agent. Stable across the life of the app —
-/// the per-conversation collection scope arrives as a run document on every
-/// turn, not baked into the preamble.
+/// the conversation's collection arrives as a run document on every turn,
+/// not baked into the preamble.
 pub const BASE_SYSTEM_PROMPT: &str = r#"You are a research assistant helping journalists investigate document collections.
 
-Your search and list tools are filtered to a user-selected set of collections — the "active collections" described in the context documents. Results outside those collections do not exist for you.
+Your search and list tools are filtered to the conversation's collection — the "active collection" described in the context documents. Results outside that collection do not exist for you.
 
 Be concise. Answer in 2-4 sentences unless the user asks for more detail. Cite document names so findings are verifiable.
 
@@ -40,10 +40,6 @@ When answering questions:
 2. Read documents to extract specific details
 3. Cite sources (document name)
 4. Note any gaps or contradictions worth pursuing"#;
-
-/// The title a conversation starts with; still having it means no title has
-/// been generated yet.
-pub const DEFAULT_TITLE: &str = "New conversation";
 
 /// Prompt used to summarize a conversation into a short title.
 const TITLE_PROMPT: &str = "Summarize this conversation in a short title of at most 50 characters. Output ONLY the title, nothing else.";
@@ -61,47 +57,16 @@ Rules:
 /// Maximum tool-call iterations per user message.
 const MAX_TURNS: usize = 100;
 
-/// Maximum characters of a generated title.
-const TITLE_MAX_CHARS: usize = 50;
-
 /// Maximum characters of a predicted next message.
 const PREDICTION_MAX_CHARS: usize = 150;
 
 /// How long a prediction may run before being abandoned.
 const PREDICTION_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Render a collection line like "Climate Reports (10 documents, 250 pages)".
-fn format_collection_entry(c: &CollectionInfo) -> String {
-    if c.document_count == 0 {
-        return c.name.clone();
-    }
-    let doc_word = if c.document_count == 1 {
-        "document"
-    } else {
-        "documents"
-    };
-    match c.total_pages {
-        Some(pages) => {
-            let page_word = if pages == 1 { "page" } else { "pages" };
-            format!(
-                "{} ({} {}, {} {})",
-                c.name, c.document_count, doc_word, pages, page_word
-            )
-        }
-        None => format!("{} ({} {})", c.name, c.document_count, doc_word),
-    }
-}
-
 /// The text of the scope document attached to every agent run.
-fn format_scope_document(collections: &[CollectionInfo]) -> String {
-    let list = collections
-        .iter()
-        .map(format_collection_entry)
-        .collect::<Vec<_>>()
-        .join(", ");
+fn format_scope_document(collection_name: &str) -> String {
     format!(
-        "Active collections: {}. Your search and list tools only cover these collections.",
-        list
+        "You are working in collection \"{collection_name}\". Your search and list tools only cover this collection."
     )
 }
 
@@ -124,6 +89,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// the stream) and returns `Ok(())`.
 pub async fn send_message(
     state: &AppState,
+    collection_id: &str,
     conversation_id: &str,
     message: String,
     on_event: impl Fn(serde_json::Value) + Send + 'static,
@@ -131,19 +97,30 @@ pub async fn send_message(
 ) -> Result<()> {
     let meta = state
         .memory
-        .load_meta(conversation_id)
+        .load_meta(collection_id, conversation_id)
         .await
         .map_err(|e| anyhow!("failed to load conversation meta: {e}"))?
-        .ok_or_else(|| anyhow!("conversation not found: {conversation_id}"))?;
-    if meta.collections.is_empty() {
-        bail!("conversation has no collection scope: {conversation_id}");
-    }
+        .ok_or_else(|| anyhow!("conversation not found: {collection_id}/{conversation_id}"))?;
+
+    let namespace_id = NamespaceId::from_str(collection_id)
+        .map_err(|_| anyhow!("invalid collection id: {collection_id}"))?;
+    let collection_name = state
+        .storage
+        .read()
+        .await
+        .get_collection_metadata(namespace_id)
+        .await
+        .context("failed to read collection metadata")?
+        .map(|metadata| metadata.name)
+        .ok_or_else(|| anyhow!("collection not found: {collection_id}"))?;
 
     let model = build_configured_model(state)?;
     run_agent(
         state,
+        collection_id,
         conversation_id,
-        &meta,
+        &collection_name,
+        meta.title.is_empty(),
         message,
         model,
         on_event,
@@ -165,47 +142,48 @@ fn build_configured_model(state: &AppState) -> Result<DynModel<Completion>> {
 /// Build the fully-configured agent for one conversation run.
 ///
 /// The tools own live handles to the index and storage plus the run's
-/// collection scope.
+/// collection.
 fn build_agent(
     state: &AppState,
-    meta: &ConversationMeta,
+    collection_id: &str,
+    conversation_id: &str,
     model: DynModel<Completion>,
-) -> rig::Agent {
-    let tool_state = ToolState::new(state, meta.collections.clone());
-    AgentBuilder::new(model)
+) -> Result<rig::Agent> {
+    let tool_state = ToolState::new(state, collection_id.to_string());
+    Ok(AgentBuilder::new(model)
         .preamble(BASE_SYSTEM_PROMPT)
         .tool(tools::Search::new(tool_state.clone()))
         .tool(tools::ReadChunk::new(tool_state.clone()))
         .tool(tools::ListDocuments::new(tool_state.clone()))
         .tool(tools::GetCollectionTerms::new(tool_state))
-        .memory(state.memory.store())
+        .memory(state.memory.store(collection_id, conversation_id)?)
+        .conversation(conversation_id)
         .default_max_turns(MAX_TURNS)
-        .build()
+        .build())
 }
 
 /// Drive the agent stream for one user message.
 ///
 /// Split from [`send_message`] so tests can inject a mock model.
+#[allow(clippy::too_many_arguments)]
 async fn run_agent(
     state: &AppState,
+    collection_id: &str,
     conversation_id: &str,
-    meta: &ConversationMeta,
+    collection_name: &str,
+    needs_title: bool,
     message: String,
     model: DynModel<Completion>,
     on_event: impl Fn(serde_json::Value) + Send + 'static,
     cancel: CancellationToken,
 ) -> Result<()> {
-    let agent = build_agent(state, meta, model.clone());
+    let agent = build_agent(state, collection_id, conversation_id, model.clone())?;
     let scope_document = Document {
-        id: "active_collections".to_string(),
-        text: format_scope_document(&meta.collections),
+        id: "active_collection".to_string(),
+        text: format_scope_document(collection_name),
         additional_props: Default::default(),
     };
-    let mut stream = agent
-        .prompt(message)
-        .document(scope_document)
-        .conversation(conversation_id.to_string())
-        .stream();
+    let mut stream = agent.prompt(message).document(scope_document).stream();
 
     loop {
         tokio::select! {
@@ -228,15 +206,17 @@ async fn run_agent(
 
     state
         .memory
-        .touch(conversation_id)
+        .touch(collection_id, conversation_id)
         .await
         .map_err(|e| anyhow!("failed to touch conversation: {e}"))?;
 
-    // First real turn: replace the default title with a generated one.
-    if meta.title == DEFAULT_TITLE {
-        let history = load_history(state, conversation_id).await?;
+    // First real turn: replace the empty title with a generated one.
+    if needs_title {
+        let history = load_history(state, collection_id, conversation_id).await?;
         if history.len() >= 2 {
-            if let Err(e) = generate_title_with(state, conversation_id, &history, &model).await {
+            if let Err(e) =
+                generate_title_with(state, collection_id, conversation_id, &history, &model).await
+            {
                 tracing::warn!(conversation_id, error = %e, "title generation failed");
             }
         }
@@ -246,10 +226,14 @@ async fn run_agent(
 }
 
 /// Load the message history for a conversation from memory.
-async fn load_history(state: &AppState, conversation_id: &str) -> Result<Vec<Message>> {
+async fn load_history(
+    state: &AppState,
+    collection_id: &str,
+    conversation_id: &str,
+) -> Result<Vec<Message>> {
     state
         .memory
-        .load(conversation_id)
+        .load(collection_id, conversation_id)
         .await
         .map_err(|e| anyhow!("failed to load conversation history: {e}"))
 }
@@ -258,6 +242,7 @@ async fn load_history(state: &AppState, conversation_id: &str) -> Result<Vec<Mes
 /// handle and tests can inject a mock.
 async fn generate_title_with(
     state: &AppState,
+    collection_id: &str,
     conversation_id: &str,
     history: &[Message],
     model: &DynModel<Completion>,
@@ -267,22 +252,22 @@ async fn generate_title_with(
         .await
         .ok()
         .map(|response| response.text())
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
+        .filter(|t| !t.trim().is_empty());
 
     let title = match generated {
-        Some(t) => t,
-        None => first_user_text(history).unwrap_or_default(),
+        Some(t) => rig_memory::title_of(&t),
+        None => first_user_text(history)
+            .map(|t| rig_memory::title_of(&t))
+            .unwrap_or_default(),
     };
     if title.is_empty() {
         return Ok(());
     }
-    let title = truncate_chars(&title, TITLE_MAX_CHARS);
     state
         .memory
-        .update_meta(conversation_id, |meta| meta.title = title)
+        .set_title(collection_id, conversation_id, &title)
         .await
-        .map_err(|e| anyhow!("failed to update conversation meta: {e}"))
+        .map_err(|e| anyhow!("failed to set conversation title: {e}"))
 }
 
 /// Concatenated text of the first user message in `history`.
@@ -309,10 +294,11 @@ fn first_user_text(history: &[Message]) -> Option<String> {
 /// Non-fatal by design: a failed prediction simply completes nothing.
 pub async fn predict_next_message(
     state: &AppState,
+    collection_id: &str,
     conversation_id: &str,
     cancel: CancellationToken,
 ) -> Result<Option<String>> {
-    let history = load_history(state, conversation_id).await?;
+    let history = load_history(state, collection_id, conversation_id).await?;
     // Need at least one user + one assistant message for a meaningful
     // prediction.
     let has_assistant = history.iter().any(|m| matches!(m, Message::Assistant(_)));
@@ -358,7 +344,6 @@ async fn predict_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::ConversationMeta;
     use crate::providers::ProviderSettings;
     use rig::completion::Usage;
     use rig::test_utils::{mock_final, MockCompletionModel, MockStreamEvent};
@@ -394,20 +379,27 @@ mod tests {
         settings.save(&state.config.settings_file).unwrap();
     }
 
-    fn test_meta(id: &str) -> ConversationMeta {
-        ConversationMeta {
-            id: id.into(),
-            title: DEFAULT_TITLE.into(),
-            collections: vec![CollectionInfo {
-                id: "abcdef1234567890".into(),
-                name: "Climate Reports".into(),
-                document_count: 3,
-                total_pages: Some(42),
-                created_at: None,
-            }],
-            created_at: String::new(),
-            updated_at: String::new(),
-        }
+    /// Create a real collection and a conversation belonging to it.
+    /// Returns the collection id and name.
+    async fn setup_conversation(
+        state: &AppState,
+        conversation_id: &str,
+        collection_name: &str,
+    ) -> (String, String) {
+        let (namespace_id, metadata) = state
+            .storage
+            .write()
+            .await
+            .create_collection(collection_name)
+            .await
+            .unwrap();
+        let collection_id = namespace_id.to_string();
+        state
+            .memory
+            .create(&collection_id, conversation_id)
+            .await
+            .unwrap();
+        (collection_id, metadata.name)
     }
 
     /// A streaming mock turn that answers with plain text.
@@ -422,23 +414,23 @@ mod tests {
         model.erase()
     }
 
-    /// The text of the `active_collections` run document sent with the probe's
+    /// The text of the `active_collection` run document sent with the probe's
     /// first completion request.
     fn first_scope_text(probe: &MockCompletionModel) -> String {
         let requests = probe.requests();
         let request = requests.first().expect("one completion request");
         rig::test_utils::sent_documents(request)
             .into_iter()
-            .find(|(id, _)| id == "active_collections")
+            .find(|(id, _)| id == "active_collection")
             .map(|(_, text)| text)
             .expect("scope document injected as run context")
     }
 
     #[tokio::test]
-    async fn send_message_happy_path_persisters_and_emits() {
+    async fn send_message_happy_path_persists_and_emits() {
         let (_tmp, state) = test_state().await;
         let id = "conv-happy";
-        state.memory.create(test_meta(id)).await.unwrap();
+        let (collection_id, name) = setup_conversation(&state, id, "Climate Reports").await;
 
         let events: std::sync::Arc<Mutex<Vec<serde_json::Value>>> =
             std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -449,8 +441,10 @@ mod tests {
 
         run_agent(
             &state,
+            &collection_id,
             id,
-            &test_meta(id),
+            &name,
+            true,
             "What do the reports say?".into(),
             model,
             move |event| sink.lock().unwrap().push(event),
@@ -468,7 +462,7 @@ mod tests {
         );
 
         // Memory recorded both sides of the turn.
-        let history = load_history(&state, id).await.unwrap();
+        let history = load_history(&state, &collection_id, id).await.unwrap();
         assert!(
             history.len() >= 2,
             "expected user + assistant, got {history:?}"
@@ -476,10 +470,15 @@ mod tests {
         assert!(matches!(history.first(), Some(Message::User { .. })));
         assert!(matches!(history.last(), Some(Message::Assistant(_))));
 
-        // Meta was touched and the default title replaced (fallback: the
-        // first user message, truncated).
-        let meta = state.memory.load_meta(id).await.unwrap().unwrap();
-        assert_ne!(meta.title, DEFAULT_TITLE);
+        // Meta was touched and the empty title replaced (fallback: the first
+        // user message).
+        let meta = state
+            .memory
+            .load_meta(&collection_id, id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!meta.title.is_empty());
         assert!(meta.title.starts_with("What do the reports say?"));
     }
 
@@ -487,7 +486,7 @@ mod tests {
     async fn cancelled_before_first_poll_is_deterministic() {
         let (_tmp, state) = test_state().await;
         let id = "conv-cancel";
-        state.memory.create(test_meta(id)).await.unwrap();
+        let (collection_id, name) = setup_conversation(&state, id, "Climate Reports").await;
 
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -501,8 +500,10 @@ mod tests {
 
         run_agent(
             &state,
+            &collection_id,
             id,
-            &test_meta(id),
+            &name,
+            true,
             "hello".into(),
             model,
             move |event| sink.lock().unwrap().push(event),
@@ -512,7 +513,7 @@ mod tests {
         .unwrap();
 
         assert!(events.lock().unwrap().is_empty());
-        let history = load_history(&state, id).await.unwrap();
+        let history = load_history(&state, &collection_id, id).await.unwrap();
         assert!(history.is_empty(), "cancelled run must not record messages");
     }
 
@@ -520,7 +521,7 @@ mod tests {
     async fn stream_error_returns_err_without_emitting() {
         let (_tmp, state) = test_state().await;
         let id = "conv-stream-error";
-        state.memory.create(test_meta(id)).await.unwrap();
+        let (collection_id, name) = setup_conversation(&state, id, "Climate Reports").await;
 
         let events: std::sync::Arc<Mutex<Vec<serde_json::Value>>> =
             std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -531,8 +532,10 @@ mod tests {
 
         let err = run_agent(
             &state,
+            &collection_id,
             id,
-            &test_meta(id),
+            &name,
+            true,
             "hello".into(),
             model,
             move |event| sink.lock().unwrap().push(event),
@@ -546,77 +549,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_injects_scope_document() {
+    async fn run_injects_scope_document_naming_the_collection() {
         let (_tmp, state) = test_state().await;
         let id = "conv-scope";
-        state.memory.create(test_meta(id)).await.unwrap();
+        let (collection_id, name) = setup_conversation(&state, id, "Budget Filings").await;
 
-        let first = test_meta(id);
-        let first_mock = MockCompletionModel::from_stream_turns([text_stream_turn("ok")]);
-        let first_probe = first_mock.clone();
+        let probe = MockCompletionModel::from_stream_turns([text_stream_turn("ok")]);
+        let first_probe = probe.clone();
         run_agent(
             &state,
+            &collection_id,
             id,
-            &first,
+            &name,
+            true,
             "summarize".into(),
-            handle(first_mock),
+            handle(probe),
             |_| {},
             CancellationToken::new(),
         )
         .await
         .unwrap();
 
-        let first_scope = first_scope_text(&first_probe);
+        let scope = first_scope_text(&first_probe);
         assert!(
-            first_scope.contains(&first.collections[0].name),
-            "scope text names the active collection: {first_scope}"
-        );
-
-        // A later turn in the same conversation with a changed scope: the run
-        // document must describe the new scope, not the first turn's.
-        let second = ConversationMeta {
-            collections: vec![CollectionInfo {
-                id: "9988776655443322".into(),
-                name: "Budget Filings".into(),
-                document_count: 7,
-                total_pages: Some(11),
-                created_at: None,
-            }],
-            ..test_meta(id)
-        };
-        let second_mock = MockCompletionModel::from_stream_turns([text_stream_turn("ok")]);
-        let second_probe = second_mock.clone();
-        run_agent(
-            &state,
-            id,
-            &second,
-            "and now?".into(),
-            handle(second_mock),
-            |_| {},
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-
-        let second_scope = first_scope_text(&second_probe);
-        assert!(
-            second_scope.contains(&second.collections[0].name),
-            "scope text follows the changed scope: {second_scope}"
-        );
-        assert!(
-            !second_scope.contains(&first.collections[0].name),
-            "scope is attached per turn, not cached from the first: {second_scope}"
+            scope.contains(&name),
+            "scope text names the conversation's collection: {scope}"
         );
     }
 
     #[tokio::test]
-    async fn send_message_requires_scope_and_conversation() {
+    async fn send_message_errors_for_unknown_conversation_and_collection() {
         let (_tmp, state) = test_state().await;
-        configure_dummy_provider(&state);
+        // A valid collection id that storage does not know.
+        let collection_id = iroh_docs::NamespaceSecret::from_bytes(&[7; 32])
+            .id()
+            .to_string();
 
         // Missing conversation.
         let err = send_message(
             &state,
+            &collection_id,
             "nope",
             "hi".into(),
             |_| {},
@@ -624,38 +596,45 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("not found"));
+        assert!(err.to_string().contains("conversation not found"));
 
-        // Empty scope.
-        let mut meta = test_meta("conv-empty");
-        meta.collections.clear();
-        state.memory.create(meta).await.unwrap();
+        // A conversation whose collection is gone.
+        let id = "conv-orphan";
+        state.memory.create(&collection_id, id).await.unwrap();
         let err = send_message(
             &state,
-            "conv-empty",
+            &collection_id,
+            id,
             "hi".into(),
             |_| {},
             CancellationToken::new(),
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("scope"));
+        // Storage reports a missing namespace rather than `Ok(None)`, so the
+        // lookup fails instead of reaching the explicit not-found branch.
+        assert!(err.to_string().contains("collection metadata"), "{err:#}");
     }
 
     #[tokio::test]
     async fn title_generation_uses_model_output() {
         let (_tmp, state) = test_state().await;
         let id = "conv-title";
-        state.memory.create(test_meta(id)).await.unwrap();
+        let (collection_id, _) = setup_conversation(&state, id, "Climate Reports").await;
 
         let history = vec![Message::user("What is the total carbon budget?")];
         let model = handle(MockCompletionModel::text("Carbon Budget Question"));
 
-        generate_title_with(&state, id, &history, &model)
+        generate_title_with(&state, &collection_id, id, &history, &model)
             .await
             .unwrap();
 
-        let meta = state.memory.load_meta(id).await.unwrap().unwrap();
+        let meta = state
+            .memory
+            .load_meta(&collection_id, id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(meta.title, "Carbon Budget Question");
     }
 
@@ -663,7 +642,7 @@ mod tests {
     async fn title_generation_falls_back_to_first_user_message() {
         let (_tmp, state) = test_state().await;
         let id = "conv-title-fallback";
-        state.memory.create(test_meta(id)).await.unwrap();
+        let (collection_id, _) = setup_conversation(&state, id, "Climate Reports").await;
 
         let long_question = "Why did the agency reject the permit application for the coastal "
             .to_string()
@@ -672,15 +651,20 @@ mod tests {
         // A mock with no scripted turn makes the completion fail → fallback.
         let model = handle(MockCompletionModel::from_turns([]));
 
-        generate_title_with(&state, id, &history, &model)
+        generate_title_with(&state, &collection_id, id, &history, &model)
             .await
             .unwrap();
 
-        let meta = state.memory.load_meta(id).await.unwrap().unwrap();
-        assert_ne!(meta.title, DEFAULT_TITLE);
-        assert_eq!(meta.title.chars().count(), TITLE_MAX_CHARS);
-        assert!(meta.title.ends_with("..."));
-        assert!(long_question.starts_with(&meta.title[..TITLE_MAX_CHARS - 3]));
+        let meta = state
+            .memory
+            .load_meta(&collection_id, id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!meta.title.is_empty());
+        assert_eq!(meta.title.chars().count(), 60);
+        assert!(meta.title.ends_with('…'));
+        assert!(long_question.starts_with(meta.title.trim_end_matches('…')));
     }
 
     #[tokio::test]
@@ -702,18 +686,17 @@ mod tests {
         let (_tmp, state) = test_state().await;
         configure_dummy_provider(&state);
         let id = "conv-predict";
-        state.memory.create(test_meta(id)).await.unwrap();
+        let (collection_id, _) = setup_conversation(&state, id, "Climate Reports").await;
 
         // Only a user message: no prediction.
-        let mut conversation = rig_memory::load_async(&state.memory.store(), id)
-            .await
-            .unwrap();
+        let store = state.memory.store(&collection_id, id).unwrap();
+        let mut conversation = rig_memory::load_async(&store, id).await.unwrap();
         conversation.extend([Message::user("hello")]);
-        rig_memory::save_async(&state.memory.store(), id, &mut conversation)
+        rig_memory::save_async(&store, id, &mut conversation)
             .await
             .unwrap();
         assert_eq!(
-            predict_next_message(&state, id, CancellationToken::new())
+            predict_next_message(&state, &collection_id, id, CancellationToken::new())
                 .await
                 .unwrap(),
             None
