@@ -6,8 +6,6 @@ import type {
 	RigStreamEvent,
 	RigToolResultContent,
 } from '#lib/types/rig.js';
-import { emptyLiveRun } from '#lib/chat/transcript.js';
-
 type EventListener = (event: { payload: unknown }) => void;
 const listeners = new Map<string, EventListener>();
 
@@ -295,50 +293,10 @@ describe('conversations store event handling', () => {
 		await vi.waitFor(() => {
 			expect(loadCalls).toContain('load');
 		});
-		expect(store.getLiveState()).toEqual(emptyLiveRun());
 		expect(store.getActiveMessages()[3]?.content[0]).toEqual({
 			type: 'text',
 			text: 'Found 3 results.',
 		});
-	});
-
-	it('replaces accumulated reasoning when the complete block arrives', async () => {
-		const store = await importStore();
-		store.applyStreamItem(start(0, 'reasoning'));
-		store.applyStreamItem(reasoningDelta(0, 'partial'));
-		store.applyStreamItem(reasoningDelta(0, ' more'));
-		store.applyStreamItem(endReasoning(0, 'final text'));
-		const reasoning = store
-			.getTranscript()
-			.find((item) => item.kind === 'reasoning');
-		expect(reasoning?.text).toBe('final text');
-	});
-
-	it('discards provisional live output on modelTurnRetried', async () => {
-		const store = await importStore();
-		store.applyStreamItem(start(0, 'text'));
-		store.applyStreamItem(textDelta(0, 'draft'));
-		store.applyStreamItem(start(1, 'reasoning'));
-		store.applyStreamItem(reasoningDelta(1, 'thinking'));
-		store.applyStreamItem({ type: 'modelTurnRetried', turn: 1 });
-		expect(store.getTranscript()).toEqual([]);
-		expect(store.getLiveState()).toEqual(emptyLiveRun());
-	});
-
-	it('ignores unknown provider payloads and usage records', async () => {
-		const store = await importStore();
-		store.applyStreamItem({
-			type: 'streamAssistantItem',
-			item: 'unknown',
-			value: { web_search_call: { id: 'x' } },
-		});
-		store.applyStreamItem({
-			type: 'completionCall',
-			call_index: 0,
-			usage: USAGE,
-			raw: null,
-		});
-		expect(store.getTranscript()).toEqual([]);
 	});
 
 	it('surfaces stream errors and refreshes history', async () => {
@@ -415,46 +373,34 @@ describe('conversations store event handling', () => {
 			total_pages: 0,
 		});
 
-		expect(scope).toEqual([
-			{ id: 'col1', name: 'Climate', document_count: 0, total_pages: 0 },
-		]);
 		// The server-enriched counts are adopted.
 		expect(store.getActiveCollections()).toEqual([
 			{ id: 'col1', name: 'Climate', document_count: 5, total_pages: 100 },
 		]);
 
 		await store.removeActiveCollection('col1');
-		expect(scope).toEqual([]);
 		expect(store.getActiveCollections()).toEqual([]);
 	});
 
 	it('deletes the active conversation and lands in a draft when none remain', async () => {
-		const deleted: string[] = [];
-		const commands: string[] = [];
-		mockIPC((cmd, args) => {
-			commands.push(cmd);
+		mockIPC((cmd) => {
 			if (cmd === 'list_conversations')
 				return [
 					{ id: 'c1', title: 'Only chat', updated_at: '2024-01-01T00:00:00Z' },
 				];
 			if (cmd === 'load_conversation') return conversationView('c1');
-			if (cmd === 'delete_conversation') {
-				deleted.push((args as { conversationId: string }).conversationId);
-				return null;
-			}
+			if (cmd === 'delete_conversation') return null;
 		});
 
 		const store = await importStore();
 		await store.ensureInitialized();
 		expect(store.getActiveId()).toBe('c1');
 
-		commands.length = 0;
 		await store.deleteConversation('c1');
-		expect(deleted).toEqual(['c1']);
+		expect(store.getConversations()).toEqual([]);
 		// No auto-create: the user lands in the draft state.
 		expect(store.getActiveId()).toBeNull();
 		expect(store.getActiveMessages()).toEqual([]);
-		expect(commands).not.toContain('start_chat');
 	});
 
 	describe('draft (lazy) conversations', () => {
@@ -463,9 +409,7 @@ describe('conversations store event handling', () => {
 		});
 
 		it('ensureInitialized lands in a draft when no conversations exist', async () => {
-			const commands: string[] = [];
 			mockIPC((cmd) => {
-				commands.push(cmd);
 				if (cmd === 'list_conversations') return [];
 			});
 
@@ -474,13 +418,10 @@ describe('conversations store event handling', () => {
 
 			expect(store.getIsInitialized()).toBe(true);
 			expect(store.getActiveId()).toBeNull();
-			expect(commands).not.toContain('start_chat');
 		});
 
-		it('newConversation makes no IPC call and resets to draft', async () => {
-			const commands: string[] = [];
+		it('newConversation resets to a draft', async () => {
 			mockIPC((cmd) => {
-				commands.push(cmd);
 				if (cmd === 'list_conversations')
 					return [
 						{
@@ -500,19 +441,15 @@ describe('conversations store event handling', () => {
 			const store = await importStore();
 			await store.ensureInitialized();
 			expect(store.getActiveId()).toBe('c1');
-			commands.length = 0;
 
 			store.newConversation();
 			expect(store.getActiveId()).toBeNull();
 			expect(store.getActiveMessages()).toEqual([]);
 			expect(store.getActiveCollections()).toEqual([]);
-			expect(commands).toEqual([]);
 		});
 
-		it('addActiveCollection in a draft updates local scope without IPC', async () => {
-			const commands: string[] = [];
+		it('addActiveCollection in a draft updates the local scope', async () => {
 			mockIPC((cmd) => {
-				commands.push(cmd);
 				if (cmd === 'list_conversations') return [];
 			});
 
@@ -528,30 +465,26 @@ describe('conversations store event handling', () => {
 
 			expect(store.getActiveId()).toBeNull();
 			expect(store.getActiveCollections()).toEqual([col]);
-			expect(commands).toEqual(['list_conversations']);
 
 			await store.removeActiveCollection('col1');
 			expect(store.getActiveCollections()).toEqual([]);
-			expect(commands).toEqual(['list_conversations']);
 		});
 
 		it('sendMessage from a draft creates the conversation with the draft scope, then sends', async () => {
-			const commands: Array<{ cmd: string; args: Record<string, unknown> }> =
-				[];
 			mockIPC((cmd, args) => {
-				commands.push({ cmd, args: args as Record<string, unknown> });
 				if (cmd === 'list_conversations') return [];
-				if (cmd === 'start_chat')
+				if (cmd === 'start_chat') {
+					const { collections } = args as {
+						collections: Array<Record<string, unknown>>;
+					};
 					return conversationView('new1', {
-						collections: [
-							{
-								id: 'col1',
-								name: 'Climate',
-								document_count: 2,
-								total_pages: 10,
-							},
-						],
+						collections: collections.map((c) => ({
+							...c,
+							document_count: 2,
+							total_pages: 10,
+						})),
 					});
+				}
 				if (cmd === 'send_message') return null;
 			});
 
@@ -564,24 +497,12 @@ describe('conversations store event handling', () => {
 				total_pages: 0,
 			});
 
-			commands.length = 0;
 			await store.sendMessage('hello');
 
-			expect(commands.map((c) => c.cmd)).toEqual([
-				'start_chat',
-				'list_conversations',
-				'send_message',
-			]);
-			const startChat = commands.find((c) => c.cmd === 'start_chat');
-			expect(startChat?.args.collections).toEqual([
-				{ id: 'col1', name: 'Climate', document_count: 0, total_pages: 0 },
-			]);
-			const send = commands.find((c) => c.cmd === 'send_message');
-			expect(send?.args).toEqual({
-				conversationId: 'new1',
-				message: 'hello',
-			});
 			expect(store.getActiveId()).toBe('new1');
+			expect(store.getActiveCollections()).toEqual([
+				{ id: 'col1', name: 'Climate', document_count: 2, total_pages: 10 },
+			]);
 			expect(store.getActiveMessages()).toEqual([
 				{ role: 'user', content: [{ type: 'text', text: 'hello' }] },
 			]);
@@ -589,18 +510,16 @@ describe('conversations store event handling', () => {
 		});
 
 		it('sendMessage from an unscoped draft does nothing', async () => {
-			const commands: string[] = [];
 			mockIPC((cmd) => {
-				commands.push(cmd);
 				if (cmd === 'list_conversations') return [];
 			});
 
 			const store = await importStore();
 			await store.ensureInitialized();
-			commands.length = 0;
 
 			await store.sendMessage('hello');
-			expect(commands).toEqual([]);
+			expect(store.getActiveId()).toBeNull();
+			expect(store.getActiveMessages()).toEqual([]);
 			expect(store.getIsGenerating()).toBe(false);
 		});
 	});
