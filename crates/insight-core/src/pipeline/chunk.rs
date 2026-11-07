@@ -187,6 +187,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_index_worker_makes_documents_searchable_by_name() {
+        let mut harness = IndexHarness::new().await;
+        let text = "Global temperatures continue to rise across the decade.";
+        harness
+            .index_document(
+                document("Climate_Report_2024.pdf", vec![text.len()], 1),
+                text,
+            )
+            .await;
+
+        let chunks = harness.search("Climate_Report");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].parent_name, "Climate_Report_2024.pdf");
+    }
+
+    #[tokio::test]
     async fn test_index_worker_maps_chunks_to_pages() {
         let mut harness = IndexHarness::new().await;
         // Three pages of equal length, so chunk boundaries fall inside pages
