@@ -14,9 +14,8 @@
 	} from '#lib/api/provider.js';
 
 	const provider = $derived(page.data.provider);
-	const current = $derived(provider.current);
-	// Why the configured provider cannot be used (rig's validation error).
-	const statusError = $derived(provider.status.error);
+	const providerError = $derived(page.data.providerError);
+	const current = $derived(provider?.current);
 
 	let selections = $state<string[]>([]);
 	let family = $state('');
@@ -79,7 +78,7 @@
 		try {
 			selections = await listProviders();
 		} catch (e) {
-			console.error('Failed to list providers:', e);
+			error = describeError(e);
 		}
 		const configured = current;
 		if (configured) {
@@ -87,7 +86,11 @@
 			model = configured.model;
 			apiKey = configured.api_key ?? '';
 			baseUrl = configured.base_url ?? '';
-			models = await listModels(configured.family).catch(() => []);
+			try {
+				models = await listModels(configured.family);
+			} catch (e) {
+				error = describeError(e);
+			}
 		} else if (selections.length > 0) {
 			await selectFamily(selections[0]);
 		}
@@ -95,8 +98,10 @@
 </script>
 
 <div class="space-y-4">
-	{#if statusError}
-		<Alert>{statusError}</Alert>
+	{#if providerError}
+		<Alert>{providerError}</Alert>
+	{:else if provider?.status.error}
+		<Alert>{provider.status.error}</Alert>
 	{/if}
 
 	<div>

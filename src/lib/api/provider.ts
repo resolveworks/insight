@@ -78,8 +78,12 @@ export async function disableProvider(): Promise<void> {
 // =============================================================================
 
 /** Whether chat is enabled: a provider is configured and usable. */
-export function isProviderReady(provider: ProviderConfig): boolean {
-	return provider.status.family !== null && provider.status.error === null;
+export function isProviderReady(provider: ProviderConfig | null): boolean {
+	return (
+		provider !== null &&
+		provider.status.family !== null &&
+		provider.status.error === null
+	);
 }
 
 /**

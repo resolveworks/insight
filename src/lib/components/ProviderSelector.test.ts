@@ -28,7 +28,7 @@ function renderSelector(
 	current: CurrentProvider | null,
 	status: ProviderStatus = idleStatus,
 ) {
-	page.data = { provider: { current, status } };
+	page.data = { provider: { current, status }, providerError: null };
 	render(ProviderSelector);
 }
 
@@ -74,6 +74,46 @@ describe('ProviderSelector', () => {
 			'sk-stored',
 		);
 		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
+	});
+
+	it('shows a failed provider-state read in the form', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'list_provider_models') return [];
+		});
+		page.data = {
+			provider: null,
+			providerError: 'malformed settings file',
+		};
+		render(ProviderSelector);
+
+		expect(
+			await screen.findByText('malformed settings file'),
+		).toBeInTheDocument();
+		expect(screen.getByLabelText('Provider')).toBeInTheDocument();
+	});
+
+	it('shows a failed selection listing instead of an empty select', async () => {
+		const reason = 'provider catalog unavailable';
+		mockIPC((cmd) => {
+			if (cmd === 'list_providers')
+				throw { code: 'external_error', message: reason };
+		});
+		renderSelector(null);
+
+		expect(await screen.findByText(reason)).toBeInTheDocument();
+	});
+
+	it('shows a failed model listing instead of an empty model select', async () => {
+		const reason = 'model catalog unavailable';
+		mockIPC((cmd) => {
+			if (cmd === 'list_providers') return SELECTIONS;
+			if (cmd === 'list_provider_models')
+				throw { code: 'external_error', message: reason };
+		});
+		renderSelector(null);
+
+		expect(await screen.findByText(reason)).toBeInTheDocument();
 	});
 
 	it('says why a configured provider cannot be used', async () => {

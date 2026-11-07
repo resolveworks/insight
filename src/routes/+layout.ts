@@ -4,7 +4,11 @@
 // See: https://v2.tauri.app/start/frontend/sveltekit/ for more info
 import { invoke } from '@tauri-apps/api/core';
 import type { LayoutLoad } from './$types';
-import type { CurrentProvider, ProviderStatus } from '#lib/api/provider.js';
+import {
+	describeError,
+	type CurrentProvider,
+	type ProviderStatus,
+} from '#lib/api/provider.js';
 
 export const ssr = false;
 
@@ -12,10 +16,14 @@ export const ssr = false;
 export const load: LayoutLoad = async ({ depends }) => {
 	depends('app:provider');
 
-	const [current, status] = await Promise.all([
-		invoke<CurrentProvider | null>('get_current_provider'),
-		invoke<ProviderStatus>('get_provider_status'),
-	]);
+	try {
+		const [current, status] = await Promise.all([
+			invoke<CurrentProvider | null>('get_current_provider'),
+			invoke<ProviderStatus>('get_provider_status'),
+		]);
 
-	return { provider: { current, status } };
+		return { provider: { current, status }, providerError: null };
+	} catch (e) {
+		return { provider: null, providerError: describeError(e) };
+	}
 };
