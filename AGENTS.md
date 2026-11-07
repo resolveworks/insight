@@ -259,7 +259,7 @@ mockIPC((cmd, args) => {
 ~/.local/share/insight/
 ├── iroh/                          # iroh data (blobs, docs)
 ├── search/                        # milli index
-├── settings.json                  # settings v2 (provider + API keys)
+├── settings.json                  # settings v2 (chat provider)
 └── conversations/
     └── {collection_id}/
         └── {conversation_id}/

@@ -12,7 +12,7 @@
 
 ## Configure an AI Provider
 
-Insight supports 27 chat-provider vendors (OpenAI, Anthropic, Gemini, Groq, and local servers like Ollama and llama.cpp). Pick one in Settings and add an API key where required to get started. This works well on any computer.
+Insight supports 27 chat-provider vendors across 34 provider selections (OpenAI, Anthropic, Gemini, Groq, and local servers like Ollama and llama.cpp). Pick one in Settings and add an API key where required to get started. This works well on any computer.
 
 Your documents are always processed and stored locally—only your questions and the AI's answers go through the provider.
 
@@ -22,9 +22,9 @@ Your documents are always processed and stored locally—only your questions and
 
 Collections are folders for organizing your documents. You might create one for each investigation or story you're working on.
 
-1. Click **New Collection**
-2. Give it a name (e.g., "City Budget Investigation")
-3. Drag and drop PDF files into the collection
+1. Enter a name in the field under Files and click **Create**
+2. Open the collection and click **Import PDF**
+3. Choose the PDFs to add
 
 Insight will process each document so the AI can search and read them. Note: text extraction works on digital PDFs; scanned PDFs (images of text) won't be text-searchable.
 
@@ -36,4 +36,4 @@ Once your documents are processed, just ask questions in plain language:
 - "Find all mentions of Company X"
 - "Summarize the main findings from these reports"
 
-The AI will search through your documents, find relevant passages, and give you an answer with citations you can click to see the original source.
+The AI will search through your documents, find relevant passages, and give you an answer citing the documents it drew on.

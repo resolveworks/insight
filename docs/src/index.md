@@ -6,11 +6,11 @@ An AI research assistant for journalists. Your documents stay on your computer.
 
 Newsrooms deal with mountains of documents—court filings, FOIA responses, leaked files—but searching and analyzing them usually means uploading to cloud services you may not trust.
 
-Insight is different. Your documents are processed, stored, and searched locally—they never leave your computer unless you choose to share them with a colleague. Chat runs on a cloud provider of your choice (OpenAI, Anthropic, Gemini, or a local server like Ollama), configured with your own API key.
+Insight is different. Your documents are processed, stored, and searched locally—they never leave your computer unless you choose to share them with a colleague. Chat runs on a provider of your choice (OpenAI, Anthropic, Gemini, or a local server like Ollama), configured in Settings with an API key where the provider requires one.
 
 ## What Can It Do?
 
-- **Answer questions about your documents** — Ask in plain language, get answers with citations pointing to the exact source.
+- **Answer questions about your documents** — Ask in plain language, get answers that cite the documents they draw on.
 - **Search smartly** — Full-text search over your collection, driven by an AI agent that knows what to look for.
 - **Share securely** — Send collections directly to colleagues, laptop-to-laptop, without a server in between.
 - **Own your documents** — Storage, indexing, and sync all run locally; no account required.

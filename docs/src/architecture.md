@@ -4,18 +4,18 @@ Insight is built as a Tauri 2.0 desktop application with a Rust backend and Svel
 
 ## Core Stack
 
-| Component       | Library     | Purpose                                                                          |
-| --------------- | ----------- | -------------------------------------------------------------------------------- |
-| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                                         |
-| UI              | Svelte 5    | Frontend                                                                         |
-| Styling         | Tailwind 4  | Utility-first CSS                                                                |
-| Chat inference  | [rig]       | LLM framework: 27 vendor selections via a registry, agent runtime, tools, memory |
-| P2P / Sync      | iroh        | Connections, NAT traversal, sync                                                 |
-| Content storage | iroh-blobs  | Content-addressed file storage                                                   |
-| Metadata sync   | iroh-docs   | CRDT key-value store for metadata                                                |
-| Real-time       | iroh-gossip | Pub/sub for live updates                                                         |
-| Search          | milli       | Full-text keyword search (BM25)                                                  |
-| PDF text        | MuPDF       | Digital text extraction                                                          |
+| Component       | Library     | Purpose                                                        |
+| --------------- | ----------- | -------------------------------------------------------------- |
+| App framework   | Tauri 2.0   | Desktop app (Rust backend, web frontend)                       |
+| UI              | Svelte 5    | Frontend                                                       |
+| Styling         | Tailwind 4  | Utility-first CSS                                              |
+| Chat inference  | [rig]       | LLM framework: provider registry, agent runtime, tools, memory |
+| P2P / Sync      | iroh        | Connections, NAT traversal, sync                               |
+| Content storage | iroh-blobs  | Content-addressed file storage                                 |
+| Metadata sync   | iroh-docs   | CRDT key-value store for metadata                              |
+| Real-time       | iroh-gossip | Pub/sub for live updates                                       |
+| Search          | milli       | Full-text keyword search (BM25)                                |
+| PDF text        | MuPDF       | Digital text extraction                                        |
 
 [rig]: https://github.com/0xPlaygrounds/rig
 
@@ -26,14 +26,14 @@ User Query
     ↓
 rig Agent (per request: preamble + tools + memory + max turns)
     ↓
-Registry-built Model (one of 27 curated rig vendor selections)
+Registry-built Model (the configured rig provider selection)
     ↓
 Tool Calling Loop (multi-turn)
     ↓
 Synthesized Answer (with citations)
 ```
 
-Inference is remote-only: the chat provider is configured in Settings as a canonical rig `ProviderId` selection (for example `openai/openai` or `anthropic/anthropic`) plus a model and optional API key / base URL. Insight exposes one curated selection per vendor from [rig](https://github.com/0xPlaygrounds/rig)'s provider registry — 27 vendors including OpenAI, Anthropic, Gemini, Groq, OpenRouter, and local servers like Ollama and llama.cpp. The registry currently registers 34 selections; Insight does not expose every one. Only the conversation—queries and retrieved excerpts—goes to the provider. Documents are stored, searched, and synced entirely on your machine.
+Inference is remote-only: the chat provider is configured in Settings as a canonical rig `ProviderId` selection (for example `openai/openai` or `anthropic/anthropic`) plus a model and optional API key / base URL. Insight exposes every selection [rig](https://github.com/0xPlaygrounds/rig)'s provider registry registers — 34 selections across 27 vendors, including OpenAI, Anthropic, Gemini, Groq, OpenRouter, and local servers like Ollama and llama.cpp. Only the conversation—queries and retrieved excerpts—goes to the provider. Documents are stored, searched, and synced entirely on your machine.
 
 The runtime (`crates/insight-core/src/runtime.rs`) builds a fresh rig agent per request: a stable preamble, four manual `Tool` implementations, and file-backed conversation memory. Each tool owns a clone of the per-run `ToolState` (search index, storage, the conversation's collection); Insight keeps these live handles on the tool instances rather than in `ToolContext`. The conversation's collection is attached as an `active_collection` run document naming it on every turn; the preamble and tools are scoped to that one collection. Title generation runs after the first successful turn, falling back to rig-memory's `title_of` of the first user message. `predict_next_message` is a bare-model completion over the same provider settings. Conversation history persists in a per-conversation rig `DirStore`: `conversations/{collection_id}/{conversation_id}/logs/{conversation_id}.jsonl` for the session log and `conversations/{collection_id}/{conversation_id}/files/meta.json` for `rig_memory::SessionMeta` (title and updated). Agent progress streams to the frontend as rig `MultiTurnStreamItem` JSON events; the Tauri command emits a single terminal `streamError` when the run fails.
 
@@ -99,7 +99,7 @@ A document's source is immutable. Text is a derivation of that source: a documen
 All file content (PDFs and extraction text) is stored in iroh-blobs using content-addressing:
 
 - Files are identified by their BLAKE3 hash
-- Duplicate files are automatically deduplicated
+- Duplicate sources are detected by hash and rejected on import
 - Content can be verified for integrity
 
 ## Data Flow
@@ -151,4 +151,4 @@ Search is local keyword indexing over the canonical extraction's text: each peer
             └── files/meta.json                # rig SessionMeta (title, updated ms)
 ```
 
-Collection ids are canonical namespace-id strings. Each conversation is one rig `DirStore`; `SessionMeta` is the only conversation metadata, with no separate metadata sidecar and no `logs/` at the root. Chat provider configuration (settings v2: active `provider` plus per-selection `api_keys`) lives in `~/.local/share/insight/settings.json`. The active `family` and the `api_keys` entries use canonical `ProviderId` selection ids such as `openai/openai` and `anthropic/anthropic`. There is no migration from earlier conversation layouts; they are not read. On Windows, app data is under `%LOCALAPPDATA%\insight\`.
+Collection ids are canonical namespace-id strings. Each conversation is one rig `DirStore`; `SessionMeta` is the only conversation metadata, with no separate metadata sidecar and no `logs/` at the root. Chat provider configuration (settings v2: a single `provider` object with `family`, `model`, and optional `api_key` and `base_url`) lives in `~/.local/share/insight/settings.json`. The `family` is a canonical `ProviderId` selection id such as `openai/openai` or `anthropic/anthropic`. There is no migration from earlier conversation layouts; they are not read. On Windows, app data is under `%LOCALAPPDATA%\insight\`.

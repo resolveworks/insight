@@ -5,12 +5,13 @@
 - [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) 20+
 - [pnpm](https://pnpm.io/)
+- libclang, for `mupdf-sys`'s bindgen step
 - Platform-specific dependencies (see below)
 
 ### Linux
 
 ```bash
-sudo apt-get install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+sudo apt-get install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libclang-dev clang
 ```
 
 ### macOS
