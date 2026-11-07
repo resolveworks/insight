@@ -3,7 +3,7 @@
 //! This crate contains all the core functionality for Insight, including:
 //! - Document storage (iroh P2P)
 //! - Full-text search (milli)
-//! - PDF text extraction (lopdf)
+//! - PDF text extraction (MuPDF)
 //! - Remote inference providers via the [`rig`] framework: the provider
 //!   registry ([`providers`]), typed document tools ([`tools`]), file-backed
 //!   conversation memory ([`memory`]), and the agent [`runtime`]

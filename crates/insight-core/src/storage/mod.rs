@@ -1406,44 +1406,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_two_phase_import() {
-        use lopdf::{dictionary, Document, Object, Stream};
-
-        // Helper to create minimal PDF
-        fn create_test_pdf(text: &str) -> Vec<u8> {
-            let mut doc = Document::with_version("1.4");
-            let font_id = doc.add_object(dictionary! {
-                "Type" => "Font",
-                "Subtype" => "Type1",
-                "BaseFont" => "Helvetica",
-            });
-            let content = format!("BT /F1 12 Tf 100 700 Td ({}) Tj ET", text);
-            let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
-            let resources_id = doc.add_object(dictionary! {
-                "Font" => dictionary! { "F1" => font_id },
-            });
-            let page_id = doc.add_object(dictionary! {
-                "Type" => "Page",
-                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
-                "Resources" => resources_id,
-                "Contents" => content_id,
-            });
-            let pages_id = doc.add_object(dictionary! {
-                "Type" => "Pages",
-                "Kids" => vec![page_id.into()],
-                "Count" => 1,
-            });
-            if let Ok(Object::Dictionary(ref mut dict)) = doc.get_object_mut(page_id) {
-                dict.set("Parent", pages_id);
-            }
-            let catalog_id = doc.add_object(dictionary! {
-                "Type" => "Catalog",
-                "Pages" => pages_id,
-            });
-            doc.trailer.set("Root", catalog_id);
-            let mut buffer = Vec::new();
-            doc.save_to(&mut buffer).unwrap();
-            buffer
-        }
+        /// One-page PDF with a standard Helvetica text run.
+        const TEXT_PDF: &[u8] = include_bytes!("../../tests/fixtures/text.pdf");
 
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp_dir.path()).await.unwrap();
@@ -1451,8 +1415,7 @@ mod tests {
 
         // Create a test PDF file with extractable digital text.
         let pdf_path = temp_dir.path().join("test.pdf");
-        let pdf_bytes =
-            create_test_pdf("Hello World this PDF has plenty of digital text for the threshold");
+        let pdf_bytes = TEXT_PDF.to_vec();
         std::fs::write(&pdf_path, &pdf_bytes).unwrap();
 
         // Phase 1: Store source

@@ -15,8 +15,9 @@ iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = "0.101"
 
-# PDF processing (default features off: we don't use PDF date conversion)
-lopdf = { version = "0.47", default-features = false, features = ["rayon"] }
+# PDF text extraction. Default features off: MuPDF's optional document
+# formats, JS, barcode and OCR support stay out of the build.
+mupdf = { version = "0.8", default-features = false, features = ["base14-fonts"] }
 
 # milli from meilisearch — full-text keyword search
 milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.56.1" }
