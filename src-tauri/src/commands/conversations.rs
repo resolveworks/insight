@@ -92,11 +92,25 @@ async fn enrich_collections(
                 col.id
             ))
         })?;
+        let mut page_counts = Vec::with_capacity(documents.len());
+        for document in &documents {
+            page_counts.push(
+                storage
+                    .page_count(namespace_id, &document.id)
+                    .await
+                    .map_err(|e| {
+                        CommandError::internal(format!(
+                            "failed to read page count for document {}: {e}",
+                            document.id
+                        ))
+                    })?,
+            );
+        }
         enriched.push(CollectionInfo {
             id: col.id,
             name: col.name,
             document_count: documents.len(),
-            total_pages: sum_page_counts(documents.iter().map(|d| d.page_count())),
+            total_pages: sum_page_counts(page_counts),
             created_at: None,
         });
     }

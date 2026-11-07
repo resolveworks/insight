@@ -120,22 +120,25 @@ pub async fn get_documents(
 ) -> CommandResult<Vec<DocumentInfo>> {
     let storage = state.storage.read().await;
 
-    let documents = storage
-        .list_documents(collection_id.namespace())
-        .await
-        .storage_err()?;
+    let namespace_id = collection_id.namespace();
+    let documents = storage.list_documents(namespace_id).await.storage_err()?;
 
-    Ok(documents
-        .into_iter()
-        .map(|m| DocumentInfo {
-            page_count: m.page_count().map(|p| p as u32),
-            id: m.id,
-            name: m.name,
-            file_type: m.file_type,
-            tags: m.tags,
-            created_at: m.created_at,
-        })
-        .collect())
+    let mut result = Vec::with_capacity(documents.len());
+    for document in documents {
+        let page_count = storage
+            .page_count(namespace_id, &document.id)
+            .await
+            .storage_err()?;
+        result.push(DocumentInfo {
+            page_count: page_count.map(|p| p as u32),
+            id: document.id,
+            name: document.name,
+            file_type: document.file_type,
+            tags: document.tags,
+            created_at: document.created_at,
+        });
+    }
+    Ok(result)
 }
 
 /// Get a single document from a collection by ID
@@ -147,14 +150,19 @@ pub async fn get_document(
 ) -> CommandResult<DocumentInfo> {
     let storage = state.storage.read().await;
 
+    let namespace_id = collection_id.namespace();
     let document = storage
-        .get_document(collection_id.namespace(), &document_id)
+        .get_document(namespace_id, &document_id)
         .await
         .storage_err()?
         .ok_or(CommandError::document_not_found())?;
+    let page_count = storage
+        .page_count(namespace_id, &document.id)
+        .await
+        .storage_err()?;
 
     Ok(DocumentInfo {
-        page_count: document.page_count().map(|p| p as u32),
+        page_count: page_count.map(|p| p as u32),
         id: document.id,
         name: document.name,
         file_type: document.file_type,
@@ -163,7 +171,7 @@ pub async fn get_document(
     })
 }
 
-/// Get the extracted text content of a document
+/// Get the canonical extraction text of a document
 #[tauri::command]
 pub async fn get_document_text(
     collection_id: CollectionId,
@@ -172,21 +180,18 @@ pub async fn get_document_text(
 ) -> CommandResult<String> {
     let storage = state.storage.read().await;
 
-    // Fetch text directly from files/{id}/text entry
-    let text_bytes = storage
-        .get_document_text(collection_id.namespace(), &document_id)
+    let extraction = storage
+        .get_canonical_extraction(collection_id.namespace(), &document_id)
         .await
         .storage_err()?
         .ok_or(CommandError::text_not_found())?;
 
-    String::from_utf8(text_bytes).map_err(|e| CommandError::InvalidUtf8 {
-        message: format!("Invalid UTF-8 in text content: {}", e),
-    })
+    Ok(extraction.text)
 }
 
 /// Get the text chunks for a document (chunked on demand; no embeddings).
 ///
-/// Returns an empty list when the document has no extracted text yet.
+/// Returns an empty list when the document has no canonical extraction yet.
 #[tauri::command]
 pub async fn get_document_chunks(
     collection_id: CollectionId,
@@ -194,23 +199,18 @@ pub async fn get_document_chunks(
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<String>> {
     let storage = state.storage.read().await;
-    let text_bytes = storage
-        .get_document_text(collection_id.namespace(), &document_id)
+    let extraction = storage
+        .get_canonical_extraction(collection_id.namespace(), &document_id)
         .await
         .storage_err()?;
     drop(storage);
 
-    match text_bytes {
-        Some(bytes) => {
-            let text = String::from_utf8(bytes).map_err(|e| CommandError::InvalidUtf8 {
-                message: format!("Invalid UTF-8 in text content: {}", e),
-            })?;
-            Ok(insight_core::pipeline::chunk_text(&text)
-                .into_iter()
-                .map(|chunk| chunk.text)
-                .collect())
-        }
-        None => Ok(vec![]), // No text stored yet
+    match extraction {
+        Some(extraction) => Ok(insight_core::pipeline::chunk_text(&extraction.text)
+            .into_iter()
+            .map(|chunk| chunk.text)
+            .collect()),
+        None => Ok(vec![]), // No canonical extraction yet
     }
 }
 

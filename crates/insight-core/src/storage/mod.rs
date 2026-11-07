@@ -17,14 +17,14 @@ use iroh_docs::{AuthorId, ContentStatus, DocTicket, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
-use crate::text::{ExtractedText, UnitKind};
+use crate::text::{Extraction, ParserId, Unit, UnitKind};
 
 // =============================================================================
 // Key Structure Constants
 // =============================================================================
 //
 // Document entries follow the pattern: files/{doc_id}/{part}
-// where part is one of: meta, text, source
+// where part is one of: meta, source, extractions/{parser_key}.
 //
 // This structure ensures iroh-docs syncs all parts automatically.
 
@@ -37,11 +37,11 @@ const FILES_PREFIX: &str = "files/";
 /// Suffix for document metadata entries
 const META_SUFFIX: &str = "/meta";
 
-/// Suffix for document text entries
-const TEXT_SUFFIX: &str = "/text";
-
 /// Suffix for document source file entries
 const SOURCE_SUFFIX: &str = "/source";
+
+/// Segment for a document's extraction entries
+const EXTRACTIONS_SEGMENT: &str = "/extractions/";
 
 /// Prefix for hash index (duplicate detection)
 const HASH_INDEX_PREFIX: &str = "_hash_index/";
@@ -52,16 +52,22 @@ pub fn doc_meta_key(doc_id: &str) -> String {
     format!("{}{}{}", FILES_PREFIX, doc_id, META_SUFFIX)
 }
 
-/// Build the key for a document's text entry
-#[inline]
-pub fn doc_text_key(doc_id: &str) -> String {
-    format!("{}{}{}", FILES_PREFIX, doc_id, TEXT_SUFFIX)
-}
-
 /// Build the key for a document's source file entry
 #[inline]
 pub fn doc_source_key(doc_id: &str) -> String {
     format!("{}{}{}", FILES_PREFIX, doc_id, SOURCE_SUFFIX)
+}
+
+/// Build the key for one of a document's extraction entries
+#[inline]
+pub fn doc_extraction_key(doc_id: &str, parser: &ParserId) -> String {
+    format!(
+        "{}{}{}{}",
+        FILES_PREFIX,
+        doc_id,
+        EXTRACTIONS_SEGMENT,
+        parser.key()
+    )
 }
 
 /// Build the key for a hash index entry
@@ -97,8 +103,8 @@ pub struct CollectionMetadata {
 /// Document metadata stored in iroh-docs under `files/{id}/meta` key
 ///
 /// The actual content is stored in separate entries:
-/// - `files/{id}/text` - extracted text content
 /// - `files/{id}/source` - original file bytes (PDF, etc.)
+/// - `files/{id}/extractions/{parser_key}` - one extraction per parser
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentMetadata {
     pub id: String,
@@ -106,26 +112,34 @@ pub struct DocumentMetadata {
     /// MIME type or file extension (e.g., "application/pdf", "pdf")
     #[serde(default = "default_file_type")]
     pub file_type: String,
-    /// UTF-8 byte offset where each addressable unit of the source ends.
+    /// The extraction currently indexed for this document, if any.
     #[serde(default)]
-    pub units: Vec<usize>,
-    /// What one unit is. `None` means no unit structure is recorded for this
-    /// source (not yet extracted, or a source with no natural units).
-    #[serde(default)]
-    pub unit_kind: Option<UnitKind>,
+    pub extraction: Option<ParserId>,
     pub tags: Vec<String>,
     pub created_at: String,
 }
 
-impl DocumentMetadata {
-    /// Number of pages in the source, when the source is paginated.
-    pub fn page_count(&self) -> Option<usize> {
-        (self.unit_kind == Some(UnitKind::Page)).then_some(self.units.len())
-    }
-}
-
 fn default_file_type() -> String {
     "application/pdf".to_string()
+}
+
+/// An extraction record stored under `files/{id}/extractions/{parser_key}`.
+///
+/// Holds the text blob hash and the source unit mapping; the text itself is
+/// a separate blob.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExtractionRecord {
+    parser: ParserId,
+    /// Hex-encoded BLAKE3 hash of the extraction text blob.
+    text_hash: String,
+    unit_kind: Option<UnitKind>,
+    units: Vec<Unit>,
+}
+
+impl ExtractionRecord {
+    fn page_count(&self) -> Option<usize> {
+        (self.unit_kind == Some(UnitKind::Page)).then_some(self.units.len())
+    }
 }
 
 /// Storage layer using iroh for P2P content-addressed storage
@@ -385,22 +399,26 @@ impl Storage {
         Ok(count)
     }
 
-    /// Add a complete document to a collection with all its parts.
+    /// Add a document's immutable source to a collection.
     ///
-    /// Stores three entries:
+    /// Stores two entries:
     /// - `files/{id}/meta` - document metadata (JSON)
-    /// - `files/{id}/text` - extracted text content
     /// - `files/{id}/source` - original file bytes
     ///
     /// Also creates a hash index entry for duplicate detection, keyed by the
-    /// BLAKE3 hash that iroh-blobs computed for the source blob.
+    /// BLAKE3 hash that iroh-blobs computed for the source blob. A source
+    /// already present in the collection is rejected.
     pub async fn add_document(
         &self,
         namespace_id: NamespaceId,
         metadata: DocumentMetadata,
-        text_content: &[u8],
         source_content: &[u8],
     ) -> Result<()> {
+        let source_hash = Hash::new(source_content);
+        if self.has_source_hash(namespace_id, &source_hash).await? {
+            anyhow::bail!("Duplicate document: {}", metadata.name);
+        }
+
         let doc = self
             .docs
             .api()
@@ -408,28 +426,7 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        // Store metadata entry at files/{id}/meta
-        let metadata_bytes = serde_json::to_vec(&metadata)?;
-        let meta_hash = self.store_blob(&metadata_bytes).await?;
-        let meta_key = doc_meta_key(&metadata.id);
-        doc.set_hash(
-            self.author_id,
-            meta_key.into_bytes(),
-            meta_hash,
-            metadata_bytes.len() as u64,
-        )
-        .await?;
-
-        // Store text entry at files/{id}/text
-        let text_hash = self.store_blob(text_content).await?;
-        let text_key = doc_text_key(&metadata.id);
-        doc.set_hash(
-            self.author_id,
-            text_key.into_bytes(),
-            text_hash,
-            text_content.len() as u64,
-        )
-        .await?;
+        self.store_meta_inner(&doc, &metadata.id, &metadata).await?;
 
         // Store source entry at files/{id}/source
         let source_blob_hash = self.store_blob(source_content).await?;
@@ -551,29 +548,180 @@ impl Storage {
         Ok(metadata)
     }
 
-    /// Get a document's extracted text content
-    pub async fn get_document_text(
+    /// Write an extraction for a document without changing which extraction
+    /// is canonical.
+    pub async fn write_extraction(
         &self,
         namespace_id: NamespaceId,
-        document_id: &str,
-    ) -> Result<Option<Vec<u8>>> {
+        doc_id: &str,
+        extraction: &Extraction,
+    ) -> Result<()> {
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        let text_bytes = extraction.text.as_bytes();
+        let text_hash = self.store_blob(text_bytes).await?;
+
+        let record = ExtractionRecord {
+            parser: extraction.parser.clone(),
+            text_hash: text_hash.to_hex(),
+            unit_kind: extraction.unit_kind,
+            units: extraction.units.clone(),
+        };
+        let record_bytes = serde_json::to_vec(&record)?;
+        let record_hash = self.store_blob(&record_bytes).await?;
+
+        let key = doc_extraction_key(doc_id, &extraction.parser);
+        doc.set_hash(
+            self.author_id,
+            key.into_bytes(),
+            record_hash,
+            record_bytes.len() as u64,
+        )
+        .await?;
+
+        doc.close().await?;
+        Ok(())
+    }
+
+    /// Make one of a document's extractions canonical.
+    ///
+    /// The extraction entry must exist; selecting an unknown parser throws.
+    pub async fn set_canonical_extraction(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        parser: &ParserId,
+    ) -> Result<()> {
+        let mut metadata = self
+            .get_document(namespace_id, doc_id)
+            .await?
+            .context("Document not found")?;
+
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        let key = doc_extraction_key(doc_id, parser);
+        let entry = doc.get_one(Query::key_exact(key.as_bytes())).await?;
+        if entry.is_none() {
+            doc.close().await?;
+            anyhow::bail!(
+                "Extraction {} not found for document {}",
+                parser.key(),
+                doc_id
+            );
+        }
+
+        metadata.extraction = Some(parser.clone());
+        self.store_meta_inner(&doc, doc_id, &metadata).await?;
+        doc.close().await?;
+        Ok(())
+    }
+
+    /// Read one of a document's extractions.
+    ///
+    /// Returns `Ok(None)` when the extraction entry is absent or its text blob
+    /// is not available locally yet (sync in flight).
+    pub async fn get_extraction(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        parser: &ParserId,
+    ) -> Result<Option<Extraction>> {
+        let record = match self
+            .get_extraction_record(namespace_id, doc_id, parser)
+            .await?
+        {
+            Some(record) => record,
+            None => return Ok(None),
+        };
+
+        let text_hash = record
+            .text_hash
+            .parse::<Hash>()
+            .context("Invalid extraction text hash")?;
+        let text_bytes = match self.get_blob(&text_hash).await? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let text = String::from_utf8(text_bytes).context("Extraction text is not valid UTF-8")?;
+
+        Ok(Some(Extraction {
+            parser: record.parser,
+            text,
+            unit_kind: record.unit_kind,
+            units: record.units,
+        }))
+    }
+
+    /// Read a document's canonical extraction, if one is selected.
+    pub async fn get_canonical_extraction(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+    ) -> Result<Option<Extraction>> {
+        let metadata = match self.get_document(namespace_id, doc_id).await? {
+            Some(metadata) => metadata,
+            None => return Ok(None),
+        };
+        let Some(parser) = metadata.extraction else {
+            return Ok(None);
+        };
+        self.get_extraction(namespace_id, doc_id, &parser).await
+    }
+
+    /// Number of pages in a document's canonical extraction.
+    pub async fn page_count(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+    ) -> Result<Option<usize>> {
+        let metadata = match self.get_document(namespace_id, doc_id).await? {
+            Some(metadata) => metadata,
+            None => return Ok(None),
+        };
+        let Some(parser) = metadata.extraction else {
+            return Ok(None);
+        };
+        Ok(self
+            .get_extraction_record(namespace_id, doc_id, &parser)
+            .await?
+            .and_then(|record| record.page_count()))
+    }
+
+    /// Read an extraction record without loading its text blob.
+    async fn get_extraction_record(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        parser: &ParserId,
+    ) -> Result<Option<ExtractionRecord>> {
         let doc = match self.docs.api().open(namespace_id).await? {
             Some(doc) => doc,
             None => return Ok(None),
         };
 
-        let key = doc_text_key(document_id);
-        let query = Query::key_exact(key.as_bytes());
-        let entry = doc.get_one(query).await?;
-
-        let text = if let Some(entry) = entry {
-            self.get_blob(&entry.content_hash()).await?
+        let key = doc_extraction_key(doc_id, parser);
+        let entry = doc.get_one(Query::key_exact(key.as_bytes())).await?;
+        let record = if let Some(entry) = entry {
+            match self.get_blob(&entry.content_hash()).await? {
+                Some(bytes) => Some(serde_json::from_slice(&bytes)?),
+                None => None,
+            }
         } else {
             None
         };
 
         doc.close().await?;
-        Ok(text)
+        Ok(record)
     }
 
     /// Get a document's original source file
@@ -624,8 +772,8 @@ impl Storage {
 
     /// Delete a document from a collection
     ///
-    /// Sweeps every entry under `files/{id}/` (meta, text, source, and
-    /// anything added later) plus the
+    /// Sweeps every entry under `files/{id}/` (meta, source, extractions,
+    /// and anything added later) plus the
     /// `_hash_index/{source_hash}` entry used for duplicate detection.
     pub async fn delete_document(
         &self,
@@ -883,13 +1031,13 @@ impl Storage {
     ///
     /// This is the first phase of the pipeline - just copies the PDF bytes
     /// to iroh storage without text extraction. Creates:
-    /// - `files/{id}/meta` - minimal metadata (no unit structure yet)
+    /// - `files/{id}/meta` - metadata with no canonical extraction yet
     /// - `files/{id}/source` - original PDF bytes
     /// - `_hash_index/{hash}` - duplicate detection index
     ///
     /// Returns the new `doc_id` for the next phase.
     ///
-    /// Note: Metadata is incomplete until `extract_and_dispatch()` is called.
+    /// Note: No extraction exists until `extract_and_dispatch()` is called.
     pub async fn store_pdf_source(
         &self,
         path: &std::path::Path,
@@ -902,92 +1050,23 @@ impl Storage {
 
         let pdf_bytes = std::fs::read(path).context("Failed to read PDF file")?;
 
-        // Hand bytes to iroh-blobs once. add_slice returns a TempTag holding
-        // the BLAKE3 hash; iroh-blobs is content-addressed, so re-adding bytes
-        // that are already stored is a no-op at the storage layer.
-        let source_temp_tag = self.blobs.add_slice(&pdf_bytes).await?;
-        let source_blob_hash = source_temp_tag.hash;
-
-        // Check for duplicate using the hash iroh just computed. Dropping
-        // the TempTag releases our temp reference; if the blob already
-        // existed, the prior document's permanent tag keeps it alive.
-        if self
-            .has_source_hash(namespace_id, &source_blob_hash)
-            .await?
-        {
-            anyhow::bail!("Duplicate document: {}", file_name);
-        }
-
-        // Promote to a permanent tag so the blob isn't garbage collected.
-        self.blobs
-            .tags()
-            .set(
-                source_blob_hash.to_string(),
-                source_temp_tag.hash_and_format(),
-            )
-            .await?;
-        drop(source_temp_tag);
-
         let doc_id = uuid::Uuid::new_v4().to_string();
 
-        // Create minimal metadata (units filled in during extract phase)
         let metadata = DocumentMetadata {
             id: doc_id.clone(),
-            name: file_name,
+            name: file_name.clone(),
             file_type: "application/pdf".to_string(),
-            units: vec![],
-            unit_kind: None,
+            extraction: None,
             tags: vec![],
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        let doc = self
-            .docs
-            .api()
-            .open(namespace_id)
-            .await?
-            .context("Collection not found")?;
-
-        // Store metadata entry at files/{id}/meta
-        let metadata_bytes = serde_json::to_vec(&metadata)?;
-        let meta_hash = self.store_blob(&metadata_bytes).await?;
-        let meta_key = doc_meta_key(&doc_id);
-        doc.set_hash(
-            self.author_id,
-            meta_key.into_bytes(),
-            meta_hash,
-            metadata_bytes.len() as u64,
-        )
-        .await?;
-
-        // Store source entry at files/{id}/source
-        let source_key = doc_source_key(&doc_id);
-        doc.set_hash(
-            self.author_id,
-            source_key.into_bytes(),
-            source_blob_hash,
-            pdf_bytes.len() as u64,
-        )
-        .await?;
-
-        // Create hash index entry for O(1) duplicate detection
-        let index_key = hash_index_key(&source_blob_hash);
-        let doc_id_bytes = doc_id.as_bytes();
-        let doc_id_hash = self.store_blob(doc_id_bytes).await?;
-        doc.set_hash(
-            self.author_id,
-            index_key.into_bytes(),
-            doc_id_hash,
-            doc_id_bytes.len() as u64,
-        )
-        .await?;
-
-        doc.close().await?;
+        self.add_document(namespace_id, metadata, &pdf_bytes)
+            .await?;
 
         tracing::info!(
             doc_id = %doc_id,
-            "Stored PDF source for {}",
-            metadata.name
+            "Stored PDF source for {file_name}"
         );
 
         Ok(doc_id)
@@ -996,9 +1075,8 @@ impl Storage {
     /// Phase 2: Extract text from the stored PDF and write it out.
     ///
     /// Extracts per-page text via [`crate::pdf::extract_text_from_bytes`] and
-    /// writes `files/{id}/text` (which fires the index stage via the
-    /// watcher). The source's page/unit structure is recorded by
-    /// [`Storage::write_extracted`], not here.
+    /// writes `files/{id}/extractions/{parser_key}`. The extraction becomes
+    /// canonical only when the document has no canonical extraction yet.
     ///
     /// Returns `Ok(Some(metadata))` on success, `Ok(None)` when the
     /// document has been deleted (job queued before deletion), and
@@ -1019,70 +1097,42 @@ impl Storage {
             }
         };
 
-        let extracted =
-            tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source_bytes))
-                .await
-                .context("Extract task panicked")??;
-
-        let metadata = self
-            .write_extracted(namespace_id, doc_id, &extracted)
-            .await?;
-
-        if let Some(metadata) = &metadata {
-            tracing::info!(
-                doc_id = %doc_id,
-                page_count = metadata.page_count(),
-                text_len = extracted.text.len(),
-                "Extracted text for {}",
-                metadata.name
-            );
-        }
-
-        Ok(metadata)
-    }
-
-    /// Persist extracted text and record its unit structure in `files/{id}/meta`,
-    /// returning the metadata as written.
-    pub async fn write_extracted(
-        &self,
-        namespace_id: NamespaceId,
-        doc_id: &str,
-        extracted: &ExtractedText,
-    ) -> Result<Option<DocumentMetadata>> {
         let mut metadata = match self.get_document(namespace_id, doc_id).await? {
-            Some(m) => m,
+            Some(metadata) => metadata,
             None => {
                 tracing::warn!(
                     doc_id = %doc_id,
-                    "Metadata not found; document was likely deleted — skipping write"
+                    "Metadata not found; document was likely deleted — skipping extract"
                 );
                 return Ok(None);
             }
         };
-        metadata.units = extracted.units.clone();
-        metadata.unit_kind = Some(extracted.unit_kind);
 
-        let doc = self
-            .docs
-            .api()
-            .open(namespace_id)
-            .await?
-            .context("Collection not found")?;
+        let extraction =
+            tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source_bytes))
+                .await
+                .context("Extract task panicked")??;
 
-        self.store_meta_inner(&doc, doc_id, &metadata).await?;
+        self.write_extraction(namespace_id, doc_id, &extraction)
+            .await?;
 
-        let text_bytes = extracted.text.as_bytes();
-        let text_hash = self.store_blob(text_bytes).await?;
-        let text_key = doc_text_key(doc_id);
-        doc.set_hash(
-            self.author_id,
-            text_key.into_bytes(),
-            text_hash,
-            text_bytes.len() as u64,
-        )
-        .await?;
+        if metadata.extraction.is_none() {
+            self.set_canonical_extraction(namespace_id, doc_id, &extraction.parser)
+                .await?;
+            metadata = self
+                .get_document(namespace_id, doc_id)
+                .await?
+                .context("Document vanished during extraction")?;
+        }
 
-        doc.close().await?;
+        tracing::info!(
+            doc_id = %doc_id,
+            page_count = extraction.page_count(),
+            text_len = extraction.text.len(),
+            "Extracted text for {}",
+            metadata.name
+        );
+
         Ok(Some(metadata))
     }
 
@@ -1176,6 +1226,46 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    fn document(id: &str, name: &str) -> DocumentMetadata {
+        DocumentMetadata {
+            id: id.to_string(),
+            name: name.to_string(),
+            file_type: "application/pdf".to_string(),
+            extraction: None,
+            tags: Vec::new(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn parser(name: &str) -> ParserId {
+        ParserId {
+            name: name.to_string(),
+            version: "1".to_string(),
+        }
+    }
+
+    fn extraction(parser: ParserId, text: &str, page_ends: Vec<usize>) -> Extraction {
+        let mut start = 0;
+        let units = page_ends
+            .into_iter()
+            .enumerate()
+            .map(|(index, end)| {
+                let unit = Unit {
+                    number: index + 1,
+                    spans: vec![crate::text::TextSpan { start, end }],
+                };
+                start = end;
+                unit
+            })
+            .collect();
+        Extraction {
+            parser,
+            text: text.to_string(),
+            unit_kind: Some(UnitKind::Page),
+            units,
+        }
+    }
+
     #[tokio::test]
     async fn test_add_and_list_documents() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1183,20 +1273,19 @@ mod tests {
 
         let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
 
-        // Add a document with all its parts
-        let doc = DocumentMetadata {
-            id: "doc-1".to_string(),
-            name: "test.pdf".to_string(),
-            file_type: "application/pdf".to_string(),
-            units: vec![10, 20, 30, 40, 50],
-            unit_kind: Some(UnitKind::Page),
-            tags: vec!["test".to_string()],
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-        };
-        let text_content = b"This is the extracted text";
         let source_content = b"PDF bytes here";
         storage
-            .add_document(collection_id, doc, text_content, source_content)
+            .add_document(collection_id, document("doc-1", "test.pdf"), source_content)
+            .await
+            .unwrap();
+
+        let extraction = extraction(parser("test-parser"), "0123456789", vec![2, 4, 6, 8, 10]);
+        storage
+            .write_extraction(collection_id, "doc-1", &extraction)
+            .await
+            .unwrap();
+        storage
+            .set_canonical_extraction(collection_id, "doc-1", &extraction.parser)
             .await
             .unwrap();
 
@@ -1209,14 +1298,18 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].id, "doc-1");
         assert_eq!(docs[0].name, "test.pdf");
-        assert_eq!(docs[0].page_count(), Some(5));
+        assert_eq!(docs[0].extraction, Some(extraction.parser.clone()));
+        assert_eq!(
+            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            Some(5)
+        );
 
-        // Verify we can retrieve text and source
-        let text = storage
-            .get_document_text(collection_id, "doc-1")
+        // Verify we can retrieve the canonical extraction and source
+        let stored = storage
+            .get_canonical_extraction(collection_id, "doc-1")
             .await
             .unwrap();
-        assert_eq!(text, Some(text_content.to_vec()));
+        assert_eq!(stored, Some(extraction));
 
         let source = storage
             .get_document_source(collection_id, "doc-1")
@@ -1226,45 +1319,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_document() {
+    async fn test_multiple_extractions_and_canonical_selection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
+
+        storage
+            .add_document(collection_id, document("doc-1", "test.pdf"), b"source")
+            .await
+            .unwrap();
+
+        let first = extraction(parser("first"), "one page", vec![8]);
+        let second = extraction(parser("second"), "two pages", vec![3, 9]);
+        storage
+            .write_extraction(collection_id, "doc-1", &first)
+            .await
+            .unwrap();
+        storage
+            .write_extraction(collection_id, "doc-1", &second)
+            .await
+            .unwrap();
+
+        // Writing extractions does not choose a canonical one.
+        assert_eq!(
+            storage
+                .get_canonical_extraction(collection_id, "doc-1")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .get_extraction(collection_id, "doc-1", &first.parser)
+                .await
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            storage
+                .get_extraction(collection_id, "doc-1", &second.parser)
+                .await
+                .unwrap(),
+            Some(second.clone())
+        );
+
+        storage
+            .set_canonical_extraction(collection_id, "doc-1", &first.parser)
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .get_canonical_extraction(collection_id, "doc-1")
+                .await
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            Some(1)
+        );
+
+        storage
+            .set_canonical_extraction(collection_id, "doc-1", &second.parser)
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .get_canonical_extraction(collection_id, "doc-1")
+                .await
+                .unwrap(),
+            Some(second)
+        );
+        assert_eq!(
+            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            Some(2)
+        );
+
+        // Selecting an extraction that was never written throws.
+        assert!(storage
+            .set_canonical_extraction(collection_id, "doc-1", &parser("missing"))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_document_removes_extractions() {
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp_dir.path()).await.unwrap();
 
         let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
 
-        // Add two documents
-        let doc1 = DocumentMetadata {
-            id: "doc-1".to_string(),
-            name: "first.pdf".to_string(),
-            file_type: "application/pdf".to_string(),
-            units: vec![10],
-            unit_kind: Some(UnitKind::Page),
-            tags: vec![],
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-        };
-        let source1 = b"source1";
-
-        let doc2 = DocumentMetadata {
-            id: "doc-2".to_string(),
-            name: "second.pdf".to_string(),
-            file_type: "application/pdf".to_string(),
-            units: vec![10, 20],
-            unit_kind: Some(UnitKind::Page),
-            tags: vec![],
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-        };
-        let source2 = b"source2";
-
         storage
-            .add_document(collection_id, doc1, b"text1", source1)
+            .add_document(collection_id, document("doc-1", "first.pdf"), b"source1")
             .await
             .unwrap();
         storage
-            .add_document(collection_id, doc2, b"text2", source2)
+            .add_document(collection_id, document("doc-2", "second.pdf"), b"source2")
             .await
             .unwrap();
 
-        // Should have 2 documents (6 entries total)
+        let worked = extraction(parser("worked"), "doc one", vec![7]);
+        storage
+            .write_extraction(collection_id, "doc-1", &worked)
+            .await
+            .unwrap();
+        storage
+            .set_canonical_extraction(collection_id, "doc-1", &worked.parser)
+            .await
+            .unwrap();
+
+        // Should have 2 documents
         let docs = storage.list_documents(collection_id).await.unwrap();
         assert_eq!(docs.len(), 2);
 
@@ -1273,6 +1437,19 @@ mod tests {
             .delete_document(collection_id, "doc-1")
             .await
             .unwrap();
+
+        // Its extraction is gone with it.
+        assert_eq!(
+            storage
+                .get_extraction(collection_id, "doc-1", &worked.parser)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            None
+        );
 
         // Should have 1 document left
         let docs = storage.list_documents(collection_id).await.unwrap();
@@ -1318,25 +1495,24 @@ mod tests {
             .unwrap());
 
         // Add a document
-        let doc = DocumentMetadata {
-            id: "doc-1".to_string(),
-            name: "report.pdf".to_string(),
-            file_type: "application/pdf".to_string(),
-            units: vec![10, 20, 30],
-            unit_kind: Some(UnitKind::Page),
-            tags: vec![],
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-        };
         storage
-            .add_document(collection_id, doc, b"text", source_content)
+            .add_document(
+                collection_id,
+                document("doc-1", "report.pdf"),
+                source_content,
+            )
             .await
             .unwrap();
 
-        // Now the hash should be detected
+        // Now the hash should be detected, and a duplicate is rejected.
         assert!(storage
             .has_source_hash(collection_id, &source_hash)
             .await
             .unwrap());
+        assert!(storage
+            .add_document(collection_id, document("doc-2", "copy.pdf"), source_content)
+            .await
+            .is_err());
 
         // Different hash should not be detected
         assert!(!storage
@@ -1379,13 +1555,22 @@ mod tests {
         assert!(!doc_id.is_empty());
         let source_hash = Hash::new(&pdf_bytes);
 
-        // After phase 1: metadata exists but the source has no recorded units
+        // After phase 1: metadata exists but no extraction is canonical.
         let meta1 = storage.get_document(collection_id, &doc_id).await.unwrap();
         assert!(meta1.is_some());
         let meta1 = meta1.unwrap();
-        assert_eq!(meta1.page_count(), None);
-        assert!(meta1.units.is_empty());
-        assert_eq!(meta1.unit_kind, None);
+        assert_eq!(meta1.extraction, None);
+        assert_eq!(
+            storage.page_count(collection_id, &doc_id).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .get_canonical_extraction(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            None
+        );
 
         // Source should exist
         let source = storage
@@ -1395,39 +1580,27 @@ mod tests {
         assert!(source.is_some());
         assert_eq!(source.unwrap(), pdf_bytes);
 
-        // Text should NOT exist yet
-        let text = storage
-            .get_document_text(collection_id, &doc_id)
-            .await
-            .unwrap();
-        assert!(text.is_none());
-
         // Phase 2: Extract and store text
-        storage
+        let extracted = storage
             .extract_and_dispatch(collection_id, &doc_id)
             .await
             .unwrap()
             .expect("document should exist");
+        assert_eq!(extracted.extraction, Some(parser("mupdf-pdf-text")));
 
-        // The persisted metadata carries the page structure
-        let persisted = storage
-            .get_document(collection_id, &doc_id)
+        // The canonical extraction carries the page structure and text.
+        assert_eq!(
+            storage.page_count(collection_id, &doc_id).await.unwrap(),
+            Some(1)
+        );
+        let canonical = storage
+            .get_canonical_extraction(collection_id, &doc_id)
             .await
             .unwrap()
-            .expect("document metadata should be persisted");
-        assert_eq!(persisted.page_count(), Some(1));
-        assert_eq!(persisted.unit_kind, Some(UnitKind::Page));
-        assert_eq!(persisted.units.len(), 1);
-
-        // Text should now exist
-        let text = storage
-            .get_document_text(collection_id, &doc_id)
-            .await
-            .unwrap();
-        assert!(text.is_some());
-        let text_bytes = text.unwrap();
-        let text_str = String::from_utf8_lossy(&text_bytes);
-        assert!(!text_str.is_empty());
+            .expect("canonical extraction should exist");
+        assert_eq!(canonical.unit_kind, Some(UnitKind::Page));
+        assert_eq!(canonical.units.len(), 1);
+        assert!(!canonical.text.is_empty());
 
         // Duplicate detection should work
         assert!(storage

@@ -19,7 +19,16 @@ pub async fn get_collections(state: State<'_, AppState>) -> CommandResult<Vec<Co
             .await
             .unwrap_or_default();
         let document_count = documents.len();
-        let total_pages = sum_page_counts(documents.iter().map(|d| d.page_count()));
+        let mut page_counts = Vec::with_capacity(documents.len());
+        for document in &documents {
+            page_counts.push(
+                storage
+                    .page_count(namespace_id, &document.id)
+                    .await
+                    .storage_err()?,
+            );
+        }
+        let total_pages = sum_page_counts(page_counts);
         result.push(CollectionInfo {
             id: namespace_id.to_string(),
             name: metadata.name,
@@ -162,7 +171,16 @@ pub async fn import_collection(
         .await
         .unwrap_or_default();
     let document_count = documents.len();
-    let total_pages = sum_page_counts(documents.iter().map(|d| d.page_count()));
+    let mut page_counts = Vec::with_capacity(documents.len());
+    for document in &documents {
+        page_counts.push(
+            storage
+                .page_count(namespace_id, &document.id)
+                .await
+                .storage_err()?,
+        );
+    }
+    let total_pages = sum_page_counts(page_counts);
 
     Ok(CollectionInfo {
         id: namespace_id.to_string(),

@@ -358,8 +358,8 @@ impl Tool for ListDocuments {
         tracing::info!("Listing documents");
         let storage = state.storage.read().await;
 
-        // (collection_id, collection_name, document), sorted by collection then
-        // document name.
+        // (collection_id, collection_name, document, page_count), sorted by
+        // collection then document name.
         let mut all_documents = Vec::new();
         for collection in &state.collections {
             let namespace_id = collection
@@ -378,7 +378,16 @@ impl Tool for ListDocuments {
                 .await
                 .map_err(infrastructure_error)?;
             for doc in documents {
-                all_documents.push((collection.id.clone(), collection_name.clone(), doc));
+                let page_count = storage
+                    .page_count(namespace_id, &doc.id)
+                    .await
+                    .map_err(infrastructure_error)?;
+                all_documents.push((
+                    collection.id.clone(),
+                    collection_name.clone(),
+                    doc,
+                    page_count,
+                ));
             }
         }
 
@@ -388,13 +397,13 @@ impl Tool for ListDocuments {
         let total_pages = crate::sum_page_counts(
             all_documents
                 .iter()
-                .map(|(_, _, document)| document.page_count()),
+                .map(|(_, _, _, page_count)| *page_count),
         );
         let truncated = total > MAX_DOCS_TO_SHOW;
 
         // Group by collection, in sorted order.
         let mut groups: Vec<CollectionGroup> = Vec::new();
-        for (collection_id, collection_name, doc) in
+        for (collection_id, collection_name, doc, page_count) in
             all_documents.into_iter().take(MAX_DOCS_TO_SHOW)
         {
             let group = match groups.iter_mut().find(|g| g.collection_id == collection_id) {
@@ -409,7 +418,7 @@ impl Tool for ListDocuments {
                 }
             };
             group.documents.push(DocumentEntry {
-                page_count: doc.page_count(),
+                page_count,
                 name: doc.name,
                 id: doc.id,
             });
@@ -514,7 +523,7 @@ impl Tool for GetCollectionTerms {
 mod tests {
     use super::*;
     use crate::search::ChunkToIndex;
-    use crate::text::UnitKind;
+    use crate::text::{Extraction, ParserId, TextSpan, Unit, UnitKind};
     use milli::update::IndexerConfig;
     use rig::tool::{Tool, ToolContext, ToolErrorKind};
 
@@ -548,33 +557,64 @@ mod tests {
         namespace_id.to_string()
     }
 
-    /// Store a document with the units its chunks' offsets refer to.
+    /// Store a document and, when a unit kind is given, an extraction whose
+    /// pages cover `text` up to the given end offsets.
     async fn add_document(
         state: &ToolState,
         collection_id: &str,
         id: &str,
         name: &str,
         text: &str,
-        units: Vec<usize>,
+        page_ends: Vec<usize>,
         unit_kind: Option<UnitKind>,
     ) {
         let metadata = crate::storage::DocumentMetadata {
             id: id.to_string(),
             name: name.to_string(),
             file_type: "application/pdf".to_string(),
-            units,
-            unit_kind,
+            extraction: None,
             tags: Vec::new(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
         };
         let namespace_id = collection_id.parse::<iroh_docs::NamespaceId>().unwrap();
-        state
-            .storage
-            .read()
-            .await
-            .add_document(namespace_id, metadata, text.as_bytes(), b"source")
+        let storage = state.storage.read().await;
+        storage
+            .add_document(namespace_id, metadata, format!("source-{id}").as_bytes())
             .await
             .unwrap();
+
+        if let Some(unit_kind) = unit_kind {
+            let mut start = 0;
+            let units = page_ends
+                .into_iter()
+                .enumerate()
+                .map(|(index, end)| {
+                    let unit = Unit {
+                        number: index + 1,
+                        spans: vec![TextSpan { start, end }],
+                    };
+                    start = end;
+                    unit
+                })
+                .collect();
+            let extraction = Extraction {
+                parser: ParserId {
+                    name: "test-parser".to_string(),
+                    version: "1".to_string(),
+                },
+                text: text.to_string(),
+                unit_kind: Some(unit_kind),
+                units,
+            };
+            storage
+                .write_extraction(namespace_id, id, &extraction)
+                .await
+                .unwrap();
+            storage
+                .set_canonical_extraction(namespace_id, id, &extraction.parser)
+                .await
+                .unwrap();
+        }
     }
 
     /// Helper to create a chunk for indexing.
@@ -920,6 +960,47 @@ mod tests {
 
         assert_eq!(out.total, 0);
         assert!(out.collections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_reports_page_counts() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Paged").await;
+        add_document(
+            &state,
+            &collection,
+            "doc-paged",
+            "Paged.pdf",
+            "0123456789",
+            vec![4, 8, 10],
+            Some(UnitKind::Page),
+        )
+        .await;
+        add_document(
+            &state,
+            &collection,
+            "doc-unknown",
+            "Unknown.pdf",
+            "no extraction",
+            Vec::new(),
+            None,
+        )
+        .await;
+        state.collections = scope(&collection, "Paged");
+
+        let out = ListDocuments::new(state)
+            .call(&mut ToolContext::new(), ListDocumentsArgs {})
+            .await
+            .unwrap();
+
+        assert_eq!(out.total, 2);
+        assert_eq!(out.total_pages, Some(3));
+        let documents = &out.collections[0].documents;
+        assert_eq!(documents.len(), 2);
+        assert_eq!(documents[0].name, "Paged.pdf");
+        assert_eq!(documents[0].page_count, Some(3));
+        assert_eq!(documents[1].name, "Unknown.pdf");
+        assert_eq!(documents[1].page_count, None);
     }
 
     #[tokio::test]
