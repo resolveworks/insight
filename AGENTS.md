@@ -39,10 +39,10 @@ Adding data: if Rust knows it, it is a command read through a load. If it change
 
 ## Invariants the code does not state
 
+- Collections are expected to contain tens of thousands of documents; design ingestion, indexing, storage, and sync for that scale.
 - Sources are immutable; text is a derivation stored per `{parser}@{version}`. Parser names may not contain `/` or `@`; bump the version by hand when a parser's output changes.
 - A document's page count is derived from its canonical extraction's units, never stored.
 - Conversations are local and never sync; collections sync fully, blobs included.
-- No OCR: MuPDF's text layer only, so scanned PDFs import with little or no text. Known limitation, not a bug.
 - No migrations anywhere — settings, conversation layouts, documents predating extractions. There are no users; invalid legacy state throws or is ignored, never bridged.
 - A dependency's stored or wire format and stream semantics stop at the Rust boundary; the UI and its DTOs are app-owned.
 
