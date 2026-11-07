@@ -1,33 +1,36 @@
 //! File-backed conversation memory for the rig agent runtime.
 //!
-//! [`FileConversationMemory`] combines rig's directory-backed session store
-//! with app-owned metadata in a dedicated namespace:
+//! A conversation belongs to exactly one evidence collection, fixed at
+//! creation. [`FileConversationMemory`] keeps each conversation in its own
+//! rig directory store under the collection:
 //!
 //! ```text
 //! {root}/
-//! ├── logs/{conversation_id}.jsonl  # rig conversation history
-//! ├── metadata/{conversation_id}.json # title, collections, timestamps
-//! └── files/...                     # rig blobs
+//! └── {collection_id}/
+//!     └── {conversation_id}/
+//!         ├── logs/{conversation_id}.jsonl  # rig conversation history
+//!         ├── files/meta.json               # rig SessionMeta
+//!         └── .rig-memory.lock
 //! ```
 //!
-//! Rig stores only messages; the metadata sidecar carries what the app needs
-//! on top (title, linked collections, timestamps). `load` reads rig's session
-//! log; `create`/`load_meta`/`update_meta`/`list_summaries`/`delete`/`touch`
-//! operate on metadata.
-//!
-//! Metadata changes are read-modify-write transactions serialized by one
-//! process-wide lock, so concurrent updates of different fields cannot lose
-//! each other. Both stores write atomically: a crash mid-write leaves the
-//! previous file intact.
+//! Collection ids are canonical [`iroh_docs::NamespaceId`] strings, so the
+//! directory names cannot escape the root. `SessionMeta` is the only
+//! app-owned metadata: `title` and `updated` (milliseconds since the epoch).
+//! An empty title means no title has been generated yet; the display
+//! fallback ([`DEFAULT_TITLE`]) is applied when building summaries, never
+//! persisted.
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
+use iroh_docs::NamespaceId;
 use rig::completion::Message;
-use rig_memory::{DirFiles, DirStore, Files, SessionError};
-use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use rig_core::now_ms;
+use rig_memory::{DirStore, Files, SessionError, SessionMeta, Store, META};
+use serde::Serialize;
 
-use crate::CollectionInfo;
+/// The title a conversation is shown with until one is generated.
+pub const DEFAULT_TITLE: &str = "New conversation";
 
 /// Errors produced by [`FileConversationMemory`].
 #[derive(Debug, thiserror::Error)]
@@ -52,247 +55,242 @@ pub enum MemoryStoreError {
     #[error("conversation not found: {0}")]
     NotFound(String),
 
-    /// A conversation still uses the pre-rig-session on-disk layout.
-    #[error(
-        "conversation {0} uses the legacy conversations/<id>/messages.json or \
-         conversations/<id>/meta.json layout; remove it or convert it before using this version"
-    )]
-    LegacyLayout(String),
+    /// A conversation directory has no readable metadata.
+    #[error("invalid conversation metadata: {0}")]
+    InvalidMetadata(String),
 
-    /// The conversations root holds an entry whose name is not UTF-8.
+    /// A collection directory holds an entry whose name is not UTF-8.
     #[error("invalid conversations directory entry name: {0:?}")]
     InvalidEntry(std::ffi::OsString),
 
-    /// The metadata namespace holds a file that is not a conversation meta.
-    #[error("invalid conversation metadata file: {0}")]
-    InvalidMetadata(String),
-}
+    /// The collection id is not a valid namespace id.
+    #[error("invalid collection id: {0}")]
+    InvalidCollection(String),
 
-/// App-facing conversation metadata, stored at `{root}/metadata/{id}.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversationMeta {
-    /// Conversation id (also the metadata file name).
-    pub id: String,
-    /// Human-readable title shown in the UI.
-    pub title: String,
-    /// Collections the conversation is scoped to.
-    pub collections: Vec<CollectionInfo>,
-    /// When the conversation was created (ISO 8601).
-    pub created_at: String,
-    /// When the conversation was last updated (ISO 8601).
-    pub updated_at: String,
+    /// The conversation id is not valid as a single path part.
+    #[error("invalid conversation id: {0}")]
+    InvalidConversationId(String),
 }
 
 /// Summary of a conversation for list views.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ConversationSummary {
     pub id: String,
     pub title: String,
-    pub updated_at: String,
 }
 
-impl From<&ConversationMeta> for ConversationSummary {
-    fn from(meta: &ConversationMeta) -> Self {
-        Self {
-            id: meta.id.clone(),
-            title: meta.title.clone(),
-            updated_at: meta.updated_at.clone(),
-        }
-    }
-}
-
-/// Current time as an ISO 8601 string, matching the rest of the app.
-fn now_iso8601() -> String {
-    chrono::Utc::now().to_rfc3339()
-}
-
-/// The metadata file name for a conversation id.
-fn meta_name(id: &str) -> String {
-    format!("{id}.json")
-}
-
-/// Rig session storage under a root directory, plus app-facing metadata.
+/// A conversation log kept in the rig directory store of one collection.
 pub struct FileConversationMemory {
     root: PathBuf,
-    store: DirStore,
-    metadata: DirFiles,
-    /// Serializes every metadata read-modify-write transaction.
-    metadata_lock: Mutex<()>,
 }
 
 impl FileConversationMemory {
     /// Create a store rooted at `root` (e.g. `Config::conversations_dir`).
     /// The directories themselves are created lazily on first write.
     pub fn new(root: PathBuf) -> Result<Self, MemoryStoreError> {
-        let store = DirStore::open(&root)?;
-        let metadata = DirFiles::new(root.join("metadata"));
-        Ok(Self {
-            root,
-            store,
-            metadata,
-            metadata_lock: Mutex::new(()),
-        })
+        Ok(Self { root })
     }
 
-    /// Clone rig's session store for an agent builder.
-    pub fn store(&self) -> DirStore {
-        self.store.clone()
+    /// The canonical directory of `collection_id`.
+    fn collection_dir(&self, collection_id: &str) -> Result<PathBuf, MemoryStoreError> {
+        let namespace_id = NamespaceId::from_str(collection_id)
+            .map_err(|_| MemoryStoreError::InvalidCollection(collection_id.to_owned()))?;
+        Ok(self.root.join(namespace_id.to_string()))
     }
 
-    /// A conversation stored in the legacy pre-rig-session layout: a
-    /// per-conversation directory holding `messages.json` or `meta.json`.
-    fn ensure_not_legacy(&self, id: &str) -> Result<(), MemoryStoreError> {
-        let dir = self.root.join(id);
-        if dir.join("messages.json").is_file() || dir.join("meta.json").is_file() {
-            return Err(MemoryStoreError::LegacyLayout(id.to_owned()));
-        }
-        Ok(())
+    /// The conversation directory, validating both path parts.
+    fn conversation_dir(
+        &self,
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<PathBuf, MemoryStoreError> {
+        let collection_dir = self.collection_dir(collection_id)?;
+        rig_memory::check_log_name(conversation_id)
+            .map_err(|_| MemoryStoreError::InvalidConversationId(conversation_id.to_owned()))?;
+        Ok(collection_dir.join(conversation_id))
     }
 
-    /// Refuse a root directory holding any legacy conversation, so listing
-    /// surfaces the old layout instead of silently omitting it.
-    fn ensure_no_legacy_conversations(&self) -> Result<(), MemoryStoreError> {
-        let entries = match std::fs::read_dir(&self.root) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        for entry in entries {
-            let entry = entry?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                return Err(MemoryStoreError::InvalidEntry(name));
-            };
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            self.ensure_not_legacy(name)?;
-        }
-        Ok(())
+    /// Open the rig directory store of one conversation.
+    fn open(
+        &self,
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<(PathBuf, DirStore), MemoryStoreError> {
+        let dir = self.conversation_dir(collection_id, conversation_id)?;
+        let store = DirStore::open(&dir)?;
+        Ok((dir, store))
     }
 
-    fn read_metadata(&self, id: &str) -> Result<Option<ConversationMeta>, MemoryStoreError> {
-        match self.metadata.read_file(&meta_name(id)) {
-            Ok(bytes) => {
-                let meta: ConversationMeta = serde_json::from_slice(&bytes)?;
-                if meta.id != id {
-                    return Err(MemoryStoreError::InvalidMetadata(meta_name(id)));
-                }
-                Ok(Some(meta))
-            }
+    fn read_meta(&self, store: &DirStore) -> Result<Option<SessionMeta>, MemoryStoreError> {
+        match store.read_file(META) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
-    fn write_metadata(&self, id: &str, meta: &ConversationMeta) -> Result<(), MemoryStoreError> {
-        let bytes = serde_json::to_vec_pretty(meta)?;
-        self.metadata.write_file(&meta_name(id), &bytes)?;
+    fn write_meta(&self, store: &DirStore, meta: &SessionMeta) -> Result<(), MemoryStoreError> {
+        store.write_file(META, &serde_json::to_vec_pretty(meta)?)?;
         Ok(())
     }
 
-    /// Create a new conversation with `meta`. Fails if one already exists.
+    /// Create a new conversation with an empty title. Fails if one already
+    /// exists in the collection.
     pub async fn create(
         &self,
-        meta: ConversationMeta,
-    ) -> Result<ConversationMeta, MemoryStoreError> {
-        let _guard = self.metadata_lock.lock().await;
-        self.ensure_not_legacy(&meta.id)?;
-        if self.read_metadata(&meta.id)?.is_some() {
-            return Err(MemoryStoreError::AlreadyExists(meta.id));
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<SessionMeta, MemoryStoreError> {
+        let (_, store) = self.open(collection_id, conversation_id)?;
+        if self.read_meta(&store)?.is_some() {
+            return Err(MemoryStoreError::AlreadyExists(format!(
+                "{collection_id}/{conversation_id}"
+            )));
         }
-        let now = now_iso8601();
-        let mut meta = meta;
-        meta.created_at = now.clone();
-        meta.updated_at = now;
-        self.write_metadata(&meta.id, &meta)?;
+        let meta = SessionMeta {
+            updated: now_ms(),
+            ..Default::default()
+        };
+        self.write_meta(&store, &meta)?;
         Ok(meta)
     }
 
-    /// Load the metadata sidecar for `id`, or `None` if unknown.
-    pub async fn load_meta(&self, id: &str) -> Result<Option<ConversationMeta>, MemoryStoreError> {
-        self.ensure_not_legacy(id)?;
-        self.read_metadata(id)
-    }
-
-    /// Apply `update` to the metadata sidecar for `id` in one serialized
-    /// transaction. Fails if the conversation does not exist.
-    pub async fn update_meta(
+    /// Load the metadata of a conversation, or `None` if unknown.
+    pub async fn load_meta(
         &self,
-        id: &str,
-        update: impl FnOnce(&mut ConversationMeta),
-    ) -> Result<(), MemoryStoreError> {
-        let _guard = self.metadata_lock.lock().await;
-        self.ensure_not_legacy(id)?;
-        let mut meta = self
-            .read_metadata(id)?
-            .ok_or_else(|| MemoryStoreError::NotFound(id.to_owned()))?;
-        update(&mut meta);
-        self.write_metadata(id, &meta)
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<SessionMeta>, MemoryStoreError> {
+        let (_, store) = self.open(collection_id, conversation_id)?;
+        self.read_meta(&store)
     }
 
-    /// List all conversation summaries, most recently updated first.
-    /// Malformed metadata or a failing read is an error, never silently
-    /// skipped; listing is serialized with in-process metadata writes.
-    pub async fn list_summaries(&self) -> Result<Vec<ConversationSummary>, MemoryStoreError> {
-        let _guard = self.metadata_lock.lock().await;
-        self.ensure_no_legacy_conversations()?;
-        let mut summaries = Vec::new();
-        for name in self.metadata.files()? {
-            let Some(id) = name.strip_suffix(".json") else {
-                return Err(MemoryStoreError::InvalidMetadata(name));
-            };
-            let bytes = self.metadata.read_file(&name)?;
-            let meta: ConversationMeta = serde_json::from_slice(&bytes)?;
-            if id != meta.id {
-                return Err(MemoryStoreError::InvalidMetadata(name));
-            }
-            summaries.push(ConversationSummary::from(&meta));
-        }
-        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        Ok(summaries)
-    }
-
-    /// Delete a conversation entirely (messages and metadata). Idempotent:
-    /// removing an unknown id succeeds.
-    pub async fn delete(&self, id: &str) -> Result<(), MemoryStoreError> {
-        let _guard = self.metadata_lock.lock().await;
-        self.ensure_not_legacy(id)?;
-        self.remove_session_log(id).await?;
-        self.metadata.remove_file(&meta_name(id))?;
-        Ok(())
-    }
-
-    /// Bump `updated_at` on the metadata sidecar to now. Fails if the
+    /// Replace the title without changing `updated`. Fails if the
     /// conversation does not exist.
-    pub async fn touch(&self, id: &str) -> Result<(), MemoryStoreError> {
-        self.update_meta(id, |meta| meta.updated_at = now_iso8601())
-            .await
+    pub async fn set_title(
+        &self,
+        collection_id: &str,
+        conversation_id: &str,
+        title: &str,
+    ) -> Result<(), MemoryStoreError> {
+        let (_, store) = self.open(collection_id, conversation_id)?;
+        let mut meta = self.read_meta(&store)?.ok_or_else(|| {
+            MemoryStoreError::NotFound(format!("{collection_id}/{conversation_id}"))
+        })?;
+        meta.title = title.to_owned();
+        self.write_meta(&store, &meta)
     }
 
-    /// rig-memory exposes no per-log removal, so this is the only place that
-    /// knows its `logs/{id}.jsonl` layout.
-    async fn remove_session_log(&self, id: &str) -> Result<(), MemoryStoreError> {
-        let path = self.root.join("logs").join(format!("{id}.jsonl"));
-        match tokio::fs::remove_file(path).await {
+    /// Set `updated` to now. Fails if the conversation does not exist.
+    pub async fn touch(
+        &self,
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), MemoryStoreError> {
+        let (_, store) = self.open(collection_id, conversation_id)?;
+        let mut meta = self.read_meta(&store)?.ok_or_else(|| {
+            MemoryStoreError::NotFound(format!("{collection_id}/{conversation_id}"))
+        })?;
+        meta.updated = now_ms();
+        self.write_meta(&store, &meta)
+    }
+
+    /// List the conversations of a collection, most recently updated first.
+    /// A missing collection directory lists empty.
+    pub async fn list_summaries(
+        &self,
+        collection_id: &str,
+    ) -> Result<Vec<ConversationSummary>, MemoryStoreError> {
+        let collection_dir = self.collection_dir(collection_id)?;
+        let entries = match std::fs::read_dir(&collection_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut summaries = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(conversation_id) = name.to_str() else {
+                return Err(MemoryStoreError::InvalidEntry(name));
+            };
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let (_, store) = self.open(collection_id, conversation_id)?;
+            let meta = self.read_meta(&store)?.ok_or_else(|| {
+                MemoryStoreError::InvalidMetadata(format!("{collection_id}/{conversation_id}"))
+            })?;
+            summaries.push((
+                meta.updated,
+                ConversationSummary {
+                    id: conversation_id.to_owned(),
+                    title: if meta.title.is_empty() {
+                        DEFAULT_TITLE.to_owned()
+                    } else {
+                        meta.title.clone()
+                    },
+                },
+            ));
+        }
+
+        summaries.sort_by_key(|a| std::cmp::Reverse(a.0));
+        Ok(summaries.into_iter().map(|(_, summary)| summary).collect())
+    }
+
+    /// Delete a conversation and its history. Idempotent: removing an
+    /// unknown conversation succeeds.
+    pub async fn delete(
+        &self,
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), MemoryStoreError> {
+        let (dir, store) = self.open(collection_id, conversation_id)?;
+        store.destroy()?;
+        match std::fs::remove_dir_all(&dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
     }
-}
 
-impl FileConversationMemory {
+    /// Delete a collection's entire conversation directory. Idempotent.
+    pub async fn delete_collection(&self, collection_id: &str) -> Result<(), MemoryStoreError> {
+        let dir = self.collection_dir(collection_id)?;
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Load a conversation's messages, or an empty vector for a conversation
     /// that has not recorded a message yet.
-    pub async fn load(&self, id: &str) -> Result<Vec<Message>, MemoryStoreError> {
-        self.ensure_not_legacy(id)?;
-        let conversation = rig_memory::load_async(&self.store, id).await?;
+    pub async fn load(
+        &self,
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<Message>, MemoryStoreError> {
+        let (_, store) = self.open(collection_id, conversation_id)?;
+        let conversation = rig_memory::load_async(&store, conversation_id).await?;
         Ok(conversation
             .into_messages()
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    /// Clone the rig directory store of one conversation for an agent
+    /// builder.
+    pub fn store(
+        &self,
+        collection_id: &str,
+        conversation_id: &str,
+    ) -> Result<DirStore, MemoryStoreError> {
+        let (_, store) = self.open(collection_id, conversation_id)?;
+        Ok(store)
     }
 }
 
@@ -307,30 +305,10 @@ mod tests {
         (dir, store)
     }
 
-    fn sample_meta(id: &str, title: &str) -> ConversationMeta {
-        ConversationMeta {
-            id: id.to_owned(),
-            title: title.to_owned(),
-            collections: vec![CollectionInfo {
-                id: "col-1".to_owned(),
-                name: "Climate Research".to_owned(),
-                document_count: 3,
-                total_pages: Some(42),
-                created_at: Some("2024-01-15T10:30:00Z".to_owned()),
-            }],
-            created_at: String::new(),
-            updated_at: String::new(),
-        }
-    }
-
-    fn collection(id: &str) -> CollectionInfo {
-        CollectionInfo {
-            id: id.to_owned(),
-            name: format!("Collection {id}"),
-            document_count: 1,
-            total_pages: Some(2),
-            created_at: None,
-        }
+    fn collection_id(byte: u8) -> String {
+        iroh_docs::NamespaceSecret::from_bytes(&[byte; 32])
+            .id()
+            .to_string()
     }
 
     fn messages_with_tools() -> Vec<Message> {
@@ -353,242 +331,277 @@ mod tests {
     }
 
     /// Persist messages the way the agent runtime does.
-    async fn save_messages(store: &FileConversationMemory, id: &str, messages: Vec<Message>) {
-        let mut conversation = rig_memory::load_async(&store.store(), id).await.unwrap();
-        conversation.extend(messages);
-        rig_memory::save_async(&store.store(), id, &mut conversation)
+    async fn save_messages(
+        store: &FileConversationMemory,
+        collection: &str,
+        conversation: &str,
+        messages: Vec<Message>,
+    ) {
+        let dir_store = store.store(collection, conversation).unwrap();
+        let mut log = rig_memory::load_async(&dir_store, conversation)
+            .await
+            .unwrap();
+        log.extend(messages);
+        rig_memory::save_async(&dir_store, conversation, &mut log)
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn unknown_id_loads_empty() {
+    async fn create_and_load_meta_round_trip() {
         let (_dir, store) = temp_store();
-        assert!(store.load("nope").await.unwrap().is_empty());
-        assert!(store.load_meta("nope").await.unwrap().is_none());
+        let collection = collection_id(1);
+
+        let created = store.create(&collection, "conv").await.unwrap();
+        assert!(created.title.is_empty());
+        assert!(created.updated > 0);
+
+        let loaded = store.load_meta(&collection, "conv").await.unwrap().unwrap();
+        assert_eq!(loaded, created);
     }
 
     #[tokio::test]
-    async fn message_round_trip_with_tool_blocks() {
+    async fn same_id_in_two_collections_is_independent() {
         let (_dir, store) = temp_store();
-        let expected = messages_with_tools();
-        save_messages(&store, "c1", expected.clone()).await;
+        let first = collection_id(1);
+        let second = collection_id(2);
 
-        let loaded = store.load("c1").await.unwrap();
-        assert_eq!(loaded, expected);
-    }
+        store.create(&first, "conv").await.unwrap();
+        store.create(&second, "conv").await.unwrap();
+        store.set_title(&first, "conv", "First").await.unwrap();
 
-    #[tokio::test]
-    async fn delete_removes_history_and_meta() {
-        let (_dir, store) = temp_store();
-        store.create(sample_meta("c3", "T")).await.unwrap();
-        save_messages(&store, "c3", vec![Message::user("hi")]).await;
-        store.delete("c3").await.unwrap();
-
-        assert!(store.load("c3").await.unwrap().is_empty());
-        assert!(store.load_meta("c3").await.unwrap().is_none());
-        // Deleting again is fine.
-        store.delete("c3").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn meta_create_load_update_list_delete() {
-        let (_dir, store) = temp_store();
-
-        store.create(sample_meta("a", "Alpha")).await.unwrap();
-        // Duplicate create fails.
-        assert!(matches!(
-            store.create(sample_meta("a", "Alpha")).await,
-            Err(MemoryStoreError::AlreadyExists(_))
-        ));
-
-        let loaded = store.load_meta("a").await.unwrap().unwrap();
-        assert_eq!(loaded.title, "Alpha");
-        assert_eq!(loaded.created_at, loaded.updated_at);
-
-        // Updating a missing conversation fails.
-        assert!(matches!(
+        assert_eq!(
             store
-                .update_meta("missing", |meta| meta.title = "x".into())
-                .await,
+                .load_meta(&first, "conv")
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "First"
+        );
+        assert!(store
+            .load_meta(&second, "conv")
+            .await
+            .unwrap()
+            .unwrap()
+            .title
+            .is_empty());
+        assert!(
+            matches!(
+                store.create(&first, "conv").await,
+                Err(MemoryStoreError::AlreadyExists(_))
+            ),
+            "creating the same conversation twice fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_collection_is_not_found() {
+        let (_dir, store) = temp_store();
+        let first = collection_id(1);
+        let second = collection_id(2);
+
+        store.create(&first, "conv").await.unwrap();
+        save_messages(&store, &first, "conv", vec![Message::user("hi")]).await;
+
+        assert!(store.load_meta(&second, "conv").await.unwrap().is_none());
+        assert!(store.load(&second, "conv").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_title_preserves_updated_and_requires_existence() {
+        let (_dir, store) = temp_store();
+        let collection = collection_id(1);
+
+        let created = store.create(&collection, "conv").await.unwrap();
+        store
+            .set_title(&collection, "conv", "A Title")
+            .await
+            .unwrap();
+
+        let meta = store.load_meta(&collection, "conv").await.unwrap().unwrap();
+        assert_eq!(meta.title, "A Title");
+        assert_eq!(meta.updated, created.updated);
+
+        assert!(matches!(
+            store.set_title(&collection, "missing", "x").await,
             Err(MemoryStoreError::NotFound(_))
         ));
-
-        store.create(sample_meta("b", "Beta")).await.unwrap();
-        store.touch("b").await.unwrap();
-
-        // List is sorted by updated_at descending: b was touched last.
-        let summaries = store.list_summaries().await.unwrap();
-        let ids: Vec<_> = summaries.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["b", "a"]);
-
-        // update_meta mutates only the fields it is given.
-        store
-            .update_meta("a", |meta| meta.title = "Alpha 2".to_owned())
-            .await
-            .unwrap();
-        let meta = store.load_meta("a").await.unwrap().unwrap();
-        assert_eq!(meta.title, "Alpha 2");
-        assert_eq!(meta.collections.len(), loaded.collections.len());
-        assert_eq!(meta.collections[0].id, loaded.collections[0].id);
-        assert_eq!(meta.updated_at, loaded.updated_at);
-
-        // Delete is idempotent and removes metadata.
-        store.delete("a").await.unwrap();
-        store.delete("a").await.unwrap();
-        assert!(store.load_meta("a").await.unwrap().is_none());
-        assert_eq!(store.list_summaries().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn corrupt_metadata_fails_listing() {
+    async fn touch_bumps_updated() {
         let (_dir, store) = temp_store();
-        store.create(sample_meta("good", "Good")).await.unwrap();
-        std::fs::write(store.metadata.path().join("bad.json"), b"{not json").unwrap();
+        let collection = collection_id(1);
+
+        let created = store.create(&collection, "conv").await.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.touch(&collection, "conv").await.unwrap();
+
+        let meta = store.load_meta(&collection, "conv").await.unwrap().unwrap();
+        assert!(meta.updated > created.updated);
+    }
+
+    #[tokio::test]
+    async fn listing_is_per_collection_sorted_and_titles_default() {
+        let (_dir, store) = temp_store();
+        let first = collection_id(1);
+        let second = collection_id(2);
+
+        store.create(&first, "older").await.unwrap();
+        store
+            .set_title(&first, "older", "Older title")
+            .await
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.create(&first, "newer").await.unwrap();
+        store.create(&second, "other").await.unwrap();
+
+        let summaries = store.list_summaries(&first).await.unwrap();
+        let ids: Vec<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["newer", "older"]);
+        assert_eq!(summaries[0].title, DEFAULT_TITLE);
+        assert_eq!(summaries[1].title, "Older title");
+
+        let other = store.list_summaries(&second).await.unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].id, "other");
+
+        assert!(
+            store
+                .list_summaries(&collection_id(3))
+                .await
+                .unwrap()
+                .is_empty(),
+            "a missing collection directory lists empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_meta_fails_listing() {
+        let (_dir, store) = temp_store();
+        let collection = collection_id(1);
+        store.create(&collection, "conv").await.unwrap();
+
+        let meta_path = store
+            .conversation_dir(&collection, "conv")
+            .unwrap()
+            .join("files")
+            .join(META);
+        std::fs::write(meta_path, b"{not json").unwrap();
 
         assert!(matches!(
-            store.list_summaries().await,
+            store.list_summaries(&collection).await,
             Err(MemoryStoreError::Json(_))
         ));
     }
 
     #[tokio::test]
-    async fn metadata_id_must_match_its_file_name() {
+    async fn conversation_without_meta_fails_listing() {
         let (_dir, store) = temp_store();
-        std::fs::create_dir_all(store.metadata.path()).unwrap();
-        let misplaced = store.metadata.path().join(meta_name("stored"));
-        std::fs::write(
-            &misplaced,
-            serde_json::to_vec_pretty(&sample_meta("other", "Other")).unwrap(),
-        )
-        .unwrap();
-        let before = std::fs::read(&misplaced).unwrap();
+        let collection = collection_id(1);
+        std::fs::create_dir_all(store.collection_dir(&collection).unwrap().join("empty")).unwrap();
 
         assert!(matches!(
-            store.load_meta("stored").await,
-            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
+            store.list_summaries(&collection).await,
+            Err(MemoryStoreError::InvalidMetadata(_))
         ));
-        assert!(matches!(
-            store
-                .update_meta("stored", |meta| meta.title = "Changed".into())
-                .await,
-            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
-        ));
-        assert!(matches!(
-            store.create(sample_meta("stored", "New")).await,
-            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
-        ));
-        assert!(matches!(
-            store.list_summaries().await,
-            Err(MemoryStoreError::InvalidMetadata(name)) if name == "stored.json"
-        ));
+    }
 
-        assert_eq!(
-            std::fs::read(&misplaced).unwrap(),
-            before,
-            "failed operations must not alter the mismatched file"
-        );
-        assert!(
-            !store.metadata.path().join(meta_name("other")).exists(),
-            "no file is created under the stored id"
-        );
+    #[tokio::test]
+    async fn delete_removes_only_that_conversation_and_is_idempotent() {
+        let (_dir, store) = temp_store();
+        let collection = collection_id(1);
+        let other = collection_id(2);
 
-        std::fs::remove_file(&misplaced).unwrap();
-        store.create(sample_meta("stored", "Title")).await.unwrap();
-        store
-            .update_meta("stored", |meta| meta.title = "Updated".into())
+        store.create(&collection, "keep").await.unwrap();
+        store.create(&collection, "gone").await.unwrap();
+        store.create(&other, "gone").await.unwrap();
+        save_messages(&store, &collection, "gone", vec![Message::user("hi")]).await;
+
+        store.delete(&collection, "gone").await.unwrap();
+        assert!(store
+            .load_meta(&collection, "gone")
             .await
-            .unwrap();
-        assert_eq!(
-            store.load_meta("stored").await.unwrap().unwrap().title,
-            "Updated"
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_layout_is_refused() {
-        let (dir, store) = temp_store();
-        let legacy = dir.path().join("old");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("messages.json"), b"[]").unwrap();
-
-        assert!(matches!(
-            store.list_summaries().await,
-            Err(MemoryStoreError::LegacyLayout(id)) if id == "old"
-        ));
-        assert!(matches!(
-            store.load_meta("old").await,
-            Err(MemoryStoreError::LegacyLayout(_))
-        ));
-        assert!(matches!(
-            store.load("old").await,
-            Err(MemoryStoreError::LegacyLayout(_))
-        ));
-        assert!(matches!(
-            store.delete("old").await,
-            Err(MemoryStoreError::LegacyLayout(_))
-        ));
+            .unwrap()
+            .is_none());
+        assert!(store.load(&collection, "gone").await.unwrap().is_empty());
+        assert!(store
+            .load_meta(&collection, "keep")
+            .await
+            .unwrap()
+            .is_some());
         assert!(
-            legacy.join("messages.json").is_file(),
-            "refused delete must leave the legacy conversation untouched"
+            store.load_meta(&other, "gone").await.unwrap().is_some(),
+            "the same id in another collection is untouched"
         );
+
+        // Deleting again is fine.
+        store.delete(&collection, "gone").await.unwrap();
     }
 
     #[tokio::test]
-    async fn legacy_meta_only_layout_is_refused() {
-        let (dir, store) = temp_store();
-        let legacy = dir.path().join("old-empty");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("meta.json"), b"{}").unwrap();
-
-        assert!(matches!(
-            store.list_summaries().await,
-            Err(MemoryStoreError::LegacyLayout(id)) if id == "old-empty"
-        ));
-        assert!(matches!(
-            store.load_meta("old-empty").await,
-            Err(MemoryStoreError::LegacyLayout(_))
-        ));
-        assert!(matches!(
-            store.delete("old-empty").await,
-            Err(MemoryStoreError::LegacyLayout(_))
-        ));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn non_utf8_root_entry_is_refused() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let (dir, store) = temp_store();
-        let name = std::ffi::OsString::from_vec(vec![0xff]);
-        std::fs::create_dir(dir.path().join(name)).unwrap();
-
-        assert!(matches!(
-            store.list_summaries().await,
-            Err(MemoryStoreError::InvalidEntry(_))
-        ));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn concurrent_touch_and_collection_update_keep_both() {
+    async fn delete_collection_removes_only_that_collection() {
         let (_dir, store) = temp_store();
-        store.create(sample_meta("c5", "T")).await.unwrap();
+        let first = collection_id(1);
+        let second = collection_id(2);
 
-        for _ in 0..20 {
-            let (touched, updated) = tokio::join!(async { store.touch("c5").await }, async {
-                store
-                    .update_meta("c5", |meta| {
-                        meta.collections = vec![collection("col-2")];
-                    })
-                    .await
-            },);
-            touched.unwrap();
-            updated.unwrap();
+        store.create(&first, "conv").await.unwrap();
+        store.create(&second, "conv").await.unwrap();
 
-            let meta = store.load_meta("c5").await.unwrap().unwrap();
-            assert_eq!(meta.collections.len(), 1);
-            assert_eq!(meta.collections[0].id, "col-2");
-        }
+        store.delete_collection(&first).await.unwrap();
+        assert!(store.list_summaries(&first).await.unwrap().is_empty());
+        assert_eq!(store.list_summaries(&second).await.unwrap().len(), 1);
+
+        // Idempotent.
+        store.delete_collection(&first).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_ids_error() {
+        let (_dir, store) = temp_store();
+        let collection = collection_id(1);
+
+        assert!(matches!(
+            store.create("not-a-namespace", "conv").await,
+            Err(MemoryStoreError::InvalidCollection(_))
+        ));
+        assert!(matches!(
+            store.create(&collection, "").await,
+            Err(MemoryStoreError::InvalidConversationId(_))
+        ));
+        assert!(matches!(
+            store.create(&collection, "..").await,
+            Err(MemoryStoreError::InvalidConversationId(_))
+        ));
+        assert!(matches!(
+            store.create(&collection, "nested/conv").await,
+            Err(MemoryStoreError::InvalidConversationId(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn message_round_trip_with_tool_blocks() {
+        let (_dir, store) = temp_store();
+        let collection = collection_id(1);
+        store.create(&collection, "conv").await.unwrap();
+        let expected = messages_with_tools();
+        save_messages(&store, &collection, "conv", expected.clone()).await;
+
+        let loaded = store.load(&collection, "conv").await.unwrap();
+        assert_eq!(loaded, expected);
+    }
+
+    #[tokio::test]
+    async fn unknown_conversation_loads_empty() {
+        let (_dir, store) = temp_store();
+        let collection = collection_id(1);
+
+        assert!(store.load(&collection, "nope").await.unwrap().is_empty());
+        assert!(store
+            .load_meta(&collection, "nope")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

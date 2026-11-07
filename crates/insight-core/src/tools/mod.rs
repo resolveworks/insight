@@ -20,7 +20,6 @@ use tokio::sync::RwLock;
 
 use crate::search;
 use crate::storage::Storage;
-use crate::CollectionInfo;
 
 /// Per-run state shared by the document tools.
 #[derive(Clone)]
@@ -29,38 +28,18 @@ pub struct ToolState {
     pub search: Arc<milli::Index>,
     /// iroh storage, read-locked during tool calls
     pub storage: Arc<RwLock<Storage>>,
-    /// The conversation's active collections. Never empty in practice —
-    /// `send_message` rejects conversations without a scope before the agent
-    /// is built.
-    pub collections: Vec<CollectionInfo>,
+    /// The conversation's collection: the only collection the tools cover.
+    pub collection_id: String,
 }
 
 impl ToolState {
-    /// Build tool state from an [`crate::AppState`] and a collection scope.
-    pub fn new(state: &crate::AppState, collections: Vec<CollectionInfo>) -> Self {
+    /// Build tool state from an [`crate::AppState`] and a collection id.
+    pub fn new(state: &crate::AppState, collection_id: String) -> Self {
         Self {
             search: state.search.clone(),
             storage: state.storage.clone(),
-            collections,
+            collection_id,
         }
-    }
-
-    /// IDs of the scoped collections, for milli collection filters.
-    fn collection_ids(&self) -> Vec<String> {
-        self.collections.iter().map(|c| c.id.clone()).collect()
-    }
-
-    /// Resolve a collection name from the active scope.
-    fn name_of(&self, collection_id: &str) -> Result<String, ToolExecutionError> {
-        self.collections
-            .iter()
-            .find(|c| c.id == collection_id)
-            .map(|c| c.name.clone())
-            .ok_or_else(|| {
-                ToolExecutionError::not_found(format!(
-                    "collection {collection_id} is not in the active scope"
-                ))
-            })
     }
 }
 
@@ -90,10 +69,6 @@ pub struct SearchHitResult {
     pub document_id: String,
     /// Chunk index within the document.
     pub chunk_index: i64,
-    /// ID of the collection the document belongs to.
-    pub collection_id: String,
-    /// Collection name.
-    pub collection_name: String,
     /// Passage content, truncated to ~500 characters.
     pub passage: String,
     /// Whether the passage was truncated.
@@ -152,7 +127,7 @@ impl Tool for Search {
         tracing::info!(query = %query, "Executing keyword search");
 
         let index = &*state.search;
-        let collection_ids = state.collection_ids();
+        let collection_ids = [state.collection_id.clone()];
         let params = search::SearchParams {
             query: &query,
             limit: SEARCH_LIMIT,
@@ -176,14 +151,11 @@ impl Tool for Search {
 
             let truncated = chunk.content.chars().count() > PASSAGE_LIMIT;
             let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
-            let collection_name = state.name_of(&chunk.collection_id)?;
 
             hits.push(SearchHitResult {
                 document_name: chunk.parent_name,
                 document_id: chunk.parent_id,
                 chunk_index: chunk.chunk_index as i64,
-                collection_name,
-                collection_id: chunk.collection_id,
                 passage,
                 truncated,
                 score: search::compute_hit_score(&hit.scores),
@@ -266,11 +238,7 @@ impl Tool for ReadChunk {
             .map_err(infrastructure_error)?
             .ok_or_else(not_found)?;
 
-        if !state
-            .collections
-            .iter()
-            .any(|collection| collection.id == chunk.collection_id)
-        {
+        if chunk.collection_id != state.collection_id {
             return Err(not_found());
         }
 
@@ -295,21 +263,10 @@ pub struct DocumentEntry {
     pub page_count: Option<usize>,
 }
 
-/// Documents grouped by collection.
-#[derive(Debug, Serialize)]
-pub struct CollectionGroup {
-    /// Collection ID.
-    pub collection_id: String,
-    /// Collection name.
-    pub collection_name: String,
-    /// Documents in this collection (sorted by name).
-    pub documents: Vec<DocumentEntry>,
-}
-
 /// Output of [`list_documents`].
 #[derive(Debug, Serialize)]
 pub struct ListDocumentsOutput {
-    /// Total documents across the scope.
+    /// Total documents in the collection.
     pub total: usize,
     /// Number of entries included (capped at 25).
     pub shown: usize,
@@ -317,8 +274,8 @@ pub struct ListDocumentsOutput {
     pub truncated: bool,
     /// Total pages across all documents, when known.
     pub total_pages: Option<usize>,
-    /// Per-collection groups, sorted by collection name.
-    pub collections: Vec<CollectionGroup>,
+    /// Documents in the collection, sorted by name (capped at 25).
+    pub documents: Vec<DocumentEntry>,
 }
 
 /// Document-listing tool over the per-run collection scope.
@@ -342,7 +299,7 @@ impl Tool for ListDocuments {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "List all documents in the selected collections, grouped by collection, with document IDs and page counts where known. At most 25 entries are returned; use search to find specific documents beyond that.".to_string()
+        "List all documents in the collection, with document IDs and page counts where known. At most 25 entries are returned; use search to find specific documents beyond that.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -358,73 +315,44 @@ impl Tool for ListDocuments {
         tracing::info!("Listing documents");
         let storage = state.storage.read().await;
 
-        // (collection_id, collection_name, document, page_count), sorted by
-        // collection then document name.
-        let mut all_documents = Vec::new();
-        for collection in &state.collections {
-            let namespace_id = collection
-                .id
-                .parse::<iroh_docs::NamespaceId>()
-                .map_err(|_| {
-                    ToolExecutionError::invalid_args(format!(
-                        "collection {} is not a valid namespace ID",
-                        collection.id
-                    ))
-                })?;
-            let collection_name = state.name_of(&collection.id)?;
+        let namespace_id = state
+            .collection_id
+            .parse::<iroh_docs::NamespaceId>()
+            .map_err(|_| {
+                ToolExecutionError::invalid_args(format!(
+                    "collection {} is not a valid namespace ID",
+                    state.collection_id
+                ))
+            })?;
 
-            let documents = storage
-                .list_documents(namespace_id)
+        let mut documents = storage
+            .list_documents(namespace_id)
+            .await
+            .map_err(infrastructure_error)?;
+        documents.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut entries = Vec::with_capacity(documents.len().min(MAX_DOCS_TO_SHOW));
+        let mut total_pages = None;
+        for doc in &documents {
+            let page_count = storage
+                .page_count(namespace_id, &doc.id)
                 .await
                 .map_err(infrastructure_error)?;
-            for doc in documents {
-                let page_count = storage
-                    .page_count(namespace_id, &doc.id)
-                    .await
-                    .map_err(infrastructure_error)?;
-                all_documents.push((
-                    collection.id.clone(),
-                    collection_name.clone(),
-                    doc,
+            if let Some(pages) = page_count {
+                *total_pages.get_or_insert(0) += pages;
+            }
+            if entries.len() < MAX_DOCS_TO_SHOW {
+                entries.push(DocumentEntry {
                     page_count,
-                ));
+                    name: doc.name.clone(),
+                    id: doc.id.clone(),
+                });
             }
         }
 
-        all_documents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name)));
-
-        let total = all_documents.len();
-        let total_pages = crate::sum_page_counts(
-            all_documents
-                .iter()
-                .map(|(_, _, _, page_count)| *page_count),
-        );
+        let total = documents.len();
+        let shown = entries.len();
         let truncated = total > MAX_DOCS_TO_SHOW;
-
-        // Group by collection, in sorted order.
-        let mut groups: Vec<CollectionGroup> = Vec::new();
-        for (collection_id, collection_name, doc, page_count) in
-            all_documents.into_iter().take(MAX_DOCS_TO_SHOW)
-        {
-            let group = match groups.iter_mut().find(|g| g.collection_id == collection_id) {
-                Some(g) => g,
-                None => {
-                    groups.push(CollectionGroup {
-                        collection_id: collection_id.clone(),
-                        collection_name,
-                        documents: Vec::new(),
-                    });
-                    groups.last_mut().expect("group just pushed")
-                }
-            };
-            group.documents.push(DocumentEntry {
-                page_count,
-                name: doc.name,
-                id: doc.id,
-            });
-        }
-
-        let shown: usize = groups.iter().map(|g| g.documents.len()).sum();
 
         tracing::info!(document_count = total, total_pages, "Listed documents");
 
@@ -433,7 +361,7 @@ impl Tool for ListDocuments {
             shown,
             truncated,
             total_pages,
-            collections: groups,
+            documents: entries,
         })
     }
 }
@@ -456,7 +384,7 @@ pub struct CollectionTermsOutput {
     pub terms: Vec<TermCount>,
 }
 
-/// Collection-term tool over the per-run collection scope.
+/// Collection-term tool over the conversation's collection.
 pub struct GetCollectionTerms {
     state: ToolState,
 }
@@ -481,7 +409,7 @@ impl Tool for GetCollectionTerms {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Get the most common terms in the selected collections by document frequency, to understand what topics are covered. Returns up to `limit` terms (default 50, max 200).".to_string()
+        "Get the most common terms in the collection by document frequency, to understand what topics are covered. Returns up to `limit` terms (default 50, max 200).".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -501,7 +429,7 @@ impl Tool for GetCollectionTerms {
 
         tracing::info!(limit, "Getting collection terms");
 
-        let collection_ids = state.collection_ids();
+        let collection_ids = [state.collection_id.clone()];
         let terms = search::get_collection_terms(&state.search, Some(&collection_ids), limit)
             .map_err(infrastructure_error)?;
 
@@ -545,7 +473,7 @@ mod tests {
             ToolState {
                 search: state.search,
                 storage: state.storage,
-                collections: Vec::new(),
+                collection_id: String::new(),
             },
         )
     }
@@ -639,20 +567,14 @@ mod tests {
         }
     }
 
-    fn scope(id: &str, name: &str) -> Vec<CollectionInfo> {
-        vec![CollectionInfo {
-            id: id.to_string(),
-            name: name.to_string(),
-            document_count: 1,
-            total_pages: Some(10),
-            created_at: None,
-        }]
+    fn scope(id: &str) -> String {
+        id.to_string()
     }
 
     #[tokio::test]
     async fn test_search_empty_query_returns_no_hits() {
         let (_tmp, mut state) = create_state().await;
-        state.collections = scope("col1", "Research");
+        state.collection_id = scope("col1");
         let out = Search::new(state)
             .call(
                 &mut ToolContext::new(),
@@ -693,7 +615,7 @@ mod tests {
             )],
         )
         .unwrap();
-        state.collections = scope(&collection, "Research Papers");
+        state.collection_id = scope(&collection);
 
         let out = Search::new(state)
             .call(
@@ -709,7 +631,6 @@ mod tests {
         let hit = &out.hits[0];
         assert_eq!(hit.document_name, "Climate_Report.pdf");
         assert_eq!(hit.document_id, "doc1");
-        assert_eq!(hit.collection_name, "Research Papers");
         assert!(hit.score > 0.0);
         assert!(!hit.truncated);
     }
@@ -764,7 +685,7 @@ mod tests {
             ],
         )
         .unwrap();
-        state.collections = scope(&research, "Research");
+        state.collection_id = scope(&research);
 
         let out = Search::new(state)
             .call(
@@ -809,7 +730,7 @@ mod tests {
             )],
         )
         .unwrap();
-        state.collections = scope(&collection, "Long Docs");
+        state.collection_id = scope(&collection);
 
         let out = Search::new(state)
             .call(
@@ -842,7 +763,7 @@ mod tests {
             )],
         )
         .unwrap();
-        state.collections = scope("collection1", "Collection One");
+        state.collection_id = scope("collection1");
 
         let out = ReadChunk::new(state)
             .call(
@@ -876,7 +797,7 @@ mod tests {
             )],
         )
         .unwrap();
-        state.collections = scope("col1", "Collection One");
+        state.collection_id = scope("col1");
 
         let err = ReadChunk::new(state)
             .call(
@@ -909,7 +830,7 @@ mod tests {
             )],
         )
         .unwrap();
-        state.collections = scope("active_collection", "Active");
+        state.collection_id = scope("active_collection");
 
         let err = ReadChunk::new(state)
             .call(
@@ -929,7 +850,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_documents_rejects_invalid_collection_id() {
         let (_tmp, mut state) = create_state().await;
-        state.collections = scope("not-a-namespace-id", "Invalid");
+        state.collection_id = scope("not-a-namespace-id");
 
         let err = ListDocuments::new(state)
             .call(&mut ToolContext::new(), ListDocumentsArgs {})
@@ -951,7 +872,7 @@ mod tests {
                 .unwrap()
                 .0
         };
-        state.collections = scope(&namespace_id.to_string(), "Empty Collection");
+        state.collection_id = scope(&namespace_id.to_string());
 
         let out = ListDocuments::new(state)
             .call(&mut ToolContext::new(), ListDocumentsArgs {})
@@ -959,7 +880,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.total, 0);
-        assert!(out.collections.is_empty());
+        assert!(out.documents.is_empty());
     }
 
     #[tokio::test]
@@ -986,7 +907,7 @@ mod tests {
             None,
         )
         .await;
-        state.collections = scope(&collection, "Paged");
+        state.collection_id = scope(&collection);
 
         let out = ListDocuments::new(state)
             .call(&mut ToolContext::new(), ListDocumentsArgs {})
@@ -995,7 +916,7 @@ mod tests {
 
         assert_eq!(out.total, 2);
         assert_eq!(out.total_pages, Some(3));
-        let documents = &out.collections[0].documents;
+        let documents = &out.documents;
         assert_eq!(documents.len(), 2);
         assert_eq!(documents[0].name, "Paged.pdf");
         assert_eq!(documents[0].page_count, Some(3));
@@ -1019,7 +940,7 @@ mod tests {
             )],
         )
         .unwrap();
-        state.collections = scope("col1", "Varied");
+        state.collection_id = scope("col1");
 
         let out = GetCollectionTerms::new(state)
             .call(
@@ -1035,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn test_collection_terms_empty_index() {
         let (_tmp, mut state) = create_state().await;
-        state.collections = scope("col1", "Empty");
+        state.collection_id = scope("col1");
 
         let out = GetCollectionTerms::new(state)
             .call(
@@ -1073,7 +994,7 @@ mod tests {
             ],
         )
         .unwrap();
-        state.collections = scope("research", "Research");
+        state.collection_id = scope("research");
 
         let out = GetCollectionTerms::new(state)
             .call(

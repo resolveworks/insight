@@ -56,7 +56,7 @@ pub fn sum_page_counts(pages: impl IntoIterator<Item = Option<usize>>) -> Option
 }
 
 pub use config::{Config, Settings, SettingsError};
-pub use memory::{ConversationMeta, ConversationSummary, FileConversationMemory};
+pub use memory::{ConversationSummary, FileConversationMemory, DEFAULT_TITLE};
 pub use pipeline::{AppEvent, Pipeline, PipelineProgress, StageProgress};
 pub use providers::{ModelChoice, ProviderSettings};
 pub use runtime::{predict_next_message, send_message, BASE_SYSTEM_PROMPT};
