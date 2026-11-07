@@ -20,34 +20,3 @@ pub struct ExtractedText {
     /// What one unit is in the source.
     pub unit_kind: UnitKind,
 }
-
-/// 1-indexed number of the unit containing `offset`, or `None` when the
-/// source has no recorded units.
-pub fn unit_number_at(units: &[usize], offset: usize) -> Option<usize> {
-    if units.is_empty() {
-        return None;
-    }
-    Some(
-        units
-            .iter()
-            .position(|&end| offset < end)
-            .map_or(units.len(), |index| index + 1),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unit_number_at_maps_offsets_to_units() {
-        let units = vec![10, 20, 30];
-        assert_eq!(unit_number_at(&units, 0), Some(1));
-        assert_eq!(unit_number_at(&units, 9), Some(1));
-        // A boundary offset belongs to the unit that starts there.
-        assert_eq!(unit_number_at(&units, 10), Some(2));
-        assert_eq!(unit_number_at(&units, 29), Some(3));
-        assert_eq!(unit_number_at(&units, 100), Some(3));
-        assert_eq!(unit_number_at(&[], 0), None);
-    }
-}

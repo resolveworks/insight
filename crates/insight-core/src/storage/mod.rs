@@ -17,7 +17,7 @@ use iroh_docs::{AuthorId, ContentStatus, DocTicket, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
-use crate::text::{unit_number_at, ExtractedText, UnitKind};
+use crate::text::{ExtractedText, UnitKind};
 
 // =============================================================================
 // Key Structure Constants
@@ -121,14 +121,6 @@ impl DocumentMetadata {
     /// Number of pages in the source, when the source is paginated.
     pub fn page_count(&self) -> Option<usize> {
         (self.unit_kind == Some(UnitKind::Page)).then_some(self.units.len())
-    }
-
-    /// 1-indexed page containing the extracted-text byte offset.
-    pub fn page_at_offset(&self, offset: usize) -> Option<usize> {
-        if self.unit_kind != Some(UnitKind::Page) {
-            return None;
-        }
-        unit_number_at(&self.units, offset)
     }
 }
 
