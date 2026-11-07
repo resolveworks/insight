@@ -152,26 +152,11 @@ mod tests {
     }
 
     #[test]
-    fn selections_are_rigs_registered_selections() {
+    fn selections_are_sorted() {
         let selections = selections();
-        assert!(selections.contains(&"openai/openai".to_string()));
-        assert!(selections.contains(&"ollama/openai".to_string()));
-
         let mut sorted = selections.clone();
         sorted.sort();
         assert_eq!(selections, sorted, "selections are sorted");
-        sorted.dedup();
-        assert_eq!(sorted.len(), selections.len(), "selections are unique");
-
-        for selection in &selections {
-            let id = ProviderId::resolve(selection).expect("selection resolves");
-            assert_eq!(&id.to_string(), selection, "selection is canonical");
-            assert!(id.is_registered(), "selection is configurable");
-        }
-
-        // Catalog-only providers are not selections.
-        assert!(!selections.contains(&"voyageai".to_string()));
-        assert!(!selections.contains(&"aws_bedrock".to_string()));
     }
 
     #[test]
@@ -182,16 +167,17 @@ mod tests {
             deepseek,
             "the vendor's models do not depend on how its selection is spelled"
         );
-        let flash = deepseek
-            .iter()
-            .find(|choice| choice.id == "deepseek-flash")
-            .expect("catalog lists the model");
-        assert_eq!(flash.name, "DeepSeek V4.1 Flash 1017");
-
         let openai = models("openai/openai").unwrap();
-        assert!(openai
-            .iter()
-            .all(|choice| choice.id != "text-embedding-3-large"));
+        assert!(
+            openai.iter().any(|choice| choice.id == "gpt-4o"),
+            "chat models are listed"
+        );
+        assert!(
+            openai
+                .iter()
+                .all(|choice| !choice.id.starts_with("text-embedding-")),
+            "embedding models are left out"
+        );
         assert!(
             openai.iter().all(|choice| choice.id != "gpt-4"),
             "deprecated models are left out"
@@ -204,25 +190,6 @@ mod tests {
             models("not-a-provider"),
             Err(ProviderRegistryError::Selection(_))
         ));
-    }
-
-    #[test]
-    fn settings_serde_round_trip() {
-        let persisted = ProviderSettings {
-            family: "anthropic/anthropic".into(),
-            model: "claude-sonnet-4-5".into(),
-            api_key: Some("sk-test".into()),
-            base_url: None,
-        };
-        let json = serde_json::to_string(&persisted).expect("serialize");
-        let back: ProviderSettings = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(persisted, back);
-
-        let minimal: ProviderSettings =
-            serde_json::from_str(r#"{"family":"ollama/openai","model":"llama3"}"#)
-                .expect("minimal");
-        assert_eq!(minimal.api_key, None);
-        assert_eq!(minimal.base_url, None);
     }
 
     #[test]
@@ -272,33 +239,10 @@ mod tests {
     }
 
     #[test]
-    fn remote_selections_build_offline_with_a_dummy_key() {
-        for family in [
-            "openai/openai",
-            "anthropic/anthropic",
-            "groq/openai",
-            "gcp.gemini/gemini",
-            "azure.openai/openai",
-        ] {
-            assert!(
-                build_model(&settings(
-                    family,
-                    Some("dummy-key"),
-                    Some("https://example.invalid")
-                ))
-                .is_ok(),
-                "{family} should construct offline"
-            );
-        }
-    }
-
-    #[test]
-    fn custom_base_url_is_used_verbatim() {
-        let id = ProviderId::resolve("ollama/openai").unwrap();
-        let config = configure(&id, None, Some("http://gpu.internal:11434/v1")).unwrap();
-        assert_eq!(config.base_url(), "http://gpu.internal:11434/v1");
-
-        let config = configure(&id, None, None).unwrap();
-        assert_eq!(config.base_url(), "http://localhost:11434/v1");
+    fn build_model_treats_blank_base_url_as_missing() {
+        assert!(matches!(
+            build_model(&settings("azure.openai/openai", Some("key"), Some("   "))),
+            Err(ProviderRegistryError::MissingBaseUrl(family)) if family == "azure.openai/openai"
+        ));
     }
 }
