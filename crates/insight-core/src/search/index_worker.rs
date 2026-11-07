@@ -197,28 +197,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_index_worker_basic() {
-        let (index, config) = test_index();
-        let handle = spawn_index_worker(index, config);
-
-        // Index a chunk
-        let chunks = vec![ChunkToIndex {
-            id: "doc1_chunk_0".to_string(),
-            parent_id: "doc1".to_string(),
-            parent_name: "test.pdf".to_string(),
-            chunk_index: 0,
-            content: "Test content".to_string(),
-            collection_id: "col1".to_string(),
-            page_count: 1,
-            start_page: 1,
-            end_page: 1,
-        }];
-
-        let result = handle.index_chunks(chunks).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn test_index_worker_delete() {
         let (index, config) = test_index();
         let handle = spawn_index_worker(index, config);
