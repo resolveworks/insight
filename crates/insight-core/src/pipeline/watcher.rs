@@ -205,23 +205,178 @@ fn invalidate(namespace_id: NamespaceId, senders: &JobSenders) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    use tokio::sync::mpsc;
+
     use super::*;
+    use crate::storage::CollectionMetadata;
 
-    #[test]
-    fn test_key_patterns() {
-        assert!(is_source_key("files/doc-123/source"));
-        assert!(!is_source_key("files/doc-123/text"));
-        assert!(!is_source_key("files/doc-123/meta"));
-
-        assert!(is_text_key("files/doc-123/text"));
-        assert!(!is_text_key("files/doc-123/source"));
-        assert!(!is_text_key("files/doc-123/meta"));
+    /// Receive the next item, or `None` if nothing arrives within `budget`.
+    async fn recv_within<T>(rx: &mut mpsc::UnboundedReceiver<T>, budget: Duration) -> Option<T> {
+        tokio::time::timeout(budget, rx.recv()).await.ok().flatten()
     }
 
-    #[test]
-    fn test_extract_doc_id() {
-        assert_eq!(extract_doc_id("files/doc-123/source"), Some("doc-123"));
-        assert_eq!(extract_doc_id("files/abc/text"), Some("abc"));
-        assert_eq!(extract_doc_id("_collection"), None);
+    /// Wait until the watcher reports this collection as changed.
+    async fn await_invalidation(
+        rx: &mut mpsc::UnboundedReceiver<AppEvent>,
+        namespace: NamespaceId,
+        budget: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + budget;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match recv_within(rx, remaining).await {
+                Some(AppEvent::CollectionInvalidated { namespace: ns }) if ns == namespace => {
+                    return true;
+                }
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    }
+
+    /// Assert the watcher reports no change for this collection within `window`.
+    async fn assert_quiet(
+        rx: &mut mpsc::UnboundedReceiver<AppEvent>,
+        namespace: NamespaceId,
+        window: Duration,
+    ) {
+        let deadline = Instant::now() + window;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            match recv_within(rx, remaining).await {
+                Some(AppEvent::CollectionInvalidated { namespace: ns }) if ns == namespace => {
+                    panic!("non-files/ entry invalidated the collection");
+                }
+                Some(_) => continue,
+                None => return,
+            }
+        }
+    }
+
+    /// Write one entry through the docs API, the way collection metadata is written.
+    async fn set_entry(storage: &RwLock<Storage>, namespace: NamespaceId, key: &str, value: &[u8]) {
+        let storage = storage.read().await;
+        let doc = storage
+            .docs()
+            .open(namespace)
+            .await
+            .unwrap()
+            .expect("collection missing");
+        doc.set_bytes(storage.author_id(), key.to_string(), value.to_vec())
+            .await
+            .unwrap();
+        doc.close().await.unwrap();
+    }
+
+    /// A stored source routes to an extract job, stored text routes to an index
+    /// job, and keys outside `files/` route nowhere.
+    #[tokio::test]
+    async fn routes_stored_entries_to_pipeline_jobs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(RwLock::new(Storage::open(temp_dir.path()).await.unwrap()));
+        let (namespace, _) = storage
+            .read()
+            .await
+            .create_collection("Watcher Test")
+            .await
+            .unwrap();
+
+        let (extract_tx, mut extract_rx) = mpsc::unbounded_channel();
+        let (index_tx, mut index_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let progress = ProgressTracker::new(events_tx.clone());
+        let watcher = CollectionWatcher::spawn(
+            namespace,
+            storage.clone(),
+            JobSenders {
+                extract: extract_tx,
+                index: index_tx,
+                events: events_tx,
+            },
+            progress,
+            CancellationToken::new(),
+        );
+
+        // The watcher subscribes from its own task, so probe with a files/ entry
+        // until its invalidation arrives; distinct values guarantee a fresh
+        // InsertLocal event per attempt.
+        let live = tokio::time::timeout(Duration::from_secs(30), async {
+            for attempt in 0.. {
+                set_entry(
+                    &storage,
+                    namespace,
+                    "files/probe/meta",
+                    format!("probe {attempt}").as_bytes(),
+                )
+                .await;
+                if await_invalidation(&mut events_rx, namespace, Duration::from_millis(500)).await {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(live.is_ok(), "watcher never subscribed to the collection");
+
+        // A non-files/ key must not dispatch a job or invalidate the collection.
+        let metadata = CollectionMetadata {
+            name: "Watcher Test".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        set_entry(
+            &storage,
+            namespace,
+            "_collection",
+            &serde_json::to_vec(&metadata).unwrap(),
+        )
+        .await;
+        assert!(recv_within(&mut extract_rx, Duration::from_millis(500))
+            .await
+            .is_none());
+        assert!(recv_within(&mut index_rx, Duration::from_millis(500))
+            .await
+            .is_none());
+        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
+
+        // Storing a source file must queue extraction for its document.
+        let pdf_path = temp_dir.path().join("paper.pdf");
+        tokio::fs::write(&pdf_path, b"%PDF-1.4 watcher test")
+            .await
+            .unwrap();
+        let doc_id = storage
+            .read()
+            .await
+            .store_pdf_source(&pdf_path, namespace)
+            .await
+            .unwrap();
+        let job = recv_within(&mut extract_rx, Duration::from_secs(10))
+            .await
+            .expect("stored source was not queued for extraction");
+        assert_eq!(job.doc_id, doc_id);
+        assert_eq!(job.namespace_id, namespace);
+        assert!(
+            await_invalidation(&mut events_rx, namespace, Duration::from_secs(10)).await,
+            "stored source did not invalidate the collection"
+        );
+
+        // Writing extracted text must queue indexing for the same document.
+        let text = "page one text";
+        storage
+            .read()
+            .await
+            .write_text_and_meta(namespace, &doc_id, text, &[text.len()])
+            .await
+            .unwrap();
+        let job = recv_within(&mut index_rx, Duration::from_secs(10))
+            .await
+            .expect("stored text was not queued for indexing");
+        assert_eq!(job.doc_id, doc_id);
+        assert_eq!(job.namespace_id, namespace);
+
+        watcher.stop();
     }
 }

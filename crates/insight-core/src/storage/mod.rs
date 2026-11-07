@@ -1304,50 +1304,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_subscribe_to_events() {
-        use futures::StreamExt;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(temp_dir.path()).await.unwrap();
-
-        let (collection_id, _) = storage.create_collection("Events Test").await.unwrap();
-
-        // Subscribe to events
-        let mut stream = storage.subscribe(collection_id).await.unwrap();
-
-        // Add a document - this should trigger InsertLocal events
-        let doc = DocumentMetadata {
-            id: "doc-events".to_string(),
-            name: "events.pdf".to_string(),
-            file_type: "application/pdf".to_string(),
-            page_count: 1,
-            tags: vec![],
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            page_boundaries: vec![],
-        };
-        let source = b"source";
-        storage
-            .add_document(collection_id, doc, b"text", source)
-            .await
-            .unwrap();
-
-        // We should receive InsertLocal events (one for each entry)
-        // Use a timeout to avoid hanging if no event is received
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next()).await;
-
-        match event {
-            Ok(Some(Ok(LiveEvent::InsertLocal { entry }))) => {
-                let key = String::from_utf8_lossy(entry.key());
-                assert!(key.starts_with("files/"));
-            }
-            other => {
-                // It's ok if we don't receive the event immediately in tests
-                tracing::debug!("Event result: {:?}", other);
-            }
-        }
-    }
-
-    #[tokio::test]
     async fn test_duplicate_detection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp_dir.path()).await.unwrap();
