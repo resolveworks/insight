@@ -9,6 +9,7 @@
 //!   conversation memory ([`memory`]), and the agent [`runtime`]
 //! - Event-driven pipeline for document import
 
+pub mod chat;
 pub mod config;
 pub mod memory;
 pub mod pdf;
@@ -55,6 +56,7 @@ pub fn sum_page_counts(pages: impl IntoIterator<Item = Option<usize>>) -> Option
     total
 }
 
+pub use chat::{from_messages, ChatEvent, RunTranscript, TranscriptItem, TranscriptKind};
 pub use config::{Config, Settings, SettingsError};
 pub use memory::{ConversationSummary, FileConversationMemory, DEFAULT_TITLE};
 pub use pipeline::{AppEvent, Pipeline, PipelineProgress, StageProgress};
