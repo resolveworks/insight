@@ -110,7 +110,7 @@ A source is immutable. Text is a derivation: a document may have many extraction
 	"id": "abc123",
 	"name": "paper.pdf",
 	"file_type": "application/pdf",
-	"extraction": "mupdf-pdf-text@1",
+	"extraction": { "name": "mupdf-pdf-text", "version": "1" },
 	"tags": ["research", "climate"],
 	"created_at": "2024-01-15T10:30:00Z"
 }

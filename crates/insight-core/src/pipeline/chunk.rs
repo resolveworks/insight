@@ -317,7 +317,10 @@ mod tests {
         let draft = extraction(parser("draft"), "alpha draft content", vec![19]);
         harness.store_document(document("doc1", "Draft.pdf")).await;
         harness.write_extraction("doc1", &draft).await;
-        harness.queue_index("doc1").await;
+
+        // Wait for the non-canonical job to finish before indexing anything
+        // else, so its completion cannot satisfy the sentinel wait.
+        harness.run_index("doc1").await;
 
         let sentinel_text = "sentinel report content";
         harness
@@ -329,6 +332,21 @@ mod tests {
 
         assert!(harness.search("alpha").is_empty());
         assert_eq!(harness.search("sentinel").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_index_worker_completes_jobs_without_canonical_extraction() {
+        let mut harness = IndexHarness::new().await;
+        harness
+            .store_document(document("doc1", "No_Extraction.pdf"))
+            .await;
+
+        harness.run_index("doc1").await;
+
+        let collection_id = harness.namespace_id.to_string();
+        let progress = harness.progress.get(&collection_id).await.unwrap();
+        assert_eq!(progress.index.active, 0);
+        assert!(!progress.index.is_active());
     }
 
     #[tokio::test]

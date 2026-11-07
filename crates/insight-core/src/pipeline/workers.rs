@@ -150,6 +150,12 @@ pub fn spawn_index_worker(
                         "Document deleted before index; skipping"
                     );
                     drop(storage_guard);
+                    progress
+                        .apply(ProgressUpdate::Completed {
+                            collection_id,
+                            stage: Stage::Index,
+                        })
+                        .await;
                     continue;
                 }
                 Err(e) => {
@@ -216,6 +222,12 @@ pub fn spawn_index_worker(
                         doc_id = %job.doc_id,
                         "Canonical extraction unavailable; skipping index"
                     );
+                    progress
+                        .apply(ProgressUpdate::Completed {
+                            collection_id,
+                            stage: Stage::Index,
+                        })
+                        .await;
                     continue;
                 }
                 Err(e) => Err(e),
