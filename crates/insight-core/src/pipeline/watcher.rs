@@ -344,54 +344,38 @@ mod tests {
 
         // Storing a source file must queue extraction for its document.
         let pdf_path = temp_dir.path().join("paper.pdf");
-        let doc_id = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut attempt = 0;
-            loop {
-                attempt += 1;
-                tokio::fs::write(&pdf_path, format!("%PDF-1.4 watcher test {attempt}"))
-                    .await
-                    .unwrap();
-                let doc_id = storage
-                    .read()
-                    .await
-                    .store_pdf_source(&pdf_path, namespace)
-                    .await
-                    .unwrap();
-                if let Some(job) = recv_within(&mut extract_rx, Duration::from_secs(1)).await {
-                    if job.doc_id == doc_id {
-                        assert_eq!(job.namespace_id, namespace);
-                        break doc_id;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("stored source was not queued for extraction");
+        tokio::fs::write(&pdf_path, b"%PDF-1.4 watcher test")
+            .await
+            .unwrap();
+        let doc_id = storage
+            .read()
+            .await
+            .store_pdf_source(&pdf_path, namespace)
+            .await
+            .unwrap();
+        let job = recv_within(&mut extract_rx, Duration::from_secs(10))
+            .await
+            .expect("stored source was not queued for extraction");
+        assert_eq!(job.doc_id, doc_id);
+        assert_eq!(job.namespace_id, namespace);
         assert!(
             await_invalidation(&mut events_rx, namespace, Duration::from_secs(10)).await,
             "stored source did not invalidate the collection"
         );
 
         // Writing extracted text must queue indexing for the same document.
-        let indexed = tokio::time::timeout(Duration::from_secs(30), async {
-            for attempt in 0.. {
-                let text = format!("page one text, attempt {attempt}");
-                storage
-                    .read()
-                    .await
-                    .write_text_and_meta(namespace, &doc_id, &text, &[text.len()])
-                    .await
-                    .unwrap();
-                if let Some(job) = recv_within(&mut index_rx, Duration::from_secs(1)).await {
-                    if job.doc_id == doc_id {
-                        assert_eq!(job.namespace_id, namespace);
-                        return;
-                    }
-                }
-            }
-        })
-        .await;
-        assert!(indexed.is_ok(), "stored text was not queued for indexing");
+        let text = "page one text";
+        storage
+            .read()
+            .await
+            .write_text_and_meta(namespace, &doc_id, text, &[text.len()])
+            .await
+            .unwrap();
+        let job = recv_within(&mut index_rx, Duration::from_secs(10))
+            .await
+            .expect("stored text was not queued for indexing");
+        assert_eq!(job.doc_id, doc_id);
+        assert_eq!(job.namespace_id, namespace);
 
         watcher.stop();
     }
