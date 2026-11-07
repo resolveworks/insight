@@ -54,6 +54,7 @@ let documents = $state.raw<Record<string, Document[]>>({});
 let pipelineProgress = $state.raw<Record<string, PipelineProgress>>({});
 let documentErrors = $state.raw<Record<string, string | null>>({});
 let loading = $state(false);
+let loaded = $state(false);
 let error = $state<string | null>(null);
 
 function stageIsActive(stage: StageProgress): boolean {
@@ -77,6 +78,7 @@ async function loadCollections() {
 	error = null;
 	try {
 		collections = await invoke<Collection[]>('get_collections');
+		loaded = true;
 	} catch (e) {
 		console.error('Failed to load collections:', e);
 		error = e instanceof Error ? e.message : String(e);
@@ -199,6 +201,11 @@ export function ensureDocuments(collectionId: string) {
 
 export function isLoading(): boolean {
 	return loading;
+}
+
+/** Whether the collection listing has loaded successfully at least once. */
+export function hasLoadedCollections(): boolean {
+	return loaded;
 }
 
 export function getError(): string | null {
