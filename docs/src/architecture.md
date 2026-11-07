@@ -45,7 +45,7 @@ A conversation belongs to exactly one evidence collection, fixed at creation. Th
 
 The Tauri command layer (`src-tauri/src/commands/conversations.rs`) scopes every conversation command by collection: `start_chat(collectionId)`, `list_conversations(collectionId)`, `load_conversation(collectionId, conversationId)`, `send_message(collectionId, conversationId, message)`, `predict_next_message(collectionId, conversationId)`, and `delete_conversation(collectionId, conversationId)`. Deleting a collection also deletes its conversations.
 
-In the UI, research is entered per collection at `/research/{collectionId}`, with that collection's conversations in a sidebar beside the chat. The top-level tabs are Files and Settings; `/` redirects to Files, and collection pages link to that collection's chats.
+In the UI, each collection is one workspace at `/collections/{collectionId}` with Research and Documents tabs; opening a collection lands on Research, with that collection's conversations in a sidebar beside the chat. The top-level tabs are Collections and Settings, and `/` redirects to Collections.
 
 ## Data Model
 

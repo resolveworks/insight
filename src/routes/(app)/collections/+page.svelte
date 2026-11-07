@@ -27,7 +27,7 @@
 	// Delete confirmation state
 	let deletingCollection = $state<{ id: string; name: string } | null>(null);
 
-	const breadcrumbs = [{ label: 'Files' }];
+	const breadcrumbs = [{ label: 'Collections' }];
 
 	const collectionList = $derived(collections.getCollections());
 
@@ -36,7 +36,7 @@
 		const collection = await collections.createCollection(newCollectionName);
 		if (collection) {
 			newCollectionName = '';
-			goto(resolve(`files/${collection.id}`));
+			goto(resolve(`collections/${collection.id}`));
 		}
 	}
 
@@ -82,7 +82,7 @@
 		if (collection) {
 			importTicket = '';
 			showImportModal = false;
-			goto(resolve(`files/${collection.id}`));
+			goto(resolve(`collections/${collection.id}`));
 		} else {
 			importError = 'Failed to import collection';
 		}
@@ -137,7 +137,7 @@
 					<div
 						class="group relative rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
-						<a href={resolve(`files/${collection.id}`)} class="block">
+						<a href={resolve(`collections/${collection.id}`)} class="block">
 							<h3 class="font-medium text-neutral-800">
 								{collection.name}
 							</h3>
@@ -152,7 +152,7 @@
 							class="absolute right-3 top-3 flex gap-2 opacity-60 transition-opacity hover:opacity-100 group-hover:opacity-100"
 						>
 							<a
-								href={resolve(`research/${collection.id}`)}
+								href={resolve(`collections/${collection.id}/research`)}
 								class="cursor-pointer text-neutral-400 hover:text-primary-600"
 								aria-label="Chats for {collection.name}"
 								title="Chats"

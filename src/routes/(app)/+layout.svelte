@@ -4,24 +4,21 @@
 
 	let { children } = $props();
 
-	type Tab = { id: string; label: string; href: 'files' | 'settings' };
+	type Tab = { id: string; label: string; href: 'collections' | 'settings' };
 	const tabs: Tab[] = [
-		{ id: 'files', label: 'Files', href: 'files' },
+		{ id: 'collections', label: 'Collections', href: 'collections' },
 		{ id: 'settings', label: 'Settings', href: 'settings' },
 	];
 
-	const currentTab = $derived.by(() => {
-		// A collection's chats live under Files.
-		const section = page.url.pathname.split('/')[1] || 'files';
-		return section === 'research' ? 'files' : section;
-	});
+	const currentTab = $derived(page.url.pathname.split('/')[1] || 'collections');
 </script>
 
 <main class="flex h-screen flex-col bg-surface-dim text-neutral-800">
-	<nav class="flex bg-neutral-700">
+	<nav aria-label="Main" class="flex bg-neutral-700">
 		{#each tabs as tab (tab.id)}
 			<a
 				href={resolve(tab.href)}
+				aria-current={currentTab === tab.id ? 'page' : undefined}
 				class="px-6 py-3 text-sm font-medium transition-colors {currentTab ===
 				tab.id
 					? 'border-b-2 border-primary-500 text-surface'
