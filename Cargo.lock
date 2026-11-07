@@ -5482,7 +5482,6 @@ dependencies = [
  "anyhow",
  "insight-core",
  "iroh-docs",
- "rig-core",
  "serde",
  "serde_json",
  "tauri",

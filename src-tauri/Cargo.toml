@@ -17,9 +17,6 @@ tauri-build = { version = "2", features = [] }
 # Core business logic
 insight-core = { path = "../crates/insight-core" }
 
-# rig message types appear in the conversation command API
-rig-core = "0.46"
-
 # Tauri
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"

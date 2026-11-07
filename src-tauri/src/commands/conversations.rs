@@ -2,26 +2,28 @@
 //! sending with streamed agent events. Each conversation belongs to exactly
 //! one collection.
 
-use rig_core::completion::Message;
 use serde::Serialize;
 use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
 use super::CollectionId;
-use crate::core::{providers, runtime, AppState, ConversationSummary, Settings, DEFAULT_TITLE};
+use crate::core::{
+    from_messages, providers, runtime, AppState, ChatEvent, ConversationSummary, Settings,
+    TranscriptItem, DEFAULT_TITLE,
+};
 use crate::error::{CommandError, CommandResult, ResultExt};
 
 /// A conversation as seen by the frontend: its collection, title, and full
-/// rig message history.
+/// normalized transcript.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConversationView {
     pub id: String,
     pub collection_id: String,
     pub title: String,
-    pub messages: Vec<Message>,
+    pub transcript: Vec<TranscriptItem>,
 }
 
-/// Load the messages of a conversation into a [`ConversationView`].
+/// Load a conversation's transcript into a [`ConversationView`].
 async fn conversation_view(
     state: &AppState,
     collection_id: &str,
@@ -41,7 +43,7 @@ async fn conversation_view(
         } else {
             title
         },
-        messages,
+        transcript: from_messages(&messages, 0),
     })
 }
 
@@ -150,17 +152,17 @@ pub async fn delete_conversation(
 /// Send a message to a conversation and stream the agent's response through
 /// the caller's channel.
 ///
-/// Each message is one serialized rig `MultiTurnStreamItem` (JSON,
-/// `type`-tagged, camelCase). Stream errors surface as a final
-/// `{"type":"streamError","message":...}` payload on the same channel. The
-/// command returns immediately; the run continues in a spawned task until it
-/// completes, errors, or is cancelled via [`cancel_generation`].
+/// Each message is one app-owned [`ChatEvent`]. A stream error surfaces as a
+/// final [`ChatEvent::RunFailed`] on the same channel; a successful or
+/// cancelled run ends with [`ChatEvent::RunFinished`]. The command returns
+/// immediately; the run continues in a spawned task until it completes,
+/// errors, or is cancelled via [`cancel_generation`].
 #[tauri::command]
 pub async fn send_message(
     collection_id: CollectionId,
     conversation_id: String,
     message: String,
-    on_event: Channel<serde_json::Value>,
+    on_event: Channel<ChatEvent>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     tracing::info!(
@@ -204,10 +206,9 @@ pub async fn send_message(
             // The run failed before or outside the stream: the frontend is
             // waiting on the channel, so surface the failure there instead of
             // leaving the chat stuck in its generating state.
-            let _ = error_channel.send(serde_json::json!({
-                "type": "streamError",
-                "message": format!("Agent run failed: {e}"),
-            }));
+            let _ = error_channel.send(ChatEvent::RunFailed {
+                message: format!("Agent run failed: {e}"),
+            });
         }
 
         // Cleanup: drop the cancel token so a later generation can register

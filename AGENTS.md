@@ -33,7 +33,7 @@ Rust owns storage truth. The frontend mirrors it and never merges entities into 
 - Route `load` functions own data (`+layout.ts` / `+page.ts` with `depends('app:…')`); components read `data`.
 - A mutation the UI initiated re-reads by calling `invalidate(...)` after the command resolves.
 - The only backend→frontend signals are changes the UI cannot derive: `collection-invalidated` (a peer changed a collection) and `pipeline-progress` (display, plus "this collection's pipeline went idle" → re-read the counts). They are consumed only in `src/lib/invalidation.ts`. Do not add per-write change events.
-- The chat run is the one client-owned stream: `send_message` streams over a Tauri `Channel` and the store folds items into one transcript view model (`src/lib/chat/transcript.ts`). Optimistic state belongs there and nowhere else.
+- The chat run is the one client-owned stream: `send_message` streams app-owned `ChatEvent`s over a Tauri `Channel` and the store applies them to its transcript. Rust normalizes both stored history and the live run into `TranscriptItem`s; the store owns the live item list and its lifecycle flags.
 
 Adding data: if Rust knows it, it is a command read through a load. If it changes behind the UI's back, that is peer sync and rides the existing invalidation.
 
@@ -44,6 +44,7 @@ Adding data: if Rust knows it, it is a command read through a load. If it change
 - Conversations are local and never sync; collections sync fully, blobs included.
 - No OCR: MuPDF's text layer only, so scanned PDFs import with little or no text. Known limitation, not a bug.
 - No migrations anywhere — settings, conversation layouts, documents predating extractions. There are no users; invalid legacy state throws or is ignored, never bridged.
+- A dependency's stored or wire format and stream semantics stop at the Rust boundary; the UI and its DTOs are app-owned.
 
 ## Conventions
 
