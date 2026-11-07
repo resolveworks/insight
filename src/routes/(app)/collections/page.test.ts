@@ -2,6 +2,20 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
 
+type EventListener = (event: { payload: unknown }) => void;
+const listeners = new Map<string, EventListener>();
+
+vi.mock('@tauri-apps/api/event', () => ({
+	listen: vi.fn(async (name: string, cb: EventListener) => {
+		listeners.set(name, cb);
+		return () => listeners.delete(name);
+	}),
+}));
+
+function emit(name: string, payload: unknown) {
+	listeners.get(name)?.({ payload });
+}
+
 const collection = {
 	id: 'col1',
 	name: 'Climate Research',
@@ -17,6 +31,7 @@ let cleanupFresh: (() => void) | undefined;
  */
 async function renderPage() {
 	vi.resetModules();
+	listeners.clear();
 	const [{ default: Page }, { render, cleanup }] = await Promise.all([
 		import('./+page.svelte'),
 		import('@testing-library/svelte'),
@@ -113,6 +128,64 @@ describe('Collections landing page', () => {
 		expect(
 			await screen.findByText('Access cannot be revoked once shared.'),
 		).toBeInTheDocument();
+	});
+
+	it('keeps loaded cards visible while a background refresh is pending', async () => {
+		let collectionCalls = 0;
+		let resolveRefresh: (value: unknown[]) => void = () => {};
+		mockIPC((cmd) => {
+			if (cmd === 'get_collections') {
+				collectionCalls += 1;
+				if (collectionCalls === 1) return [collection];
+				return new Promise((resolve) => {
+					resolveRefresh = resolve;
+				});
+			}
+			if (cmd === 'get_documents') return [];
+			if (cmd === 'get_pipeline_progress') return [];
+		});
+
+		await renderPage();
+
+		await screen.findByRole('heading', { name: 'Climate Research' });
+		emit('collection-invalidated', { collection_id: 'col1' });
+		await waitFor(() => expect(collectionCalls).toBe(2));
+
+		expect(
+			screen.getByRole('heading', { name: 'Climate Research' }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+		resolveRefresh([{ ...collection, document_count: 3 }]);
+		await waitFor(() => {
+			expect(screen.getByText('3 documents')).toBeInTheDocument();
+		});
+	});
+
+	it('retains loaded cards and shows the error when a background refresh fails', async () => {
+		let collectionCalls = 0;
+		mockIPC((cmd) => {
+			if (cmd === 'get_collections') {
+				collectionCalls += 1;
+				if (collectionCalls === 1) return [collection];
+				throw new Error('sync unavailable');
+			}
+			if (cmd === 'get_documents') return [];
+			if (cmd === 'get_pipeline_progress') return [];
+		});
+
+		await renderPage();
+
+		await screen.findByRole('heading', { name: 'Climate Research' });
+		emit('collection-invalidated', { collection_id: 'col1' });
+
+		expect(
+			await screen.findByText('Failed to load collections: sync unavailable'),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole('heading', { name: 'Climate Research' }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole('status')).not.toBeInTheDocument();
 	});
 
 	it('states the deletion consequence before confirming', async () => {

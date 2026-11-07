@@ -32,6 +32,7 @@
 
 	const collectionList = $derived(collections.getCollections());
 	const loading = $derived(collections.isLoading());
+	const loaded = $derived(collections.hasLoadedCollections());
 	const loadError = $derived(collections.getError());
 
 	async function handleCreateCollection() {
@@ -127,66 +128,75 @@
 		</div>
 
 		<!-- Collections grid -->
-		{#if loading}
-			<div
-				class="flex flex-col items-center justify-center py-12"
-				role="status"
-			>
-				<LoadingSpinner size="lg" />
-				<p class="sr-only">Loading collections…</p>
-			</div>
-		{:else if loadError}
-			<ErrorAlert>Failed to load collections: {loadError}</ErrorAlert>
-		{:else if collectionList.length === 0}
-			<div class="flex flex-col items-center justify-center py-12">
-				<p class="text-neutral-500">No collections yet</p>
-				<p class="mt-1 text-sm text-neutral-400">
-					Create one above to start organizing your documents.
-				</p>
-			</div>
+		{#if !loaded}
+			{#if loading}
+				<div
+					class="flex flex-col items-center justify-center py-12"
+					role="status"
+				>
+					<LoadingSpinner size="lg" />
+					<p class="sr-only">Loading collections…</p>
+				</div>
+			{:else if loadError}
+				<ErrorAlert>Failed to load collections: {loadError}</ErrorAlert>
+			{/if}
 		{:else}
-			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-				{#each collectionList as collection (collection.id)}
-					<article
-						class="flex flex-col rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
-					>
-						<a href={resolve(`collections/${collection.id}`)} class="block">
-							<h3 class="font-medium text-neutral-800">
-								{collection.name}
-							</h3>
-							<p class="mt-1 text-sm text-neutral-500">
-								{collection.document_count}
-								{collection.document_count === 1 ? 'document' : 'documents'}
-							</p>
-							<p class="mt-3 text-sm font-medium text-primary-600">
-								Open research workspace
-								<span aria-hidden="true">→</span>
-							</p>
-						</a>
+			{#if loadError}
+				<div class="mb-4">
+					<ErrorAlert>Failed to load collections: {loadError}</ErrorAlert>
+				</div>
+			{/if}
+			{#if collectionList.length === 0}
+				<div class="flex flex-col items-center justify-center py-12">
+					<p class="text-neutral-500">No collections yet</p>
+					<p class="mt-1 text-sm text-neutral-400">
+						Create one above to start organizing your documents.
+					</p>
+				</div>
+			{:else}
+				<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+					{#each collectionList as collection (collection.id)}
+						<article
+							class="flex flex-col rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
+						>
+							<a href={resolve(`collections/${collection.id}`)} class="block">
+								<h3 class="font-medium text-neutral-800">
+									{collection.name}
+								</h3>
+								<p class="mt-1 text-sm text-neutral-500">
+									{collection.document_count}
+									{collection.document_count === 1 ? 'document' : 'documents'}
+								</p>
+								<p class="mt-3 text-sm font-medium text-primary-600">
+									Open research workspace
+									<span aria-hidden="true">→</span>
+								</p>
+							</a>
 
-						<div class="mt-4 flex gap-2 border-t border-neutral-100 pt-3">
-							<Button
-								variant="secondary"
-								size="sm"
-								onclick={() => openShareModal(collection.id)}
-							>
-								Share
-							</Button>
-							<Button
-								variant="danger"
-								size="sm"
-								onclick={() =>
-									(deletingCollection = {
-										id: collection.id,
-										name: collection.name,
-									})}
-							>
-								Delete
-							</Button>
-						</div>
-					</article>
-				{/each}
-			</div>
+							<div class="mt-4 flex gap-2 border-t border-neutral-100 pt-3">
+								<Button
+									variant="secondary"
+									size="sm"
+									onclick={() => openShareModal(collection.id)}
+								>
+									Share
+								</Button>
+								<Button
+									variant="danger"
+									size="sm"
+									onclick={() =>
+										(deletingCollection = {
+											id: collection.id,
+											name: collection.name,
+										})}
+								>
+									Delete
+								</Button>
+							</div>
+						</article>
+					{/each}
+				</div>
+			{/if}
 		{/if}
 	</div>
 </div>
