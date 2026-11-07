@@ -11,7 +11,7 @@
 </script>
 
 <div class="flex flex-col items-center justify-center py-12 text-center">
-	<p class="text-neutral-500">{title}</p>
+	<p class="text-muted">{title}</p>
 	{#if description}
 		<p class="mt-1 max-w-sm text-sm text-subtle">{description}</p>
 	{/if}

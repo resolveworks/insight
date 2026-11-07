@@ -11,8 +11,6 @@
 			Only the conversation is sent to the provider — documents never leave your
 			machine.
 		</p>
-		<div class="card p-6">
-			<ProviderSelector />
-		</div>
+		<ProviderSelector />
 	</div>
 </div>

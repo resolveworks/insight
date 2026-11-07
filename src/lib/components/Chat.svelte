@@ -251,6 +251,7 @@
 				<Input
 					type="text"
 					bind:value={inputValue}
+					class="flex-1"
 					ghostText={prediction}
 					onkeydown={handleKeydown}
 					onAcceptGhost={handleAcceptPrediction}
