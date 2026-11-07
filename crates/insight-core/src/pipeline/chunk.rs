@@ -57,9 +57,9 @@ mod tests {
     use milli::update::IndexerConfig;
     use tokio::sync::{mpsc, RwLock};
 
-    use super::super::workers::{spawn_index_worker, SharedReceiver};
+    use super::super::workers::spawn_index_worker;
     use super::*;
-    use crate::pipeline::{AppEvent, IndexJob, ProgressTracker, Stage};
+    use crate::pipeline::{AppEvent, IndexQueue, ProgressTracker};
     use crate::search::{
         chunk_external_id, get_indexed_chunk, index_chunks_batch, search_index, ChunkToIndex,
         IndexedChunk, SearchParams,
@@ -73,7 +73,7 @@ mod tests {
         storage: Arc<RwLock<Storage>>,
         index: Arc<milli::Index>,
         namespace_id: iroh_docs::NamespaceId,
-        job_tx: mpsc::UnboundedSender<IndexJob>,
+        queue: IndexQueue,
         events_rx: mpsc::UnboundedReceiver<AppEvent>,
         progress: ProgressTracker,
         _temp: tempfile::TempDir,
@@ -90,9 +90,9 @@ mod tests {
                 crate::search::spawn_index_worker(index.clone(), IndexerConfig::default());
             let (events_tx, events_rx) = mpsc::unbounded_channel();
             let progress = ProgressTracker::new(events_tx);
-            let (job_tx, job_rx) = mpsc::unbounded_channel();
+            let queue = IndexQueue::new(progress.clone());
             spawn_index_worker(
-                SharedReceiver::new_unbounded(job_rx),
+                queue.clone(),
                 storage.clone(),
                 index_worker,
                 progress.clone(),
@@ -109,7 +109,7 @@ mod tests {
                 storage,
                 index,
                 namespace_id,
-                job_tx,
+                queue,
                 events_rx,
                 progress,
                 _temp: temp,
@@ -155,15 +155,9 @@ mod tests {
 
         /// Queue an index job without waiting for it to run.
         async fn queue_index(&self, doc_id: &str) {
-            self.progress
-                .queue(&self.namespace_id.to_string(), Stage::Index)
+            self.queue
+                .enqueue(self.namespace_id, doc_id.to_string())
                 .await;
-            self.job_tx
-                .send(IndexJob {
-                    namespace_id: self.namespace_id,
-                    doc_id: doc_id.to_string(),
-                })
-                .unwrap();
         }
 
         /// Run a document through the index worker and wait until that job

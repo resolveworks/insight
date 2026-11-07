@@ -20,12 +20,14 @@
 //! handed the work off explicitly.
 
 mod chunk;
+mod index_queue;
 mod progress;
 mod types;
 mod watcher;
 mod workers;
 
 pub use chunk::{chunk_text, Chunk};
+pub use index_queue::IndexQueue;
 pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
 pub use types::{ExtractJob, IndexJob, ProgressUpdate, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
@@ -67,7 +69,9 @@ pub struct Pipeline {
 
     // Worker pool channels (unbounded to avoid blocking the event watcher)
     extract_tx: mpsc::UnboundedSender<ExtractJob>,
-    index_tx: mpsc::UnboundedSender<IndexJob>,
+
+    // Coalescing queue shared by every index producer and the index worker
+    index_queue: IndexQueue,
 
     // Per-collection watchers
     watchers: Arc<RwLock<HashMap<NamespaceId, CollectionWatcher>>>,
@@ -95,24 +99,28 @@ impl Pipeline {
         let progress = ProgressTracker::new(events.clone());
         let cancel = CancellationToken::new();
 
-        // Create unbounded channels (avoids blocking the event watcher)
+        // Create unbounded channel (avoids blocking the event watcher)
         let (extract_tx, extract_rx) = mpsc::unbounded_channel();
-        let (index_tx, index_rx) = mpsc::unbounded_channel();
+        let index_queue = IndexQueue::new(progress.clone());
 
-        // Shared receivers for multi-worker stages
+        // Shared receiver for multi-worker stage
         let extract_rx = SharedReceiver::new_unbounded(extract_rx);
-        let index_rx = SharedReceiver::new_unbounded(index_rx);
 
         // Spawn worker pools
         spawn_extract_workers(
             EXTRACT_WORKERS,
             extract_rx,
             storage.clone(),
-            index_tx.clone(),
+            index_queue.clone(),
             progress.clone(),
         );
 
-        workers::spawn_index_worker(index_rx, storage.clone(), index_worker, progress.clone());
+        workers::spawn_index_worker(
+            index_queue.clone(),
+            storage.clone(),
+            index_worker,
+            progress.clone(),
+        );
 
         tracing::info!(extract_workers = EXTRACT_WORKERS, "Pipeline started");
 
@@ -120,7 +128,7 @@ impl Pipeline {
             Self {
                 storage,
                 extract_tx,
-                index_tx,
+                index_queue,
                 watchers: Arc::new(RwLock::new(HashMap::new())),
                 progress,
                 cancel,
@@ -142,7 +150,7 @@ impl Pipeline {
         }
 
         let senders = JobSenders {
-            index: self.index_tx.clone(),
+            index: self.index_queue.clone(),
             events: self.events.clone(),
         };
 
@@ -150,7 +158,6 @@ impl Pipeline {
             namespace_id,
             self.storage.clone(),
             senders,
-            self.progress.clone(),
             self.cancel.child_token(),
         );
 

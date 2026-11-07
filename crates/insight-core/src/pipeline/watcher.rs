@@ -3,7 +3,7 @@
 //! Local imports hand work to the workers explicitly. The watcher only reacts
 //! to remote `files/` entries, queuing index reconciliation for their document.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -14,13 +14,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::storage::{LiveEvent, Storage};
 
-use super::progress::ProgressTracker;
-use super::types::{IndexJob, Stage};
+use super::index_queue::IndexQueue;
 use super::AppEvent;
 
 /// Dispatch channels for watcher-originated work.
 pub struct JobSenders {
-    pub index: mpsc::UnboundedSender<IndexJob>,
+    pub index: IndexQueue,
     pub events: mpsc::UnboundedSender<AppEvent>,
 }
 
@@ -44,20 +43,12 @@ impl CollectionWatcher {
         namespace_id: NamespaceId,
         storage: Arc<RwLock<Storage>>,
         senders: JobSenders,
-        progress: ProgressTracker,
         cancel: CancellationToken,
     ) -> Self {
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = run_watcher(
-                namespace_id,
-                storage,
-                senders,
-                progress,
-                cancel_clone.clone(),
-            )
-            .await
+            if let Err(e) = run_watcher(namespace_id, storage, senders, cancel_clone.clone()).await
             {
                 if !cancel_clone.is_cancelled() {
                     tracing::error!(
@@ -82,7 +73,6 @@ async fn run_watcher(
     namespace_id: NamespaceId,
     storage: Arc<RwLock<Storage>>,
     senders: JobSenders,
-    progress: ProgressTracker,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     // Subscribe to namespace events (need storage just for subscription)
@@ -95,8 +85,7 @@ async fn run_watcher(
 
     tokio::pin!(stream);
 
-    let collection_id = namespace_id.to_string();
-    let mut pending_content: HashMap<Hash, String> = HashMap::new();
+    let mut pending_content: HashMap<Hash, HashSet<String>> = HashMap::new();
     tracing::info!(namespace = %namespace_id, "CollectionWatcher started");
 
     loop {
@@ -114,9 +103,7 @@ async fn run_watcher(
                         handle_event(
                             &live_event,
                             namespace_id,
-                            &collection_id,
                             &senders,
-                            &progress,
                             &mut pending_content,
                         )
                         .await;
@@ -144,10 +131,8 @@ async fn run_watcher(
 async fn handle_event(
     event: &LiveEvent,
     namespace_id: NamespaceId,
-    collection_id: &str,
     senders: &JobSenders,
-    progress: &ProgressTracker,
-    pending_content: &mut HashMap<Hash, String>,
+    pending_content: &mut HashMap<Hash, HashSet<String>>,
 ) {
     let (key_bytes, content_status, content_hash) = match event {
         // A local import hands its work off explicitly; local entries never
@@ -159,8 +144,10 @@ async fn handle_event(
             ..
         } => (entry.key(), *content_status, entry.content_hash()),
         LiveEvent::ContentReady { hash } => {
-            if let Some(doc_id) = pending_content.remove(hash) {
-                queue_index(namespace_id, collection_id, &doc_id, senders, progress).await;
+            if let Some(doc_ids) = pending_content.remove(hash) {
+                for doc_id in doc_ids {
+                    queue_index(namespace_id, &doc_id, senders).await;
+                }
             }
             return;
         }
@@ -185,25 +172,21 @@ async fn handle_event(
             doc_id = %doc_id,
             "Remote entry pending content; waiting for ContentReady"
         );
-        pending_content.insert(content_hash, doc_id);
+        pending_content
+            .entry(content_hash)
+            .or_default()
+            .insert(doc_id);
     } else {
-        queue_index(namespace_id, collection_id, &doc_id, senders, progress).await;
+        queue_index(namespace_id, &doc_id, senders).await;
     }
 }
 
-async fn queue_index(
-    namespace_id: NamespaceId,
-    collection_id: &str,
-    doc_id: &str,
-    senders: &JobSenders,
-    progress: &ProgressTracker,
-) {
+async fn queue_index(namespace_id: NamespaceId, doc_id: &str, senders: &JobSenders) {
     tracing::debug!(doc_id = %doc_id, "Queuing index");
-    progress.queue(collection_id, Stage::Index).await;
-    let _ = senders.index.send(IndexJob {
-        namespace_id,
-        doc_id: doc_id.to_string(),
-    });
+    senders
+        .index
+        .enqueue(namespace_id, doc_id.to_string())
+        .await;
 }
 
 /// Tell the application layer that a peer changed this collection's entries.
@@ -225,10 +208,19 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::pipeline::{IndexJob, ProgressTracker};
 
-    /// Receive the next item, or `None` if nothing arrives within `budget`.
+    /// Receive the next item on a channel, or `None` if nothing arrives within `budget`.
     async fn recv_within<T>(rx: &mut mpsc::UnboundedReceiver<T>, budget: Duration) -> Option<T> {
         tokio::time::timeout(budget, rx.recv()).await.ok().flatten()
+    }
+
+    /// Receive the next index job, or `None` if none arrives within `budget`.
+    async fn recv_job(queue: &IndexQueue, budget: Duration) -> Option<IndexJob> {
+        tokio::time::timeout(budget, queue.recv())
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Wait until the watcher reports this collection as changed.
@@ -264,12 +256,30 @@ mod tests {
             }
             match recv_within(rx, remaining).await {
                 Some(AppEvent::CollectionInvalidated { namespace: ns }) if ns == namespace => {
-                    panic!("a local change invalidated the collection");
+                    panic!("unexpected collection invalidation");
                 }
                 Some(_) => continue,
                 None => return,
             }
         }
+    }
+
+    /// Build the watcher's dispatch inputs, returning the queue so tests can
+    /// observe the jobs the watcher actually sent.
+    fn dispatch() -> (
+        JobSenders,
+        IndexQueue,
+        ProgressTracker,
+        mpsc::UnboundedReceiver<AppEvent>,
+    ) {
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let progress = ProgressTracker::new(events_tx.clone());
+        let queue = IndexQueue::new(progress.clone());
+        let senders = JobSenders {
+            index: queue.clone(),
+            events: events_tx,
+        };
+        (senders, queue, progress, events_rx)
     }
 
     fn entry(namespace: NamespaceId, key: &str) -> Entry {
@@ -297,18 +307,23 @@ mod tests {
         }
     }
 
+    fn insert_remote_with_hash(namespace: NamespaceId, key: &str, hash: Hash) -> LiveEvent {
+        LiveEvent::InsertRemote {
+            from: SecretKey::generate().public(),
+            entry: Entry::new(
+                RecordIdentifier::new(namespace, AuthorId::default(), key.as_bytes()),
+                Record::new(hash, key.len() as u64, 0),
+            ),
+            content_status: ContentStatus::Missing,
+        }
+    }
+
     /// Local entries are handed off explicitly by the import and extract
     /// stages; the watcher must not queue work or invalidate for them.
     #[tokio::test]
     async fn ignores_local_pipeline_entries() {
         let namespace = NamespaceId::default();
-        let (index_tx, mut index_rx) = mpsc::unbounded_channel();
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let senders = JobSenders {
-            index: index_tx,
-            events: events_tx.clone(),
-        };
-        let progress = ProgressTracker::new(events_tx);
+        let (senders, queue, progress, mut events_rx) = dispatch();
         let mut pending = HashMap::new();
 
         for key in [
@@ -320,17 +335,13 @@ mod tests {
             handle_event(
                 &insert_local(namespace, key),
                 namespace,
-                &namespace.to_string(),
                 &senders,
-                &progress,
                 &mut pending,
             )
             .await;
         }
 
-        assert!(recv_within(&mut index_rx, Duration::from_millis(200))
-            .await
-            .is_none());
+        assert!(recv_job(&queue, Duration::from_millis(200)).await.is_none());
         assert_quiet(&mut events_rx, namespace, Duration::from_millis(200)).await;
         assert!(pending.is_empty());
         assert!(progress.get(&namespace.to_string()).await.is_none());
@@ -341,13 +352,7 @@ mod tests {
     #[tokio::test]
     async fn queues_remote_files_entries_for_indexing() {
         let namespace = NamespaceId::default();
-        let (index_tx, mut index_rx) = mpsc::unbounded_channel();
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let senders = JobSenders {
-            index: index_tx,
-            events: events_tx.clone(),
-        };
-        let progress = ProgressTracker::new(events_tx);
+        let (senders, queue, _progress, mut events_rx) = dispatch();
         let mut pending = HashMap::new();
 
         for key in [
@@ -358,13 +363,11 @@ mod tests {
             handle_event(
                 &insert_remote(namespace, key, ContentStatus::Complete),
                 namespace,
-                &namespace.to_string(),
                 &senders,
-                &progress,
                 &mut pending,
             )
             .await;
-            let job = recv_within(&mut index_rx, Duration::from_secs(1))
+            let job = recv_job(&queue, Duration::from_secs(1))
                 .await
                 .expect("remote files entry was not queued for indexing");
             assert_eq!(job.doc_id, "doc1");
@@ -374,15 +377,11 @@ mod tests {
         handle_event(
             &insert_remote(namespace, "_collection", ContentStatus::Complete),
             namespace,
-            &namespace.to_string(),
             &senders,
-            &progress,
             &mut pending,
         )
         .await;
-        assert!(recv_within(&mut index_rx, Duration::from_millis(200))
-            .await
-            .is_none());
+        assert!(recv_job(&queue, Duration::from_millis(200)).await.is_none());
         assert_quiet(&mut events_rx, namespace, Duration::from_millis(200)).await;
         assert!(pending.is_empty());
     }
@@ -397,13 +396,7 @@ mod tests {
         use iroh_docs::engine::{Origin, SyncEvent};
 
         let namespace = NamespaceId::default();
-        let (index_tx, _index_rx) = mpsc::unbounded_channel();
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let senders = JobSenders {
-            index: index_tx,
-            events: events_tx.clone(),
-        };
-        let progress = ProgressTracker::new(events_tx);
+        let (senders, _queue, _progress, mut events_rx) = dispatch();
         let mut pending = HashMap::new();
 
         let sync = LiveEvent::SyncFinished(SyncEvent {
@@ -413,15 +406,7 @@ mod tests {
             finished: SystemTime::now(),
             result: Err("test sync".to_string()),
         });
-        handle_event(
-            &sync,
-            namespace,
-            &namespace.to_string(),
-            &senders,
-            &progress,
-            &mut pending,
-        )
-        .await;
+        handle_event(&sync, namespace, &senders, &mut pending).await;
         assert!(
             await_invalidation(&mut events_rx, namespace, Duration::from_secs(1)).await,
             "peer sync did not invalidate the collection"
@@ -430,9 +415,7 @@ mod tests {
         handle_event(
             &LiveEvent::PendingContentReady,
             namespace,
-            &namespace.to_string(),
             &senders,
-            &progress,
             &mut pending,
         )
         .await;
@@ -441,9 +424,7 @@ mod tests {
                 hash: Hash::new(b"landed content"),
             },
             namespace,
-            &namespace.to_string(),
             &senders,
-            &progress,
             &mut pending,
         )
         .await;
@@ -469,45 +450,73 @@ mod tests {
             content_status: ContentStatus::Missing,
         };
 
-        let (index_tx, mut index_rx) = mpsc::unbounded_channel();
-        let (events_tx, _events_rx) = mpsc::unbounded_channel();
-        let senders = JobSenders {
-            index: index_tx,
-            events: events_tx.clone(),
-        };
-        let progress = ProgressTracker::new(events_tx);
+        let (senders, queue, _progress, _events_rx) = dispatch();
         let mut pending = HashMap::new();
 
-        handle_event(
-            &event,
-            namespace,
-            &namespace.to_string(),
-            &senders,
-            &progress,
-            &mut pending,
-        )
-        .await;
+        handle_event(&event, namespace, &senders, &mut pending).await;
 
-        assert_eq!(pending.get(&content_hash), Some(&"doc1".to_string()));
-        assert!(recv_within(&mut index_rx, Duration::from_millis(200))
-            .await
-            .is_none());
+        assert_eq!(
+            pending.get(&content_hash).map(|docs| docs.contains("doc1")),
+            Some(true)
+        );
+        assert!(recv_job(&queue, Duration::from_millis(200)).await.is_none());
 
         handle_event(
             &LiveEvent::ContentReady { hash: content_hash },
             namespace,
-            &namespace.to_string(),
             &senders,
-            &progress,
             &mut pending,
         )
         .await;
 
-        let job = recv_within(&mut index_rx, Duration::from_secs(1))
+        let job = recv_job(&queue, Duration::from_secs(1))
             .await
             .expect("content-ready entry was not queued for indexing");
         assert_eq!(job.doc_id, "doc1");
         assert_eq!(job.namespace_id, namespace);
+        assert!(pending.is_empty());
+    }
+
+    /// Several documents can share one missing content hash; the ContentReady
+    /// event releases every document waiting on it, not just the last one.
+    #[tokio::test]
+    async fn content_ready_releases_every_document_waiting_on_the_hash() {
+        let namespace = NamespaceId::default();
+        let content_hash = Hash::new(b"shared remote content");
+        let (senders, queue, _progress, _events_rx) = dispatch();
+        let mut pending = HashMap::new();
+
+        for key in ["files/doc1/source", "files/doc2/source"] {
+            handle_event(
+                &insert_remote_with_hash(namespace, key, content_hash),
+                namespace,
+                &senders,
+                &mut pending,
+            )
+            .await;
+        }
+        assert!(recv_job(&queue, Duration::from_millis(200)).await.is_none());
+
+        handle_event(
+            &LiveEvent::ContentReady { hash: content_hash },
+            namespace,
+            &senders,
+            &mut pending,
+        )
+        .await;
+
+        let mut doc_ids = Vec::new();
+        for _ in 0..2 {
+            doc_ids.push(
+                recv_job(&queue, Duration::from_secs(1))
+                    .await
+                    .expect("document waiting on the content hash was not queued")
+                    .doc_id,
+            );
+        }
+        doc_ids.sort();
+        assert_eq!(doc_ids, ["doc1", "doc2"]);
+        assert!(recv_job(&queue, Duration::from_millis(200)).await.is_none());
         assert!(pending.is_empty());
     }
 }
