@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::search::{chunk_external_id, ChunkToIndex, IndexWorkerHandle};
-use crate::storage::Storage;
+use crate::storage::{CommitOutcome, DocumentMetadata, Storage};
 
 use super::chunk::chunk_text;
 use super::progress::ProgressTracker;
@@ -65,13 +66,45 @@ pub fn spawn_extract_workers(
                     })
                     .await;
 
-                // Do the work
-                let result = {
+                // Do the work. The storage guard is held only for the short
+                // input read and commit, never across MuPDF.
+                let result: anyhow::Result<Option<DocumentMetadata>> = async {
+                    let input = {
+                        let storage = storage.read().await;
+                        storage
+                            .extraction_input(job.namespace_id, &job.doc_id)
+                            .await?
+                    };
+                    let Some((_, source)) = input else {
+                        tracing::debug!(
+                            doc_id = %job.doc_id,
+                            "Extract has no work: document gone or already canonical"
+                        );
+                        return Ok(None);
+                    };
+
+                    let extraction = tokio::task::spawn_blocking(move || {
+                        crate::pdf::extract_text_from_bytes(source)
+                    })
+                    .await
+                    .context("Extract task panicked")??;
+
                     let storage = storage.read().await;
-                    storage
-                        .extract_and_dispatch(job.namespace_id, &job.doc_id)
-                        .await
-                };
+                    match storage
+                        .commit_extraction(job.namespace_id, &job.doc_id, &extraction)
+                        .await?
+                    {
+                        CommitOutcome::Written(metadata) => Ok(Some(metadata)),
+                        CommitOutcome::DocumentGone => {
+                            tracing::debug!(
+                                doc_id = %job.doc_id,
+                                "Document deleted during extract"
+                            );
+                            Ok(None)
+                        }
+                    }
+                }
+                .await;
 
                 match result {
                     Ok(Some(metadata)) => {
@@ -89,10 +122,14 @@ pub fn spawn_extract_workers(
                         // InsertLocal(extraction entry) will trigger index via watcher
                     }
                     Ok(None) => {
-                        tracing::debug!(
-                            doc_id = %job.doc_id,
-                            "Document deleted before extract; skipping"
-                        );
+                        // The job is still terminal: the document vanished or
+                        // already had a canonical extraction.
+                        progress
+                            .apply(ProgressUpdate::Completed {
+                                collection_id,
+                                stage: Stage::Extract,
+                            })
+                            .await;
                     }
                     Err(e) => {
                         tracing::error!(doc_id = %job.doc_id, error = %e, "Extract failed");
@@ -258,4 +295,91 @@ pub fn spawn_index_worker(
 
         tracing::debug!("Index worker stopped");
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::pipeline::progress::ProgressTracker;
+
+    /// A queued extract job whose document was deleted before the worker
+    /// picked it up is still terminal: progress settles as completed instead
+    /// of staying active, and no document entries are recreated.
+    #[tokio::test]
+    async fn queued_extract_for_deleted_document_completes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(RwLock::new(Storage::open(temp_dir.path()).await.unwrap()));
+        let (namespace_id, _) = storage
+            .read()
+            .await
+            .create_collection("Progress Test")
+            .await
+            .unwrap();
+        let doc_id = storage
+            .read()
+            .await
+            .add_document(namespace_id, "gone.pdf", "application/pdf", b"gone")
+            .await
+            .unwrap()
+            .id;
+        storage
+            .read()
+            .await
+            .delete_document(namespace_id, &doc_id)
+            .await
+            .unwrap();
+
+        let (extract_tx, extract_rx) = mpsc::unbounded_channel();
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let progress = ProgressTracker::new(events_tx);
+        spawn_extract_workers(
+            1,
+            SharedReceiver::new_unbounded(extract_rx),
+            storage.clone(),
+            progress.clone(),
+        );
+
+        let collection_id = namespace_id.to_string();
+        progress.queue(&collection_id, Stage::Extract).await;
+        extract_tx
+            .send(ExtractJob {
+                namespace_id,
+                doc_id: doc_id.clone(),
+            })
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let current = progress
+                .get(&collection_id)
+                .await
+                .expect("collection progress");
+            if !current.extract.is_active() {
+                assert_eq!(current.extract.completed, 1);
+                assert_eq!(current.extract.failed, 0);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "extract progress never settled: {current:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let storage = storage.read().await;
+        assert!(storage
+            .get_document(namespace_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(storage
+            .get_document_source(namespace_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
 }

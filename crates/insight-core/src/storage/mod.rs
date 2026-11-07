@@ -115,6 +115,16 @@ fn default_file_type() -> String {
     "application/pdf".to_string()
 }
 
+/// Outcome of committing a document's extraction.
+#[derive(Debug, Clone)]
+pub enum CommitOutcome {
+    /// The extraction was written; the metadata reflects the document after
+    /// the commit.
+    Written(DocumentMetadata),
+    /// The document was deleted before the extraction could be committed.
+    DocumentGone,
+}
+
 /// An extraction record stored under `files/{id}/extractions/{parser_key}`.
 ///
 /// Holds the text blob hash and the source unit mapping; the text itself is
@@ -151,6 +161,9 @@ pub struct Storage {
     router: Router,
     /// Default author ID for this node
     author_id: AuthorId,
+    /// Serializes document mutations that must observe one consistent state:
+    /// extraction commits and document deletion.
+    document_mutations: tokio::sync::Mutex<()>,
 }
 
 impl Storage {
@@ -219,6 +232,7 @@ impl Storage {
             gossip,
             router,
             author_id,
+            document_mutations: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -750,6 +764,8 @@ impl Storage {
         namespace_id: NamespaceId,
         document_id: &str,
     ) -> Result<()> {
+        let _mutation = self.document_mutations.lock().await;
+
         let doc = self
             .docs
             .api()
@@ -982,7 +998,9 @@ impl Storage {
     ///
     /// Returns the new document's metadata for the next phase.
     ///
-    /// Note: No extraction exists until `extract_and_dispatch()` is called.
+    /// Note: No extraction exists until an extract worker reads the source
+    /// with [`Self::extraction_input`] and commits the result with
+    /// [`Self::commit_extraction`].
     pub async fn store_pdf_source(
         &self,
         path: &std::path::Path,
@@ -1007,58 +1025,78 @@ impl Storage {
         Ok(metadata)
     }
 
-    /// Phase 2: Extract text from the stored PDF and write it out.
+    /// Read the inputs needed to extract a document's text.
     ///
-    /// Extracts per-page text via [`crate::pdf::extract_text_from_bytes`] and
-    /// writes `files/{id}/extractions/{parser_key}`. The extraction becomes
-    /// canonical only when the document has no canonical extraction yet.
-    ///
-    /// Returns `Ok(Some(metadata))` on success, `Ok(None)` when the
-    /// document has been deleted (job queued before deletion), and
-    /// `Err(...)` for actual failures.
-    pub async fn extract_and_dispatch(
+    /// Returns `Ok(None)` when extraction is terminal for this job: the
+    /// document is gone, or it already has a canonical extraction.
+    pub async fn extraction_input(
         &self,
         namespace_id: NamespaceId,
         doc_id: &str,
-    ) -> Result<Option<DocumentMetadata>> {
-        let source_bytes = match self.get_document_source(namespace_id, doc_id).await? {
-            Some(b) => b,
-            None => {
-                tracing::warn!(
-                    doc_id = %doc_id,
-                    "Source not found; document was likely deleted — skipping extract"
-                );
-                return Ok(None);
-            }
-        };
-
-        let mut metadata = match self.get_document(namespace_id, doc_id).await? {
+    ) -> Result<Option<(DocumentMetadata, Vec<u8>)>> {
+        let metadata = match self.get_document(namespace_id, doc_id).await? {
             Some(metadata) => metadata,
             None => {
-                tracing::warn!(
-                    doc_id = %doc_id,
-                    "Metadata not found; document was likely deleted — skipping extract"
-                );
+                tracing::debug!(doc_id = %doc_id, "Document gone before extract");
                 return Ok(None);
             }
         };
 
-        let extraction =
-            tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source_bytes))
-                .await
-                .context("Extract task panicked")??;
+        if metadata.extraction.is_some() {
+            tracing::debug!(doc_id = %doc_id, "Document already has a canonical extraction");
+            return Ok(None);
+        }
 
-        self.write_extraction(namespace_id, doc_id, &extraction)
+        let source = self.get_document_source(namespace_id, doc_id).await?;
+
+        match source {
+            Some(source) => Ok(Some((metadata, source))),
+            None => {
+                // A delete racing the source read removes both entries, so a
+                // missing source is terminal only when the document is gone.
+                if self.get_document(namespace_id, doc_id).await?.is_none() {
+                    tracing::debug!(doc_id = %doc_id, "Document gone during extract input read");
+                    return Ok(None);
+                }
+                anyhow::bail!("Document {doc_id} has metadata but no source")
+            }
+        }
+    }
+
+    /// Commit an extraction produced from [`Self::extraction_input`].
+    ///
+    /// Writes `files/{id}/extractions/{parser_key}` and selects it canonical
+    /// when the document has no canonical extraction yet. A document deleted
+    /// while extraction was running yields [`CommitOutcome::DocumentGone`]
+    /// without recreating any of its entries.
+    pub async fn commit_extraction(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        extraction: &Extraction,
+    ) -> Result<CommitOutcome> {
+        let _mutation = self.document_mutations.lock().await;
+
+        let metadata = match self.get_document(namespace_id, doc_id).await? {
+            Some(metadata) => metadata,
+            None => {
+                tracing::debug!(doc_id = %doc_id, "Document deleted during extract");
+                return Ok(CommitOutcome::DocumentGone);
+            }
+        };
+
+        self.write_extraction(namespace_id, doc_id, extraction)
             .await?;
 
-        if metadata.extraction.is_none() {
+        let metadata = if metadata.extraction.is_none() {
             self.set_canonical_extraction(namespace_id, doc_id, &extraction.parser)
                 .await?;
-            metadata = self
-                .get_document(namespace_id, doc_id)
+            self.get_document(namespace_id, doc_id)
                 .await?
-                .context("Document vanished during extraction")?;
-        }
+                .context("Document vanished while committing its extraction")?
+        } else {
+            metadata
+        };
 
         tracing::info!(
             doc_id = %doc_id,
@@ -1068,7 +1106,7 @@ impl Storage {
             metadata.name
         );
 
-        Ok(Some(metadata))
+        Ok(CommitOutcome::Written(metadata))
     }
 
     /// Internal helper: serialize + store the metadata entry on an open
@@ -1418,6 +1456,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_commit_extraction_after_delete_is_document_gone() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Deleted Doc").await.unwrap();
+
+        let doc_id = add_document(&storage, collection_id, "gone.pdf", b"gone source").await;
+        let late = extraction(parser("late"), "extracted after deletion", vec![24]);
+
+        storage
+            .delete_document(collection_id, &doc_id)
+            .await
+            .unwrap();
+
+        // Reading input after deletion is terminal, not an error.
+        assert!(storage
+            .extraction_input(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        let outcome = storage
+            .commit_extraction(collection_id, &doc_id, &late)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CommitOutcome::DocumentGone));
+
+        // The late commit recreates none of the document's entries.
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage
+                .get_document_source(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .get_extraction(collection_id, &doc_id, &late.parser)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .get_canonical_extraction(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(storage
+            .list_documents(collection_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn test_delete_collection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp_dir.path()).await.unwrap();
@@ -1518,12 +1618,22 @@ mod tests {
         assert!(source.is_some());
         assert_eq!(source.unwrap(), pdf_bytes);
 
-        // Phase 2: Extract and store text
-        let extracted = storage
-            .extract_and_dispatch(collection_id, &doc_id)
+        // Phase 2: Read the input, extract, and commit the text.
+        let (input_metadata, source) = storage
+            .extraction_input(collection_id, &doc_id)
             .await
             .unwrap()
-            .expect("document should exist");
+            .expect("document should need extraction");
+        assert_eq!(input_metadata.extraction, None);
+        let extraction = crate::pdf::extract_text_from_bytes(source).unwrap();
+        let extracted = match storage
+            .commit_extraction(collection_id, &doc_id, &extraction)
+            .await
+            .unwrap()
+        {
+            CommitOutcome::Written(metadata) => metadata,
+            CommitOutcome::DocumentGone => panic!("document vanished during extraction"),
+        };
         assert_eq!(extracted.extraction, Some(parser("mupdf-pdf-text")));
 
         // The canonical extraction carries the page structure and text.
