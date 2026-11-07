@@ -44,6 +44,12 @@ export interface PipelineProgress {
 	index: StageProgress;
 }
 
+/** What an import stored, plus the files it could not store. */
+export interface ImportOutcome {
+	documents: Document[];
+	failures: { path: string; message: string }[];
+}
+
 interface CollectionInvalidated {
 	collection_id: string;
 }
@@ -305,23 +311,23 @@ export async function importCollection(
 /**
  * Start importing files into a collection.
  *
- * Progress and the resulting document listing arrive through events; nothing
- * is refreshed here.
+ * Progress arrives through pipeline events; the stored rows are re-read here
+ * so they appear without waiting for an invalidation.
  */
 export async function startImport(
 	collectionId: string,
 	paths: string[],
-): Promise<boolean> {
+): Promise<ImportOutcome | null> {
 	try {
-		const progress = await invoke<PipelineProgress>('start_import', {
+		const outcome = await invoke<ImportOutcome>('start_import', {
 			paths,
 			collectionId,
 		});
-		applyProgress(progress);
-		return true;
+		await loadDocuments(collectionId);
+		return outcome;
 	} catch (e) {
 		console.error('Failed to start import:', e);
-		return false;
+		return null;
 	}
 }
 

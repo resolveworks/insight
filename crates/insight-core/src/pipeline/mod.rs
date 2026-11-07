@@ -48,7 +48,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::search::IndexWorkerHandle;
-use crate::storage::Storage;
+use crate::storage::{DocumentMetadata, Storage};
 
 use workers::{spawn_extract_workers, SharedReceiver};
 
@@ -57,13 +57,13 @@ const EXTRACT_WORKERS: usize = 4;
 
 /// Events the pipeline surfaces to the application layer.
 ///
-/// Progress is display state; invalidation says only *that* a collection's
-/// entries changed, never what they now contain — listeners re-read storage.
+/// Progress is display state; invalidation says only *that* a peer changed a
+/// collection's entries, never what they now contain — listeners re-read storage.
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     /// Pipeline progress changed for a collection.
     Progress(PipelineProgress),
-    /// Entries in a collection changed; readers of its document listing must re-read.
+    /// A peer changed entries in a collection; readers of its document listing must re-read.
     CollectionInvalidated { namespace: NamespaceId },
 }
 
@@ -178,18 +178,17 @@ impl Pipeline {
 
     /// Import files into a collection.
     ///
-    /// Stores each file's source bytes. The iroh events drive the rest:
+    /// Stores each file's source bytes, returning the metadata of every
+    /// document it stored. The iroh events drive the rest:
     /// - InsertLocal(source) → Extract
     /// - InsertLocal(extraction) → Index
-    ///
-    /// Returns (successful_count, errors).
     pub async fn import_files(
         &self,
         namespace_id: NamespaceId,
         paths: Vec<PathBuf>,
-    ) -> (usize, Vec<(PathBuf, String)>) {
+    ) -> (Vec<DocumentMetadata>, Vec<(PathBuf, String)>) {
         let collection_id = namespace_id.to_string();
-        let mut success = 0;
+        let mut documents = Vec::new();
         let mut errors = Vec::new();
 
         for path in paths {
@@ -214,15 +213,15 @@ impl Pipeline {
             drop(storage);
 
             match result {
-                Ok(doc_id) => {
-                    tracing::info!(doc_id = %doc_id, path = %path.display(), "Stored PDF source");
+                Ok(metadata) => {
+                    tracing::info!(doc_id = %metadata.id, path = %path.display(), "Stored PDF source");
                     self.progress
                         .apply(ProgressUpdate::Completed {
                             collection_id: collection_id.clone(),
                             stage: Stage::Store,
                         })
                         .await;
-                    success += 1;
+                    documents.push(metadata);
                     // InsertLocal(files/*/source) will trigger extract via watcher
                 }
                 Err(e) => {
@@ -239,7 +238,7 @@ impl Pipeline {
             }
         }
 
-        (success, errors)
+        (documents, errors)
     }
 
     /// Get progress for a collection.
