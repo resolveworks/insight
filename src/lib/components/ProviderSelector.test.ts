@@ -1,8 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { screen, waitFor, fireEvent } from '@testing-library/svelte';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
-import ProviderSelector from './ProviderSelector.svelte';
-import * as providerStore from '#lib/stores/provider-state.svelte.js';
 
 const SELECTIONS = ['ollama/openai', 'openai/openai'];
 
@@ -16,17 +14,34 @@ const MODELS: Record<string, Array<{ id: string; name: string }>> = {
 
 const idleStatus = { family: null, model: null, error: null };
 
+let cleanupFresh: (() => void) | undefined;
+
+/**
+ * The provider store keeps module-level $state and self-initializes on import,
+ * so each test re-imports the component with a fresh module graph (store
+ * included) after installing its IPC mock.
+ */
+async function renderSelector() {
+	vi.resetModules();
+	// Re-import testing-library alongside the component so `mount`, `cleanup`
+	// and the component share one Svelte runtime instance.
+	const [{ default: ProviderSelector }, { render, cleanup }] =
+		await Promise.all([
+			import('./ProviderSelector.svelte'),
+			import('@testing-library/svelte'),
+		]);
+	cleanupFresh = cleanup;
+	render(ProviderSelector);
+}
+
+afterEach(() => {
+	cleanupFresh?.();
+	cleanupFresh = undefined;
+});
+
 describe('ProviderSelector', () => {
-	beforeEach(async () => {
+	beforeEach(() => {
 		clearMocks();
-		// Reset the shared store so each test boots against its own mock.
-		mockIPC((cmd) => {
-			if (cmd === 'list_providers') return SELECTIONS;
-			if (cmd === 'get_current_provider') return null;
-			if (cmd === 'get_provider_status') return idleStatus;
-			return null;
-		});
-		await providerStore.__resetForTests();
 	});
 
 	it('offers rig selections and preselects the configured provider and model', async () => {
@@ -43,9 +58,7 @@ describe('ProviderSelector', () => {
 				return { family: 'openai/openai', model: 'gpt-4o', error: null };
 			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
@@ -74,9 +87,7 @@ describe('ProviderSelector', () => {
 			if (cmd === 'get_provider_status') return idleStatus;
 			if (cmd === 'list_provider_models') return MODELS['ollama/openai'];
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		expect(
 			await screen.findByText(/failed to load provider settings/i),
@@ -100,9 +111,7 @@ describe('ProviderSelector', () => {
 				return { family: 'deepseek', model: 'deepseek-flash', error: reason };
 			if (cmd === 'list_provider_models') return [];
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		expect(await screen.findByText(reason)).toBeInTheDocument();
 	});
@@ -115,9 +124,7 @@ describe('ProviderSelector', () => {
 			if (cmd === 'list_provider_models')
 				return MODELS[(args as { family: string }).family];
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
@@ -156,9 +163,7 @@ describe('ProviderSelector', () => {
 				};
 			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		const model = (await screen.findByLabelText('Model')) as HTMLSelectElement;
 		await waitFor(() => expect(model.value).toBe('my-private-deployment'));
@@ -178,9 +183,7 @@ describe('ProviderSelector', () => {
 			if (cmd === 'get_provider_status') return idleStatus;
 			return null;
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
@@ -226,9 +229,7 @@ describe('ProviderSelector', () => {
 				throw { code: 'external_error', message: reason };
 			return null;
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
@@ -252,11 +253,9 @@ describe('ProviderSelector', () => {
 		expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
 	});
 
-	it('invokes disable_provider for a configured provider', async () => {
-		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+	it('hides the Disable button once the provider is disabled', async () => {
 		let disabled = false;
-		mockIPC((cmd, args) => {
-			calls.push({ cmd, args: args as Record<string, unknown> });
+		mockIPC((cmd) => {
 			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'disable_provider') {
 				disabled = true;
@@ -277,14 +276,14 @@ describe('ProviderSelector', () => {
 					? idleStatus
 					: { family: 'openai/openai', model: 'gpt-4o', error: null };
 		});
-		await providerStore.__resetForTests();
-
-		render(ProviderSelector);
+		await renderSelector();
 
 		screen.getByRole('button', { name: 'Disable' }).click();
 
-		await waitFor(() => {
-			expect(calls.find((c) => c.cmd === 'disable_provider')).toBeTruthy();
-		});
+		await waitFor(() =>
+			expect(
+				screen.queryByRole('button', { name: 'Disable' }),
+			).not.toBeInTheDocument(),
+		);
 	});
 });
