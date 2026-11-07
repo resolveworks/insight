@@ -157,22 +157,20 @@ pub fn open_index(path: &Path) -> Result<Index> {
 pub struct ChunkToIndex {
     /// Unique chunk ID: "{parent_id}_chunk_{chunk_index}"
     pub id: String,
-    /// Original document ID (for grouping and full-text retrieval)
+    /// Original document ID.
     pub parent_id: String,
-    /// Document filename (for display in results)
+    /// Document filename, for display and retrieval in the UI.
     pub parent_name: String,
-    /// Position of this chunk in the document (0-indexed)
+    /// Position of this chunk in the document (0-indexed).
     pub chunk_index: usize,
-    /// The chunk text content (~450 tokens)
+    /// Text as indexed (may carry a document-name prefix for relevance).
     pub content: String,
-    /// Collection this chunk belongs to
+    /// Collection this chunk belongs to.
     pub collection_id: String,
-    /// Number of pages in the parent document
-    pub page_count: usize,
-    /// First page this chunk appears on (1-indexed)
-    pub start_page: usize,
-    /// Last page this chunk appears on (1-indexed)
-    pub end_page: usize,
+    /// UTF-8 byte offset in the document's extracted text where the chunk starts.
+    pub text_offset_start: usize,
+    /// Byte offset one past the chunk's end.
+    pub text_offset_end: usize,
 }
 
 /// A chunk as stored in the search index.
@@ -189,16 +187,14 @@ pub struct IndexedChunk {
     pub parent_name: String,
     /// Position of this chunk in the document (0-indexed).
     pub chunk_index: usize,
-    /// The chunk text content.
+    /// Text as indexed (may carry a document-name prefix for relevance).
     pub content: String,
     /// Collection this chunk belongs to.
     pub collection_id: String,
-    /// Number of pages in the parent document.
-    pub page_count: usize,
-    /// First page this chunk appears on (1-indexed).
-    pub start_page: usize,
-    /// Last page this chunk appears on (1-indexed).
-    pub end_page: usize,
+    /// UTF-8 byte offset in the document's extracted text where the chunk starts.
+    pub text_offset_start: usize,
+    /// Byte offset one past the chunk's end.
+    pub text_offset_end: usize,
 }
 
 impl IndexedChunk {
@@ -271,14 +267,13 @@ fn index_chunk_batch(
                 Value::String(chunk.collection_id.clone()),
             );
             m.insert(
-                "page_count".to_string(),
-                Value::Number(chunk.page_count.into()),
+                "text_offset_start".to_string(),
+                Value::Number(chunk.text_offset_start.into()),
             );
             m.insert(
-                "start_page".to_string(),
-                Value::Number(chunk.start_page.into()),
+                "text_offset_end".to_string(),
+                Value::Number(chunk.text_offset_end.into()),
             );
-            m.insert("end_page".to_string(), Value::Number(chunk.end_page.into()));
             m
         })
         .collect();
@@ -772,9 +767,8 @@ mod tests {
             chunk_index: 0,
             content: content.to_string(),
             collection_id: collection_id.to_string(),
-            page_count: 1,
-            start_page: 1,
-            end_page: 1,
+            text_offset_start: 0,
+            text_offset_end: content.len(),
         }
     }
 

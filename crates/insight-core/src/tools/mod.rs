@@ -11,6 +11,7 @@
 //! [`ToolExecutionError`] with precise kinds (e.g. `not_found`) so the runtime
 //! can classify outcomes and the model receives safe, actionable feedback.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
@@ -20,6 +21,7 @@ use tokio::sync::RwLock;
 
 use crate::search;
 use crate::storage::Storage;
+use crate::text::UnitKind;
 use crate::CollectionInfo;
 
 /// Per-run state shared by the document tools.
@@ -81,6 +83,18 @@ fn infrastructure_error(error: impl std::fmt::Display) -> ToolExecutionError {
 
 // ==================== search ====================
 
+/// Where a passage sits in its source document.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SourceRef {
+    /// 1-indexed inclusive page range in a paginated source.
+    Page {
+        first: usize,
+        last: usize,
+        of: usize,
+    },
+}
+
 /// One search hit with the fields the model needs for citation.
 #[derive(Debug, Serialize)]
 pub struct SearchHitResult {
@@ -98,12 +112,10 @@ pub struct SearchHitResult {
     pub passage: String,
     /// Whether the passage was truncated.
     pub truncated: bool,
-    /// First page the chunk appears on (0 if unknown).
-    pub start_page: i64,
-    /// Last page the chunk appears on (0 if unknown).
-    pub end_page: i64,
-    /// Total page count of the document.
-    pub page_count: i64,
+    /// Where the passage sits in its source document; absent when the source
+    /// has no recorded page structure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceRef>,
     /// Relevance score.
     pub score: f64,
 }
@@ -141,7 +153,7 @@ impl Tool for Search {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Keyword (BM25) full-text search over indexed document chunks. Returns up to 15 passages with document IDs, chunk indices, and page references. Use read_chunk with the document_id and chunk_index to read a full passage.".to_string()
+        "Keyword (BM25) full-text search over indexed document chunks. Returns up to 15 passages with document IDs, chunk indices, and page references where the document is paginated. Use read_chunk with the document_id and chunk_index to read a full passage.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -168,6 +180,9 @@ impl Tool for Search {
 
         let results = search::search_index(index, params).map_err(infrastructure_error)?;
         let rtxn = index.read_txn().map_err(infrastructure_error)?;
+        let storage = state.storage.read().await;
+        let mut documents: HashMap<(String, String), crate::storage::DocumentMetadata> =
+            HashMap::new();
         let mut hits = Vec::with_capacity(results.hits.len());
 
         for hit in &results.hits {
@@ -184,6 +199,41 @@ impl Tool for Search {
             let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
             let collection_name = state.name_of(&chunk.collection_id)?;
 
+            let cache_key = (chunk.collection_id.clone(), chunk.parent_id.clone());
+            if !documents.contains_key(&cache_key) {
+                let namespace_id = chunk
+                    .collection_id
+                    .parse::<iroh_docs::NamespaceId>()
+                    .map_err(|_| {
+                        ToolExecutionError::invalid_args(format!(
+                            "collection {} is not a valid namespace ID",
+                            chunk.collection_id
+                        ))
+                    })?;
+                let metadata = storage
+                    .get_document(namespace_id, &chunk.parent_id)
+                    .await
+                    .map_err(infrastructure_error)?
+                    .ok_or_else(|| {
+                        infrastructure_error(format!(
+                            "search hit references missing document metadata {}",
+                            chunk.parent_id
+                        ))
+                    })?;
+                documents.insert(cache_key.clone(), metadata);
+            }
+            let metadata = &documents[&cache_key];
+
+            let source = if metadata.unit_kind == Some(UnitKind::Page) {
+                metadata
+                    .page_at_offset(chunk.text_offset_start)
+                    .zip(metadata.page_at_offset(chunk.text_offset_end.saturating_sub(1)))
+                    .zip(metadata.page_count())
+                    .map(|((first, last), of)| SourceRef::Page { first, last, of })
+            } else {
+                None
+            };
+
             hits.push(SearchHitResult {
                 document_name: chunk.parent_name,
                 document_id: chunk.parent_id,
@@ -192,9 +242,7 @@ impl Tool for Search {
                 collection_id: chunk.collection_id,
                 passage,
                 truncated,
-                start_page: chunk.start_page as i64,
-                end_page: chunk.end_page as i64,
-                page_count: chunk.page_count as i64,
+                source,
                 score: search::compute_hit_score(&hit.scores),
             });
         }
@@ -300,8 +348,8 @@ pub struct DocumentEntry {
     pub name: String,
     /// Document ID (use with read_chunk / search).
     pub id: String,
-    /// Total page count.
-    pub page_count: usize,
+    /// Total page count, when the source is paginated.
+    pub page_count: Option<usize>,
 }
 
 /// Documents grouped by collection.
@@ -324,8 +372,8 @@ pub struct ListDocumentsOutput {
     pub shown: usize,
     /// Whether the document list was truncated.
     pub truncated: bool,
-    /// Total pages across all documents.
-    pub total_pages: usize,
+    /// Total pages across all documents, when known.
+    pub total_pages: Option<usize>,
     /// Per-collection groups, sorted by collection name.
     pub collections: Vec<CollectionGroup>,
 }
@@ -351,7 +399,7 @@ impl Tool for ListDocuments {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "List all documents in the selected collections, grouped by collection, with document IDs and page counts. At most 25 entries are returned; use search to find specific documents beyond that.".to_string()
+        "List all documents in the selected collections, grouped by collection, with document IDs and page counts where known. At most 25 entries are returned; use search to find specific documents beyond that.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -394,10 +442,11 @@ impl Tool for ListDocuments {
         all_documents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name)));
 
         let total = all_documents.len();
-        let total_pages: usize = all_documents
-            .iter()
-            .filter_map(|(_, _, d)| d.page_count())
-            .sum();
+        let total_pages = crate::sum_page_counts(
+            all_documents
+                .iter()
+                .map(|(_, _, document)| document.page_count()),
+        );
         let truncated = total > MAX_DOCS_TO_SHOW;
 
         // Group by collection, in sorted order.
@@ -417,7 +466,7 @@ impl Tool for ListDocuments {
                 }
             };
             group.documents.push(DocumentEntry {
-                page_count: doc.page_count().unwrap_or_default(),
+                page_count: doc.page_count(),
                 name: doc.name,
                 id: doc.id,
             });
@@ -548,6 +597,42 @@ mod tests {
         )
     }
 
+    /// Create a real collection and return its namespace ID.
+    async fn create_collection(state: &ToolState, name: &str) -> String {
+        let storage = state.storage.write().await;
+        let (namespace_id, _) = storage.create_collection(name).await.unwrap();
+        namespace_id.to_string()
+    }
+
+    /// Store a document with the units its chunks' offsets refer to.
+    async fn add_document(
+        state: &ToolState,
+        collection_id: &str,
+        id: &str,
+        name: &str,
+        text: &str,
+        units: Vec<usize>,
+        unit_kind: Option<UnitKind>,
+    ) {
+        let metadata = crate::storage::DocumentMetadata {
+            id: id.to_string(),
+            name: name.to_string(),
+            file_type: "application/pdf".to_string(),
+            units,
+            unit_kind,
+            tags: Vec::new(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let namespace_id = collection_id.parse::<iroh_docs::NamespaceId>().unwrap();
+        state
+            .storage
+            .read()
+            .await
+            .add_document(namespace_id, metadata, text.as_bytes(), b"source")
+            .await
+            .unwrap();
+    }
+
     /// Helper to create a chunk for indexing.
     #[allow(clippy::too_many_arguments)]
     fn make_chunk(
@@ -556,9 +641,7 @@ mod tests {
         content: &str,
         collection_id: &str,
         chunk_index: usize,
-        page_count: usize,
-        start_page: usize,
-        end_page: usize,
+        text_offset_start: usize,
     ) -> ChunkToIndex {
         ChunkToIndex {
             id: format!("{parent_id}_chunk_{chunk_index}"),
@@ -567,9 +650,8 @@ mod tests {
             chunk_index,
             content: content.to_string(),
             collection_id: collection_id.to_string(),
-            page_count,
-            start_page,
-            end_page,
+            text_offset_start,
+            text_offset_end: text_offset_start + content.len(),
         }
     }
 
@@ -602,22 +684,32 @@ mod tests {
     #[tokio::test]
     async fn test_search_finds_indexed_document() {
         let (_tmp, mut state) = create_state().await;
+        let content = "Global temperatures are rising due to greenhouse gases.";
+        let collection = create_collection(&state, "Research Papers").await;
+        add_document(
+            &state,
+            &collection,
+            "doc1",
+            "Climate_Report.pdf",
+            content,
+            vec![content.len()],
+            Some(UnitKind::Page),
+        )
+        .await;
         search::index_chunks_batch(
             &state.search,
             &IndexerConfig::default(),
             vec![make_chunk(
                 "doc1",
                 "Climate_Report.pdf",
-                "Global temperatures are rising due to greenhouse gases.",
-                "research",
+                content,
+                &collection,
                 0,
-                10,
-                1,
-                1,
+                0,
             )],
         )
         .unwrap();
-        state.collections = scope("research", "Research Papers");
+        state.collections = scope(&collection, "Research Papers");
 
         let out = Search::new(state)
             .call(
@@ -634,7 +726,14 @@ mod tests {
         assert_eq!(hit.document_name, "Climate_Report.pdf");
         assert_eq!(hit.document_id, "doc1");
         assert_eq!(hit.collection_name, "Research Papers");
-        assert_eq!(hit.page_count, 10);
+        assert!(matches!(
+            hit.source,
+            Some(SourceRef::Page {
+                first: 1,
+                last: 1,
+                of: 1
+            })
+        ));
         assert!(hit.score > 0.0);
         assert!(!hit.truncated);
     }
@@ -642,6 +741,30 @@ mod tests {
     #[tokio::test]
     async fn test_search_filters_by_collection() {
         let (_tmp, mut state) = create_state().await;
+        let research = create_collection(&state, "Research").await;
+        let finance = create_collection(&state, "Finance").await;
+        let research_content = "Scientific research on climate change.";
+        let finance_content = "Financial analysis for climate initiatives.";
+        add_document(
+            &state,
+            &research,
+            "doc1",
+            "Research_Paper.pdf",
+            research_content,
+            vec![],
+            None,
+        )
+        .await;
+        add_document(
+            &state,
+            &finance,
+            "doc2",
+            "Finance_Report.pdf",
+            finance_content,
+            vec![],
+            None,
+        )
+        .await;
         search::index_chunks_batch(
             &state.search,
             &IndexerConfig::default(),
@@ -649,27 +772,23 @@ mod tests {
                 make_chunk(
                     "doc1",
                     "Research_Paper.pdf",
-                    "Scientific research on climate change.",
-                    "research_col",
+                    research_content,
+                    &research,
                     0,
-                    10,
-                    1,
-                    1,
+                    0,
                 ),
                 make_chunk(
                     "doc2",
                     "Finance_Report.pdf",
-                    "Financial analysis for climate initiatives.",
-                    "finance_col",
+                    finance_content,
+                    &finance,
                     0,
-                    5,
-                    1,
-                    1,
+                    0,
                 ),
             ],
         )
         .unwrap();
-        state.collections = scope("research_col", "Research");
+        state.collections = scope(&research, "Research");
 
         let out = Search::new(state)
             .call(
@@ -690,6 +809,17 @@ mod tests {
     async fn test_search_truncates_long_passages() {
         let (_tmp, mut state) = create_state().await;
         let long_content = "climate research findings ".repeat(30); // ~780 chars
+        let collection = create_collection(&state, "Long Docs").await;
+        add_document(
+            &state,
+            &collection,
+            "doc1",
+            "Long.pdf",
+            &long_content,
+            vec![],
+            None,
+        )
+        .await;
         search::index_chunks_batch(
             &state.search,
             &IndexerConfig::default(),
@@ -697,15 +827,13 @@ mod tests {
                 "doc1",
                 "Long.pdf",
                 &long_content,
-                "col1",
+                &collection,
                 0,
-                1,
-                1,
-                1,
+                0,
             )],
         )
         .unwrap();
-        state.collections = scope("col1", "Long Docs");
+        state.collections = scope(&collection, "Long Docs");
 
         let out = Search::new(state)
             .call(
@@ -720,21 +848,62 @@ mod tests {
         assert!(!out.hits.is_empty());
         assert!(out.hits[0].truncated);
         assert!(out.hits[0].passage.chars().count() <= 500);
+        assert!(out.hits[0].source.is_none());
     }
 
     #[tokio::test]
-    async fn test_search_page_references_preserved() {
+    async fn test_search_resolves_source_references() {
         let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Mixed").await;
+
+        let single_text = "Content A";
+        add_document(
+            &state,
+            &collection,
+            "doc1",
+            "Single.pdf",
+            single_text,
+            vec![single_text.len()],
+            Some(UnitKind::Page),
+        )
+        .await;
+
+        let range_text = "Content B. More content.";
+        let boundary = "Content B. ".len();
+        add_document(
+            &state,
+            &collection,
+            "doc2",
+            "Range.pdf",
+            range_text,
+            vec![boundary, range_text.len()],
+            Some(UnitKind::Page),
+        )
+        .await;
+
+        let plain_text = "Content C";
+        add_document(
+            &state,
+            &collection,
+            "doc3",
+            "Unpaginated.pdf",
+            plain_text,
+            vec![],
+            None,
+        )
+        .await;
+
         search::index_chunks_batch(
             &state.search,
             &IndexerConfig::default(),
             vec![
-                make_chunk("doc1", "Single.pdf", "Content A", "col1", 0, 10, 5, 5),
-                make_chunk("doc2", "Range.pdf", "Content B", "col1", 0, 20, 3, 7),
+                make_chunk("doc1", "Single.pdf", single_text, &collection, 0, 0),
+                make_chunk("doc2", "Range.pdf", range_text, &collection, 0, 0),
+                make_chunk("doc3", "Unpaginated.pdf", plain_text, &collection, 0, 0),
             ],
         )
         .unwrap();
-        state.collections = scope("col1", "Mixed");
+        state.collections = scope(&collection, "Mixed");
 
         let out = Search::new(state)
             .call(
@@ -751,19 +920,35 @@ mod tests {
             .iter()
             .find(|h| h.document_name == "Single.pdf")
             .unwrap();
-        assert_eq!(
-            (single.start_page, single.end_page, single.page_count),
-            (5, 5, 10)
-        );
+        assert!(matches!(
+            single.source,
+            Some(SourceRef::Page {
+                first: 1,
+                last: 1,
+                of: 1
+            })
+        ));
+
         let range = out
             .hits
             .iter()
             .find(|h| h.document_name == "Range.pdf")
             .unwrap();
-        assert_eq!(
-            (range.start_page, range.end_page, range.page_count),
-            (3, 7, 20)
-        );
+        assert!(matches!(
+            range.source,
+            Some(SourceRef::Page {
+                first: 1,
+                last: 2,
+                of: 2
+            })
+        ));
+
+        let plain = out
+            .hits
+            .iter()
+            .find(|h| h.document_name == "Unpaginated.pdf")
+            .unwrap();
+        assert!(plain.source.is_none());
     }
 
     #[tokio::test]
@@ -778,9 +963,7 @@ mod tests {
                 "This is the content of chunk 0 with important information.",
                 "collection1",
                 0,
-                5,
-                1,
-                1,
+                0,
             )],
         )
         .unwrap();
@@ -814,9 +997,7 @@ mod tests {
                 "Content of chunk 0",
                 "col1",
                 0,
-                1,
-                1,
-                1,
+                0,
             )],
         )
         .unwrap();
@@ -849,9 +1030,7 @@ mod tests {
                 "Content in another collection",
                 "other_collection",
                 0,
-                1,
-                1,
-                1,
+                0,
             )],
         )
         .unwrap();
@@ -920,9 +1099,7 @@ mod tests {
                 "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu",
                 "col1",
                 0,
-                1,
-                1,
-                1,
+                0,
             )],
         )
         .unwrap();
@@ -967,9 +1144,7 @@ mod tests {
                     "Climate change affects global temperatures and weather patterns.",
                     "research",
                     0,
-                    10,
-                    1,
-                    1,
+                    0,
                 ),
                 make_chunk(
                     "doc2",
@@ -977,9 +1152,7 @@ mod tests {
                     "Weather patterns are shifting due to climate factors.",
                     "research",
                     0,
-                    5,
-                    1,
-                    1,
+                    0,
                 ),
             ],
         )

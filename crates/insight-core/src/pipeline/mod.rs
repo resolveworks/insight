@@ -32,7 +32,7 @@ mod types;
 mod watcher;
 mod workers;
 
-pub use chunk::chunk_text;
+pub use chunk::{chunk_text, Chunk};
 pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
 pub use types::{ExtractJob, IndexJob, ProgressUpdate, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
