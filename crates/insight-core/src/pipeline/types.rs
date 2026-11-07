@@ -35,20 +35,3 @@ pub struct IndexJob {
     pub namespace_id: NamespaceId,
     pub doc_id: String,
 }
-
-/// Progress update from workers.
-#[derive(Debug, Clone)]
-pub enum ProgressUpdate {
-    /// Job started processing (pending -> active).
-    Started { collection_id: String, stage: Stage },
-    /// Job completed successfully (active -> completed).
-    Completed { collection_id: String, stage: Stage },
-    /// Job failed (active -> failed).
-    Failed {
-        collection_id: String,
-        stage: Stage,
-        error: String,
-    },
-    /// Job queued for processing (-> pending).
-    Queued { collection_id: String, stage: Stage },
-}

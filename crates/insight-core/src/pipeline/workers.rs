@@ -11,7 +11,7 @@ use crate::storage::{CommitOutcome, DocumentMetadata, Storage};
 use super::chunk::chunk_text;
 use super::index_queue::IndexQueue;
 use super::progress::ProgressTracker;
-use super::types::{ExtractJob, ProgressUpdate, Stage};
+use super::types::{ExtractJob, Stage};
 
 /// Shared receiver for multiple workers pulling from one unbounded channel.
 pub struct SharedReceiver<T> {
@@ -62,67 +62,16 @@ pub fn spawn_extract_workers(
             while let Some(job) = rx.recv().await {
                 let collection_id = job.namespace_id.to_string();
 
-                // Mark as started
-                progress
-                    .apply(ProgressUpdate::Started {
-                        collection_id: collection_id.clone(),
-                        stage: Stage::Extract,
-                    })
-                    .await;
+                progress.start(&collection_id, Stage::Extract).await;
 
-                // Do the work. The storage guard is held only for the short
-                // input read and commit, never across MuPDF.
-                let result: anyhow::Result<Option<DocumentMetadata>> = async {
-                    let input = {
-                        let storage = storage.read().await;
-                        storage
-                            .extraction_input(job.namespace_id, &job.doc_id)
-                            .await?
-                    };
-                    let Some((_, source)) = input else {
-                        tracing::debug!(
-                            doc_id = %job.doc_id,
-                            "Extract has no work: document gone or already canonical"
-                        );
-                        return Ok(None);
-                    };
-
-                    let extraction = tokio::task::spawn_blocking(move || {
-                        crate::pdf::extract_text_from_bytes(source)
-                    })
-                    .await
-                    .context("Extract task panicked")??;
-
-                    let storage = storage.read().await;
-                    match storage
-                        .commit_extraction(job.namespace_id, &job.doc_id, &extraction)
-                        .await?
-                    {
-                        CommitOutcome::Written(metadata) => Ok(Some(metadata)),
-                        CommitOutcome::DocumentGone => {
-                            tracing::debug!(
-                                doc_id = %job.doc_id,
-                                "Document deleted during extract"
-                            );
-                            Ok(None)
-                        }
-                    }
-                }
-                .await;
-
-                match result {
+                match extract_document(&storage, &job).await {
                     Ok(Some(metadata)) => {
                         tracing::debug!(
                             doc_id = %job.doc_id,
                             parser = ?metadata.extraction.as_ref().map(|p| p.key()),
                             "Extracted text"
                         );
-                        progress
-                            .apply(ProgressUpdate::Completed {
-                                collection_id: collection_id.clone(),
-                                stage: Stage::Extract,
-                            })
-                            .await;
+                        progress.finish_ok(&collection_id, Stage::Extract).await;
                         index_queue
                             .enqueue(job.namespace_id, job.doc_id.clone())
                             .await;
@@ -131,22 +80,11 @@ pub fn spawn_extract_workers(
                         // The job is still terminal: the document vanished or
                         // already had a canonical extraction. Neither leaves
                         // anything new to index.
-                        progress
-                            .apply(ProgressUpdate::Completed {
-                                collection_id,
-                                stage: Stage::Extract,
-                            })
-                            .await;
+                        progress.finish_ok(&collection_id, Stage::Extract).await;
                     }
                     Err(e) => {
                         tracing::error!(doc_id = %job.doc_id, error = %e, "Extract failed");
-                        progress
-                            .apply(ProgressUpdate::Failed {
-                                collection_id,
-                                stage: Stage::Extract,
-                                error: e.to_string(),
-                            })
-                            .await;
+                        progress.finish_err(&collection_id, Stage::Extract).await;
                     }
                 }
             }
@@ -173,13 +111,7 @@ pub fn spawn_index_worker(
         while let Some(job) = queue.recv().await {
             let collection_id = job.namespace_id.to_string();
 
-            // Mark as started
-            progress
-                .apply(ProgressUpdate::Started {
-                    collection_id: collection_id.clone(),
-                    stage: Stage::Index,
-                })
-                .await;
+            progress.start(&collection_id, Stage::Index).await;
 
             let result = reconcile_document(
                 &storage,
@@ -193,28 +125,59 @@ pub fn spawn_index_worker(
             match result {
                 Ok(()) => {
                     tracing::info!(doc_id = %job.doc_id, "Document indexed");
-                    progress
-                        .apply(ProgressUpdate::Completed {
-                            collection_id,
-                            stage: Stage::Index,
-                        })
-                        .await;
+                    progress.finish_ok(&collection_id, Stage::Index).await;
                 }
                 Err(e) => {
                     tracing::error!(doc_id = %job.doc_id, error = %e, "Index failed");
-                    progress
-                        .apply(ProgressUpdate::Failed {
-                            collection_id,
-                            stage: Stage::Index,
-                            error: e.to_string(),
-                        })
-                        .await;
+                    progress.finish_err(&collection_id, Stage::Index).await;
                 }
             }
         }
 
         tracing::debug!("Index worker stopped");
     });
+}
+
+/// Extract a document's text and commit the resulting extraction.
+///
+/// `Ok(None)` is a terminal no-op: the document is gone or already has a
+/// canonical extraction. The caller owns progress accounting.
+async fn extract_document(
+    storage: &RwLock<Storage>,
+    job: &ExtractJob,
+) -> anyhow::Result<Option<DocumentMetadata>> {
+    let input = {
+        let storage = storage.read().await;
+        storage
+            .extraction_input(job.namespace_id, &job.doc_id)
+            .await?
+    };
+    let Some((_, source)) = input else {
+        tracing::debug!(
+            doc_id = %job.doc_id,
+            "Extract has no work: document gone or already canonical"
+        );
+        return Ok(None);
+    };
+
+    // The storage guard is held only for the short input read and commit,
+    // never across MuPDF.
+    let extraction =
+        tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source))
+            .await
+            .context("Extract task panicked")??;
+
+    let storage = storage.read().await;
+    match storage
+        .commit_extraction(job.namespace_id, &job.doc_id, &extraction)
+        .await?
+    {
+        CommitOutcome::Written(metadata) => Ok(Some(metadata)),
+        CommitOutcome::DocumentGone => {
+            tracing::debug!(doc_id = %job.doc_id, "Document deleted during extract");
+            Ok(None)
+        }
+    }
 }
 
 /// Bring one document's chunks in one collection in line with storage.
@@ -327,7 +290,7 @@ mod tests {
         );
 
         let collection_id = namespace_id.to_string();
-        progress.queue(&collection_id, Stage::Extract).await;
+        progress.enqueue(&collection_id, Stage::Extract).await;
         extract_tx
             .send(ExtractJob {
                 namespace_id,

@@ -29,7 +29,7 @@ mod workers;
 pub use chunk::{chunk_text, Chunk};
 pub use index_queue::IndexQueue;
 pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
-pub use types::{ExtractJob, IndexJob, ProgressUpdate, Stage};
+pub use types::{ExtractJob, IndexJob, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
 
 use std::collections::HashMap;
@@ -189,20 +189,10 @@ impl Pipeline {
         let mut errors = Vec::new();
 
         for path in paths {
-            // Track store stage
-            self.progress
-                .apply(ProgressUpdate::Queued {
-                    collection_id: collection_id.clone(),
-                    stage: Stage::Store,
-                })
-                .await;
-
-            self.progress
-                .apply(ProgressUpdate::Started {
-                    collection_id: collection_id.clone(),
-                    stage: Stage::Store,
-                })
-                .await;
+            // Store runs inline rather than through a worker channel, but
+            // still accounts for its job through the same transitions.
+            self.progress.enqueue(&collection_id, Stage::Store).await;
+            self.progress.start(&collection_id, Stage::Store).await;
 
             // Store PDF source
             let storage = self.storage.read().await;
@@ -212,13 +202,8 @@ impl Pipeline {
             match result {
                 Ok(metadata) => {
                     tracing::info!(doc_id = %metadata.id, path = %path.display(), "Stored PDF source");
-                    self.progress
-                        .apply(ProgressUpdate::Completed {
-                            collection_id: collection_id.clone(),
-                            stage: Stage::Store,
-                        })
-                        .await;
-                    self.progress.queue(&collection_id, Stage::Extract).await;
+                    self.progress.finish_ok(&collection_id, Stage::Store).await;
+                    self.progress.enqueue(&collection_id, Stage::Extract).await;
                     let _ = self.extract_tx.send(ExtractJob {
                         namespace_id,
                         doc_id: metadata.id.clone(),
@@ -227,13 +212,7 @@ impl Pipeline {
                 }
                 Err(e) => {
                     tracing::error!(path = %path.display(), error = %e, "Failed to store PDF");
-                    self.progress
-                        .apply(ProgressUpdate::Failed {
-                            collection_id: collection_id.clone(),
-                            stage: Stage::Store,
-                            error: e.to_string(),
-                        })
-                        .await;
+                    self.progress.finish_err(&collection_id, Stage::Store).await;
                     errors.push((path, e.to_string()));
                 }
             }
