@@ -417,6 +417,18 @@ mod tests {
         model.erase()
     }
 
+    /// The text of the `active_collections` run document sent with the probe's
+    /// first completion request.
+    fn first_scope_text(probe: &MockCompletionModel) -> String {
+        let requests = probe.requests();
+        let request = requests.first().expect("one completion request");
+        rig::test_utils::sent_documents(request)
+            .into_iter()
+            .find(|(id, _)| id == "active_collections")
+            .map(|(_, text)| text)
+            .expect("scope document injected as run context")
+    }
+
     #[tokio::test]
     async fn send_message_happy_path_persisters_and_emits() {
         let (_tmp, state) = test_state().await;
@@ -534,34 +546,61 @@ mod tests {
         let id = "conv-scope";
         state.memory.create(test_meta(id)).await.unwrap();
 
-        let mock = MockCompletionModel::from_stream_turns([text_stream_turn("ok")]);
-        let probe = mock.clone();
-
+        let first = test_meta(id);
+        let first_mock = MockCompletionModel::from_stream_turns([text_stream_turn("ok")]);
+        let first_probe = first_mock.clone();
         run_agent(
             &state,
             id,
-            &test_meta(id),
+            &first,
             "summarize".into(),
-            handle(mock),
+            handle(first_mock),
             |_| {},
             CancellationToken::new(),
         )
         .await
         .unwrap();
 
-        let requests = probe.requests();
-        let request = requests.first().expect("one completion request");
-        let documents = rig::test_utils::sent_documents(request);
-        let scope_doc = documents
-            .iter()
-            .find(|(id, _)| id == "active_collections")
-            .expect("scope document injected as run context");
+        let first_scope = first_scope_text(&first_probe);
         assert!(
-            scope_doc
-                .1
-                .contains("Climate Reports (3 documents, 42 pages)"),
-            "scope text describes the active collections: {}",
-            scope_doc.1
+            first_scope.contains(&first.collections[0].name),
+            "scope text names the active collection: {first_scope}"
+        );
+
+        // A later turn in the same conversation with a changed scope: the run
+        // document must describe the new scope, not the first turn's.
+        let second = ConversationMeta {
+            collections: vec![CollectionInfo {
+                id: "9988776655443322".into(),
+                name: "Budget Filings".into(),
+                document_count: 7,
+                total_pages: 11,
+                created_at: None,
+            }],
+            ..test_meta(id)
+        };
+        let second_mock = MockCompletionModel::from_stream_turns([text_stream_turn("ok")]);
+        let second_probe = second_mock.clone();
+        run_agent(
+            &state,
+            id,
+            &second,
+            "and now?".into(),
+            handle(second_mock),
+            |_| {},
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let second_scope = first_scope_text(&second_probe);
+        assert!(
+            second_scope.contains(&second.collections[0].name),
+            "scope text follows the changed scope: {second_scope}"
+        );
+        assert!(
+            !second_scope.contains(&first.collections[0].name),
+            "scope is attached per turn, not cached from the first: {second_scope}"
         );
     }
 
