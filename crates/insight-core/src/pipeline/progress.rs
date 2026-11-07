@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 
-use super::types::{ProgressUpdate, Stage};
+use super::types::Stage;
 use super::AppEvent;
 
 /// Progress for a single processing stage.
@@ -63,6 +63,11 @@ impl PipelineProgress {
 }
 
 /// Tracks progress for all collections.
+///
+/// Every stage transition is `enqueue -> start -> finish_ok|finish_err`, in
+/// that order, exactly once per job. `pending` counts enqueued jobs not yet
+/// started, `active` counts started jobs without an outcome, and
+/// `pending + active + completed + failed` is the number of enqueues.
 #[derive(Clone)]
 pub struct ProgressTracker {
     collections: Arc<RwLock<HashMap<String, PipelineProgress>>>,
@@ -78,73 +83,71 @@ impl ProgressTracker {
         }
     }
 
-    /// Queue a job for processing.
-    pub async fn queue(&self, collection_id: &str, stage: Stage) {
-        self.apply(ProgressUpdate::Queued {
-            collection_id: collection_id.to_string(),
-            stage,
-        })
-        .await;
+    /// Record that a job was queued for processing.
+    pub async fn enqueue(&self, collection_id: &str, stage: Stage) {
+        let mut collections = self.collections.write().await;
+        let progress = collections
+            .entry(collection_id.to_string())
+            .or_insert_with(|| PipelineProgress::new(collection_id.to_string()));
+        progress.stage_mut(stage).pending += 1;
+        self.notify(progress);
     }
 
-    /// Apply a progress update.
-    pub async fn apply(&self, update: ProgressUpdate) {
+    /// Record that a queued job was received and started.
+    pub async fn start(&self, collection_id: &str, stage: Stage) {
         let mut collections = self.collections.write().await;
+        let progress = collections.get_mut(collection_id).unwrap_or_else(|| {
+            panic!(
+                "pipeline invariant violated: {stage} job started for untracked collection \
+                 {collection_id}"
+            )
+        });
+        let stage_progress = progress.stage_mut(stage);
+        assert!(
+            stage_progress.pending > 0,
+            "pipeline invariant violated: {stage} job started with no pending job for \
+             collection {collection_id}"
+        );
+        stage_progress.pending -= 1;
+        stage_progress.active += 1;
+        self.notify(progress);
+    }
 
-        let collection_id = match &update {
-            ProgressUpdate::Queued { collection_id, .. }
-            | ProgressUpdate::Started { collection_id, .. }
-            | ProgressUpdate::Completed { collection_id, .. }
-            | ProgressUpdate::Failed { collection_id, .. } => collection_id.clone(),
-        };
+    /// Record that a started job completed successfully.
+    pub async fn finish_ok(&self, collection_id: &str, stage: Stage) {
+        self.finish(collection_id, stage, false).await;
+    }
 
-        match update {
-            ProgressUpdate::Queued {
-                collection_id,
-                stage,
-            } => {
-                let progress = collections
-                    .entry(collection_id.clone())
-                    .or_insert_with(|| PipelineProgress::new(collection_id));
-                progress.stage_mut(stage).pending += 1;
-            }
-            ProgressUpdate::Started {
-                collection_id,
-                stage,
-            } => {
-                if let Some(progress) = collections.get_mut(&collection_id) {
-                    let stage_progress = progress.stage_mut(stage);
-                    stage_progress.pending = stage_progress.pending.saturating_sub(1);
-                    stage_progress.active += 1;
-                }
-            }
-            ProgressUpdate::Completed {
-                collection_id,
-                stage,
-            } => {
-                if let Some(progress) = collections.get_mut(&collection_id) {
-                    let stage_progress = progress.stage_mut(stage);
-                    stage_progress.active = stage_progress.active.saturating_sub(1);
-                    stage_progress.completed += 1;
-                }
-            }
-            ProgressUpdate::Failed {
-                collection_id,
-                stage,
-                ..
-            } => {
-                if let Some(progress) = collections.get_mut(&collection_id) {
-                    let stage_progress = progress.stage_mut(stage);
-                    stage_progress.active = stage_progress.active.saturating_sub(1);
-                    stage_progress.failed += 1;
-                }
-            }
+    /// Record that a started job failed.
+    pub async fn finish_err(&self, collection_id: &str, stage: Stage) {
+        self.finish(collection_id, stage, true).await;
+    }
+
+    async fn finish(&self, collection_id: &str, stage: Stage, failed: bool) {
+        let mut collections = self.collections.write().await;
+        let progress = collections.get_mut(collection_id).unwrap_or_else(|| {
+            panic!(
+                "pipeline invariant violated: {stage} job finished for untracked collection \
+                 {collection_id}"
+            )
+        });
+        let stage_progress = progress.stage_mut(stage);
+        assert!(
+            stage_progress.active > 0,
+            "pipeline invariant violated: {stage} job finished with no active job for \
+             collection {collection_id}"
+        );
+        stage_progress.active -= 1;
+        if failed {
+            stage_progress.failed += 1;
+        } else {
+            stage_progress.completed += 1;
         }
+        self.notify(progress);
+    }
 
-        // Notify listeners of the updated progress
-        if let Some(progress) = collections.get(&collection_id) {
-            let _ = self.notify_tx.send(AppEvent::Progress(progress.clone()));
-        }
+    fn notify(&self, progress: &PipelineProgress) {
+        let _ = self.notify_tx.send(AppEvent::Progress(progress.clone()));
     }
 
     /// Get progress for a collection.
@@ -166,5 +169,103 @@ impl ProgressTracker {
     /// Remove a collection from tracking.
     pub async fn remove(&self, collection_id: &str) {
         self.collections.write().await.remove(collection_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracker() -> (ProgressTracker, mpsc::UnboundedReceiver<AppEvent>) {
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        (ProgressTracker::new(events_tx), events_rx)
+    }
+
+    /// A successful job moves from pending to active to completed and leaves
+    /// the stage idle with every job accounted for.
+    #[tokio::test]
+    async fn successful_job_moves_through_each_counter_once() {
+        let (progress, _events) = tracker();
+        let collection_id = "collection";
+
+        progress.enqueue(collection_id, Stage::Extract).await;
+        let current = progress
+            .get(collection_id)
+            .await
+            .expect("collection progress");
+        assert_eq!(current.extract.pending, 1);
+        assert_eq!(current.extract.active, 0);
+        assert_eq!(current.extract.total(), 1);
+
+        progress.start(collection_id, Stage::Extract).await;
+        let current = progress
+            .get(collection_id)
+            .await
+            .expect("collection progress");
+        assert_eq!(current.extract.pending, 0);
+        assert_eq!(current.extract.active, 1);
+        assert!(current.extract.is_active());
+
+        progress.finish_ok(collection_id, Stage::Extract).await;
+        let current = progress
+            .get(collection_id)
+            .await
+            .expect("collection progress");
+        assert_eq!(current.extract.pending, 0);
+        assert_eq!(current.extract.active, 0);
+        assert_eq!(current.extract.completed, 1);
+        assert_eq!(current.extract.failed, 0);
+        assert_eq!(current.extract.total(), 1);
+        assert!(!current.extract.is_active());
+        assert!(!current.is_active());
+        assert!(progress.get_all_active().await.is_empty());
+    }
+
+    /// A failed job also has exactly one terminal outcome and leaves the
+    /// stage idle.
+    #[tokio::test]
+    async fn failed_job_has_one_terminal_outcome_and_settles_idle() {
+        let (progress, _events) = tracker();
+        let collection_id = "collection";
+
+        progress.enqueue(collection_id, Stage::Index).await;
+        progress.start(collection_id, Stage::Index).await;
+        progress.finish_err(collection_id, Stage::Index).await;
+
+        let current = progress
+            .get(collection_id)
+            .await
+            .expect("collection progress");
+        assert_eq!(current.index.pending, 0);
+        assert_eq!(current.index.active, 0);
+        assert_eq!(current.index.completed, 0);
+        assert_eq!(current.index.failed, 1);
+        assert_eq!(current.index.total(), 1);
+        assert!(!current.is_active());
+        assert!(progress.get_all_active().await.is_empty());
+    }
+
+    /// Starting a job that was never enqueued is an invariant violation, not
+    /// an anonymous decrement.
+    #[tokio::test]
+    #[should_panic(expected = "started with no pending job")]
+    async fn start_without_pending_job_panics() {
+        let (progress, _events) = tracker();
+        let collection_id = "collection";
+
+        progress.enqueue(collection_id, Stage::Extract).await;
+        progress.start(collection_id, Stage::Extract).await;
+        progress.start(collection_id, Stage::Extract).await;
+    }
+
+    /// Finishing a job that never started is an invariant violation.
+    #[tokio::test]
+    #[should_panic(expected = "finished with no active job")]
+    async fn finish_without_active_job_panics() {
+        let (progress, _events) = tracker();
+        let collection_id = "collection";
+
+        progress.enqueue(collection_id, Stage::Index).await;
+        progress.finish_ok(collection_id, Stage::Index).await;
     }
 }

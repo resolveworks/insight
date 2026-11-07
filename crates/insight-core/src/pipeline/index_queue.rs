@@ -38,7 +38,8 @@ impl IndexQueue {
     }
 
     /// Queue a document for index reconciliation unless one is already
-    /// waiting. Progress counts exactly the jobs actually sent.
+    /// waiting. Progress enqueues exactly the jobs actually sent; a coalesced
+    /// duplicate sends nothing and changes nothing.
     pub async fn enqueue(&self, namespace_id: NamespaceId, doc_id: String) {
         let key = (namespace_id, doc_id);
         let mut queued = self.queued.lock().await;
@@ -46,7 +47,7 @@ impl IndexQueue {
             return;
         }
         self.progress
-            .queue(&namespace_id.to_string(), Stage::Index)
+            .enqueue(&namespace_id.to_string(), Stage::Index)
             .await;
         let _ = self.tx.send(IndexJob {
             namespace_id: key.0,
