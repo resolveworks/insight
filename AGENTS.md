@@ -65,7 +65,7 @@ The agent has 4 manual `rig::tool::Tool` implementations in `crates/insight-core
 - **list_documents** — list documents in the active collections
 - **get_collection_terms** — frequent/representative terms of a collection
 
-A search hit carries a `source` reference resolved from the document's units at read time — `{"kind":"page","first":2,"last":3,"of":10}` — omitted when the source has no page structure. Page counts in tool output are optional for the same reason.
+A search hit carries the passage and the document/chunk identity. Resolving a passage to source units is not the search tool's job; that belongs to the citation layer. Page counts in tool output are optional because the source may have no recorded unit structure.
 
 Tool outputs are typed serializable structs and errors are `ToolExecutionError` with precise kinds (`not_found`, …) — rig converts them into structured model output at dispatch time.
 
@@ -125,7 +125,7 @@ Search is local keyword indexing over synced text: each peer builds its own mill
 1. User adds PDF to collection
 2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
 3. **Extract**: per-page text extracted with MuPDF (digital text only; the page/unit table is recorded), written to `files/{id}/text`, alongside `files/{id}/meta`
-4. **Index**: the watcher triggers the index worker, which chunks text with a character-based splitter (~1500 chars, ~200 overlap) and indexes chunks in milli for full-text search. Each chunk stores its byte span in the document text; page references are resolved from the document's units when a tool reads it, not stored on the chunk
+4. **Index**: the watcher triggers the index worker, which chunks text with a character-based splitter (~1500 chars, ~200 overlap) and indexes chunks in milli for full-text search. Each chunk stores its byte span in the document text; page references are not stored on the chunk
 
 **No OCR**: text extraction uses MuPDF's text layer only (its OCR device is not built), so scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable. This is a known limitation.
 

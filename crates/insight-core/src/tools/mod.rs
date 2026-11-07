@@ -11,7 +11,6 @@
 //! [`ToolExecutionError`] with precise kinds (e.g. `not_found`) so the runtime
 //! can classify outcomes and the model receives safe, actionable feedback.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
@@ -21,7 +20,6 @@ use tokio::sync::RwLock;
 
 use crate::search;
 use crate::storage::Storage;
-use crate::text::UnitKind;
 use crate::CollectionInfo;
 
 /// Per-run state shared by the document tools.
@@ -83,18 +81,6 @@ fn infrastructure_error(error: impl std::fmt::Display) -> ToolExecutionError {
 
 // ==================== search ====================
 
-/// Where a passage sits in its source document.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SourceRef {
-    /// 1-indexed inclusive page range in a paginated source.
-    Page {
-        first: usize,
-        last: usize,
-        of: usize,
-    },
-}
-
 /// One search hit with the fields the model needs for citation.
 #[derive(Debug, Serialize)]
 pub struct SearchHitResult {
@@ -112,10 +98,6 @@ pub struct SearchHitResult {
     pub passage: String,
     /// Whether the passage was truncated.
     pub truncated: bool,
-    /// Where the passage sits in its source document; absent when the source
-    /// has no recorded page structure.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceRef>,
     /// Relevance score.
     pub score: f64,
 }
@@ -153,7 +135,7 @@ impl Tool for Search {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Keyword (BM25) full-text search over indexed document chunks. Returns up to 15 passages with document IDs, chunk indices, and page references where the document is paginated. Use read_chunk with the document_id and chunk_index to read a full passage.".to_string()
+        "Keyword (BM25) full-text search over indexed document chunks. Returns up to 15 passages with document IDs and chunk indices. Use read_chunk with the document_id and chunk_index to read a full passage.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -180,9 +162,6 @@ impl Tool for Search {
 
         let results = search::search_index(index, params).map_err(infrastructure_error)?;
         let rtxn = index.read_txn().map_err(infrastructure_error)?;
-        let storage = state.storage.read().await;
-        let mut documents: HashMap<(String, String), crate::storage::DocumentMetadata> =
-            HashMap::new();
         let mut hits = Vec::with_capacity(results.hits.len());
 
         for hit in &results.hits {
@@ -199,41 +178,6 @@ impl Tool for Search {
             let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
             let collection_name = state.name_of(&chunk.collection_id)?;
 
-            let cache_key = (chunk.collection_id.clone(), chunk.parent_id.clone());
-            if !documents.contains_key(&cache_key) {
-                let namespace_id = chunk
-                    .collection_id
-                    .parse::<iroh_docs::NamespaceId>()
-                    .map_err(|_| {
-                        ToolExecutionError::invalid_args(format!(
-                            "collection {} is not a valid namespace ID",
-                            chunk.collection_id
-                        ))
-                    })?;
-                let metadata = storage
-                    .get_document(namespace_id, &chunk.parent_id)
-                    .await
-                    .map_err(infrastructure_error)?
-                    .ok_or_else(|| {
-                        infrastructure_error(format!(
-                            "search hit references missing document metadata {}",
-                            chunk.parent_id
-                        ))
-                    })?;
-                documents.insert(cache_key.clone(), metadata);
-            }
-            let metadata = &documents[&cache_key];
-
-            let source = if metadata.unit_kind == Some(UnitKind::Page) {
-                metadata
-                    .page_at_offset(chunk.text_offset_start)
-                    .zip(metadata.page_at_offset(chunk.text_offset_end.saturating_sub(1)))
-                    .zip(metadata.page_count())
-                    .map(|((first, last), of)| SourceRef::Page { first, last, of })
-            } else {
-                None
-            };
-
             hits.push(SearchHitResult {
                 document_name: chunk.parent_name,
                 document_id: chunk.parent_id,
@@ -242,7 +186,6 @@ impl Tool for Search {
                 collection_id: chunk.collection_id,
                 passage,
                 truncated,
-                source,
                 score: search::compute_hit_score(&hit.scores),
             });
         }
@@ -571,6 +514,7 @@ impl Tool for GetCollectionTerms {
 mod tests {
     use super::*;
     use crate::search::ChunkToIndex;
+    use crate::text::UnitKind;
     use milli::update::IndexerConfig;
     use rig::tool::{Tool, ToolContext, ToolErrorKind};
 
@@ -726,14 +670,6 @@ mod tests {
         assert_eq!(hit.document_name, "Climate_Report.pdf");
         assert_eq!(hit.document_id, "doc1");
         assert_eq!(hit.collection_name, "Research Papers");
-        assert!(matches!(
-            hit.source,
-            Some(SourceRef::Page {
-                first: 1,
-                last: 1,
-                of: 1
-            })
-        ));
         assert!(hit.score > 0.0);
         assert!(!hit.truncated);
     }
@@ -848,107 +784,6 @@ mod tests {
         assert!(!out.hits.is_empty());
         assert!(out.hits[0].truncated);
         assert!(out.hits[0].passage.chars().count() <= 500);
-        assert!(out.hits[0].source.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_search_resolves_source_references() {
-        let (_tmp, mut state) = create_state().await;
-        let collection = create_collection(&state, "Mixed").await;
-
-        let single_text = "Content A";
-        add_document(
-            &state,
-            &collection,
-            "doc1",
-            "Single.pdf",
-            single_text,
-            vec![single_text.len()],
-            Some(UnitKind::Page),
-        )
-        .await;
-
-        let range_text = "Content B. More content.";
-        let boundary = "Content B. ".len();
-        add_document(
-            &state,
-            &collection,
-            "doc2",
-            "Range.pdf",
-            range_text,
-            vec![boundary, range_text.len()],
-            Some(UnitKind::Page),
-        )
-        .await;
-
-        let plain_text = "Content C";
-        add_document(
-            &state,
-            &collection,
-            "doc3",
-            "Unpaginated.pdf",
-            plain_text,
-            vec![],
-            None,
-        )
-        .await;
-
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![
-                make_chunk("doc1", "Single.pdf", single_text, &collection, 0, 0),
-                make_chunk("doc2", "Range.pdf", range_text, &collection, 0, 0),
-                make_chunk("doc3", "Unpaginated.pdf", plain_text, &collection, 0, 0),
-            ],
-        )
-        .unwrap();
-        state.collections = scope(&collection, "Mixed");
-
-        let out = Search::new(state)
-            .call(
-                &mut ToolContext::new(),
-                SearchArgs {
-                    query: "Content".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let single = out
-            .hits
-            .iter()
-            .find(|h| h.document_name == "Single.pdf")
-            .unwrap();
-        assert!(matches!(
-            single.source,
-            Some(SourceRef::Page {
-                first: 1,
-                last: 1,
-                of: 1
-            })
-        ));
-
-        let range = out
-            .hits
-            .iter()
-            .find(|h| h.document_name == "Range.pdf")
-            .unwrap();
-        assert!(matches!(
-            range.source,
-            Some(SourceRef::Page {
-                first: 1,
-                last: 2,
-                of: 2
-            })
-        ));
-
-        let plain = out
-            .hits
-            .iter()
-            .find(|h| h.document_name == "Unpaginated.pdf")
-            .unwrap();
-        assert!(plain.source.is_none());
     }
 
     #[tokio::test]
