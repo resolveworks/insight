@@ -1011,7 +1011,9 @@ impl Storage {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown.pdf".to_string());
 
-        let pdf_bytes = std::fs::read(path).context("Failed to read PDF file")?;
+        let pdf_bytes = tokio::fs::read(path)
+            .await
+            .context("Failed to read PDF file")?;
 
         let metadata = self
             .add_document(namespace_id, &file_name, "application/pdf", &pdf_bytes)
