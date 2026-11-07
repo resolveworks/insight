@@ -67,10 +67,10 @@ pub enum ChatEvent {
         /// Key of the removed item.
         key: String,
     },
-    /// The run committed: the transcript's authoritative items.
+    /// The run committed: the items this run appended, at their final keys.
     RunFinished {
-        /// Every item the run recorded, with provisional and live flags
-        /// cleared.
+        /// The items the run appended, with provisional and live flags
+        /// cleared. Items already committed before the run are not repeated.
         items: Vec<TranscriptItem>,
     },
     /// The run failed before committing.
@@ -552,6 +552,64 @@ mod tests {
     use rig::completion::AssistantMessage;
     use rig::message::{CallId, ToolFunction, ToolName};
     use rig::streaming::Part;
+    use serde_json::json;
+
+    #[test]
+    fn transcript_wire_shape_is_stable() {
+        assert_eq!(
+            serde_json::to_value(TranscriptKind::ToolCall).unwrap(),
+            json!("tool_call")
+        );
+        assert_eq!(
+            serde_json::to_value(TranscriptKind::ToolResult).unwrap(),
+            json!("tool_result")
+        );
+
+        let item = TranscriptItem {
+            key: "1-0".into(),
+            kind: TranscriptKind::ToolCall,
+            name: "search".into(),
+            text: "{\"query\":\"climate\"}".into(),
+            provisional: true,
+            is_error: false,
+            executing: true,
+            streaming: false,
+        };
+        let item_json = json!({
+            "key": "1-0",
+            "kind": "tool_call",
+            "name": "search",
+            "text": "{\"query\":\"climate\"}",
+            "provisional": true,
+            "is_error": false,
+            "executing": true,
+            "streaming": false,
+        });
+        assert_eq!(serde_json::to_value(&item).unwrap(), item_json);
+
+        assert_eq!(
+            serde_json::to_value(ChatEvent::ItemUpserted { item: item.clone() }).unwrap(),
+            json!({ "type": "item_upserted", "item": item_json })
+        );
+        assert_eq!(
+            serde_json::to_value(ChatEvent::ItemRemoved { key: "1-0".into() }).unwrap(),
+            json!({ "type": "item_removed", "key": "1-0" })
+        );
+        assert_eq!(
+            serde_json::to_value(ChatEvent::RunFinished {
+                items: vec![item.clone()]
+            })
+            .unwrap(),
+            json!({ "type": "run_finished", "items": [item_json] })
+        );
+        assert_eq!(
+            serde_json::to_value(ChatEvent::RunFailed {
+                message: "boom".into()
+            })
+            .unwrap(),
+            json!({ "type": "run_failed", "message": "boom" })
+        );
+    }
 
     #[test]
     fn stored_tool_call_and_result_normalize() {

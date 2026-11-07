@@ -54,8 +54,8 @@ fn format_scope_document(collection_name: &str) -> String {
 /// Send a user message to a conversation and stream the agent's response.
 ///
 /// The run emits the user's item, then [`ChatEvent`]s as the agent produces
-/// them, and ends with [`ChatEvent::RunFinished`] carrying the normalized
-/// transcript. A stream error ends the run and is returned as `Err`, so the
+/// them, and ends with [`ChatEvent::RunFinished`] carrying the items this run
+/// appended. A stream error ends the run and is returned as `Err`, so the
 /// caller owns the single failure event on the channel. Cancelling `cancel`
 /// aborts the run (dropping the stream), records nothing, and returns
 /// `Ok(())` after an empty [`ChatEvent::RunFinished`].
@@ -195,7 +195,6 @@ async fn run_agent(
 
     let final_messages =
         final_messages.ok_or_else(|| anyhow!("agent stream ended without a final response"))?;
-    transcript.clear_streaming();
     on_event(ChatEvent::RunFinished {
         items: from_messages(&final_messages, base),
     });
@@ -547,6 +546,84 @@ mod tests {
             .expect("assistant answer");
         assert_eq!(answer.key, "3-0");
         assert_eq!(answer.text, "The collection has no matching passages.");
+    }
+
+    #[tokio::test]
+    async fn a_second_run_continues_the_committed_keys() {
+        let (_tmp, state) = test_state().await;
+        let id = "conv-second-run";
+        let (collection_id, name) = setup_conversation(&state, id, "Climate Reports").await;
+
+        run_agent(
+            &state,
+            &collection_id,
+            id,
+            &name,
+            false,
+            "First question".into(),
+            handle(MockCompletionModel::from_stream_turns([text_stream_turn(
+                "First answer",
+            )])),
+            |_| {},
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let prior = load_history(&state, &collection_id, id).await.unwrap();
+        let prior_items = from_messages(&prior, 0);
+        let base = prior.len();
+        assert_eq!(base, 2);
+
+        let events: std::sync::Arc<Mutex<Vec<ChatEvent>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let model = handle(MockCompletionModel::from_stream_turns([
+            tool_call_stream_turn(),
+            text_stream_turn("Second answer"),
+        ]));
+        run_agent(
+            &state,
+            &collection_id,
+            id,
+            &name,
+            false,
+            "Second question".into(),
+            model,
+            move |event| sink.lock().unwrap().push(event),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let events = events.lock().unwrap().clone();
+        let run_finished = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                ChatEvent::RunFinished { items } => Some(items.clone()),
+                _ => None,
+            })
+            .expect("the run finishes with its transcript");
+
+        let all = load_history(&state, &collection_id, id).await.unwrap();
+        let all_items = from_messages(&all, 0);
+
+        let mut combined = prior_items.clone();
+        combined.extend(run_finished.iter().cloned());
+        assert_eq!(combined, all_items);
+        assert_eq!(&all_items[..prior_items.len()], prior_items.as_slice());
+
+        assert_eq!(run_finished.first().unwrap().key, format!("{base}-0"));
+        assert!(run_finished.iter().all(|item| {
+            item.key
+                .split_once('-')
+                .expect("transcript keys are message-block")
+                .0
+                .parse::<usize>()
+                .expect("message index is a number")
+                >= base
+        }));
     }
 
     #[tokio::test]
