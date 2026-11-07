@@ -38,8 +38,8 @@ impl<T> Clone for SharedReceiver<T> {
 
 /// Spawn extract workers.
 ///
-/// Workers extract text from stored PDFs and write to iroh.
-/// The InsertLocal event for files/*/text triggers the next stage.
+/// Workers extract text from stored PDFs and write an extraction to iroh.
+/// The InsertLocal event for the extraction entry triggers the next stage.
 pub fn spawn_extract_workers(
     count: usize,
     rx: SharedReceiver<ExtractJob>,
@@ -77,7 +77,7 @@ pub fn spawn_extract_workers(
                     Ok(Some(metadata)) => {
                         tracing::debug!(
                             doc_id = %job.doc_id,
-                            pages = metadata.page_count(),
+                            parser = ?metadata.extraction.as_ref().map(|p| p.key()),
                             "Extracted text"
                         );
                         progress
@@ -86,7 +86,7 @@ pub fn spawn_extract_workers(
                                 stage: Stage::Extract,
                             })
                             .await;
-                        // InsertLocal(files/*/text) will trigger index via watcher
+                        // InsertLocal(extraction entry) will trigger index via watcher
                     }
                     Ok(None) => {
                         tracing::debug!(
@@ -136,7 +136,7 @@ pub fn spawn_index_worker(
                 })
                 .await;
 
-            // Get metadata and text from storage
+            // Get the document and its canonical extraction from storage
             let storage_guard = storage.read().await;
             let metadata_result = storage_guard
                 .get_document(job.namespace_id, &job.doc_id)
@@ -166,31 +166,14 @@ pub fn spawn_index_worker(
                 }
             };
 
-            let text_result = storage_guard
-                .get_document_text(job.namespace_id, &job.doc_id)
+            let extraction_result = storage_guard
+                .get_canonical_extraction(job.namespace_id, &job.doc_id)
                 .await;
             drop(storage_guard);
 
-            let result = match text_result {
-                Ok(Some(text_bytes)) => {
-                    let text = match String::from_utf8(text_bytes) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            let err =
-                                anyhow::anyhow!("Invalid UTF-8 in document {}: {}", job.doc_id, e);
-                            tracing::error!(doc_id = %job.doc_id, error = %err, "Index failed");
-                            progress
-                                .apply(ProgressUpdate::Failed {
-                                    collection_id,
-                                    stage: Stage::Index,
-                                    error: err.to_string(),
-                                })
-                                .await;
-                            continue;
-                        }
-                    };
-
-                    let chunks = chunk_text(&text);
+            let result = match extraction_result {
+                Ok(Some(extraction)) => {
+                    let chunks = chunk_text(&extraction.text);
                     if chunks.is_empty() {
                         tracing::warn!(doc_id = %job.doc_id, "Document has no text to index");
                         Ok(())
@@ -225,7 +208,16 @@ pub fn spawn_index_worker(
                         index_worker.index_chunks(to_index).await
                     }
                 }
-                Ok(None) => Err(anyhow::anyhow!("Text not found for {}", job.doc_id)),
+                Ok(None) => {
+                    // No canonical extraction, or its text is not local yet.
+                    // A later event (meta/extraction insert or ContentReady)
+                    // queues another job.
+                    tracing::debug!(
+                        doc_id = %job.doc_id,
+                        "Canonical extraction unavailable; skipping index"
+                    );
+                    continue;
+                }
                 Err(e) => Err(e),
             };
 

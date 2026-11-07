@@ -78,17 +78,30 @@ Each collection is an iroh-docs namespace. Sharing a collection = sharing namesp
 ```
 Namespace: 7f3a8b2c... ("Climate Research")
 │
-├── files/abc123/meta                → document metadata (JSON)
-├── files/abc123/text                → extracted text content
-├── files/abc123/source              → original file bytes (PDF, etc.)
-├── files/def456/meta                → document metadata (JSON)
-├── files/def456/text                → extracted text content
-├── files/def456/source              → original file bytes
-├── _hash_index/{hash}               → duplicate detection index
-└── _collection                      → collection settings
+├── files/abc123/meta                       → document metadata (JSON)
+├── files/abc123/source                     → original file bytes (PDF, etc.)
+├── files/abc123/extractions/mupdf-pdf-text@1 → extraction record (JSON)
+├── files/def456/meta                       → document metadata (JSON)
+├── files/def456/source                     → original file bytes
+├── files/def456/extractions/mupdf-pdf-text@1 → extraction record (JSON)
+├── _hash_index/{hash}                      → duplicate detection index
+└── _collection                             → collection settings
 ```
 
 All document data is grouped under `files/{doc_id}/`. That grouping is our convention, not something iroh prescribes: iroh-docs keys are opaque bytes, and an entry's value is a blob hash. iroh-docs syncs entries and, under its default download policy, fetches the blobs they reference. That is what lets a collection share as a unit.
+
+A source is immutable. Text is a derivation: a document may have many extractions, each produced by a parser and stored under its `{name}@{version}` key. The extraction record points at a text blob and carries the source unit mapping:
+
+```json
+{
+	"parser": { "name": "mupdf-pdf-text", "version": "1" },
+	"text_hash": "...",
+	"unit_kind": "page",
+	"units": [{ "number": 1, "spans": [{ "start": 0, "end": 1500 }] }]
+}
+```
+
+`text_hash` is hex because iroh's `Hash` has no serde representation. `units` are the source's addressable positions with the byte spans of the extraction text attributed to each: for a PDF, one unit per page, numbered from 1. A page with no text is a unit with empty `spans`. Units are ordered by number; spans within a unit are ascending and non-overlapping. `unit_kind` is `null` when the parser records no unit structure. Parser names must not contain `/` or `@`; versions are bumped by hand when the parser's output changes.
 
 ### Document Metadata (files/{id}/meta)
 
@@ -97,45 +110,47 @@ All document data is grouped under `files/{doc_id}/`. That grouping is our conve
 	"id": "abc123",
 	"name": "paper.pdf",
 	"file_type": "application/pdf",
-	"units": [1500, 3200, 4800],
-	"unit_kind": "page",
+	"extraction": "mupdf-pdf-text@1",
 	"tags": ["research", "climate"],
 	"created_at": "2024-01-15T10:30:00Z"
 }
 ```
 
-`units` are the addressable positions of the _source_: for a PDF, the UTF-8 byte offset in `files/{id}/text` where each page ends; `unit_kind` says what one unit is. Page counts are derived from that table, never stored alongside it. `unit_kind` is `null` when no unit structure is recorded — before extraction, or for a format with no natural units — and page counts are then unknown rather than zero. One writer records it (`Storage::write_extracted`), so the table and the count cannot disagree.
+`extraction` names the document's canonical extraction — the one search indexes. It is `null` before any extraction exists, and the document then has no text and an unknown page count. The page count is derived from the canonical extraction's units, never stored alongside them. There is no migration for documents that predate extractions: they simply have no canonical extraction until re-imported.
 
 ### What Syncs vs What's Local
 
-| Data            | Syncs                       | Stored in  |
-| --------------- | --------------------------- | ---------- |
-| PDF files       | Yes                         | iroh-blobs |
-| Extracted text  | Yes                         | iroh-blobs |
-| File metadata   | Yes                         | iroh-docs  |
-| Collection info | Yes                         | iroh-docs  |
-| Search index    | No (built from synced text) | milli      |
+| Data            | Syncs                          | Stored in  |
+| --------------- | ------------------------------ | ---------- |
+| PDF files       | Yes                            | iroh-blobs |
+| Extractions     | Yes                            | iroh-blobs |
+| File metadata   | Yes                            | iroh-docs  |
+| Collection info | Yes                            | iroh-docs  |
+| Search index    | No (built from synced text)    | milli      |
 
-Search is local keyword indexing over synced text: each peer builds its own milli index from the documents' text. Nothing beyond the raw document data is derived or replicated.
+Search is local keyword indexing over the canonical extraction's text: each peer builds its own milli index from the synced extraction text. Nothing beyond the raw document data is derived or replicated.
 
 ## Document Ingestion
 
 ### Local Import
 
 1. User adds PDF to collection
-2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
-3. **Extract**: per-page text extracted with MuPDF (digital text only; the page/unit table is recorded), written to `files/{id}/text`, alongside `files/{id}/meta`
-4. **Index**: the watcher triggers the index worker, which chunks text with a character-based splitter (~1500 chars, ~200 overlap) and indexes chunks in milli for full-text search. Each chunk stores its byte span in the document text; page references are not stored on the chunk
+2. **Store**: original PDF bytes written to `files/{id}/source` (iroh), with `files/{id}/meta` and the `_hash_index` duplicate check
+3. **Extract**: MuPDF produces an extraction (digital text only; one unit per page with its text spans) written to `files/{id}/extractions/{parser_key}`. The first extraction becomes the document's canonical extraction
+4. **Index**: the watcher triggers the index worker, which chunks the canonical extraction's text with a character-based splitter (~1500 chars, ~200 overlap) and indexes chunks in milli for full-text search. Each chunk stores its byte span in the extraction text; page references are not stored on the chunk
+
+Selecting a different extraction as canonical changes what search indexes; the extraction entries themselves never change once written. A source is never modified — changed content is a new document.
 
 **No OCR**: text extraction uses MuPDF's text layer only (its OCR device is not built), so scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable. This is a known limitation.
 
 ### On Sync
 
-When document entries arrive from a peer, iroh-docs automatically syncs the entry content blobs. The SyncWatcher listens for `files/*/text` entries and triggers indexing:
+When document entries arrive from a peer, iroh-docs automatically syncs the entry content blobs. The watcher reacts to `files/*/meta` and extraction entries (local or remote) by queueing indexing for the document:
 
-1. Text is already available at `files/{id}/text` (synced by iroh)
-2. Chunks are indexed in milli for search
-3. Source file at `files/{id}/source` is available immediately
+1. The index worker reads the canonical extraction and its text blob
+2. Chunks of that text are indexed in milli for search
+3. If the extraction entry arrived before its content, the watcher records the content hash and queues indexing when the matching `ContentReady` event arrives. The index worker skips cleanly while the extraction or text is not yet available
+4. Source file at `files/{id}/source` is available immediately
 
 ## Sync Model
 

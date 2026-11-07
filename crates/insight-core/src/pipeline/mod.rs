@@ -6,22 +6,24 @@
 //!
 //! ```text
 //! LOCAL IMPORT                     REMOTE SYNC
-//! store_pdf_source()               peer sends files/{id}/text
+//! store_pdf_source()               peer sends files/{id}/meta or an extraction
 //!       │                                │
 //!       ▼                                ▼
-//! InsertLocal(source)             InsertRemote(text)
+//! InsertLocal(source)             InsertRemote(meta/extraction)
 //!       │                                │
 //!       └────────► WATCHER ◄─────────────┘
 //!                      │
 //!         ┌────────────┴───────────┐
 //!         ▼                        ▼
-//!   files/*/source (local)   files/*/text (local or remote)
-//!         │                        │
-//!         ▼                        ▼
-//!     Extract worker          Index worker
-//!         │                        │
-//!         ▼                        ▼
-//!    writes text            chunks text (char-based) → milli index
+//!   files/*/source (local)   files/*/meta or
+//!         │                  files/*/extractions/*
+//!         ▼                        │
+//!     Extract worker               ▼
+//!         │                  Index worker
+//!         ▼                        │
+//!   writes an extraction          ▼
+//!                          chunks canonical extraction text
+//!                          (char-based) → milli index
 //! ```
 //!
 //! Each stage writes to iroh, which triggers the next stage via events.
@@ -178,7 +180,7 @@ impl Pipeline {
     ///
     /// Stores each file's source bytes. The iroh events drive the rest:
     /// - InsertLocal(source) → Extract
-    /// - InsertLocal(text) → Index
+    /// - InsertLocal(extraction) → Index
     ///
     /// Returns (successful_count, errors).
     pub async fn import_files(
