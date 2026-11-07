@@ -28,7 +28,7 @@ export interface CollectionInfo {
 	id: string;
 	name: string;
 	document_count: number;
-	total_pages: number;
+	total_pages: number | null;
 	created_at?: string | null;
 }
 

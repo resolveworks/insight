@@ -15,7 +15,7 @@ export interface Collection {
 	id: string;
 	name: string;
 	document_count: number;
-	total_pages: number;
+	total_pages: number | null;
 	created_at?: string;
 }
 
@@ -23,7 +23,7 @@ export interface Document {
 	id: string;
 	name: string;
 	file_type: string;
-	page_count: number;
+	page_count: number | null;
 	tags: string[];
 	created_at: string;
 }

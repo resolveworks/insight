@@ -9,7 +9,8 @@ use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::{
-    providers, runtime, AppState, CollectionInfo, ConversationMeta, ConversationSummary, Settings,
+    providers, runtime, sum_page_counts, AppState, CollectionInfo, ConversationMeta,
+    ConversationSummary, Settings,
 };
 use crate::error::{CommandError, CommandResult, ResultExt};
 
@@ -95,7 +96,7 @@ async fn enrich_collections(
             id: col.id,
             name: col.name,
             document_count: documents.len(),
-            total_pages: documents.iter().map(|d| d.page_count).sum(),
+            total_pages: sum_page_counts(documents.iter().map(|d| d.page_count())),
             created_at: None,
         });
     }

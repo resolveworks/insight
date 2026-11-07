@@ -174,15 +174,15 @@ mod tests {
         }
     }
 
-    fn document(name: &str, page_boundaries: Vec<usize>, page_count: usize) -> DocumentMetadata {
+    fn document(name: &str, units: Vec<usize>) -> DocumentMetadata {
         DocumentMetadata {
             id: "doc1".to_string(),
             name: name.to_string(),
             file_type: "application/pdf".to_string(),
-            page_count,
+            units,
+            unit_kind: Some(crate::text::UnitKind::Page),
             tags: Vec::new(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
-            page_boundaries,
         }
     }
 
@@ -191,10 +191,7 @@ mod tests {
         let mut harness = IndexHarness::new().await;
         let text = "Global temperatures continue to rise across the decade.";
         harness
-            .index_document(
-                document("Climate_Report_2024.pdf", vec![text.len()], 1),
-                text,
-            )
+            .index_document(document("Climate_Report_2024.pdf", vec![text.len()]), text)
             .await;
 
         let chunks = harness.search("Climate_Report");
@@ -213,7 +210,7 @@ mod tests {
         let p2 = page.len() * 2;
         let p3 = text.len();
         harness
-            .index_document(document("pages.pdf", vec![p1, p2, p3], 3), &text)
+            .index_document(document("pages.pdf", vec![p1, p2, p3]), &text)
             .await;
 
         let mut chunks: Vec<IndexedChunk> = harness.search("report");

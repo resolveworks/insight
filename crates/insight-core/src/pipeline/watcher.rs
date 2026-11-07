@@ -365,10 +365,15 @@ mod tests {
 
         // Writing extracted text must queue indexing for the same document.
         let text = "page one text";
+        let extracted = crate::text::ExtractedText {
+            text: text.to_string(),
+            units: vec![text.len()],
+            unit_kind: crate::text::UnitKind::Page,
+        };
         storage
             .read()
             .await
-            .write_text_and_meta(namespace, &doc_id, text, &[text.len()])
+            .write_extracted(namespace, &doc_id, &extracted)
             .await
             .unwrap();
         let job = recv_within(&mut index_rx, Duration::from_secs(10))

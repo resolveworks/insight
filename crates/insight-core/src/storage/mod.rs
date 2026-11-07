@@ -17,6 +17,8 @@ use iroh_docs::{AuthorId, ContentStatus, DocTicket, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
+use crate::text::{unit_number_at, ExtractedText, UnitKind};
+
 // =============================================================================
 // Key Structure Constants
 // =============================================================================
@@ -104,12 +106,30 @@ pub struct DocumentMetadata {
     /// MIME type or file extension (e.g., "application/pdf", "pdf")
     #[serde(default = "default_file_type")]
     pub file_type: String,
-    pub page_count: usize,
+    /// UTF-8 byte offset where each addressable unit of the source ends.
+    #[serde(default)]
+    pub units: Vec<usize>,
+    /// What one unit is. `None` means no unit structure is recorded for this
+    /// source (not yet extracted, or a source with no natural units).
+    #[serde(default)]
+    pub unit_kind: Option<UnitKind>,
     pub tags: Vec<String>,
     pub created_at: String,
-    /// Character offset where each page ends (for chunk-to-page mapping)
-    #[serde(default)]
-    pub page_boundaries: Vec<usize>,
+}
+
+impl DocumentMetadata {
+    /// Number of pages in the source, when the source is paginated.
+    pub fn page_count(&self) -> Option<usize> {
+        (self.unit_kind == Some(UnitKind::Page)).then_some(self.units.len())
+    }
+
+    /// 1-indexed page containing the extracted-text byte offset.
+    pub fn page_at_offset(&self, offset: usize) -> Option<usize> {
+        if self.unit_kind != Some(UnitKind::Page) {
+            return None;
+        }
+        unit_number_at(&self.units, offset)
+    }
 }
 
 fn default_file_type() -> String {
@@ -871,7 +891,7 @@ impl Storage {
     ///
     /// This is the first phase of the pipeline - just copies the PDF bytes
     /// to iroh storage without text extraction. Creates:
-    /// - `files/{id}/meta` - minimal metadata (no page_count/boundaries yet)
+    /// - `files/{id}/meta` - minimal metadata (no unit structure yet)
     /// - `files/{id}/source` - original PDF bytes
     /// - `_hash_index/{hash}` - duplicate detection index
     ///
@@ -918,15 +938,15 @@ impl Storage {
 
         let doc_id = uuid::Uuid::new_v4().to_string();
 
-        // Create minimal metadata (page_count/boundaries filled in during extract phase)
+        // Create minimal metadata (units filled in during extract phase)
         let metadata = DocumentMetadata {
             id: doc_id.clone(),
             name: file_name,
             file_type: "application/pdf".to_string(),
-            page_count: 0, // Unknown until extraction
+            units: vec![],
+            unit_kind: None,
             tags: vec![],
             created_at: chrono::Utc::now().to_rfc3339(),
-            page_boundaries: vec![], // Unknown until extraction
         };
 
         let doc = self
@@ -983,10 +1003,10 @@ impl Storage {
 
     /// Phase 2: Extract text from the stored PDF and write it out.
     ///
-    /// Extracts per-page text via [`crate::pdf::extract_text_from_bytes`],
+    /// Extracts per-page text via [`crate::pdf::extract_text_from_bytes`] and
     /// writes `files/{id}/text` (which fires the index stage via the
-    /// watcher), and updates `files/{id}/meta` with the final page info
-    /// and page boundaries.
+    /// watcher). The source's page/unit structure is recorded by
+    /// [`Storage::write_extracted`], not here.
     ///
     /// Returns `Ok(Some(metadata))` on success, `Ok(None)` when the
     /// document has been deleted (job queued before deletion), and
@@ -1012,47 +1032,31 @@ impl Storage {
                 .await
                 .context("Extract task panicked")??;
 
-        let mut metadata = match self.get_document(namespace_id, doc_id).await? {
-            Some(m) => m,
-            None => {
-                tracing::warn!(
-                    doc_id = %doc_id,
-                    "Metadata not found after extraction; document was likely deleted — skipping"
-                );
-                return Ok(None);
-            }
-        };
+        let metadata = self
+            .write_extracted(namespace_id, doc_id, &extracted)
+            .await?;
 
-        metadata.page_count = extracted.page_count;
-        metadata.page_boundaries = extracted.page_boundaries.clone();
+        if let Some(metadata) = &metadata {
+            tracing::info!(
+                doc_id = %doc_id,
+                page_count = metadata.page_count(),
+                text_len = extracted.text.len(),
+                "Extracted text for {}",
+                metadata.name
+            );
+        }
 
-        self.write_text_and_meta(
-            namespace_id,
-            doc_id,
-            &extracted.text,
-            &extracted.page_boundaries,
-        )
-        .await?;
-
-        tracing::info!(
-            doc_id = %doc_id,
-            page_count = extracted.page_count,
-            text_len = extracted.text.len(),
-            "Extracted text for {}",
-            metadata.name
-        );
-
-        Ok(Some(metadata))
+        Ok(metadata)
     }
 
-    /// Write merged text + updated meta in a single document handle.
-    pub async fn write_text_and_meta(
+    /// Persist extracted text and record its unit structure in `files/{id}/meta`,
+    /// returning the metadata as written.
+    pub async fn write_extracted(
         &self,
         namespace_id: NamespaceId,
         doc_id: &str,
-        text: &str,
-        page_boundaries: &[usize],
-    ) -> Result<()> {
+        extracted: &ExtractedText,
+    ) -> Result<Option<DocumentMetadata>> {
         let mut metadata = match self.get_document(namespace_id, doc_id).await? {
             Some(m) => m,
             None => {
@@ -1060,10 +1064,11 @@ impl Storage {
                     doc_id = %doc_id,
                     "Metadata not found; document was likely deleted — skipping write"
                 );
-                return Ok(());
+                return Ok(None);
             }
         };
-        metadata.page_boundaries = page_boundaries.to_vec();
+        metadata.units = extracted.units.clone();
+        metadata.unit_kind = Some(extracted.unit_kind);
 
         let doc = self
             .docs
@@ -1074,7 +1079,7 @@ impl Storage {
 
         self.store_meta_inner(&doc, doc_id, &metadata).await?;
 
-        let text_bytes = text.as_bytes();
+        let text_bytes = extracted.text.as_bytes();
         let text_hash = self.store_blob(text_bytes).await?;
         let text_key = doc_text_key(doc_id);
         doc.set_hash(
@@ -1086,7 +1091,7 @@ impl Storage {
         .await?;
 
         doc.close().await?;
-        Ok(())
+        Ok(Some(metadata))
     }
 
     /// Internal helper: serialize + store the metadata entry on an open
@@ -1191,10 +1196,10 @@ mod tests {
             id: "doc-1".to_string(),
             name: "test.pdf".to_string(),
             file_type: "application/pdf".to_string(),
-            page_count: 5,
+            units: vec![10, 20, 30, 40, 50],
+            unit_kind: Some(UnitKind::Page),
             tags: vec!["test".to_string()],
             created_at: "2024-01-01T00:00:00Z".to_string(),
-            page_boundaries: vec![],
         };
         let text_content = b"This is the extracted text";
         let source_content = b"PDF bytes here";
@@ -1212,7 +1217,7 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].id, "doc-1");
         assert_eq!(docs[0].name, "test.pdf");
-        assert_eq!(docs[0].page_count, 5);
+        assert_eq!(docs[0].page_count(), Some(5));
 
         // Verify we can retrieve text and source
         let text = storage
@@ -1240,10 +1245,10 @@ mod tests {
             id: "doc-1".to_string(),
             name: "first.pdf".to_string(),
             file_type: "application/pdf".to_string(),
-            page_count: 1,
+            units: vec![10],
+            unit_kind: Some(UnitKind::Page),
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
-            page_boundaries: vec![],
         };
         let source1 = b"source1";
 
@@ -1251,10 +1256,10 @@ mod tests {
             id: "doc-2".to_string(),
             name: "second.pdf".to_string(),
             file_type: "application/pdf".to_string(),
-            page_count: 2,
+            units: vec![10, 20],
+            unit_kind: Some(UnitKind::Page),
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
-            page_boundaries: vec![],
         };
         let source2 = b"source2";
 
@@ -1325,10 +1330,10 @@ mod tests {
             id: "doc-1".to_string(),
             name: "report.pdf".to_string(),
             file_type: "application/pdf".to_string(),
-            page_count: 10,
+            units: vec![10, 20, 30],
+            unit_kind: Some(UnitKind::Page),
             tags: vec![],
             created_at: "2024-01-01T00:00:00Z".to_string(),
-            page_boundaries: vec![],
         };
         storage
             .add_document(collection_id, doc, b"text", source_content)
@@ -1382,12 +1387,13 @@ mod tests {
         assert!(!doc_id.is_empty());
         let source_hash = Hash::new(&pdf_bytes);
 
-        // After phase 1: metadata exists but page_count is 0
+        // After phase 1: metadata exists but the source has no recorded units
         let meta1 = storage.get_document(collection_id, &doc_id).await.unwrap();
         assert!(meta1.is_some());
         let meta1 = meta1.unwrap();
-        assert_eq!(meta1.page_count, 0);
-        assert!(meta1.page_boundaries.is_empty());
+        assert_eq!(meta1.page_count(), None);
+        assert!(meta1.units.is_empty());
+        assert_eq!(meta1.unit_kind, None);
 
         // Source should exist
         let source = storage
@@ -1405,15 +1411,21 @@ mod tests {
         assert!(text.is_none());
 
         // Phase 2: Extract and store text
-        let metadata = storage
+        storage
             .extract_and_dispatch(collection_id, &doc_id)
             .await
             .unwrap()
             .expect("document should exist");
 
-        // Now page_count should be populated
-        assert_eq!(metadata.page_count, 1);
-        assert!(!metadata.page_boundaries.is_empty());
+        // The persisted metadata carries the page structure
+        let persisted = storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .expect("document metadata should be persisted");
+        assert_eq!(persisted.page_count(), Some(1));
+        assert_eq!(persisted.unit_kind, Some(UnitKind::Page));
+        assert_eq!(persisted.units.len(), 1);
 
         // Text should now exist
         let text = storage

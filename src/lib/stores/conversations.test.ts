@@ -318,7 +318,7 @@ describe('conversations store event handling', () => {
 			id: 'col1',
 			name: 'Test',
 			document_count: 0,
-			total_pages: 0,
+			total_pages: null,
 		});
 		await store.sendMessage('hello');
 		emit('conv2', start(0, 'text'));
@@ -370,7 +370,7 @@ describe('conversations store event handling', () => {
 			id: 'col1',
 			name: 'Climate',
 			document_count: 0,
-			total_pages: 0,
+			total_pages: null,
 		});
 
 		// The server-enriched counts are adopted.
@@ -459,7 +459,7 @@ describe('conversations store event handling', () => {
 				id: 'col1',
 				name: 'Climate',
 				document_count: 0,
-				total_pages: 0,
+				total_pages: null,
 			};
 			await store.addActiveCollection(col);
 
@@ -494,7 +494,7 @@ describe('conversations store event handling', () => {
 				id: 'col1',
 				name: 'Climate',
 				document_count: 0,
-				total_pages: 0,
+				total_pages: null,
 			});
 
 			await store.sendMessage('hello');
@@ -543,7 +543,7 @@ describe('conversations store event handling', () => {
 			id: 'col1',
 			name: 'Test',
 			document_count: 0,
-			total_pages: 0,
+			total_pages: null,
 		});
 		await store.sendMessage('hi');
 		await store.cancelGeneration();

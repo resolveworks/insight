@@ -72,7 +72,7 @@ const PREDICTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Render a collection line like "Climate Reports (10 documents, 250 pages)".
 fn format_collection_entry(c: &CollectionInfo) -> String {
-    if c.document_count == 0 && c.total_pages == 0 {
+    if c.document_count == 0 {
         return c.name.clone();
     }
     let doc_word = if c.document_count == 1 {
@@ -80,11 +80,16 @@ fn format_collection_entry(c: &CollectionInfo) -> String {
     } else {
         "documents"
     };
-    let page_word = if c.total_pages == 1 { "page" } else { "pages" };
-    format!(
-        "{} ({} {}, {} {})",
-        c.name, c.document_count, doc_word, c.total_pages, page_word
-    )
+    match c.total_pages {
+        Some(pages) => {
+            let page_word = if pages == 1 { "page" } else { "pages" };
+            format!(
+                "{} ({} {}, {} {})",
+                c.name, c.document_count, doc_word, pages, page_word
+            )
+        }
+        None => format!("{} ({} {})", c.name, c.document_count, doc_word),
+    }
 }
 
 /// The text of the scope document attached to every agent run.
@@ -397,7 +402,7 @@ mod tests {
                 id: "abcdef1234567890".into(),
                 name: "Climate Reports".into(),
                 document_count: 3,
-                total_pages: 42,
+                total_pages: Some(42),
                 created_at: None,
             }],
             created_at: String::new(),
@@ -574,7 +579,7 @@ mod tests {
                 id: "9988776655443322".into(),
                 name: "Budget Filings".into(),
                 document_count: 7,
-                total_pages: 11,
+                total_pages: Some(11),
                 created_at: None,
             }],
             ..test_meta(id)

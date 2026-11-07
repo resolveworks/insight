@@ -315,7 +315,7 @@ mod tests {
                 id: "col-1".to_owned(),
                 name: "Climate Research".to_owned(),
                 document_count: 3,
-                total_pages: 42,
+                total_pages: Some(42),
                 created_at: Some("2024-01-15T10:30:00Z".to_owned()),
             }],
             created_at: String::new(),
@@ -328,7 +328,7 @@ mod tests {
             id: id.to_owned(),
             name: format!("Collection {id}"),
             document_count: 1,
-            total_pages: 2,
+            total_pages: Some(2),
             created_at: None,
         }
     }

@@ -1,7 +1,7 @@
 use tauri::State;
 
 use super::CollectionId;
-use crate::core::{AppState, CollectionInfo};
+use crate::core::{sum_page_counts, AppState, CollectionInfo};
 use crate::error::{CommandError, CommandResult, ResultExt};
 
 /// Get all collections
@@ -19,7 +19,7 @@ pub async fn get_collections(state: State<'_, AppState>) -> CommandResult<Vec<Co
             .await
             .unwrap_or_default();
         let document_count = documents.len();
-        let total_pages: usize = documents.iter().map(|d| d.page_count).sum();
+        let total_pages = sum_page_counts(documents.iter().map(|d| d.page_count()));
         result.push(CollectionInfo {
             id: namespace_id.to_string(),
             name: metadata.name,
@@ -53,7 +53,7 @@ pub async fn create_collection(
         id: namespace_id.to_string(),
         name: metadata.name,
         document_count: 0,
-        total_pages: 0,
+        total_pages: None,
         created_at: Some(metadata.created_at),
     })
 }
@@ -162,7 +162,7 @@ pub async fn import_collection(
         .await
         .unwrap_or_default();
     let document_count = documents.len();
-    let total_pages: usize = documents.iter().map(|d| d.page_count).sum();
+    let total_pages = sum_page_counts(documents.iter().map(|d| d.page_count()));
 
     Ok(CollectionInfo {
         id: namespace_id.to_string(),
