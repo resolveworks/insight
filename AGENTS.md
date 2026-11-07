@@ -65,6 +65,8 @@ The agent has 4 manual `rig::tool::Tool` implementations in `crates/insight-core
 - **list_documents** — list documents in the active collections
 - **get_collection_terms** — frequent/representative terms of a collection
 
+A search hit carries a `source` reference resolved from the document's units at read time — `{"kind":"page","first":2,"last":3,"of":10}` — omitted when the source has no page structure. Page counts in tool output are optional for the same reason.
+
 Tool outputs are typed serializable structs and errors are `ToolExecutionError` with precise kinds (`not_found`, …) — rig converts them into structured model output at dispatch time.
 
 ## Data Model
@@ -95,12 +97,14 @@ All document data is grouped under `files/{doc_id}/`. This is the idiomatic iroh
 	"id": "abc123",
 	"name": "paper.pdf",
 	"file_type": "application/pdf",
-	"page_count": 42,
+	"units": [1500, 3200, 4800],
+	"unit_kind": "page",
 	"tags": ["research", "climate"],
-	"created_at": "2024-01-15T10:30:00Z",
-	"page_boundaries": [0, 1500, 3200]
+	"created_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+`units` are the addressable positions of the _source_: for a PDF, the UTF-8 byte offset in `files/{id}/text` where each page ends; `unit_kind` says what one unit is. Page counts are derived from that table, never stored alongside it. `unit_kind` is `null` when no unit structure is recorded — before extraction, or for a format with no natural units — and page counts are then unknown rather than zero. One writer records it (`Storage::write_extracted`), so the table and the count cannot disagree.
 
 ### What Syncs vs What's Local
 
@@ -120,8 +124,8 @@ Search is local keyword indexing over synced text: each peer builds its own mill
 
 1. User adds PDF to collection
 2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
-3. **Extract**: per-page text extracted with MuPDF (digital text only; page boundaries recorded), written to `files/{id}/text`, alongside `files/{id}/meta`
-4. **Index**: the watcher triggers the index worker, which chunks text with a character-based splitter (~1500 chars, ~200 overlap, page-mapped) and indexes chunks in milli for full-text search
+3. **Extract**: per-page text extracted with MuPDF (digital text only; the page/unit table is recorded), written to `files/{id}/text`, alongside `files/{id}/meta`
+4. **Index**: the watcher triggers the index worker, which chunks text with a character-based splitter (~1500 chars, ~200 overlap) and indexes chunks in milli for full-text search. Each chunk stores its byte span in the document text; page references are resolved from the document's units when a tool reads it, not stored on the chunk
 
 **No OCR**: text extraction uses MuPDF's text layer only (its OCR device is not built), so scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable. This is a known limitation.
 
@@ -188,7 +192,7 @@ interfaces; never private helpers, internal state, or call order.
 - Mock at the boundary, never our own code: rig's test-utils model for
   inference, temp directories for iroh/milli, `mockIPC` for Tauri commands.
 - Prefer integration: drive a module the way its real caller does. Unit tests
-  are for pure logic — the transcript fold, chunking, page boundaries.
+  are for pure logic — the transcript fold, chunking, offset-to-unit mapping.
 - No test-only APIs or hooks in production code. No smoke tests.
 - A test must be able to fail: assert an outcome, not that a fake was called or
   a line was logged.

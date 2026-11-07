@@ -65,12 +65,14 @@ Namespace: 7f3a8b2c... ("Climate Research")
 	"id": "abc123",
 	"name": "paper.pdf",
 	"file_type": "application/pdf",
-	"page_count": 42,
+	"units": [1500, 3200, 4800],
+	"unit_kind": "page",
 	"tags": ["research", "climate"],
-	"created_at": "2024-01-15T10:30:00Z",
-	"page_boundaries": [0, 1500, 3200]
+	"created_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+`units` are the addressable positions of the source, mapped onto the extracted text: for a PDF, the byte offset where each page ends. `unit_kind` names what one unit is, and is `null` when the source has no recorded unit structure (before extraction, or a format with no natural units). Page counts are derived from the table, so they are either known or absent — never a placeholder zero.
 
 ### Content-Addressed Storage
 
@@ -86,8 +88,8 @@ All file content (PDFs, extracted text) is stored in iroh-blobs using content-ad
 
 1. User adds PDF to collection
 2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
-3. **Extract**: per-page text extracted with MuPDF (digital text only; page boundaries recorded), written to `files/{id}/text` alongside `files/{id}/meta`
-4. **Index**: the watcher triggers the index worker, which chunks text (~1500 chars, ~200 overlap, page-mapped) and indexes chunks in milli for full-text search
+3. **Extract**: per-page text extracted with MuPDF (digital text only; the page/unit table is recorded), written to `files/{id}/text` alongside `files/{id}/meta`
+4. **Index**: the watcher triggers the index worker, which chunks text (~1500 chars, ~200 overlap) and indexes chunks in milli for full-text search. Chunks store the byte span they occupy in the document text; page references are resolved from the document's units when a search hit is read
 
 **No OCR**: extraction uses MuPDF's text layer only. Scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable.
 
