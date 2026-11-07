@@ -1034,8 +1034,6 @@ impl Storage {
         namespace_id: NamespaceId,
         doc_id: &str,
     ) -> Result<Option<(DocumentMetadata, Vec<u8>)>> {
-        let _mutation = self.document_mutations.lock().await;
-
         let metadata = match self.get_document(namespace_id, doc_id).await? {
             Some(metadata) => metadata,
             None => {
@@ -1049,12 +1047,20 @@ impl Storage {
             return Ok(None);
         }
 
-        let source = self
-            .get_document_source(namespace_id, doc_id)
-            .await?
-            .with_context(|| format!("Document {doc_id} has metadata but no source"))?;
+        let source = self.get_document_source(namespace_id, doc_id).await?;
 
-        Ok(Some((metadata, source)))
+        match source {
+            Some(source) => Ok(Some((metadata, source))),
+            None => {
+                // A delete racing the source read removes both entries, so a
+                // missing source is terminal only when the document is gone.
+                if self.get_document(namespace_id, doc_id).await?.is_none() {
+                    tracing::debug!(doc_id = %doc_id, "Document gone during extract input read");
+                    return Ok(None);
+                }
+                anyhow::bail!("Document {doc_id} has metadata but no source")
+            }
+        }
     }
 
     /// Commit an extraction produced from [`Self::extraction_input`].
@@ -1462,6 +1468,13 @@ mod tests {
             .delete_document(collection_id, &doc_id)
             .await
             .unwrap();
+
+        // Reading input after deletion is terminal, not an error.
+        assert!(storage
+            .extraction_input(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
 
         let outcome = storage
             .commit_extraction(collection_id, &doc_id, &late)
