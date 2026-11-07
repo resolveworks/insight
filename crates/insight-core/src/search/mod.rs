@@ -150,12 +150,20 @@ pub fn open_index(path: &Path) -> Result<Index> {
 // Indexing
 // ============================================================================
 
+/// External ID for a document chunk, unique within the search index.
+///
+/// The same document ID can occur in multiple collections, so the collection
+/// is part of the identity.
+pub fn chunk_external_id(collection_id: &str, parent_id: &str, chunk_index: usize) -> String {
+    format!("{collection_id}_{parent_id}_chunk_{chunk_index}")
+}
+
 /// A text chunk to be indexed (for search)
 ///
 /// Documents are split into chunks for more precise search results.
 /// Each chunk is indexed separately as a BM25 keyword-search document.
 pub struct ChunkToIndex {
-    /// Unique chunk ID: "{parent_id}_chunk_{chunk_index}"
+    /// Unique chunk ID, see [`chunk_external_id`].
     pub id: String,
     /// Original document ID.
     pub parent_id: String,
@@ -179,7 +187,7 @@ pub struct ChunkToIndex {
 /// stale row fails deserialization instead of yielding default values.
 #[derive(Debug, Deserialize)]
 pub struct IndexedChunk {
-    /// Unique chunk ID: "{parent_id}_chunk_{chunk_index}"
+    /// Unique chunk ID, see [`chunk_external_id`].
     pub id: String,
     /// Original document ID.
     pub parent_id: String,
@@ -479,17 +487,20 @@ pub fn get_indexed_chunk_by_external_id(
     }
 }
 
-/// Delete all chunks belonging to a document by its parent ID
+/// Delete all chunks belonging to a document in one collection.
 pub fn delete_document_chunks(
     index: &Index,
     indexer_config: &IndexerConfig,
+    collection_id: &str,
     parent_id: &str,
 ) -> Result<usize> {
-    // Find all chunks with this parent_id
+    // Find all chunks with this collection and parent
     let rtxn = index.read_txn()?;
 
-    // Build filter for parent_id
-    let filter_str = format!("parent_id = \"{}\"", parent_id);
+    let filter_str = format!(
+        "collection_id = \"{}\" AND parent_id = \"{}\"",
+        collection_id, parent_id
+    );
     let progress = Progress::quiet();
     let fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut search = milli::Search::new(
@@ -527,7 +538,12 @@ pub fn delete_document_chunks(
     let count = chunk_ids.len();
     if count > 0 {
         delete_chunks_by_id(index, indexer_config, &chunk_ids)?;
-        tracing::debug!("Deleted {} chunks for document {}", count, parent_id);
+        tracing::debug!(
+            "Deleted {} chunks for document {} in collection {}",
+            count,
+            parent_id,
+            collection_id
+        );
     }
 
     Ok(count)
@@ -761,7 +777,7 @@ mod tests {
         collection_id: &str,
     ) -> ChunkToIndex {
         ChunkToIndex {
-            id: format!("{}_chunk_0", parent_id),
+            id: chunk_external_id(collection_id, parent_id, 0),
             parent_id: parent_id.to_string(),
             parent_name: parent_name.to_string(),
             chunk_index: 0,
@@ -961,7 +977,7 @@ mod tests {
         drop(rtxn);
 
         // Delete chunks for one document
-        let deleted = delete_document_chunks(&index, &config, "doc1").unwrap();
+        let deleted = delete_document_chunks(&index, &config, "col1", "doc1").unwrap();
         assert_eq!(deleted, 1);
 
         let rtxn = index.read_txn().unwrap();
@@ -980,6 +996,119 @@ mod tests {
         assert_eq!(results.hits.len(), 1);
         let name = get_field(&index, results.hits[0].doc_id, "parent_name");
         assert_eq!(name, Some("b.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_same_document_id_indexes_in_two_collections() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let chunks = vec![
+            make_chunk("doc1", "a.pdf", "Alpha findings", "col1"),
+            make_chunk("doc1", "a.pdf", "Beta findings", "col2"),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
+
+        let rtxn = index.read_txn().unwrap();
+        assert_eq!(index.number_of_documents(&rtxn).unwrap(), 2);
+        drop(rtxn);
+
+        let deleted = delete_document_chunks(&index, &config, "col1", "doc1").unwrap();
+        assert_eq!(deleted, 1);
+
+        assert!(search_index(
+            &index,
+            SearchParams {
+                query: "alpha",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+
+        let beta = search_index(
+            &index,
+            SearchParams {
+                query: "beta",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(beta.hits.len(), 1);
+        assert_eq!(
+            get_field(&index, beta.hits[0].doc_id, "collection_id"),
+            Some("col2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_replacing_document_in_one_collection_leaves_the_other_intact() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let chunks = vec![
+            make_chunk("doc1", "a.pdf", "Alpha findings", "col1"),
+            make_chunk("doc1", "a.pdf", "Beta findings", "col2"),
+        ];
+        index_chunks_batch(&index, &config, chunks).unwrap();
+
+        index_chunks_batch(
+            &index,
+            &config,
+            vec![make_chunk("doc1", "a.pdf", "Gamma findings", "col1")],
+        )
+        .unwrap();
+
+        let rtxn = index.read_txn().unwrap();
+        assert_eq!(index.number_of_documents(&rtxn).unwrap(), 2);
+        drop(rtxn);
+
+        assert!(search_index(
+            &index,
+            SearchParams {
+                query: "alpha",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+
+        let gamma = search_index(
+            &index,
+            SearchParams {
+                query: "gamma",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(gamma.hits.len(), 1);
+        assert_eq!(
+            get_field(&index, gamma.hits[0].doc_id, "collection_id"),
+            Some("col1".to_string())
+        );
+
+        let beta = search_index(
+            &index,
+            SearchParams {
+                query: "beta",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(beta.hits.len(), 1);
+        assert_eq!(
+            get_field(&index, beta.hits[0].doc_id, "collection_id"),
+            Some("col2".to_string())
+        );
     }
 
     #[test]

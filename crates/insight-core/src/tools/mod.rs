@@ -227,7 +227,7 @@ impl Tool for ReadChunk {
         let chunk_index = args.chunk_index;
         tracing::info!(document_id = %document_id, chunk_index, "Reading chunk");
 
-        let chunk_id = format!("{document_id}_chunk_{chunk_index}");
+        let chunk_id = search::chunk_external_id(&state.collection_id, &document_id, chunk_index);
         let not_found = || {
             ToolExecutionError::not_found(format!(
                 "chunk {chunk_index} not found for document {document_id}. Try a different chunk index."
@@ -550,7 +550,7 @@ mod tests {
         text_offset_start: usize,
     ) -> ChunkToIndex {
         ChunkToIndex {
-            id: format!("{parent_id}_chunk_{chunk_index}"),
+            id: crate::search::chunk_external_id(collection_id, parent_id, chunk_index),
             parent_id: parent_id.to_string(),
             parent_name: parent_name.to_string(),
             chunk_index,
