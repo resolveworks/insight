@@ -7,10 +7,12 @@ import Layout from './+layout.svelte';
 describe('App layout navigation', () => {
 	afterEach(() => {
 		page.url = new URL('http://localhost/collections');
+		page.route.id = '/(app)/collections';
 	});
 
 	it('links to every section', () => {
 		page.url = new URL('http://localhost/collections/abc/research');
+		page.route.id = '/(app)/collections/[collectionId]/research';
 
 		render(Layout, {
 			props: {
@@ -33,6 +35,7 @@ describe('App layout navigation', () => {
 
 	it('marks Settings current outside the collections section', () => {
 		page.url = new URL('http://localhost/settings');
+		page.route.id = '/(app)/settings';
 
 		render(Layout, {
 			props: {

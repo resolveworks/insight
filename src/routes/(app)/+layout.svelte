@@ -10,7 +10,9 @@
 		{ id: 'settings', label: 'Settings', href: 'settings' },
 	];
 
-	const currentTab = $derived(page.url.pathname.split('/')[1] || 'collections');
+	const currentTab = $derived(
+		page.route.id?.startsWith('/(app)/settings') ? 'settings' : 'collections',
+	);
 </script>
 
 <main class="flex h-screen flex-col bg-surface-dim text-neutral-800">

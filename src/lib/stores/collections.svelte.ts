@@ -197,6 +197,11 @@ export function getDocumentsError(collectionId: string): string | null {
 	return documentErrors[collectionId] ?? null;
 }
 
+/** Human-readable document count, e.g. "1 document" or "2 documents". */
+export function documentCountLabel(count: number): string {
+	return `${count} ${count === 1 ? 'document' : 'documents'}`;
+}
+
 /**
  * Load a collection's documents on first view. The list page calls this when
  * the route param changes; subsequent updates arrive through invalidation.

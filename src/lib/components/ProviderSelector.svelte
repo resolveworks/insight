@@ -31,8 +31,7 @@
 	let error = $state<string | null>(null);
 
 	const canSave = $derived(!busy && !!family && !!model.trim());
-	const selectClasses =
-		'w-full cursor-pointer rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 focus:border-transparent focus:ring-2 focus:ring-tertiary-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-500';
+	const selectClasses = 'field w-full cursor-pointer';
 
 	async function selectFamily(id: string) {
 		family = id;
@@ -101,10 +100,10 @@
 		<Alert>{statusError}</Alert>
 	{/if}
 
-	<div>
+	<div class="flex flex-col gap-2">
 		<label
 			for="provider-family-select"
-			class="mb-2 block text-sm font-medium text-neutral-700"
+			class="block text-sm font-medium text-neutral-700"
 		>
 			Provider
 		</label>
@@ -128,6 +127,7 @@
 		bind:value={baseUrl}
 		placeholder="https://api.example.com/v1"
 		disabled={busy}
+		class="w-full"
 	/>
 
 	<Input
@@ -137,13 +137,11 @@
 		bind:value={apiKey}
 		placeholder="API key"
 		disabled={busy}
+		class="w-full"
 	/>
 
-	<div>
-		<label
-			for="model-input"
-			class="mb-2 block text-sm font-medium text-neutral-700"
-		>
+	<div class="flex flex-col gap-2">
+		<label for="model-input" class="block text-sm font-medium text-neutral-700">
 			Model
 		</label>
 		<select
