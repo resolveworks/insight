@@ -76,7 +76,7 @@ describe('ProviderSelector', () => {
 		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
 	});
 
-	it('shows a failed provider-state read in the form', async () => {
+	it('shows a failed provider read in the form', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'list_provider_models') return [];
