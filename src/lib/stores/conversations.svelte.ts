@@ -1,6 +1,6 @@
 /**
- * Conversations store. Owns the conversation list, the active conversation's
- * state (messages + active collection scope), and the streaming chat
+ * Conversations store. Owns the conversation list of the active collection,
+ * the active conversation's state (messages), and the streaming chat
  * pipeline.
  *
  * The backend streams serialized rig `MultiTurnStreamItem`s on
@@ -24,48 +24,41 @@ import {
 // Types (backend contract)
 // =============================================================================
 
-export interface CollectionInfo {
-	id: string;
-	name: string;
-	document_count: number;
-	total_pages: number | null;
-	created_at?: string | null;
-}
-
 export interface ConversationView {
 	id: string;
+	collection_id: string;
 	title: string;
-	created_at: string;
-	updated_at: string;
-	collections: CollectionInfo[];
 	messages: RigMessage[];
 }
 
 export interface ConversationSummary {
 	id: string;
 	title: string;
-	updated_at: string;
 }
 
 // =============================================================================
 // State
 // =============================================================================
 
-const STORAGE_KEY = 'insight:activeConversationId';
+const STORAGE_KEY_PREFIX = 'insight:activeConversationId:';
 
-function readStoredId(): string | null {
+function storageKey(collectionId: string): string {
+	return `${STORAGE_KEY_PREFIX}${collectionId}`;
+}
+
+function readStoredId(collectionId: string): string | null {
 	if (typeof window === 'undefined') return null;
 	try {
-		return localStorage.getItem(STORAGE_KEY);
+		return localStorage.getItem(storageKey(collectionId));
 	} catch {
 		return null;
 	}
 }
 
 let conversations = $state<ConversationSummary[]>([]);
+let activeCollectionId = $state<string | null>(null);
 let activeId = $state<string | null>(null);
 let activeMessages = $state<RigMessage[]>([]);
-let activeCollections = $state<CollectionInfo[]>([]);
 let live = $state<LiveRun>(emptyLiveRun());
 // Stored-message count when the current run started: slices the optimistic
 // user message (and any prior run) out when adopting a finalResponse payload.
@@ -73,11 +66,10 @@ let runBase = 0;
 let isGenerating = $state(false);
 let isLoading = $state(false);
 let listLoaded = $state(false);
-let initialized = $state(false);
 let error = $state<string | null>(null);
 
 let unlistenAgent: UnlistenFn | undefined;
-let initializing = false;
+let initPromise: Promise<void> | null = null;
 // Synchronous send guard: blocks re-entry while a draft conversation is
 // being created (before `isGenerating`/`activeId` would catch it).
 let sendInFlight = false;
@@ -87,37 +79,41 @@ let sendInFlight = false;
 // =============================================================================
 
 function persistActiveId() {
-	if (typeof window === 'undefined') return;
+	if (typeof window === 'undefined' || !activeCollectionId) return;
 	try {
+		const key = storageKey(activeCollectionId);
 		if (activeId) {
-			localStorage.setItem(STORAGE_KEY, activeId);
+			localStorage.setItem(key, activeId);
 		} else {
-			localStorage.removeItem(STORAGE_KEY);
+			localStorage.removeItem(key);
 		}
 	} catch {
 		// Storage unavailable (private mode / test environments): skip.
 	}
 }
 
-function adoptConversation(conv: ConversationView) {
-	activeId = conv.id;
-	activeMessages = conv.messages ?? [];
-	runBase = conv.messages?.length ?? 0;
-	activeCollections = conv.collections ?? [];
-	live = emptyLiveRun();
-}
-
-/** Drop the active conversation and land in the draft state (no IPC). */
-function clearActive() {
+/** Detach the stream listener and drop the active conversation's state. */
+function resetActive() {
 	unlistenAgent?.();
 	unlistenAgent = undefined;
 	activeId = null;
 	activeMessages = [];
 	runBase = 0;
-	activeCollections = [];
 	live = emptyLiveRun();
 	isGenerating = false;
+}
+
+/** Drop the active conversation and land in the draft state (no IPC). */
+function clearActive() {
+	resetActive();
 	persistActiveId();
+}
+
+function adoptConversation(conv: ConversationView) {
+	activeId = conv.id;
+	activeMessages = conv.messages ?? [];
+	runBase = conv.messages?.length ?? 0;
+	live = emptyLiveRun();
 }
 
 async function attachListener(convId: string) {
@@ -177,8 +173,12 @@ async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
 }
 
 async function refreshList() {
+	const collectionId = activeCollectionId;
+	if (!collectionId) return;
 	try {
-		conversations = await invoke<ConversationSummary[]>('list_conversations');
+		conversations = await invoke<ConversationSummary[]>('list_conversations', {
+			collectionId,
+		});
 	} catch (e) {
 		console.error('Failed to list conversations:', e);
 	} finally {
@@ -194,7 +194,13 @@ async function loadById(
 		isLoading = true;
 		if (!opts.silent) error = null;
 
+		const collectionId = activeCollectionId;
+		if (!collectionId) {
+			throw new Error('Cannot load a conversation without a collection');
+		}
+
 		const conv = await invoke<ConversationView>('load_conversation', {
+			collectionId,
 			conversationId: id,
 		});
 
@@ -214,14 +220,19 @@ async function loadById(
 	}
 }
 
-async function createNew(
-	collections: CollectionInfo[] | null = null,
-): Promise<boolean> {
+async function createNew(): Promise<boolean> {
 	try {
 		isLoading = true;
 		error = null;
 
-		const conv = await invoke<ConversationView>('start_chat', { collections });
+		const collectionId = activeCollectionId;
+		if (!collectionId) {
+			throw new Error('Cannot start a chat without a collection');
+		}
+
+		const conv = await invoke<ConversationView>('start_chat', {
+			collectionId,
+		});
 
 		adoptConversation(conv);
 
@@ -243,46 +254,58 @@ async function createNew(
 // =============================================================================
 
 /**
- * Fetch the conversation list. Safe to call before a chat provider is
- * configured — listing doesn't require one, only creating a new chat does.
+ * Bind the store to a collection and open its initial conversation.
+ * Idempotent per collection. Switching collections resets all per-conversation
+ * state, then opens the stored conversation if it is still in the list, else
+ * the most recent one, else the draft state (nothing is persisted until the
+ * first message is sent).
  */
-export async function loadList(): Promise<void> {
-	await refreshList();
-}
+export async function initialize(collectionId: string): Promise<void> {
+	if (activeCollectionId === collectionId) {
+		await initPromise;
+		return;
+	}
+	if (initPromise) {
+		await initPromise;
+		if (activeCollectionId === collectionId) return;
+	}
 
-/**
- * Resolve the initial active conversation. Idempotent — safe to call multiple
- * times. Order: stored ID → most recent → draft state (nothing is persisted
- * until the first message is sent).
- */
-export async function ensureInitialized(): Promise<void> {
-	if (initialized || initializing) return;
-	initializing = true;
-
-	try {
-		const stored = readStoredId();
+	initPromise = (async () => {
+		resetActive();
+		activeCollectionId = collectionId;
+		conversations = [];
+		error = null;
+		listLoaded = false;
 
 		await refreshList();
 
+		const stored = readStoredId(collectionId);
 		if (stored && conversations.some((c) => c.id === stored)) {
-			if (await loadById(stored, { silent: true })) {
-				initialized = true;
-				return;
-			}
+			if (await loadById(stored, { silent: true })) return;
 		}
 		if (conversations.length > 0) {
-			if (await loadById(conversations[0].id, { silent: true })) {
-				initialized = true;
-				return;
-			}
+			await loadById(conversations[0].id, { silent: true });
+			return;
 		}
 		// Draft state: activeId stays null; the conversation is created on the
 		// first sendMessage.
-		clearActive();
-		initialized = true;
+		persistActiveId();
+	})();
+
+	try {
+		await initPromise;
 	} finally {
-		initializing = false;
+		initPromise = null;
 	}
+}
+
+/**
+ * Fetch the conversation list of the active collection. Safe to call before a
+ * chat provider is configured — listing doesn't require one, only creating a
+ * new chat does.
+ */
+export async function loadList(): Promise<void> {
+	await refreshList();
 }
 
 /** Load a conversation by ID (called when the user clicks a history item). */
@@ -305,12 +328,15 @@ export function newConversation(): void {
  * most-recent chat is opened, or the draft state is entered if none remain.
  */
 export async function deleteConversation(id: string): Promise<boolean> {
+	const collectionId = activeCollectionId;
+	if (!collectionId) return false;
+
 	const previous = conversations;
 	const wasActive = activeId === id;
 	conversations = conversations.filter((c) => c.id !== id);
 
 	try {
-		await invoke('delete_conversation', { conversationId: id });
+		await invoke('delete_conversation', { collectionId, conversationId: id });
 	} catch (e) {
 		error = `Failed to delete conversation: ${e}`;
 		console.error('Failed to delete conversation:', e);
@@ -328,63 +354,15 @@ export async function deleteConversation(id: string): Promise<boolean> {
 	return true;
 }
 
-/**
- * Replace the active conversation's collection scope. The server enriches
- * the collection info (document counts) in the returned view.
- */
-export async function setActiveCollections(
-	cols: CollectionInfo[],
-): Promise<void> {
-	// Skip the round-trip when the id-set is already what we have locally.
-	const currentIds = activeCollections.map((c) => c.id);
-	if (
-		cols.length === currentIds.length &&
-		cols.every((c) => currentIds.includes(c.id))
-	) {
-		return;
-	}
-
-	// Draft state: track the local scope only; it gets persisted by
-	// start_chat on the first send.
-	if (!activeId) {
-		activeCollections = cols;
-		return;
-	}
-
-	try {
-		const conv = await invoke<ConversationView>(
-			'set_conversation_collections',
-			{
-				conversationId: activeId,
-				collections: cols,
-			},
-		);
-		adoptConversation(conv);
-	} catch (e) {
-		error = `Failed to update collections: ${e}`;
-		console.error('Failed to update collections:', e);
-	}
-}
-
-export async function addActiveCollection(col: CollectionInfo): Promise<void> {
-	await setActiveCollections([...activeCollections, col]);
-}
-
-export async function removeActiveCollection(id: string): Promise<void> {
-	await setActiveCollections(activeCollections.filter((c) => c.id !== id));
-}
-
 /** Send a user message to the active conversation. */
 export async function sendMessage(text: string): Promise<void> {
 	const trimmed = text.trim();
 	if (!trimmed || isGenerating || sendInFlight) return;
 	sendInFlight = true;
 	try {
-		// Draft state: persist the conversation now, scoped to the locally
-		// selected collections (the UI gates sending on having a scope).
+		// Draft state: persist the conversation in the active collection now.
 		if (!activeId) {
-			if (activeCollections.length === 0) return;
-			if (!(await createNew(activeCollections))) return;
+			if (!(await createNew())) return;
 		}
 
 		const convId = activeId!;
@@ -424,9 +402,11 @@ export async function cancelGeneration(): Promise<void> {
 
 /** Ask the backend for a tab-completion prediction of the user's next message. */
 export async function predictNextMessage(): Promise<string | null> {
-	if (!activeId) return null;
+	const collectionId = activeCollectionId;
+	if (!activeId || !collectionId) return null;
 	try {
 		return await invoke<string | null>('predict_next_message', {
+			collectionId,
 			conversationId: activeId,
 		});
 	} catch (e) {
@@ -458,16 +438,16 @@ export function getConversations(): ConversationSummary[] {
 	return conversations;
 }
 
+export function getActiveCollectionId(): string | null {
+	return activeCollectionId;
+}
+
 export function getActiveId(): string | null {
 	return activeId;
 }
 
 export function getActiveMessages(): RigMessage[] {
 	return activeMessages;
-}
-
-export function getActiveCollections(): CollectionInfo[] {
-	return activeCollections;
 }
 
 /** Stored history + live run as one flat renderable list. */
@@ -481,10 +461,6 @@ export function getIsGenerating(): boolean {
 
 export function getIsLoading(): boolean {
 	return isLoading;
-}
-
-export function getIsInitialized(): boolean {
-	return initialized;
 }
 
 export function getIsListLoaded(): boolean {

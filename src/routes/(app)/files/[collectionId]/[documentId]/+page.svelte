@@ -25,10 +25,10 @@
 	);
 
 	const breadcrumbs = $derived([
-		{ label: 'Files', href: 'files' },
+		{ label: 'Files', href: resolve('files') },
 		{
 			label: collection?.name || 'Collection',
-			href: `files/${collectionId}`,
+			href: resolve(`files/${collectionId}`),
 		},
 		{ label: document?.name || 'Document' },
 	]);

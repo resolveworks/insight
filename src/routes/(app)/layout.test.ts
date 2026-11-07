@@ -6,7 +6,7 @@ import Layout from './+layout.svelte';
 
 describe('App layout navigation', () => {
 	afterEach(() => {
-		page.url = new URL('http://localhost/search');
+		page.url = new URL('http://localhost/files');
 	});
 
 	it('links to every section', () => {
@@ -20,12 +20,10 @@ describe('App layout navigation', () => {
 
 		const links = screen.getAllByRole('link');
 		expect(links.map((link) => link.textContent?.trim())).toEqual([
-			'Research',
 			'Files',
 			'Settings',
 		]);
 		expect(links.map((link) => link.getAttribute('href'))).toEqual([
-			'/research',
 			'/files',
 			'/settings',
 		]);

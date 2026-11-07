@@ -2,30 +2,37 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 import ConversationSidebar from './ConversationSidebar.svelte';
+import * as chat from '#lib/stores/conversations.svelte.js';
+
+const summary = (id: string, title: string) => ({ id, title });
+
+const view = (id: string) => ({
+	id,
+	collection_id: 'col1',
+	title: `Chat ${id}`,
+	messages: [],
+});
 
 describe('ConversationSidebar', () => {
 	beforeEach(() => {
 		clearMocks();
+		localStorage.clear();
 	});
 
 	it('shows the conversation list without a chat provider configured', async () => {
-		mockIPC((cmd) => {
+		const listCalls: Array<Record<string, unknown>> = [];
+		mockIPC((cmd, args) => {
 			if (cmd === 'list_conversations') {
+				listCalls.push(args as Record<string, unknown>);
 				return [
-					{
-						id: 'c1',
-						title: 'Climate research',
-						updated_at: '2024-02-01T00:00:00Z',
-					},
-					{
-						id: 'c2',
-						title: 'Budget analysis',
-						updated_at: '2024-01-15T00:00:00Z',
-					},
+					summary('c1', 'Climate research'),
+					summary('c2', 'Budget analysis'),
 				];
 			}
+			if (cmd === 'load_conversation') return view('c1');
 		});
 
+		await chat.initialize('col1');
 		render(ConversationSidebar, { props: {} });
 
 		await waitFor(() => {
@@ -33,6 +40,7 @@ describe('ConversationSidebar', () => {
 		});
 		expect(screen.getByText('Budget analysis')).toBeInTheDocument();
 		expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+		expect(listCalls).toContainEqual({ collectionId: 'col1' });
 	});
 
 	it('shows empty state when the list is empty', async () => {
@@ -40,6 +48,7 @@ describe('ConversationSidebar', () => {
 			if (cmd === 'list_conversations') return [];
 		});
 
+		await chat.initialize('col1');
 		render(ConversationSidebar, { props: {} });
 
 		await waitFor(() => {
@@ -52,17 +61,13 @@ describe('ConversationSidebar', () => {
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
 			if (cmd === 'list_conversations') {
-				return [
-					{
-					id: 'c1',
-					title: 'Climate research',
-					updated_at: '2024-02-01T00:00:00Z',
-				},
-				];
+				return [summary('c1', 'Climate research')];
 			}
+			if (cmd === 'load_conversation') return view('c1');
 			if (cmd === 'delete_conversation') return null;
 		});
 
+		await chat.initialize('col1');
 		render(ConversationSidebar, { props: {} });
 
 		await waitFor(() => {
@@ -75,9 +80,7 @@ describe('ConversationSidebar', () => {
 			expect(screen.getByText('Delete chat')).toBeInTheDocument();
 		});
 		expect(
-			screen.getByText(
-				/This conversation's history will be removed\./,
-			),
+			screen.getByText(/This conversation's history will be removed\./),
 		).toBeInTheDocument();
 		expect(calls.find((c) => c.cmd === 'delete_conversation')).toBeUndefined();
 
@@ -85,7 +88,10 @@ describe('ConversationSidebar', () => {
 
 		await waitFor(() => {
 			const deleteCall = calls.find((c) => c.cmd === 'delete_conversation');
-			expect(deleteCall?.args).toEqual({ conversationId: 'c1' });
+			expect(deleteCall?.args).toEqual({
+				collectionId: 'col1',
+				conversationId: 'c1',
+			});
 		});
 	});
 
@@ -94,17 +100,13 @@ describe('ConversationSidebar', () => {
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
 			if (cmd === 'list_conversations') {
-				return [
-					{
-						id: 'c1',
-						title: 'Climate research',
-						updated_at: '2024-02-01T00:00:00Z',
-					},
-				];
+				return [summary('c1', 'Climate research')];
 			}
+			if (cmd === 'load_conversation') return view('c1');
 			if (cmd === 'delete_conversation') return null;
 		});
 
+		await chat.initialize('col1');
 		render(ConversationSidebar, { props: {} });
 
 		await waitFor(() => {
@@ -113,7 +115,9 @@ describe('ConversationSidebar', () => {
 
 		screen.getByLabelText('Delete chat').click();
 		await waitFor(() => {
-			expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+			expect(
+				screen.getByRole('button', { name: 'Cancel' }),
+			).toBeInTheDocument();
 		});
 		screen.getByRole('button', { name: 'Cancel' }).click();
 

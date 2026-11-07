@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
-
 	type Segment = {
 		label: string;
 		href?: string;
@@ -19,8 +17,9 @@
 			<span class="text-neutral-400">/</span>
 		{/if}
 		{#if segment.href !== undefined}
-			{@const href = resolve(segment.href as 'research')}
-			<a {href} class="hover:text-primary-600 transition-colors">
+			<!-- Callers pass already-resolved paths. -->
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+			<a href={segment.href} class="hover:text-primary-600 transition-colors">
 				{segment.label}
 			</a>
 		{:else}

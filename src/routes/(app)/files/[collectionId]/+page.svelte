@@ -37,7 +37,7 @@
 	);
 
 	const breadcrumbs = $derived([
-		{ label: 'Files', href: 'files' },
+		{ label: 'Files', href: resolve('files') },
 		{ label: collectionName },
 	]);
 
@@ -79,7 +79,15 @@
 	<header class="border-b border-neutral-200 bg-surface-bright px-6 py-4">
 		<div class="flex items-center justify-between">
 			<Breadcrumb segments={breadcrumbs} />
-			<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
+			<div class="flex items-center gap-2">
+				<a
+					href={resolve(`research/${collectionId}`)}
+					class="inline-flex items-center justify-center rounded-md border border-neutral-300 bg-surface-bright px-4 py-2 text-sm font-medium text-neutral-700 hover:border-primary-300 hover:text-primary-600"
+				>
+					Chats
+				</a>
+				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
+			</div>
 		</div>
 
 		{#if processing && stages.length > 0}
