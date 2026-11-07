@@ -1,10 +1,10 @@
 # Collections
 
-Collections are how Insight organizes your documents. Think of them as folders—each collection holds a set of related documents with its own search and sharing settings.
+Collections are how Insight organizes your documents. Think of them as folders—each collection holds a set of related documents with its own search.
 
 ## Creating a Collection
 
-Click **New Collection** and give it a name. You might organize by:
+Enter a name in the field under Files and click **Create**. You might organize by:
 
 - Investigation (e.g., "City Hall Contracts")
 - Beat (e.g., "Climate", "Housing")
@@ -12,7 +12,7 @@ Click **New Collection** and give it a name. You might organize by:
 
 ## Adding Documents
 
-Drag and drop PDF files into a collection, or click **Add Files**.
+Open a collection and click **Import PDF**; PDFs are added to that collection.
 
 When you add a document, Insight:
 
@@ -26,14 +26,14 @@ You can share collections directly with other Insight users—no cloud upload re
 
 ### To Share
 
-1. Open the collection
-2. Click **Share**
-3. Send the generated link to your colleague
+1. Open the Files page
+2. Click the share icon on the collection card
+3. Send the generated ticket to your colleague
 
 ### To Join
 
-1. Click **Join Collection**
-2. Paste the link you received
+1. Click **Import…** on the Files page
+2. Paste the ticket you received
 3. Documents will copy to your computer automatically
 
 Once synced, you both have full copies. You can work offline and still access everything.

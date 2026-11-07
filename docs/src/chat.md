@@ -2,7 +2,7 @@
 
 Insight uses AI to help you find and understand information in your documents. Just ask questions in plain language—the AI does the searching for you.
 
-Open a collection and start a chat from its research view; each conversation belongs to that one collection, so the AI only searches and reads documents there. To research a different set of documents, start a conversation in that collection. Conversations are stored on your computer and are not shared when you share a collection.
+Open a collection's Chats view — the **Chats** button in the collection header or the chat icon on its Files card — and start a conversation there. Each conversation belongs to that one collection, so the AI only searches and reads documents there. To research a different set of documents, start a conversation in that collection. Conversations are stored on your computer and are not shared when you share a collection.
 
 ## How It Works
 
@@ -40,8 +40,8 @@ You don't need to know which document contains the answer. Just ask, and the AI 
 
 ## Citations
 
-Every answer includes citations. Click one to jump straight to that passage in the original document—so you can verify and quote accurately.
+Answers cite the document names they draw on, so you can verify and quote accurately.
 
 ## Privacy Note
 
-Your questions and relevant document excerpts are sent to the chat provider you configure in Settings — one of the 27 vendor selections Insight supports (OpenAI, Anthropic, Gemini, Groq, Ollama for local servers, ...). Your full documents stay on your computer. See [Getting Started](./getting-started.md) for provider setup.
+Your questions and relevant document excerpts are sent to the chat provider you configure in Settings — one of the provider selections Insight supports (OpenAI, Anthropic, Gemini, Groq, Ollama for local servers, ...). Your full documents stay on your computer. See [Getting Started](./getting-started.md) for provider setup.
