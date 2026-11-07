@@ -169,6 +169,11 @@ export function getDocuments(collectionId: string): Document[] {
 	return documents[collectionId] ?? [];
 }
 
+/** Whether the store has received this collection's document listing. */
+export function hasLoadedDocuments(collectionId: string): boolean {
+	return documents[collectionId] !== undefined;
+}
+
 /**
  * Load a collection's documents on first view. The list page calls this when
  * the route param changes; subsequent updates arrive through invalidation.

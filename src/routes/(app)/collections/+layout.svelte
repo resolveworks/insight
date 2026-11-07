@@ -2,6 +2,6 @@
 	let { children } = $props();
 </script>
 
-<div class="h-full overflow-y-auto bg-surface">
+<div class="h-full overflow-hidden bg-surface">
 	{@render children()}
 </div>

@@ -3,6 +3,7 @@
 	import { resolve } from '$app/paths';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import Button from '#lib/components/Button.svelte';
+	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import type { Document } from '#lib/stores/collections.svelte.js';
@@ -12,6 +13,9 @@
 	const collectionId = $derived(page.params.collectionId);
 	const documents = $derived(
 		collectionId ? collections.getDocuments(collectionId) : [],
+	);
+	const documentsLoaded = $derived(
+		collectionId ? collections.hasLoadedDocuments(collectionId) : false,
 	);
 
 	// Pipeline progress from global store (persists across navigation)
@@ -67,11 +71,6 @@
 <div class="flex h-full flex-col">
 	<!-- Content -->
 	<div class="flex-1 overflow-y-auto p-6">
-		<!-- Actions row -->
-		<div class="mb-6 flex items-center justify-end">
-			<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
-		</div>
-
 		{#if processing && stages.length > 0}
 			<div class="mb-6 grid grid-cols-3 gap-4">
 				{#each stages as stage (stage.name)}
@@ -98,22 +97,43 @@
 			</div>
 		{/if}
 
-		{#if documents.length === 0}
-			<div class="flex flex-col items-center justify-center py-12">
-				<p class="text-neutral-500">No documents yet</p>
-				<p class="mt-1 text-sm text-neutral-400">
-					Import PDFs to add documents to this collection.
+		{#if !documentsLoaded}
+			<div
+				class="flex flex-col items-center justify-center py-12"
+				role="status"
+			>
+				<LoadingSpinner size="lg" />
+				<p class="sr-only">Loading documents…</p>
+			</div>
+		{:else if documents.length === 0 && processing}
+			<div class="flex flex-col items-center justify-center py-12 text-center">
+				<p class="text-neutral-500">Processing documents…</p>
+				<p class="mt-1 max-w-sm text-sm text-neutral-400">
+					Documents will appear here as they finish importing.
 				</p>
 			</div>
+		{:else if documents.length === 0}
+			<div class="flex flex-col items-center justify-center py-12 text-center">
+				<p class="text-neutral-500">No documents yet</p>
+				<p class="mt-1 max-w-sm text-sm text-neutral-400">
+					The research agent answers from documents in this collection. Import a
+					PDF to give it sources.
+				</p>
+				<Button class="mt-4" onclick={importPdf}>Import PDF</Button>
+			</div>
 		{:else}
+			<div class="mb-4 flex items-center justify-end">
+				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
+			</div>
+
 			<ul class="space-y-2">
 				{#each documents as doc (doc.id)}
 					<li
-						class="group flex items-center justify-between rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
+						class="flex items-center justify-between gap-4 rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
 						<a
 							href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
-							class="flex-1"
+							class="min-w-0 flex-1"
 						>
 							<span
 								class="text-neutral-800 transition-colors hover:text-primary-600"
@@ -125,26 +145,13 @@
 								>
 							{/if}
 						</a>
-						<button
+						<Button
+							variant="danger"
+							size="sm"
 							onclick={() => (deletingDocument = doc)}
-							class="cursor-pointer text-neutral-400 opacity-60 transition-opacity hover:opacity-100 hover:text-error"
-							aria-label="Delete document"
-							title="Delete document"
 						>
-							<svg
-								class="h-4 w-4"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-							>
-								<path
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									stroke-width="2"
-									d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-								/>
-							</svg>
-						</button>
+							Delete
+						</Button>
 					</li>
 				{/each}
 			</ul>
@@ -155,7 +162,7 @@
 {#if deletingDocument}
 	<ConfirmDialog
 		title="Delete document"
-		message="Delete &quot;{deletingDocument.name}&quot; from this collection? This removes the document and its extracted text from this machine."
+		message="Delete &quot;{deletingDocument.name}&quot; from this collection? This removes the document and its extracted text from this collection."
 		onConfirm={confirmDeleteDocument}
 		onCancel={() => (deletingDocument = null)}
 	/>
