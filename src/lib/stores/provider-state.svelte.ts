@@ -166,14 +166,3 @@ export function getProviderStateError(): string | null {
 export function isLoaded(): boolean {
 	return loaded;
 }
-
-/**
- * Test-only: re-query provider state from the (mocked) backend so a fresh
- * boot can be simulated without re-importing the module (which would
- * duplicate the Svelte runtime and break component rendering).
- */
-export async function __resetForTests(): Promise<void> {
-	loaded = false;
-	await queryProviderState().catch(() => {});
-	loaded = true;
-}
