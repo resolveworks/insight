@@ -4,7 +4,7 @@
 	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import Input from '#lib/components/Input.svelte';
-	import ErrorAlert from '#lib/components/ErrorAlert.svelte';
+	import Alert from '#lib/components/Alert.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
@@ -138,12 +138,12 @@
 					<p class="sr-only">Loading collections…</p>
 				</div>
 			{:else if loadError}
-				<ErrorAlert>Failed to load collections: {loadError}</ErrorAlert>
+				<Alert>Failed to load collections: {loadError}</Alert>
 			{/if}
 		{:else}
 			{#if loadError}
 				<div class="mb-4">
-					<ErrorAlert>Failed to load collections: {loadError}</ErrorAlert>
+					<Alert>Failed to load collections: {loadError}</Alert>
 				</div>
 			{/if}
 			{#if collectionList.length === 0}
@@ -222,7 +222,7 @@
 				{importingCollection ? 'Importing...' : 'Import'}
 			</Button>
 			{#if importError}
-				<ErrorAlert>{importError}</ErrorAlert>
+				<Alert>{importError}</Alert>
 			{/if}
 		</div>
 	</Modal>
@@ -249,7 +249,7 @@
 				</p>
 			</div>
 		{:else if shareError}
-			<ErrorAlert>{shareError}</ErrorAlert>
+			<Alert>{shareError}</Alert>
 		{:else}
 			<p class="text-sm text-neutral-400">Generating ticket...</p>
 		{/if}
