@@ -23,7 +23,7 @@
 <div class="flex h-full overflow-hidden">
 	<!-- Left sidebar: this collection's conversation history, always local -->
 	<aside
-		class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-neutral-200 bg-surface-dim"
+		class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface-dim"
 	>
 		{#if activeCollectionId === collectionId}
 			<ConversationSidebar
@@ -32,7 +32,7 @@
 			/>
 		{:else}
 			<div class="flex h-full items-center justify-center">
-				<LoadingSpinner />
+				<LoadingSpinner ariaLabel="Loading conversations" />
 			</div>
 		{/if}
 	</aside>
@@ -41,7 +41,7 @@
 	<main class="min-w-0 flex-1 overflow-hidden">
 		{#if activeCollectionId !== collectionId || !collection}
 			<div class="flex h-full items-center justify-center bg-surface">
-				<LoadingSpinner size="lg" />
+				<LoadingSpinner size="lg" ariaLabel="Loading collection" />
 			</div>
 		{:else}
 			<Chat

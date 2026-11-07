@@ -57,6 +57,7 @@ export interface LiveToolResultBlock {
 	call: string;
 	name: string;
 	text: string;
+	isError: boolean;
 }
 
 export type LiveMessage =
@@ -160,6 +161,7 @@ export function applyItem(run: LiveRun, item: MultiTurnStreamItem): LiveRun {
 				call: callIdString(item.tool_result.call),
 				name: item.tool_result.name,
 				text: flattenToolResult(item.tool_result.content),
+				isError: item.tool_result.is_error ?? false,
 			};
 			return {
 				...run,
@@ -398,6 +400,8 @@ export interface TranscriptItem {
 	args: string;
 	/** Part of the in-flight run (drives expanded state / cursor / spinner). */
 	provisional: boolean;
+	/** toolResult failed; false otherwise. */
+	isError: boolean;
 	/** Tool call whose execution has not been observed yet. */
 	executing: boolean;
 	/** Assistant text currently receiving deltas (streaming cursor). */
@@ -421,6 +425,7 @@ function storedItems(
 		name: '',
 		args: '',
 		provisional: false,
+		isError: false,
 		executing: false,
 		streaming: false,
 		...fields,
@@ -435,6 +440,7 @@ function storedItems(
 								item(i, 'toolResult', {
 									name: block.name,
 									text: flattenToolResult(block.content),
+									isError: block.is_error ?? false,
 								}),
 							]
 						: [], // unknown block kinds (images, …) render nothing
@@ -474,13 +480,18 @@ function liveItems(
 		name: '',
 		args: '',
 		provisional: true,
+		isError: false,
 		executing: false,
 		streaming: false,
 		...fields,
 	});
 	if (message.role === 'user') {
 		return message.content.map((block, i) =>
-			item(i, 'toolResult', { name: block.name, text: block.text }),
+			item(i, 'toolResult', {
+				name: block.name,
+				text: block.text,
+				isError: block.isError,
+			}),
 		);
 	}
 	return message.content.map((block, i) => {

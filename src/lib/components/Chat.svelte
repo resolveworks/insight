@@ -6,7 +6,9 @@
 	import Input from './Input.svelte';
 	import Alert from './Alert.svelte';
 	import SetupScreen from './SetupScreen.svelte';
+	import ToolBlock from './ToolBlock.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
+	import { documentCountLabel } from '#lib/stores/collections.svelte.js';
 
 	type Props = {
 		collectionId: string;
@@ -22,7 +24,6 @@
 
 	// Reactive reads from the conversations store
 	const activeId = $derived(chat.getActiveId());
-	const messages = $derived(chat.getActiveMessages());
 	const transcript = $derived(chat.getTranscript());
 	const isGenerating = $derived(chat.getIsGenerating());
 	const isLoading = $derived(chat.getIsLoading());
@@ -97,7 +98,7 @@
 			isGenerating ||
 			isLoading ||
 			!activeId ||
-			messages.length === 0 ||
+			transcript.length === 0 ||
 			!hasDocuments ||
 			!providerReady
 		) {
@@ -124,20 +125,20 @@
 		bind:this={messagesContainer}
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
-		{#if messages.length === 0}
+		{#if transcript.length === 0}
 			{#if !hasDocuments}
 				<div class="flex h-full items-center justify-center">
 					<div class="max-w-md text-center">
 						<div class="mb-2 text-lg text-neutral-800">
 							No documents in {collectionName}
 						</div>
-						<p class="text-sm text-neutral-500">
+						<p class="text-sm text-muted">
 							Research answers need sources. Add documents to this collection
 							before asking questions.
 						</p>
 						<a
 							href={resolve(`collections/${collectionId}/documents`)}
-							class="mt-4 inline-flex rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
+							class="mt-4 inline-flex rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
 						>
 							Go to Documents
 						</a>
@@ -145,14 +146,12 @@
 				</div>
 			{:else}
 				<div class="flex h-full items-center justify-center">
-					<div class="text-center text-neutral-500">
+					<div class="text-center text-muted">
 						<div class="mb-2 text-lg text-neutral-800">
 							Ask questions about {collectionName}
 						</div>
 						<div class="text-sm">
-							{documentCount}
-							{documentCount === 1 ? 'document' : 'documents'} ready to search and
-							read
+							{documentCountLabel(documentCount)} ready to search and read
 						</div>
 					</div>
 				</div>
@@ -173,7 +172,7 @@
 				{:else if item.kind === 'assistantText'}
 					<div class="flex justify-start">
 						<div
-							class="max-w-[80%] min-w-0 break-words rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-800"
+							class="max-w-[80%] min-w-0 break-words rounded-lg border border-line bg-surface-bright px-4 py-2 text-neutral-800"
 						>
 							<Markdown content={item.text} />{#if item.streaming}<span
 									class="animate-pulse text-primary-500">▊</span
@@ -181,48 +180,30 @@
 						</div>
 					</div>
 				{:else if item.kind === 'reasoning'}
-					<!-- Always open — nothing ever auto-folds when a run commits. The
-					     static attribute is set once, so manual folds stick. -->
-					<details
-						class="mx-4 rounded border border-neutral-300 bg-surface-bright"
-						open
-					>
-						<summary
-							class="cursor-pointer px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"
-						>
-							Reasoning
-						</summary>
+					<ToolBlock title="Reasoning">
 						<pre
-							class="max-h-48 overflow-auto whitespace-pre-wrap break-words p-2 text-xs text-neutral-600">{item.text}</pre>
-					</details>
+							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{item.text}</pre>
+					</ToolBlock>
 				{:else if item.kind === 'toolCall'}
-					<details
-						class="mx-4 rounded border border-neutral-300 bg-surface-bright"
-						open
-					>
-						<summary
-							class="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs font-medium text-neutral-500 hover:text-neutral-700"
-						>
-							<span>Tool: {item.name || '…'}</span>
+					<ToolBlock title="Tool: {item.name || '…'}">
+						{#snippet summaryExtra()}
 							{#if item.executing}
 								<span class="animate-pulse text-primary-500">...</span>
 							{/if}
-						</summary>
+						{/snippet}
 						{#if item.args}
 							<pre
-								class="max-h-24 overflow-auto whitespace-pre-wrap break-words p-2 text-xs text-neutral-600">{item.args}</pre>
+								class="max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{item.args}</pre>
 						{/if}
-					</details>
+					</ToolBlock>
 				{:else if item.kind === 'toolResult'}
-					<div
-						class="mx-4 rounded border border-neutral-300 bg-surface-dim p-2 text-xs"
+					<ToolBlock
+						title="Tool result: {item.name}"
+						tone={item.isError ? 'error' : 'neutral'}
 					>
-						<div class="mb-1 font-medium text-neutral-500">
-							Tool result: {item.name}
-						</div>
 						<pre
-							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-neutral-700">{item.text}</pre>
-					</div>
+							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{item.text}</pre>
+					</ToolBlock>
 				{/if}
 			{/each}
 
@@ -230,7 +211,7 @@
 			{#if isGenerating && !transcript.some((item) => item.provisional)}
 				<div class="flex justify-start">
 					<div
-						class="rounded-lg border border-neutral-200 bg-surface-bright px-4 py-2 text-neutral-500"
+						class="max-w-[80%] min-w-0 break-words rounded-lg border border-line bg-surface-bright px-4 py-2 text-muted"
 					>
 						<span class="animate-pulse">Thinking...</span>
 					</div>
@@ -246,7 +227,7 @@
 
 	{#if providerReady}
 		<!-- Input Area -->
-		<div class="border-t border-neutral-300 bg-surface-bright p-4">
+		<div class="border-t border-line bg-surface-bright p-4">
 			<div class="flex gap-2">
 				<Input
 					type="text"
@@ -274,9 +255,7 @@
 		</div>
 	{:else}
 		<!-- Provider setup lives below the transcript so local history stays readable -->
-		<div
-			class="h-80 max-h-[55%] shrink-0 overflow-y-auto border-t border-neutral-300"
-		>
+		<div class="h-80 max-h-[55%] shrink-0 overflow-y-auto border-t border-line">
 			<SetupScreen />
 		</div>
 	{/if}
