@@ -1,6 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor, fireEvent } from '@testing-library/svelte';
-import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import {
+	render,
+	screen,
+	waitFor,
+	fireEvent,
+	cleanup,
+} from '@testing-library/svelte';
+import { mockIPC } from '@tauri-apps/api/mocks';
+import { page } from '$app/state';
+import { invalidate } from '$app/navigation';
+import ProviderSelector from './ProviderSelector.svelte';
+import type { CurrentProvider, ProviderStatus } from '#lib/api/provider.js';
 
 const SELECTIONS = ['ollama/openai', 'openai/openai'];
 
@@ -12,53 +22,39 @@ const MODELS: Record<string, Array<{ id: string; name: string }>> = {
 	'ollama/openai': [{ id: 'llama3', name: 'Llama 3' }],
 };
 
-const idleStatus = { family: null, model: null, error: null };
+const idleStatus: ProviderStatus = { family: null, model: null, error: null };
 
-let cleanupFresh: (() => void) | undefined;
-
-/**
- * The provider store keeps module-level $state and self-initializes on import,
- * so each test re-imports the component with a fresh module graph (store
- * included) after installing its IPC mock.
- */
-async function renderSelector() {
-	vi.resetModules();
-	// Re-import testing-library alongside the component so `mount`, `cleanup`
-	// and the component share one Svelte runtime instance.
-	const [{ default: ProviderSelector }, { render, cleanup }] =
-		await Promise.all([
-			import('./ProviderSelector.svelte'),
-			import('@testing-library/svelte'),
-		]);
-	cleanupFresh = cleanup;
+function renderSelector(
+	current: CurrentProvider | null,
+	status: ProviderStatus = idleStatus,
+) {
+	page.data = { provider: { current, status } };
 	render(ProviderSelector);
 }
 
 afterEach(() => {
-	cleanupFresh?.();
-	cleanupFresh = undefined;
+	cleanup();
 });
 
 describe('ProviderSelector', () => {
 	beforeEach(() => {
-		clearMocks();
+		vi.mocked(invalidate).mockClear();
 	});
 
 	it('offers rig selections and preselects the configured provider and model', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'list_providers') return SELECTIONS;
-			if (cmd === 'get_current_provider')
-				return {
-					family: 'openai/openai',
-					model: 'gpt-4o',
-					api_key: 'sk-stored',
-					base_url: null,
-				};
-			if (cmd === 'get_provider_status')
-				return { family: 'openai/openai', model: 'gpt-4o', error: null };
 			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
 		});
-		await renderSelector();
+		renderSelector(
+			{
+				family: 'openai/openai',
+				model: 'gpt-4o',
+				api_key: 'sk-stored',
+				base_url: null,
+			},
+			{ family: 'openai/openai', model: 'gpt-4o', error: null },
+		);
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
@@ -80,38 +76,21 @@ describe('ProviderSelector', () => {
 		expect(screen.getByLabelText('Base URL')).toBeInTheDocument();
 	});
 
-	it('shows the provider state error when the boot query fails', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'list_providers') return SELECTIONS;
-			if (cmd === 'get_current_provider') throw new Error('malformed settings');
-			if (cmd === 'get_provider_status') return idleStatus;
-			if (cmd === 'list_provider_models') return MODELS['ollama/openai'];
-		});
-		await renderSelector();
-
-		expect(
-			await screen.findByText(/failed to load provider settings/i),
-		).toHaveTextContent('malformed settings');
-		// The form stays visible so the settings can be inspected and fixed.
-		expect(screen.getByLabelText('Provider')).toBeInTheDocument();
-	});
-
 	it('says why a configured provider cannot be used', async () => {
 		const reason = 'no registered provider is named `deepseek`';
 		mockIPC((cmd) => {
 			if (cmd === 'list_providers') return SELECTIONS;
-			if (cmd === 'get_current_provider')
-				return {
-					family: 'deepseek',
-					model: 'deepseek-flash',
-					api_key: 'sk',
-					base_url: null,
-				};
-			if (cmd === 'get_provider_status')
-				return { family: 'deepseek', model: 'deepseek-flash', error: reason };
 			if (cmd === 'list_provider_models') return [];
 		});
-		await renderSelector();
+		renderSelector(
+			{
+				family: 'deepseek',
+				model: 'deepseek-flash',
+				api_key: 'sk',
+				base_url: null,
+			},
+			{ family: 'deepseek', model: 'deepseek-flash', error: reason },
+		);
 
 		expect(await screen.findByText(reason)).toBeInTheDocument();
 	});
@@ -119,12 +98,10 @@ describe('ProviderSelector', () => {
 	it('swaps the model list when the provider changes', async () => {
 		mockIPC((cmd, args) => {
 			if (cmd === 'list_providers') return SELECTIONS;
-			if (cmd === 'get_current_provider') return null;
-			if (cmd === 'get_provider_status') return idleStatus;
 			if (cmd === 'list_provider_models')
 				return MODELS[(args as { family: string }).family];
 		});
-		await renderSelector();
+		renderSelector(null);
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
@@ -148,22 +125,21 @@ describe('ProviderSelector', () => {
 	it('keeps a configured model the catalog does not list', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'list_providers') return SELECTIONS;
-			if (cmd === 'get_current_provider')
-				return {
-					family: 'openai/openai',
-					model: 'my-private-deployment',
-					api_key: 'sk',
-					base_url: 'https://gateway.internal/v1',
-				};
-			if (cmd === 'get_provider_status')
-				return {
-					family: 'openai/openai',
-					model: 'my-private-deployment',
-					error: null,
-				};
 			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
 		});
-		await renderSelector();
+		renderSelector(
+			{
+				family: 'openai/openai',
+				model: 'my-private-deployment',
+				api_key: 'sk',
+				base_url: 'https://gateway.internal/v1',
+			},
+			{
+				family: 'openai/openai',
+				model: 'my-private-deployment',
+				error: null,
+			},
+		);
 
 		const model = (await screen.findByLabelText('Model')) as HTMLSelectElement;
 		await waitFor(() => expect(model.value).toBe('my-private-deployment'));
@@ -172,23 +148,20 @@ describe('ProviderSelector', () => {
 		).toBeInTheDocument();
 	});
 
-	it('invokes configure_provider on save', async () => {
+	it('invokes configure_provider on save and refreshes the provider load', async () => {
 		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
 			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'list_provider_models')
 				return MODELS[(args as { family: string }).family];
-			if (cmd === 'get_current_provider') return null;
-			if (cmd === 'get_provider_status') return idleStatus;
 			return null;
 		});
-		await renderSelector();
+		renderSelector(null);
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
 		)) as HTMLSelectElement;
-		// Let the initial selection settle before changing it.
 		await waitFor(() =>
 			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
 				'llama3',
@@ -215,6 +188,9 @@ describe('ProviderSelector', () => {
 				model: 'gpt-4o',
 			});
 		});
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith('app:provider'),
+		);
 	});
 
 	it('shows the message of a rejected configure, not the error object', async () => {
@@ -223,18 +199,15 @@ describe('ProviderSelector', () => {
 			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'list_provider_models')
 				return MODELS[(args as { family: string }).family];
-			if (cmd === 'get_current_provider') return null;
-			if (cmd === 'get_provider_status') return idleStatus;
 			if (cmd === 'configure_provider')
 				throw { code: 'external_error', message: reason };
 			return null;
 		});
-		await renderSelector();
+		renderSelector(null);
 
 		const provider = (await screen.findByLabelText(
 			'Provider',
 		)) as HTMLSelectElement;
-		// Let the initial selection settle before changing it.
 		await waitFor(() =>
 			expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
 				'llama3',
@@ -251,39 +224,32 @@ describe('ProviderSelector', () => {
 
 		expect(await screen.findByText(reason)).toBeInTheDocument();
 		expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+		expect(invalidate).not.toHaveBeenCalled();
 	});
 
-	it('hides the Disable button once the provider is disabled', async () => {
-		let disabled = false;
+	it('disables the configured provider and refreshes the provider load', async () => {
+		const calls: string[] = [];
 		mockIPC((cmd) => {
+			calls.push(cmd);
 			if (cmd === 'list_providers') return SELECTIONS;
-			if (cmd === 'disable_provider') {
-				disabled = true;
-				return null;
-			}
 			if (cmd === 'list_provider_models') return MODELS['openai/openai'];
-			if (cmd === 'get_current_provider')
-				return disabled
-					? null
-					: {
-							family: 'openai/openai',
-							model: 'gpt-4o',
-							api_key: 'sk',
-							base_url: null,
-						};
-			if (cmd === 'get_provider_status')
-				return disabled
-					? idleStatus
-					: { family: 'openai/openai', model: 'gpt-4o', error: null };
+			return null;
 		});
-		await renderSelector();
+		renderSelector(
+			{
+				family: 'openai/openai',
+				model: 'gpt-4o',
+				api_key: 'sk',
+				base_url: null,
+			},
+			{ family: 'openai/openai', model: 'gpt-4o', error: null },
+		);
 
 		screen.getByRole('button', { name: 'Disable' }).click();
 
+		await waitFor(() => expect(calls).toContain('disable_provider'));
 		await waitFor(() =>
-			expect(
-				screen.queryByRole('button', { name: 'Disable' }),
-			).not.toBeInTheDocument(),
+			expect(invalidate).toHaveBeenCalledWith('app:provider'),
 		);
 	});
 });

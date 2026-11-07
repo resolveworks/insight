@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
 	import Alert from './Alert.svelte';
@@ -7,21 +8,17 @@
 		configureProvider,
 		describeError,
 		disableProvider,
-		getCurrentProvider,
-		getProviderStateError,
-		getSelections,
-		getStatus,
-		loadModels,
-		loadSelections,
+		listModels,
+		listProviders,
 		type ModelChoice,
-	} from '#lib/stores/provider-state.svelte.js';
+	} from '#lib/api/provider.js';
 
-	const selections = $derived(getSelections());
-	const current = $derived(getCurrentProvider());
-	const stateError = $derived(getProviderStateError());
+	const provider = $derived(page.data.provider);
+	const current = $derived(provider.current);
 	// Why the configured provider cannot be used (rig's validation error).
-	const statusError = $derived(getStatus().error);
+	const statusError = $derived(provider.status.error);
 
+	let selections = $state<string[]>([]);
 	let family = $state('');
 	let model = $state('');
 	let apiKey = $state('');
@@ -40,7 +37,7 @@
 		error = null;
 		let listed: ModelChoice[] = [];
 		try {
-			listed = await loadModels(id);
+			listed = await listModels(id);
 		} catch (e) {
 			error = describeError(e);
 		}
@@ -79,14 +76,18 @@
 	}
 
 	onMount(async () => {
-		await loadSelections();
+		try {
+			selections = await listProviders();
+		} catch (e) {
+			console.error('Failed to list providers:', e);
+		}
 		const configured = current;
 		if (configured) {
 			family = configured.family;
 			model = configured.model;
 			apiKey = configured.api_key ?? '';
 			baseUrl = configured.base_url ?? '';
-			models = await loadModels(configured.family).catch(() => []);
+			models = await listModels(configured.family).catch(() => []);
 		} else if (selections.length > 0) {
 			await selectFamily(selections[0]);
 		}
@@ -94,9 +95,6 @@
 </script>
 
 <div class="space-y-4">
-	{#if stateError}
-		<Alert>{stateError}</Alert>
-	{/if}
 	{#if statusError}
 		<Alert>{statusError}</Alert>
 	{/if}

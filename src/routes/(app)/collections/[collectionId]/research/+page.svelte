@@ -4,16 +4,12 @@
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
-	import {
-		isLoaded,
-		isProviderReady,
-	} from '#lib/stores/provider-state.svelte.js';
+	import { isProviderReady } from '#lib/api/provider.js';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
 	const collectionId = $derived(page.params.collectionId ?? '');
 	const collection = $derived(collections.getCollection(collectionId));
-	const loaded = $derived(isLoaded());
-	const providerReady = $derived(isProviderReady());
+	const providerReady = $derived(isProviderReady(page.data.provider));
 	const activeCollectionId = $derived(chat.getActiveCollectionId());
 
 	// Conversation history is local: bind it as soon as the collection is
@@ -44,11 +40,7 @@
 
 	<!-- Main pane: chat, with provider setup in its lower region if needed -->
 	<main class="min-w-0 flex-1 overflow-hidden">
-		{#if !loaded}
-			<div class="flex h-full items-center justify-center bg-surface">
-				<LoadingSpinner size="lg" />
-			</div>
-		{:else if activeCollectionId !== collectionId || !collection}
+		{#if activeCollectionId !== collectionId || !collection}
 			<div class="flex h-full items-center justify-center bg-surface">
 				<LoadingSpinner size="lg" />
 			</div>

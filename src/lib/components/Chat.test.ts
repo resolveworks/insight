@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
+import { page } from '$app/state';
 import Chat from './Chat.svelte';
 import * as chat from '#lib/stores/conversations.svelte.js';
 
@@ -50,6 +51,12 @@ async function renderChat(
 	});
 
 	await chat.initialize(collectionId);
+	page.data = {
+		provider: {
+			current: null,
+			status: { family: null, model: null, error: null },
+		},
+	};
 	render(Chat, { props: { ...props, ...overrides } });
 }
 

@@ -45,6 +45,12 @@ beforeAll(async () => {
 	});
 	page.url = new URL('http://localhost/collections/col1/research');
 	page.params = { collectionId: 'col1' };
+	page.data = {
+		provider: {
+			current: null,
+			status: { family: null, model: null, error: null },
+		},
+	};
 	Page = (await import('./+page.svelte')).default;
 });
 
