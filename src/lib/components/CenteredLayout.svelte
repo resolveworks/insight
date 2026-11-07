@@ -18,7 +18,9 @@
 	};
 </script>
 
-<div class="flex h-screen items-center justify-center bg-neutral-700">
+<div
+	class="flex h-full min-h-0 items-center justify-center overflow-y-auto bg-neutral-700 p-6"
+>
 	<div
 		class="w-full {widthClasses[width]} rounded-lg bg-surface p-8 shadow-medium"
 	>

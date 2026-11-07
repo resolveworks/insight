@@ -41,6 +41,35 @@ describe('ConversationSidebar', () => {
 		expect(screen.getByText('Budget analysis')).toBeInTheDocument();
 		expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
 		expect(listCalls).toContainEqual({ collectionId: 'col1' });
+		expect(
+			screen.getByRole('heading', { name: 'Conversations' }),
+		).toBeInTheDocument();
+	});
+
+	it('marks the active conversation and keeps delete keyboard accessible', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'list_conversations') {
+				return [
+					summary('c1', 'Climate research'),
+					summary('c2', 'Budget analysis'),
+				];
+			}
+			if (cmd === 'load_conversation') return view('c1');
+		});
+
+		const chat = await import('#lib/stores/conversations.svelte.js');
+		await chat.initialize('col1');
+		await chat.selectConversation('c1');
+		render(ConversationSidebar, { props: {} });
+
+		const active = await screen.findByRole('button', {
+			name: 'Climate research',
+		});
+		expect(active).toHaveAttribute('aria-current', 'true');
+		expect(
+			screen.getByRole('button', { name: 'Budget analysis' }),
+		).not.toHaveAttribute('aria-current');
+		expect(screen.getAllByLabelText('Delete chat')[0].tagName).toBe('BUTTON');
 	});
 
 	it('shows empty state when the list is empty', async () => {
