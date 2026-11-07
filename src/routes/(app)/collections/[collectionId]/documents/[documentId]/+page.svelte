@@ -3,6 +3,9 @@
 	import { resolve } from '$app/paths';
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
+	import Alert from '#lib/components/Alert.svelte';
+	import BackLink from '#lib/components/BackLink.svelte';
+	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import type { Document } from '#lib/stores/collections.svelte.js';
 
 	let document = $state<Document | null>(null);
@@ -18,6 +21,25 @@
 
 	const collectionId = $derived(page.params.collectionId);
 	const documentId = $derived(page.params.documentId);
+
+	interface MetadataRow {
+		label: string;
+		value: string;
+		mono?: boolean;
+	}
+
+	const metadataRows: MetadataRow[] = $derived(
+		document
+			? [
+					{ label: 'ID', value: document.id, mono: true },
+					{ label: 'Type', value: document.file_type },
+					...(document.page_count !== null
+						? [{ label: 'Pages', value: `${document.page_count}` }]
+						: []),
+					{ label: 'Created', value: formatDate(document.created_at) },
+				]
+			: [],
+	);
 
 	/** Robustly convert any thrown value (including Tauri v2 errors) to a string. */
 	function errorMessage(e: unknown): string {
@@ -106,80 +128,51 @@
 
 <div class="flex h-full flex-col bg-surface">
 	<div class="flex-1 overflow-y-auto p-6">
-		<a
-			href={resolve(`collections/${collectionId}/documents`)}
-			class="mb-4 inline-flex items-center gap-1 text-sm text-neutral-500 transition-colors hover:text-primary-600"
-		>
-			<span aria-hidden="true">&larr;</span>
-			<span>Back to documents</span>
-		</a>
+		<div class="mb-4">
+			<BackLink href={resolve(`collections/${collectionId}/documents`)}>
+				Back to documents
+			</BackLink>
+		</div>
 
 		{#if loading}
-			<p class="text-neutral-500">Loading...</p>
+			<LoadingSpinner size="sm" ariaLabel="Loading document" />
 		{:else if error}
-			<div class="rounded-lg border border-error/50 bg-error/10 p-4">
-				<p class="text-error">{error}</p>
-			</div>
+			<Alert>{error}</Alert>
 		{:else if document}
-			<h2 class="mb-6 text-2xl text-neutral-800">
-				{document.name}
-			</h2>
+			<h1 class="text-xl font-medium text-neutral-800">{document.name}</h1>
 
-			<div
-				class="max-w-2xl rounded-lg border border-neutral-200 bg-surface-bright"
-			>
+			<div class="mt-6 max-w-2xl card">
 				<table class="w-full">
-					<tbody class="divide-y divide-neutral-200">
-						<tr>
-							<td class="px-4 py-3 text-sm font-medium text-neutral-500">ID</td>
-							<td class="px-4 py-3 font-mono text-sm text-neutral-700"
-								>{document.id}</td
-							>
-						</tr>
-						<tr>
-							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
-								>Type</td
-							>
-							<td class="px-4 py-3 text-sm text-neutral-700"
-								>{document.file_type}</td
-							>
-						</tr>
-						{#if document.page_count !== null}
+					<tbody class="divide-y divide-line">
+						{#each metadataRows as row (row.label)}
 							<tr>
-								<td class="px-4 py-3 text-sm font-medium text-neutral-500"
-									>Pages</td
+								<td class="px-4 py-3 text-sm font-medium text-muted">
+									{row.label}
+								</td>
+								<td
+									class="px-4 py-3 text-sm text-neutral-700"
+									class:font-mono={row.mono}
 								>
-								<td class="px-4 py-3 text-sm text-neutral-700"
-									>{document.page_count}</td
-								>
+									{row.value}
+								</td>
 							</tr>
-						{/if}
+						{/each}
 						<tr>
-							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
-								>Tags</td
-							>
+							<td class="px-4 py-3 text-sm font-medium text-muted">Tags</td>
 							<td class="px-4 py-3 text-sm text-neutral-700">
 								{#if document.tags.length > 0}
 									<div class="flex flex-wrap gap-1">
 										{#each document.tags as tag (tag)}
 											<span
-												class="rounded bg-secondary-300 px-2 py-0.5 text-xs text-neutral-800"
+												class="rounded-sm bg-secondary-300 px-2 py-0.5 text-xs text-neutral-800"
 												>{tag}</span
 											>
 										{/each}
 									</div>
 								{:else}
-									<span class="italic text-neutral-400">(none)</span>
+									<span class="text-sm italic text-subtle">(none)</span>
 								{/if}
 							</td>
-						</tr>
-						<tr>
-							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
-								>Created</td
-							>
-							<td class="px-4 py-3 text-sm text-neutral-700"
-								>{formatDate(document.created_at)}</td
-							>
 						</tr>
 					</tbody>
 				</table>
@@ -187,26 +180,20 @@
 
 			<!-- Document Content -->
 			<div class="mt-6">
-				<h2
-					class="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-500"
-				>
+				<h2 class="mb-3 text-sm font-medium uppercase tracking-wide text-muted">
 					Content
 				</h2>
 				{#if loadingContent}
-					<p class="text-neutral-500">Loading content...</p>
+					<LoadingSpinner size="sm" ariaLabel="Loading content" />
 				{:else if contentError}
-					<div class="rounded-lg border border-warning/50 bg-warning/10 p-3">
-						<p class="text-sm text-neutral-600">{contentError}</p>
-					</div>
+					<Alert variant="warning">{contentError}</Alert>
 				{:else if content}
-					<div
-						class="max-h-[500px] overflow-y-auto rounded-lg border border-neutral-200 bg-surface-bright p-4"
-					>
+					<div class="max-h-125 overflow-y-auto card p-4">
 						<pre
 							class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-neutral-700">{content}</pre>
 					</div>
 				{:else}
-					<p class="italic text-neutral-500">No content available</p>
+					<p class="text-sm italic text-subtle">No content available</p>
 				{/if}
 			</div>
 
@@ -214,7 +201,7 @@
 			<div class="mt-6">
 				<button
 					onclick={toggleChunks}
-					class="flex items-center gap-2 text-sm font-medium uppercase tracking-wide text-neutral-500 transition-colors hover:text-neutral-700"
+					class="flex items-center gap-2 text-sm font-medium uppercase tracking-wide text-muted transition-colors hover:text-neutral-700 focus-visible:focus-ring"
 				>
 					<span
 						class="inline-block transition-transform"
@@ -224,7 +211,7 @@
 					</span>
 					Text Chunks
 					{#if chunks}
-						<span class="text-xs font-normal normal-case text-neutral-400"
+						<span class="text-xs font-normal normal-case text-subtle"
 							>({chunks.length} chunks)</span
 						>
 					{/if}
@@ -233,21 +220,15 @@
 				{#if chunksExpanded}
 					<div class="mt-3">
 						{#if loadingChunks}
-							<p class="text-neutral-500">Loading chunks...</p>
+							<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
 						{:else if chunksError}
-							<div
-								class="rounded-lg border border-warning/50 bg-warning/10 p-3"
-							>
-								<p class="text-sm text-warning">{chunksError}</p>
-							</div>
+							<Alert variant="warning">{chunksError}</Alert>
 						{:else if chunks && chunks.length > 0}
 							<div class="space-y-3">
 								{#each chunks as chunk, i (i)}
-									<div
-										class="rounded-lg border border-neutral-200 bg-surface-bright p-4"
-									>
+									<div class="card p-4">
 										<div
-											class="mb-2 flex items-center justify-between text-xs text-neutral-400"
+											class="mb-2 flex items-center justify-between text-xs text-subtle"
 										>
 											<span>Chunk {i + 1}</span>
 											<span>{chunk.length} chars</span>
@@ -258,7 +239,7 @@
 								{/each}
 							</div>
 						{:else}
-							<p class="italic text-neutral-500">No chunks generated</p>
+							<p class="text-sm italic text-subtle">No chunks generated</p>
 						{/if}
 					</div>
 				{/if}

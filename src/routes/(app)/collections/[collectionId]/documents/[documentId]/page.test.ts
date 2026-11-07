@@ -18,7 +18,7 @@ const document = {
 };
 
 describe('Document detail page', () => {
-	it('names the document with a second-level heading, below the collection shell', async () => {
+	it('names the document with a content-level heading below the collection shell', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document') return document;
 			if (cmd === 'get_document_text') return 'Extracted text';
@@ -28,12 +28,9 @@ describe('Document detail page', () => {
 
 		render(DocumentPage);
 
-		const heading = await screen.findByRole('heading', {
-			level: 2,
-			name: 'report.pdf',
-		});
-		expect(heading).toBeInTheDocument();
-		expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+		expect(
+			await screen.findByRole('heading', { level: 1, name: 'report.pdf' }),
+		).toBeInTheDocument();
 	});
 
 	it('offers a single compact back link to the document list', async () => {

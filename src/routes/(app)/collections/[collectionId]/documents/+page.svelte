@@ -4,6 +4,7 @@
 	import { open } from '@tauri-apps/plugin-dialog';
 	import Button from '#lib/components/Button.svelte';
 	import Alert from '#lib/components/Alert.svelte';
+	import EmptyState from '#lib/components/EmptyState.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
@@ -90,11 +91,11 @@
 					{@const done = stage.data.completed + stage.data.failed}
 					{@const percent = total > 0 ? (done / total) * 100 : 0}
 					<div class="flex flex-col gap-1">
-						<div class="flex justify-between text-xs text-neutral-500">
+						<div class="flex justify-between text-xs text-muted">
 							<span>{stage.name}</span>
 							<span>{done}/{total}</span>
 						</div>
-						<div class="h-1.5 w-full rounded-full bg-neutral-200">
+						<div class="h-1.5 w-full rounded-full bg-surface-dim">
 							<div
 								class="h-1.5 rounded-full bg-primary-500 transition-all"
 								style="width: {percent}%"
@@ -106,34 +107,32 @@
 		{/if}
 
 		{#if !documentsLoaded && documentsError}
-			<div class="flex flex-col items-start gap-3 py-12">
-				<Alert>Failed to load documents: {documentsError}</Alert>
-				<Button variant="secondary" onclick={retryDocuments}>Retry</Button>
+			<div class="py-12">
+				<Alert>
+					Failed to load documents: {documentsError}
+					{#snippet action()}
+						<Button variant="secondary" onclick={retryDocuments}>Retry</Button>
+					{/snippet}
+				</Alert>
 			</div>
 		{:else if !documentsLoaded}
-			<div
-				class="flex flex-col items-center justify-center py-12"
-				role="status"
-			>
-				<LoadingSpinner size="lg" />
-				<p class="sr-only">Loading documents…</p>
+			<div class="flex justify-center py-12">
+				<LoadingSpinner size="lg" ariaLabel="Loading documents" />
 			</div>
 		{:else if documents.length === 0 && processing}
-			<div class="flex flex-col items-center justify-center py-12 text-center">
-				<p class="text-neutral-500">Processing documents…</p>
-				<p class="mt-1 max-w-sm text-sm text-neutral-400">
-					Documents will appear here as they finish importing.
-				</p>
-			</div>
+			<EmptyState
+				title="Processing documents…"
+				description="Documents will appear here as they finish importing."
+			/>
 		{:else if documents.length === 0}
-			<div class="flex flex-col items-center justify-center py-12 text-center">
-				<p class="text-neutral-500">No documents yet</p>
-				<p class="mt-1 max-w-sm text-sm text-neutral-400">
-					The research agent answers from documents in this collection. Import a
-					PDF to give it sources.
-				</p>
-				<Button class="mt-4" onclick={importPdf}>Import PDF</Button>
-			</div>
+			<EmptyState
+				title="No documents yet"
+				description="The research agent answers from documents in this collection. Import a PDF to give it sources."
+			>
+				{#snippet action()}
+					<Button onclick={importPdf}>Import PDF</Button>
+				{/snippet}
+			</EmptyState>
 		{:else}
 			<div class="mb-4 flex items-center justify-end">
 				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
@@ -142,7 +141,7 @@
 			<ul class="space-y-2">
 				{#each documents as doc (doc.id)}
 					<li
-						class="flex items-center justify-between gap-4 rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
+						class="card flex items-center justify-between gap-4 px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
 						<a
 							href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
@@ -153,7 +152,7 @@
 								>{doc.name}</span
 							>
 							{#if doc.page_count !== null}
-								<span class="ml-2 text-xs text-neutral-500"
+								<span class="ml-2 text-xs text-muted"
 									>{doc.page_count} pages</span
 								>
 							{/if}
