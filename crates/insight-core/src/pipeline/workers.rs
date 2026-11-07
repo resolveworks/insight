@@ -9,8 +9,9 @@ use crate::search::{chunk_external_id, ChunkToIndex, IndexWorkerHandle};
 use crate::storage::{CommitOutcome, DocumentMetadata, Storage};
 
 use super::chunk::chunk_text;
+use super::index_queue::IndexQueue;
 use super::progress::ProgressTracker;
-use super::types::{ExtractJob, IndexJob, ProgressUpdate, Stage};
+use super::types::{ExtractJob, ProgressUpdate, Stage};
 
 /// Shared receiver for multiple workers pulling from one unbounded channel.
 pub struct SharedReceiver<T> {
@@ -46,13 +47,13 @@ pub fn spawn_extract_workers(
     count: usize,
     rx: SharedReceiver<ExtractJob>,
     storage: Arc<RwLock<Storage>>,
-    index_tx: mpsc::UnboundedSender<IndexJob>,
+    index_queue: IndexQueue,
     progress: ProgressTracker,
 ) {
     for i in 0..count {
         let rx = rx.clone();
         let storage = storage.clone();
-        let index_tx = index_tx.clone();
+        let index_queue = index_queue.clone();
         let progress = progress.clone();
 
         tokio::spawn(async move {
@@ -122,11 +123,9 @@ pub fn spawn_extract_workers(
                                 stage: Stage::Extract,
                             })
                             .await;
-                        progress.queue(&collection_id, Stage::Index).await;
-                        let _ = index_tx.send(IndexJob {
-                            namespace_id: job.namespace_id,
-                            doc_id: job.doc_id,
-                        });
+                        index_queue
+                            .enqueue(job.namespace_id, job.doc_id.clone())
+                            .await;
                     }
                     Ok(None) => {
                         // The job is still terminal: the document vanished or
@@ -163,7 +162,7 @@ pub fn spawn_extract_workers(
 /// current canonical extraction. A document that is gone or has no local
 /// canonical text loses its stale chunks.
 pub fn spawn_index_worker(
-    rx: SharedReceiver<IndexJob>,
+    queue: IndexQueue,
     storage: Arc<RwLock<Storage>>,
     index_worker: IndexWorkerHandle,
     progress: ProgressTracker,
@@ -171,7 +170,7 @@ pub fn spawn_index_worker(
     tokio::spawn(async move {
         tracing::debug!("Index worker started");
 
-        while let Some(job) = rx.recv().await {
+        while let Some(job) = queue.recv().await {
             let collection_id = job.namespace_id.to_string();
 
             // Mark as started
@@ -316,14 +315,14 @@ mod tests {
             .unwrap();
 
         let (extract_tx, extract_rx) = mpsc::unbounded_channel();
-        let (index_tx, mut index_rx) = mpsc::unbounded_channel();
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
         let progress = ProgressTracker::new(events_tx);
+        let index_queue = IndexQueue::new(progress.clone());
         spawn_extract_workers(
             1,
             SharedReceiver::new_unbounded(extract_rx),
             storage.clone(),
-            index_tx,
+            index_queue.clone(),
             progress.clone(),
         );
 
@@ -354,7 +353,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        assert!(index_rx.try_recv().is_err(), "deleted document was indexed");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), index_queue.recv())
+                .await
+                .is_err(),
+            "deleted document was indexed"
+        );
 
         let storage = storage.read().await;
         assert!(storage
