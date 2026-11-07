@@ -21,7 +21,6 @@ pub enum CommandError {
 
     // Configuration errors
     ProviderNotConfigured { message: String },
-    NoCollectionScope { message: String },
 
     // Operation errors
     StorageError { message: String },
@@ -60,12 +59,6 @@ impl CommandError {
         }
     }
 
-    pub fn no_collection_scope() -> Self {
-        Self::NoCollectionScope {
-            message: "Pick at least one collection before sending a message".to_string(),
-        }
-    }
-
     pub fn storage(message: impl Into<String>) -> Self {
         Self::StorageError {
             message: message.into(),
@@ -94,7 +87,6 @@ impl std::fmt::Display for CommandError {
             Self::CollectionNotFound { message } => write!(f, "{}", message),
             Self::ConversationNotFound { message } => write!(f, "{}", message),
             Self::ProviderNotConfigured { message } => write!(f, "{}", message),
-            Self::NoCollectionScope { message } => write!(f, "{}", message),
             Self::StorageError { message } => write!(f, "{}", message),
             Self::ExternalError { message } => write!(f, "{}", message),
             Self::InternalError { message } => write!(f, "{}", message),

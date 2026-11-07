@@ -77,6 +77,22 @@ pub async fn delete_collection(
     let collection_id = namespace_id.to_string();
     tracing::info!("Deleting collection {}", collection_id);
 
+    // Cancel any in-flight work belonging to the collection's conversations
+    // before their data disappears.
+    let summaries = state
+        .memory
+        .list_summaries(&collection_id)
+        .await
+        .storage_err()?;
+    for summary in summaries {
+        if let Some(token) = state.active_generations.write().await.remove(&summary.id) {
+            token.cancel();
+        }
+        if let Some(token) = state.active_predictions.write().await.remove(&summary.id) {
+            token.cancel();
+        }
+    }
+
     // Delete from storage first
     {
         let storage = state.storage.read().await;
@@ -88,27 +104,34 @@ pub async fn delete_collection(
 
     // Delete all chunks from search index in background
     let index_worker = state.index_worker.clone();
+    let index_collection_id = collection_id.clone();
     tokio::spawn(async move {
         match index_worker
-            .delete_collection_chunks(collection_id.clone())
+            .delete_collection_chunks(index_collection_id.clone())
             .await
         {
             Ok(deleted_count) => {
                 tracing::info!(
                     "Removed {} chunks from search index for collection {}",
                     deleted_count,
-                    collection_id
+                    index_collection_id
                 );
             }
             Err(e) => {
                 tracing::error!(
                     "Failed to remove chunks from search index for collection {}: {}",
-                    collection_id,
+                    index_collection_id,
                     e
                 );
             }
         }
     });
+
+    state
+        .memory
+        .delete_collection(&collection_id)
+        .await
+        .storage_err()?;
 
     Ok(())
 }

@@ -90,7 +90,6 @@ pub fn run() {
             commands::conversations::start_chat,
             commands::conversations::send_message,
             commands::conversations::cancel_generation,
-            commands::conversations::set_conversation_collections,
             commands::conversations::delete_conversation,
             // Chat provider status
             commands::models::get_provider_status,
