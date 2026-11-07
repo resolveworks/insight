@@ -997,7 +997,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_definitions_expose_names_and_required_params() {
+    async fn tool_definitions_declare_required_params() {
         let (_tmp, state) = create_state().await;
         assert_eq!(
             Search::new(state.clone()).parameters()["required"],
