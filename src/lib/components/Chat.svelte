@@ -202,7 +202,7 @@
 						tone={item.isError ? 'error' : 'neutral'}
 					>
 						<pre
-							class="max-h-48 overflow-auto whitespace-pre-wrap break-words">{item.text}</pre>
+							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{item.text}</pre>
 					</ToolBlock>
 				{/if}
 			{/each}
