@@ -1,20 +1,17 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import * as chat from '#lib/stores/conversations.svelte.js';
+	import type { ConversationSummary } from '#lib/api/conversation.js';
 	import Button from './Button.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
-	import LoadingSpinner from './LoadingSpinner.svelte';
 
 	type Props = {
+		conversations: ConversationSummary[];
+		activeId: string | null;
 		onSelect?: (id: string) => void;
 		onNew?: () => void;
+		onDelete?: (id: string) => void;
 	};
 
-	let { onSelect, onNew }: Props = $props();
-
-	const conversations = $derived(chat.getConversations());
-	const activeId = $derived(chat.getActiveId());
-	const listLoaded = $derived(chat.getIsListLoaded());
+	let { conversations, activeId, onSelect, onNew, onDelete }: Props = $props();
 
 	// Conversation pending delete confirmation, if any.
 	let pendingDelete = $state<{
@@ -22,15 +19,8 @@
 		title: string;
 	} | null>(null);
 
-	// The list is independent of provider configuration; fetch it as soon as
-	// the sidebar mounts so users see their history even before picking a
-	// model.
-	onMount(() => {
-		chat.loadList();
-	});
-
 	function confirmDelete() {
-		if (pendingDelete) chat.deleteConversation(pendingDelete.id);
+		if (pendingDelete) onDelete?.(pendingDelete.id);
 		pendingDelete = null;
 	}
 </script>
@@ -49,11 +39,7 @@
 			Conversations
 		</h3>
 
-		{#if !listLoaded}
-			<div class="px-2 py-4">
-				<LoadingSpinner size="sm" ariaLabel="Loading conversations" />
-			</div>
-		{:else if conversations.length === 0}
+		{#if conversations.length === 0}
 			<p class="px-2 py-4 text-sm italic text-subtle">No conversations yet</p>
 		{:else}
 			<ul class="space-y-1">

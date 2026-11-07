@@ -1,13 +1,9 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { page } from '$app/state';
 import Chat from './Chat.svelte';
 import * as chat from '#lib/stores/conversations.svelte.js';
-
-vi.mock('@tauri-apps/api/event', () => ({
-	listen: vi.fn(async () => () => {}),
-}));
 
 const props = {
 	collectionId: 'col1',
@@ -38,7 +34,6 @@ async function renderChat(
 	opts: RenderOptions = {},
 ) {
 	mockIPC((cmd) => {
-		if (cmd === 'list_conversations') return opts.conversations ?? [];
 		if (cmd === 'load_conversation') {
 			return {
 				id: 'c1',
@@ -50,7 +45,7 @@ async function renderChat(
 		if (cmd === 'list_providers') return [];
 	});
 
-	await chat.initialize(collectionId);
+	await chat.initialize(collectionId, opts.conversations ?? []);
 	page.data = {
 		provider: {
 			current: null,
@@ -140,9 +135,6 @@ describe('Chat', () => {
 
 	it('renders reasoning and tool activity as open disclosures, flagging a failed result', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'list_conversations') {
-				return [{ id: 'c1', title: 'Existing chat' }];
-			}
 			if (cmd === 'list_providers') return [];
 			if (cmd === 'load_conversation') {
 				return {
@@ -185,7 +177,7 @@ describe('Chat', () => {
 			}
 		});
 
-		await chat.initialize('tools');
+		await chat.initialize('tools', [{ id: 'c1', title: 'Existing chat' }]);
 		// Provider setup (not the composer) below the transcript keeps the
 		// prediction timer out of the test.
 		render(Chat, {
@@ -210,9 +202,6 @@ describe('Chat', () => {
 		const calls: string[] = [];
 		mockIPC((cmd) => {
 			calls.push(cmd);
-			if (cmd === 'list_conversations') {
-				return [{ id: 'c1', title: 'Existing chat' }];
-			}
 			if (cmd === 'load_conversation') {
 				return {
 					id: 'c1',
@@ -228,7 +217,9 @@ describe('Chat', () => {
 			}
 		});
 
-		await chat.initialize('no-prediction');
+		await chat.initialize('no-prediction', [
+			{ id: 'c1', title: 'Existing chat' },
+		]);
 		render(Chat, { props: { ...props, documentCount: 0 } });
 
 		await screen.findByText('Earlier question');

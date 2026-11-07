@@ -1,6 +1,6 @@
 /**
  * TypeScript mirrors of the rig serde payloads the backend forwards to the
- * frontend (conversations and the `agent-event-{id}` stream).
+ * frontend (conversations and their streamed chat items).
  *
  * Sources (rig v0.46.0, from crates.io):
  * - rig-core `completion/message.rs` — `Message`, `AssistantMessage`,
@@ -238,7 +238,7 @@ export type RigStreamItem =
 	| { item: 'unknown'; value: unknown };
 
 // =============================================================================
-// MultiTurnStreamItem (the `agent-event-{conversationId}` payloads)
+// MultiTurnStreamItem (the chat channel messages)
 // =============================================================================
 
 export type StreamAssistantItem = {

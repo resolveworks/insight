@@ -1,17 +1,23 @@
 /**
- * Conversations store. Owns the conversation list of the active collection,
- * the active conversation's state (messages), and the streaming chat
- * pipeline.
+ * Conversations store. Owns the active conversation's state (messages) and
+ * the streaming chat pipeline.
  *
- * The backend streams serialized rig `MultiTurnStreamItem`s on
- * `agent-event-{conversationId}`; the live assistant state (text deltas,
- * streamed tool-call arguments, reasoning, tool results) is assembled here
- * from those events. After `finalResponse` (or `streamError`) the
+ * Each send opens a Tauri Channel; the backend streams serialized rig
+ * `MultiTurnStreamItem`s through it, and the live assistant state (text
+ * deltas, streamed tool-call arguments, reasoning, tool results) is assembled
+ * here from those items. After `finalResponse` (or `streamError`) the
  * authoritative history is re-fetched via `load_conversation`.
  */
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import { invalidate } from '$app/navigation';
 import type { MultiTurnStreamItem, RigMessage } from '#lib/types/rig.js';
+import {
+	deleteConversation as deleteConversationCommand,
+	loadConversation,
+	startChat,
+	type ConversationSummary,
+	type ConversationView,
+} from '#lib/api/conversation.js';
 import {
 	applyItem,
 	buildTranscript,
@@ -19,22 +25,6 @@ import {
 	type LiveRun,
 	type TranscriptItem,
 } from '#lib/chat/transcript.js';
-
-// =============================================================================
-// Types (backend contract)
-// =============================================================================
-
-export interface ConversationView {
-	id: string;
-	collection_id: string;
-	title: string;
-	messages: RigMessage[];
-}
-
-export interface ConversationSummary {
-	id: string;
-	title: string;
-}
 
 // =============================================================================
 // State
@@ -55,7 +45,6 @@ function readStoredId(collectionId: string): string | null {
 	}
 }
 
-let conversations = $state<ConversationSummary[]>([]);
 let activeCollectionId = $state<string | null>(null);
 let activeId = $state<string | null>(null);
 let activeMessages = $state<RigMessage[]>([]);
@@ -65,10 +54,8 @@ let live = $state<LiveRun>(emptyLiveRun());
 let runBase = 0;
 let isGenerating = $state(false);
 let isLoading = $state(false);
-let listLoaded = $state(false);
 let error = $state<string | null>(null);
 
-let unlistenAgent: UnlistenFn | undefined;
 let initPromise: Promise<void> | null = null;
 // Synchronous send guard: blocks re-entry while a draft conversation is
 // being created (before `isGenerating`/`activeId` would catch it).
@@ -92,10 +79,8 @@ function persistActiveId() {
 	}
 }
 
-/** Detach the stream listener and drop the active conversation's state. */
+/** Drop the active conversation's state. */
 function resetActive() {
-	unlistenAgent?.();
-	unlistenAgent = undefined;
 	activeId = null;
 	activeMessages = [];
 	runBase = 0;
@@ -114,14 +99,6 @@ function adoptConversation(conv: ConversationView) {
 	activeMessages = conv.messages ?? [];
 	runBase = conv.messages?.length ?? 0;
 	live = emptyLiveRun();
-}
-
-async function attachListener(convId: string) {
-	unlistenAgent?.();
-	unlistenAgent = await listen<MultiTurnStreamItem>(
-		`agent-event-${convId}`,
-		(e) => handleAgentEvent(convId, e.payload),
-	);
 }
 
 /**
@@ -152,7 +129,7 @@ async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
 			];
 			live = emptyLiveRun();
 			await loadById(convId, { silent: true });
-			refreshList();
+			await invalidate(`app:conversations:${activeCollectionId}`);
 			break;
 		}
 
@@ -162,27 +139,13 @@ async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
 			isGenerating = false;
 			live = emptyLiveRun();
 			await loadById(convId, { silent: true });
-			refreshList();
+			await invalidate(`app:conversations:${activeCollectionId}`);
 			break;
 		}
 
 		default:
 			applyStreamItem(payload);
 			break;
-	}
-}
-
-async function refreshList() {
-	const collectionId = activeCollectionId;
-	if (!collectionId) return;
-	try {
-		conversations = await invoke<ConversationSummary[]>('list_conversations', {
-			collectionId,
-		});
-	} catch (e) {
-		console.error('Failed to list conversations:', e);
-	} finally {
-		listLoaded = true;
 	}
 }
 
@@ -199,14 +162,9 @@ async function loadById(
 			throw new Error('Cannot load a conversation without a collection');
 		}
 
-		const conv = await invoke<ConversationView>('load_conversation', {
-			collectionId,
-			conversationId: id,
-		});
+		const conv = await loadConversation(collectionId, id);
 
 		adoptConversation(conv);
-
-		await attachListener(conv.id);
 		persistActiveId();
 		return true;
 	} catch (e) {
@@ -230,15 +188,10 @@ async function createNew(): Promise<boolean> {
 			throw new Error('Cannot start a chat without a collection');
 		}
 
-		const conv = await invoke<ConversationView>('start_chat', {
-			collectionId,
-		});
+		const conv = await startChat(collectionId);
 
 		adoptConversation(conv);
-
-		await attachListener(conv.id);
 		persistActiveId();
-		await refreshList();
 		return true;
 	} catch (e) {
 		error = `Failed to start chat: ${e}`;
@@ -260,7 +213,10 @@ async function createNew(): Promise<boolean> {
  * the most recent one, else the draft state (nothing is persisted until the
  * first message is sent).
  */
-export async function initialize(collectionId: string): Promise<void> {
+export async function initialize(
+	collectionId: string,
+	conversations: ConversationSummary[],
+): Promise<void> {
 	if (activeCollectionId === collectionId) {
 		await initPromise;
 		return;
@@ -273,11 +229,7 @@ export async function initialize(collectionId: string): Promise<void> {
 	initPromise = (async () => {
 		resetActive();
 		activeCollectionId = collectionId;
-		conversations = [];
 		error = null;
-		listLoaded = false;
-
-		await refreshList();
 
 		const stored = readStoredId(collectionId);
 		if (stored && conversations.some((c) => c.id === stored)) {
@@ -299,15 +251,6 @@ export async function initialize(collectionId: string): Promise<void> {
 	}
 }
 
-/**
- * Fetch the conversation list of the active collection. Safe to call before a
- * chat provider is configured — listing doesn't require one, only creating a
- * new chat does.
- */
-export async function loadList(): Promise<void> {
-	await refreshList();
-}
-
 /** Load a conversation by ID (called when the user clicks a history item). */
 export async function selectConversation(id: string): Promise<void> {
 	if (id === activeId) return;
@@ -323,31 +266,30 @@ export function newConversation(): void {
 }
 
 /**
- * Delete a conversation. Optimistically removes it from the sidebar; on
- * failure the list is restored. If the deleted chat was active, the next
- * most-recent chat is opened, or the draft state is entered if none remain.
+ * Delete a conversation. If it was active, open the next one in
+ * `remainingConversations`, or enter the draft state if none remain.
  */
-export async function deleteConversation(id: string): Promise<boolean> {
+export async function deleteConversation(
+	id: string,
+	remainingConversations: ConversationSummary[],
+): Promise<boolean> {
 	const collectionId = activeCollectionId;
 	if (!collectionId) return false;
 
-	const previous = conversations;
 	const wasActive = activeId === id;
-	conversations = conversations.filter((c) => c.id !== id);
 
 	try {
-		await invoke('delete_conversation', { collectionId, conversationId: id });
+		await deleteConversationCommand(collectionId, id);
 	} catch (e) {
 		error = `Failed to delete conversation: ${e}`;
 		console.error('Failed to delete conversation:', e);
-		conversations = previous;
 		return false;
 	}
 
 	if (wasActive) {
 		clearActive();
-		if (conversations.length > 0) {
-			await loadById(conversations[0].id, { silent: true });
+		if (remainingConversations.length > 0) {
+			await loadById(remainingConversations[0].id, { silent: true });
 		}
 		// Otherwise: stay in draft state (already set by clearActive).
 	}
@@ -358,6 +300,10 @@ export async function deleteConversation(id: string): Promise<boolean> {
 export async function sendMessage(text: string): Promise<void> {
 	const trimmed = text.trim();
 	if (!trimmed || isGenerating || sendInFlight) return;
+	const collectionId = activeCollectionId;
+	if (!collectionId) {
+		throw new Error('Cannot send a message without a collection');
+	}
 	sendInFlight = true;
 	try {
 		// Draft state: persist the conversation in the active collection now.
@@ -375,10 +321,18 @@ export async function sendMessage(text: string): Promise<void> {
 		isGenerating = true;
 		live = emptyLiveRun();
 
+		const channel = new Channel<MultiTurnStreamItem>();
+		channel.onmessage = (item) => {
+			if (convId !== activeId) return;
+			void handleAgentEvent(convId, item);
+		};
+
 		try {
 			await invoke('send_message', {
+				collectionId,
 				conversationId: convId,
 				message: trimmed,
+				onEvent: channel,
 			});
 		} catch (e) {
 			error = `Failed to send message: ${e}`;
@@ -434,10 +388,6 @@ export function clearError(): void {
 // Reactive getters
 // =============================================================================
 
-export function getConversations(): ConversationSummary[] {
-	return conversations;
-}
-
 export function getActiveCollectionId(): string | null {
 	return activeCollectionId;
 }
@@ -461,10 +411,6 @@ export function getIsGenerating(): boolean {
 
 export function getIsLoading(): boolean {
 	return isLoading;
-}
-
-export function getIsListLoaded(): boolean {
-	return listLoaded;
 }
 
 export function getError(): string | null {

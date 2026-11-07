@@ -14,6 +14,12 @@ import {
 	listDocuments,
 	startImport,
 } from './document';
+import {
+	deleteConversation,
+	listConversations,
+	loadConversation,
+	startChat,
+} from './conversation';
 
 const collection = {
 	id: 'col1',
@@ -166,5 +172,53 @@ describe('Document commands', () => {
 
 		expect(await getPipelineProgress()).toEqual(progress);
 		expect(invalidate).not.toHaveBeenCalled();
+	});
+});
+
+describe('Conversation commands', () => {
+	const summary = { id: 'c1', title: 'Climate research' };
+	const view = {
+		id: 'c1',
+		collection_id: 'col1',
+		title: 'Climate research',
+		messages: [],
+	};
+
+	it('lists and loads conversations without re-reading the list', async () => {
+		mockIPC((cmd, args) => {
+			if (cmd === 'list_conversations') return [summary];
+			if (
+				cmd === 'load_conversation' &&
+				commandArgs(args).conversationId === 'c1'
+			)
+				return view;
+		});
+
+		expect(await listConversations('col1')).toEqual([summary]);
+		expect(await loadConversation('col1', 'c1')).toEqual(view);
+		expect(invalidate).not.toHaveBeenCalled();
+	});
+
+	it('re-reads the conversation list after starting a chat', async () => {
+		mockIPC((cmd, args) => {
+			if (cmd === 'start_chat' && commandArgs(args).collectionId === 'col1')
+				return view;
+		});
+
+		expect(await startChat('col1')).toEqual(view);
+		expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
+	});
+
+	it('re-reads the conversation list after deleting a conversation', async () => {
+		mockIPC((cmd, args) => {
+			if (
+				cmd === 'delete_conversation' &&
+				commandArgs(args).conversationId === 'c1'
+			)
+				return null;
+		});
+
+		await deleteConversation('col1', 'c1');
+		expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
 	});
 });

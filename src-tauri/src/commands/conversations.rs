@@ -4,7 +4,7 @@
 
 use rig_core::completion::Message;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{ipc::Channel, State};
 use tokio_util::sync::CancellationToken;
 
 use super::CollectionId;
@@ -155,10 +155,10 @@ pub async fn delete_conversation(
     Ok(())
 }
 
-/// Send a message to a conversation and stream the agent's response as
-/// `agent-event-{id}` Tauri events.
+/// Send a message to a conversation and stream the agent's response through
+/// the caller's channel.
 ///
-/// Each event payload is one serialized rig `MultiTurnStreamItem` (JSON,
+/// Each message is one serialized rig `MultiTurnStreamItem` (JSON,
 /// `type`-tagged, camelCase). Stream errors surface as a final
 /// `{"type":"streamError","message":...}` payload on the same channel. The
 /// command returns immediately; the run continues in a spawned task until it
@@ -168,7 +168,7 @@ pub async fn send_message(
     collection_id: CollectionId,
     conversation_id: String,
     message: String,
-    app: AppHandle,
+    on_event: Channel<serde_json::Value>,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     tracing::info!(
@@ -188,23 +188,17 @@ pub async fn send_message(
     let state_clone = state.inner().clone();
     let collection_id = collection_id.namespace().to_string();
     let conv_id = conversation_id.clone();
-    let app_handle = app.clone();
-    let app_handle_error = app.clone();
+    let error_channel = on_event.clone();
 
     tokio::spawn(async move {
-        let event_name = format!("agent-event-{}", conv_id);
-        let emitter = move |value: serde_json::Value| {
-            if let Err(e) = app_handle.emit(&event_name, &value) {
-                tracing::error!("Failed to emit agent event: {}", e);
-            }
-        };
-
         if let Err(e) = runtime::send_message(
             &state_clone,
             &collection_id,
             &conv_id,
             message,
-            emitter,
+            move |value| {
+                let _ = on_event.send(value);
+            },
             cancel_token,
         )
         .await
@@ -216,16 +210,12 @@ pub async fn send_message(
                 "Agent run error"
             );
             // The run failed before or outside the stream: the frontend is
-            // waiting on the event channel, so surface the failure there
-            // instead of leaving the chat stuck in its generating state.
-            let event_name = format!("agent-event-{}", conv_id);
-            let _ = app_handle_error.emit(
-                &event_name,
-                &serde_json::json!({
-                    "type": "streamError",
-                    "message": format!("Agent run failed: {e}"),
-                }),
-            );
+            // waiting on the channel, so surface the failure there instead of
+            // leaving the chat stuck in its generating state.
+            let _ = error_channel.send(serde_json::json!({
+                "type": "streamError",
+                "message": format!("Agent run failed: {e}"),
+            }));
         }
 
         // Cleanup: drop the cancel token so a later generation can register
