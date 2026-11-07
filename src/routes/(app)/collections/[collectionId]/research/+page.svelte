@@ -3,7 +3,7 @@
 	import Chat from '#lib/components/Chat.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
-	import SetupScreen from '#lib/components/SetupScreen.svelte';
+	import * as collections from '#lib/stores/collections.svelte.js';
 	import {
 		isLoaded,
 		isProviderReady,
@@ -11,49 +11,54 @@
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
 	const collectionId = $derived(page.params.collectionId ?? '');
+	const collection = $derived(collections.getCollection(collectionId));
 	const loaded = $derived(isLoaded());
 	const providerReady = $derived(isProviderReady());
 	const activeCollectionId = $derived(chat.getActiveCollectionId());
 
-	// The page owns initialization: bind the store to this collection once the
-	// provider is known, then the sidebar and chat below render for it.
+	// Conversation history is local: bind it as soon as the collection is
+	// known, independent of the chat provider. Only the main pane is gated.
 	$effect(() => {
-		if (loaded && providerReady && collectionId) {
+		if (collectionId) {
 			void chat.initialize(collectionId);
 		}
 	});
 </script>
 
-{#if !loaded}
-	<!-- Provider state unknown: minimal spinner pane -->
-	<div class="flex h-full items-center justify-center bg-surface">
-		<LoadingSpinner size="lg" />
-	</div>
-{:else if !providerReady}
-	<!-- First-run setup: focused provider configuration screen -->
-	<SetupScreen />
-{:else if activeCollectionId !== collectionId}
-	<!-- Store still bound to another collection; never render a mismatched list -->
-	<div class="flex h-full items-center justify-center bg-surface">
-		<LoadingSpinner size="lg" />
-	</div>
-{:else}
-	<div class="flex h-full overflow-hidden">
-		<!-- Left sidebar: this collection's conversation history -->
-		<aside
-			class="flex w-64 flex-col border-r border-primary-700 bg-primary-600 text-surface"
-		>
-			<div class="flex-1 overflow-y-auto">
-				<ConversationSidebar
-					onSelect={(id) => chat.selectConversation(id)}
-					onNew={() => chat.newConversation()}
-				/>
+<div class="flex h-full overflow-hidden">
+	<!-- Left sidebar: this collection's conversation history, always local -->
+	<aside
+		class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-neutral-200 bg-surface-dim"
+	>
+		{#if activeCollectionId === collectionId}
+			<ConversationSidebar
+				onSelect={(id) => chat.selectConversation(id)}
+				onNew={() => chat.newConversation()}
+			/>
+		{:else}
+			<div class="flex h-full items-center justify-center">
+				<LoadingSpinner />
 			</div>
-		</aside>
+		{/if}
+	</aside>
 
-		<!-- Main: Chat -->
-		<div class="flex-1">
-			<Chat />
-		</div>
-	</div>
-{/if}
+	<!-- Main pane: chat, with provider setup in its lower region if needed -->
+	<main class="min-w-0 flex-1 overflow-hidden">
+		{#if !loaded}
+			<div class="flex h-full items-center justify-center bg-surface">
+				<LoadingSpinner size="lg" />
+			</div>
+		{:else if activeCollectionId !== collectionId || !collection}
+			<div class="flex h-full items-center justify-center bg-surface">
+				<LoadingSpinner size="lg" />
+			</div>
+		{:else}
+			<Chat
+				{collectionId}
+				collectionName={collection.name}
+				documentCount={collection.document_count}
+				{providerReady}
+			/>
+		{/if}
+	</main>
+</div>

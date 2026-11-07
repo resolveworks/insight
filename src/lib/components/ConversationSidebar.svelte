@@ -33,11 +33,11 @@
 	}
 </script>
 
-<div class="flex flex-col">
-	<div class="border-b border-primary-700 p-3">
+<div class="flex h-full flex-col">
+	<div class="border-b border-neutral-200 p-3">
 		<button
 			onclick={() => onNew?.()}
-			class="w-full rounded-md bg-secondary-400 px-3 py-2 text-sm font-medium text-neutral-800 hover:bg-secondary-500"
+			class="w-full rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-neutral-400 hover:text-neutral-900"
 		>
 			New Chat
 		</button>
@@ -45,29 +45,30 @@
 
 	<div class="flex-1 overflow-y-auto p-2">
 		<h3
-			class="px-2 py-1 text-xs font-medium uppercase tracking-wide text-primary-300"
+			class="px-2 py-1 text-xs font-medium uppercase tracking-wide text-neutral-400"
 		>
-			History
+			Conversations
 		</h3>
 
 		{#if !listLoaded}
-			<p class="px-2 py-4 text-sm text-primary-300">Loading...</p>
+			<p class="px-2 py-4 text-sm text-neutral-400">Loading...</p>
 		{:else if conversations.length === 0}
-			<p class="px-2 py-4 text-sm italic text-primary-300">
+			<p class="px-2 py-4 text-sm italic text-neutral-400">
 				No conversations yet
 			</p>
 		{:else}
 			<ul class="space-y-1">
 				{#each conversations as conv (conv.id)}
 					<li
-						class="group flex items-center rounded transition
+						class="group flex items-center rounded transition-colors
 							{activeId === conv.id
-							? 'bg-primary-500 text-surface'
-							: 'text-primary-100 hover:bg-primary-500'}"
+							? 'bg-neutral-200 text-neutral-900'
+							: 'text-neutral-600 hover:bg-neutral-100'}"
 					>
 						<button
 							onclick={() => onSelect?.(conv.id)}
-							class="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
+							aria-current={activeId === conv.id ? 'true' : undefined}
+							class="min-w-0 flex-1 truncate rounded px-2 py-1.5 text-left text-sm focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:outline-none"
 						>
 							{conv.title}
 						</button>
@@ -79,7 +80,7 @@
 									title: conv.title,
 								};
 							}}
-							class="px-2 py-1.5 text-primary-200 opacity-60 transition-opacity hover:opacity-100 hover:text-error"
+							class="rounded px-2 py-1.5 text-neutral-400 transition-colors hover:text-error focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:outline-none"
 							title="Delete chat"
 							aria-label="Delete chat"
 						>

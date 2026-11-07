@@ -1,10 +1,24 @@
 <script lang="ts">
 	import { tick } from 'svelte';
+	import { resolve } from '$app/paths';
 	import Markdown from './Markdown.svelte';
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
+	import SetupScreen from './SetupScreen.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
+
+	type Props = {
+		collectionId: string;
+		collectionName: string;
+		documentCount: number;
+		providerReady: boolean;
+	};
+
+	let { collectionId, collectionName, documentCount, providerReady }: Props =
+		$props();
+
+	const hasDocuments = $derived(documentCount > 0);
 
 	// Reactive reads from the conversations store
 	const activeId = $derived(chat.getActiveId());
@@ -41,7 +55,8 @@
 	});
 
 	async function sendMessage() {
-		if (!inputValue.trim() || isGenerating) return;
+		if (!inputValue.trim() || isGenerating || !hasDocuments || !providerReady)
+			return;
 		const text = inputValue;
 		inputValue = '';
 		await chat.sendMessage(text);
@@ -78,7 +93,14 @@
 			cancelPrediction();
 			return;
 		}
-		if (isGenerating || isLoading || !activeId || messages.length === 0) {
+		if (
+			isGenerating ||
+			isLoading ||
+			!activeId ||
+			messages.length === 0 ||
+			!hasDocuments ||
+			!providerReady
+		) {
 			prediction = '';
 			return;
 		}
@@ -103,15 +125,38 @@
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
 		{#if messages.length === 0}
-			<div class="flex h-full items-center justify-center">
-				<div class="text-center text-neutral-500">
-					<div class="mb-2 text-lg">Ask questions about your documents</div>
-					<div class="text-sm">
-						The agent can search and read this collection's documents to help
-						you find information
+			{#if !hasDocuments}
+				<div class="flex h-full items-center justify-center">
+					<div class="max-w-md text-center">
+						<div class="mb-2 text-lg text-neutral-800">
+							No documents in {collectionName}
+						</div>
+						<p class="text-sm text-neutral-500">
+							Research answers need sources. Add documents to this collection
+							before asking questions.
+						</p>
+						<a
+							href={resolve(`collections/${collectionId}/documents`)}
+							class="mt-4 inline-flex rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
+						>
+							Go to Documents
+						</a>
 					</div>
 				</div>
-			</div>
+			{:else}
+				<div class="flex h-full items-center justify-center">
+					<div class="text-center text-neutral-500">
+						<div class="mb-2 text-lg text-neutral-800">
+							Ask questions about {collectionName}
+						</div>
+						<div class="text-sm">
+							{documentCount}
+							{documentCount === 1 ? 'document' : 'documents'} ready to search and
+							read
+						</div>
+					</div>
+				</div>
+			{/if}
 		{:else}
 			<!-- One renderer over the unified transcript: stored history and the
 			     live run are the same view model, so a run committing only
@@ -199,25 +244,39 @@
 		<ErrorAlert variant="banner">{error}</ErrorAlert>
 	{/if}
 
-	<!-- Input Area -->
-	<div class="border-t border-neutral-300 bg-surface-bright p-4">
-		<div class="flex gap-2">
-			<GhostInput
-				type="text"
-				bind:value={inputValue}
-				ghostText={prediction}
-				onkeydown={handleKeydown}
-				onAcceptGhost={handleAcceptPrediction}
-				placeholder="Ask about your documents..."
-				disabled={isGenerating}
-			/>
-			{#if isGenerating}
-				<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
-			{:else}
-				<Button onclick={sendMessage} disabled={!inputValue.trim()}>
-					Send
-				</Button>
-			{/if}
+	{#if providerReady}
+		<!-- Input Area -->
+		<div class="border-t border-neutral-300 bg-surface-bright p-4">
+			<div class="flex gap-2">
+				<GhostInput
+					type="text"
+					bind:value={inputValue}
+					ghostText={prediction}
+					onkeydown={handleKeydown}
+					onAcceptGhost={handleAcceptPrediction}
+					placeholder={hasDocuments
+						? 'Ask about your documents...'
+						: 'Add documents to start asking questions'}
+					disabled={isGenerating || !hasDocuments}
+				/>
+				{#if isGenerating}
+					<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
+				{:else}
+					<Button
+						onclick={sendMessage}
+						disabled={!hasDocuments || !inputValue.trim()}
+					>
+						Send
+					</Button>
+				{/if}
+			</div>
 		</div>
-	</div>
+	{:else}
+		<!-- Provider setup lives below the transcript so local history stays readable -->
+		<div
+			class="h-80 max-h-[55%] shrink-0 overflow-y-auto border-t border-neutral-300"
+		>
+			<SetupScreen />
+		</div>
+	{/if}
 </div>
