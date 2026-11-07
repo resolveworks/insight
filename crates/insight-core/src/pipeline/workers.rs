@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, Mutex, RwLock};
 
-use crate::search::{ChunkToIndex, IndexWorkerHandle};
+use crate::search::{chunk_external_id, ChunkToIndex, IndexWorkerHandle};
 use crate::storage::Storage;
 
 use super::chunk::chunk_text;
@@ -186,7 +186,7 @@ pub fn spawn_index_worker(
                     } else {
                         // Delete old chunks first
                         if let Err(e) = index_worker
-                            .delete_document_chunks(job.doc_id.clone())
+                            .delete_document_chunks(collection_id.clone(), job.doc_id.clone())
                             .await
                         {
                             tracing::warn!(
@@ -200,7 +200,7 @@ pub fn spawn_index_worker(
                             .into_iter()
                             .enumerate()
                             .map(|(i, chunk)| ChunkToIndex {
-                                id: format!("{}_chunk_{}", metadata.id, i),
+                                id: chunk_external_id(&collection_id, &metadata.id, i),
                                 parent_id: metadata.id.clone(),
                                 parent_name: metadata.name.clone(),
                                 chunk_index: i,

@@ -231,16 +231,18 @@ pub async fn delete_document(
 
     // Delete all chunks for this document from search index in background
     let index_worker = state.index_worker.clone();
+    let collection = namespace_id.to_string();
     tokio::spawn(async move {
         match index_worker
-            .delete_document_chunks(document_id.clone())
+            .delete_document_chunks(collection.clone(), document_id.clone())
             .await
         {
             Ok(count) => {
                 tracing::info!(
-                    "Removed {} chunks for document {} from search index",
+                    "Removed {} chunks for document {} in collection {} from search index",
                     count,
-                    document_id
+                    document_id,
+                    collection
                 );
             }
             Err(e) => {
