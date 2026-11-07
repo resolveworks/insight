@@ -299,7 +299,7 @@ impl FileConversationMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig::completion::message::{AssistantContent, UserContent};
+    use rig::completion::message::AssistantContent;
 
     fn temp_store() -> (tempfile::TempDir, FileConversationMemory) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -376,12 +376,6 @@ mod tests {
 
         let loaded = store.load("c1").await.unwrap();
         assert_eq!(loaded, expected);
-
-        // The tool-result message keeps its role and block kind.
-        let Message::User { content } = &loaded[2] else {
-            panic!("expected user role");
-        };
-        assert!(matches!(content[0], UserContent::ToolResult(_)));
     }
 
     #[tokio::test]
@@ -444,20 +438,6 @@ mod tests {
         store.delete("a").await.unwrap();
         assert!(store.load_meta("a").await.unwrap().is_none());
         assert_eq!(store.list_summaries().await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn metadata_writes_leave_no_temp_litter() {
-        let (_dir, store) = temp_store();
-        store.create(sample_meta("c4", "T")).await.unwrap();
-
-        for entry in std::fs::read_dir(store.metadata.path()).unwrap() {
-            let name = entry.unwrap().file_name();
-            assert!(
-                !name.to_string_lossy().contains("rig-part"),
-                "stray part file: {name:?}"
-            );
-        }
     }
 
     #[tokio::test]

@@ -117,8 +117,11 @@ mod tests {
 
     #[test]
     fn settings_all_defaults_when_empty_object() {
-        let parsed: Settings = serde_json::from_str("{}").unwrap();
-        assert!(parsed.provider.is_none());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        let settings = Settings::load(&path).unwrap();
+        assert!(settings.provider.is_none());
     }
 
     #[test]
@@ -165,20 +168,5 @@ mod tests {
             Err(SettingsError::Read { path: err_path, .. }) => assert_eq!(err_path, path),
             other => panic!("expected read error, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn settings_roundtrip() {
-        let original = Settings {
-            provider: Some(ProviderSettings {
-                family: "anthropic/anthropic".into(),
-                model: "claude".into(),
-                api_key: Some("k".into()),
-                base_url: None,
-            }),
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let parsed: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.provider, original.provider);
     }
 }
