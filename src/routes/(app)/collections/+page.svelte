@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import Input from '#lib/components/Input.svelte';
 	import Alert from '#lib/components/Alert.svelte';
@@ -27,8 +28,6 @@
 
 	// Delete confirmation state
 	let deletingCollection = $state<{ id: string; name: string } | null>(null);
-
-	const breadcrumbs = [{ label: 'Collections' }];
 
 	const collectionList = $derived(collections.getCollections());
 	const loading = $derived(collections.isLoading());
@@ -102,10 +101,7 @@
 </script>
 
 <div class="flex h-full flex-col">
-	<!-- Header -->
-	<header class="border-b border-neutral-200 bg-surface-bright px-6 py-4">
-		<Breadcrumb segments={breadcrumbs} />
-	</header>
+	<PageHeader title="Collections" />
 
 	<!-- Content -->
 	<div class="flex-1 overflow-y-auto p-6">
@@ -130,12 +126,8 @@
 		<!-- Collections grid -->
 		{#if !loaded}
 			{#if loading}
-				<div
-					class="flex flex-col items-center justify-center py-12"
-					role="status"
-				>
-					<LoadingSpinner size="lg" />
-					<p class="sr-only">Loading collections…</p>
+				<div class="flex justify-center py-12">
+					<LoadingSpinner size="lg" ariaLabel="Loading collections" />
 				</div>
 			{:else if loadError}
 				<Alert>Failed to load collections: {loadError}</Alert>
@@ -147,25 +139,22 @@
 				</div>
 			{/if}
 			{#if collectionList.length === 0}
-				<div class="flex flex-col items-center justify-center py-12">
-					<p class="text-neutral-500">No collections yet</p>
-					<p class="mt-1 text-sm text-neutral-400">
-						Create one above to start organizing your documents.
-					</p>
-				</div>
+				<EmptyState
+					title="No collections yet"
+					description="Create one above to start organizing your documents."
+				/>
 			{:else}
 				<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
 					{#each collectionList as collection (collection.id)}
 						<article
-							class="flex flex-col rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
+							class="card flex flex-col p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
 						>
 							<a href={resolve(`collections/${collection.id}`)} class="block">
 								<h3 class="font-medium text-neutral-800">
 									{collection.name}
 								</h3>
-								<p class="mt-1 text-sm text-neutral-500">
-									{collection.document_count}
-									{collection.document_count === 1 ? 'document' : 'documents'}
+								<p class="mt-1 text-sm text-muted">
+									{collections.documentCountLabel(collection.document_count)}
 								</p>
 								<p class="mt-3 text-sm font-medium text-primary-600">
 									Open research workspace
@@ -173,7 +162,7 @@
 								</p>
 							</a>
 
-							<div class="mt-4 flex gap-2 border-t border-neutral-100 pt-3">
+							<div class="mt-4 flex gap-2 border-t border-line pt-3">
 								<Button
 									variant="secondary"
 									size="sm"
@@ -212,8 +201,7 @@
 				placeholder="Paste ticket here..."
 				bind:value={importTicket}
 				rows="3"
-				class="w-full resize-none rounded-md border border-neutral-300 bg-surface px-3 py-2 text-sm placeholder-neutral-400 focus:border-primary-400 focus:outline-none"
-			></textarea>
+				class="field w-full resize-none text-sm"></textarea>
 			<Button
 				fullWidth
 				onclick={handleImportCollection}
@@ -241,17 +229,15 @@
 						{ticketCopied ? 'Copied!' : 'Copy'}
 					</Button>
 				</div>
-				<p class="text-xs text-neutral-400">
+				<p class="text-xs text-subtle">
 					Share this ticket with others to sync this collection
 				</p>
-				<p class="text-xs text-neutral-500">
-					Access cannot be revoked once shared.
-				</p>
+				<p class="text-xs text-muted">Access cannot be revoked once shared.</p>
 			</div>
 		{:else if shareError}
 			<Alert>{shareError}</Alert>
 		{:else}
-			<p class="text-sm text-neutral-400">Generating ticket...</p>
+			<p class="text-sm text-subtle">Generating ticket...</p>
 		{/if}
 	</Modal>
 {/if}

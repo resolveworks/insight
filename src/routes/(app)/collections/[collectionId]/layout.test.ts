@@ -28,6 +28,9 @@ beforeAll(async () => {
 
 function renderWorkspace(pathname: string) {
 	page.url = new URL(`http://localhost${pathname}`);
+	page.route.id = pathname.endsWith('/documents')
+		? '/(app)/collections/[collectionId]/documents'
+		: '/(app)/collections/[collectionId]/research';
 	page.params = { collectionId: 'col1' };
 	render(Layout, {
 		props: {

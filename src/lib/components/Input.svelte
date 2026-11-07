@@ -22,8 +22,7 @@
 
 	let effectivePlaceholder = $derived(ghostText || placeholder);
 
-	const inputClasses =
-		'flex-1 rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-neutral-800 placeholder-neutral-400 focus:border-tertiary-400 focus:outline-none disabled:opacity-50';
+	const inputClasses = 'field';
 
 	function handleKeyDown(
 		e: KeyboardEvent & { currentTarget: HTMLInputElement },

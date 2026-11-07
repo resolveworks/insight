@@ -21,6 +21,7 @@ beforeAll(async () => {
 describe('Collection workspace shell for an unknown collection', () => {
 	it('shows a not-found state instead of a generic collection title', async () => {
 		page.url = new URL('http://localhost/collections/missing/research');
+		page.route.id = '/(app)/collections/[collectionId]/research';
 		page.params = { collectionId: 'missing' };
 
 		render(Layout, {
