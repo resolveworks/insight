@@ -3,7 +3,6 @@
 	import { resolve } from '$app/paths';
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
-	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
 	import type { Document } from '#lib/stores/collections.svelte.js';
 
 	let document = $state<Document | null>(null);
@@ -19,14 +18,6 @@
 
 	const collectionId = $derived(page.params.collectionId);
 	const documentId = $derived(page.params.documentId);
-
-	const breadcrumbs = $derived([
-		{
-			label: 'Documents',
-			href: resolve(`collections/${collectionId}/documents`),
-		},
-		{ label: document?.name || 'Document' },
-	]);
 
 	/** Robustly convert any thrown value (including Tauri v2 errors) to a string. */
 	function errorMessage(e: unknown): string {
@@ -114,29 +105,25 @@
 </script>
 
 <div class="flex h-full flex-col bg-surface">
-	<!-- Breadcrumb header -->
-	<header class="border-b border-neutral-200 bg-surface-bright px-6 py-4">
-		<Breadcrumb segments={breadcrumbs} />
-	</header>
-
-	<!-- Content -->
 	<div class="flex-1 overflow-y-auto p-6">
+		<a
+			href={resolve(`collections/${collectionId}/documents`)}
+			class="mb-4 inline-flex items-center gap-1 text-sm text-neutral-500 transition-colors hover:text-primary-600"
+		>
+			<span aria-hidden="true">&larr;</span>
+			<span>Back to documents</span>
+		</a>
+
 		{#if loading}
 			<p class="text-neutral-500">Loading...</p>
 		{:else if error}
 			<div class="rounded-lg border border-error/50 bg-error/10 p-4">
 				<p class="text-error">{error}</p>
-				<a
-					href={resolve(`collections/${collectionId}/documents`)}
-					class="mt-2 inline-block text-sm text-neutral-500 hover:text-neutral-700"
-				>
-					Back to documents
-				</a>
 			</div>
 		{:else if document}
-			<h1 class="mb-6 text-2xl text-neutral-800">
+			<h2 class="mb-6 text-2xl text-neutral-800">
 				{document.name}
-			</h1>
+			</h2>
 
 			<div
 				class="max-w-2xl rounded-lg border border-neutral-200 bg-surface-bright"
@@ -276,14 +263,6 @@
 					</div>
 				{/if}
 			</div>
-
-			<a
-				href={resolve(`collections/${collectionId}/documents`)}
-				class="mt-6 inline-flex items-center gap-2 text-sm text-neutral-500 transition-colors hover:text-primary-600"
-			>
-				<span>&larr;</span>
-				<span>Back to documents</span>
-			</a>
 		{/if}
 	</div>
 </div>

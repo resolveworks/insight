@@ -52,6 +52,7 @@ interface CollectionInvalidated {
 let collections = $state.raw<Collection[]>([]);
 let documents = $state.raw<Record<string, Document[]>>({});
 let pipelineProgress = $state.raw<Record<string, PipelineProgress>>({});
+let documentErrors = $state.raw<Record<string, string | null>>({});
 let loading = $state(false);
 let error = $state<string | null>(null);
 
@@ -85,8 +86,17 @@ async function loadCollections() {
 }
 
 async function loadDocuments(collectionId: string) {
-	const docs = await invoke<Document[]>('get_documents', { collectionId });
-	documents = { ...documents, [collectionId]: docs };
+	documentErrors = { ...documentErrors, [collectionId]: null };
+	try {
+		const docs = await invoke<Document[]>('get_documents', { collectionId });
+		documents = { ...documents, [collectionId]: docs };
+	} catch (e) {
+		documentErrors = {
+			...documentErrors,
+			[collectionId]: e instanceof Error ? e.message : String(e),
+		};
+		throw e;
+	}
 }
 
 // Per-collection refresh bookkeeping: a burst of invalidations collapses into
@@ -172,6 +182,11 @@ export function getDocuments(collectionId: string): Document[] {
 /** Whether the store has received this collection's document listing. */
 export function hasLoadedDocuments(collectionId: string): boolean {
 	return documents[collectionId] !== undefined;
+}
+
+/** The error from this collection's most recent document load, if it failed. */
+export function getDocumentsError(collectionId: string): string | null {
+	return documentErrors[collectionId] ?? null;
 }
 
 /**

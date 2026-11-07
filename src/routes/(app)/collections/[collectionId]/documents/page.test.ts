@@ -71,6 +71,59 @@ describe('Collection documents page', () => {
 		});
 	});
 
+	it('replaces the spinner with the load error and retries into the empty state', async () => {
+		let attempts = 0;
+		mockIPC((cmd) => {
+			if (cmd === 'get_collections') return [collection];
+			if (cmd === 'get_documents') {
+				attempts += 1;
+				if (attempts === 1) throw new Error('storage unavailable');
+				return [];
+			}
+			if (cmd === 'get_pipeline_progress') return [];
+		});
+
+		await renderPage();
+
+		expect(
+			await screen.findByText('Failed to load documents: storage unavailable'),
+		).toBeInTheDocument();
+		expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+		expect(await screen.findByText('No documents yet')).toBeInTheDocument();
+		expect(
+			screen.queryByText(/Failed to load documents/),
+		).not.toBeInTheDocument();
+		expect(attempts).toBe(2);
+	});
+
+	it('retries a failed load into the document list', async () => {
+		let attempts = 0;
+		mockIPC((cmd) => {
+			if (cmd === 'get_collections') return [collection];
+			if (cmd === 'get_documents') {
+				attempts += 1;
+				if (attempts === 1) throw new Error('storage unavailable');
+				return [document];
+			}
+			if (cmd === 'get_pipeline_progress') return [];
+		});
+
+		await renderPage();
+
+		await screen.findByText('Failed to load documents: storage unavailable');
+		await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+		expect(
+			await screen.findByRole('link', { name: /report\.pdf/ }),
+		).toHaveAttribute('href', '/collections/col1/documents/doc1');
+		expect(
+			screen.queryByText(/Failed to load documents/),
+		).not.toBeInTheDocument();
+	});
+
 	it('explains the empty collection and offers importing a PDF', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_collections') return [collection];
