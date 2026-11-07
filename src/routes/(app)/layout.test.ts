@@ -1,40 +1,33 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { render, screen } from '@testing-library/svelte';
+import { createRawSnippet } from 'svelte';
+import { page } from '$app/state';
+import Layout from './+layout.svelte';
 
-describe('App Layout Navigation', () => {
-	it('derives current tab correctly from various paths', () => {
-		// Test the tab derivation logic used in the layout
-		const deriveTab = (pathname: string) =>
-			pathname.split('/')[1] || 'research';
-
-		const testCases = [
-			{ path: '/research', expected: 'research' },
-			{ path: '/files', expected: 'files' },
-			{ path: '/files/abc/123', expected: 'files' },
-			{ path: '/settings', expected: 'settings' },
-			{ path: '/', expected: 'research' }, // falls back to research when empty
-		];
-
-		for (const { path, expected } of testCases) {
-			expect(deriveTab(path)).toBe(expected);
-		}
+describe('App layout navigation', () => {
+	afterEach(() => {
+		page.url = new URL('http://localhost/search');
 	});
 
-	it('tab configuration is complete', () => {
-		// Verify the tab configuration matches our routes
-		const tabs = [
-			{ id: 'research', label: 'Research', href: 'research' },
-			{ id: 'files', label: 'Files', href: 'files' },
-			{ id: 'settings', label: 'Settings', href: 'settings' },
-		];
+	it('links to every section', () => {
+		page.url = new URL('http://localhost/files/abc');
 
-		expect(tabs).toHaveLength(3);
-		expect(tabs.map((t) => t.id)).toContain('research');
-		expect(tabs.map((t) => t.id)).toContain('files');
-		expect(tabs.map((t) => t.id)).toContain('settings');
+		render(Layout, {
+			props: {
+				children: createRawSnippet(() => ({ render: () => '<span></span>' })),
+			},
+		});
 
-		// Each tab should have matching id and href
-		for (const tab of tabs) {
-			expect(tab.href).toBe(tab.id);
-		}
+		const links = screen.getAllByRole('link');
+		expect(links.map((link) => link.textContent?.trim())).toEqual([
+			'Research',
+			'Files',
+			'Settings',
+		]);
+		expect(links.map((link) => link.getAttribute('href'))).toEqual([
+			'/research',
+			'/files',
+			'/settings',
+		]);
 	});
 });

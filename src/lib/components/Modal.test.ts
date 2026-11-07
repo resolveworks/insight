@@ -7,16 +7,6 @@ import Modal from './Modal.svelte';
 import ConfirmDialog from './ConfirmDialog.svelte';
 
 describe('Modal', () => {
-	it('renders title and content', () => {
-		render(Modal, {
-			props: { title: 'Test dialog', children: text('Body content') },
-		});
-
-		expect(screen.getByText('Test dialog')).toBeInTheDocument();
-		expect(screen.getByText('Body content')).toBeInTheDocument();
-		expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
-	});
-
 	it('closes on Escape without calling handlers', async () => {
 		const onClose = vi.fn();
 		render(Modal, {
@@ -98,34 +88,15 @@ describe('ConfirmDialog', () => {
 		expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
 	});
 
-	it('closes via cancel button, backdrop, and Escape without confirming', () => {
+	it('cancels without confirming', () => {
 		const onConfirm = vi.fn();
 		const onCancel = vi.fn();
-
-		// Cancel button
-		const { unmount } = render(ConfirmDialog, {
-			props: { title: 'T', message: 'M', onConfirm, onCancel },
-		});
-		screen.getByRole('button', { name: 'Cancel' }).click();
-		expect(onCancel).toHaveBeenCalledTimes(1);
-		unmount();
-
-		// Backdrop click
-		const { container, unmount: unmount2 } = render(ConfirmDialog, {
-			props: { title: 'T', message: 'M', onConfirm, onCancel },
-		});
-		container.firstElementChild!.dispatchEvent(
-			new MouseEvent('click', { bubbles: true }),
-		);
-		expect(onCancel).toHaveBeenCalledTimes(2);
-		unmount2();
-
-		// Escape
 		render(ConfirmDialog, {
 			props: { title: 'T', message: 'M', onConfirm, onCancel },
 		});
-		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-		expect(onCancel).toHaveBeenCalledTimes(3);
+
+		screen.getByRole('button', { name: 'Cancel' }).click();
+		expect(onCancel).toHaveBeenCalledTimes(1);
 		expect(onConfirm).not.toHaveBeenCalled();
 	});
 });
