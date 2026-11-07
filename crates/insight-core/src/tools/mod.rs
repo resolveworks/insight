@@ -496,20 +496,14 @@ mod tests {
         page_ends: Vec<usize>,
         unit_kind: Option<UnitKind>,
     ) {
-        let metadata = crate::storage::DocumentMetadata {
-            id: id.to_string(),
-            name: name.to_string(),
-            file_type: "application/pdf".to_string(),
-            extraction: None,
-            tags: Vec::new(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-        };
         let namespace_id = collection_id.parse::<iroh_docs::NamespaceId>().unwrap();
+        let source = format!("source-{id}");
         let storage = state.storage.read().await;
-        storage
-            .add_document(namespace_id, metadata, format!("source-{id}").as_bytes())
+        let doc_id = storage
+            .add_document(namespace_id, name, "application/pdf", source.as_bytes())
             .await
-            .unwrap();
+            .unwrap()
+            .id;
 
         if let Some(unit_kind) = unit_kind {
             let mut start = 0;
@@ -535,11 +529,11 @@ mod tests {
                 units,
             };
             storage
-                .write_extraction(namespace_id, id, &extraction)
+                .write_extraction(namespace_id, &doc_id, &extraction)
                 .await
                 .unwrap();
             storage
-                .set_canonical_extraction(namespace_id, id, &extraction.parser)
+                .set_canonical_extraction(namespace_id, &doc_id, &extraction.parser)
                 .await
                 .unwrap();
         }

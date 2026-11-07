@@ -25,6 +25,7 @@ use crate::text::{Extraction, ParserId, Unit, UnitKind};
 //
 // Document entries follow the pattern: files/{doc_id}/{part}
 // where part is one of: meta, source, extractions/{parser_key}.
+// A document's id is the BLAKE3 hash iroh computed for its source blob.
 //
 // This structure ensures iroh-docs syncs all parts automatically.
 
@@ -42,9 +43,6 @@ const SOURCE_SUFFIX: &str = "/source";
 
 /// Segment for a document's extraction entries
 const EXTRACTIONS_SEGMENT: &str = "/extractions/";
-
-/// Prefix for hash index (duplicate detection)
-const HASH_INDEX_PREFIX: &str = "_hash_index/";
 
 /// Build the key for a document's metadata entry
 #[inline]
@@ -68,12 +66,6 @@ pub fn doc_extraction_key(doc_id: &str, parser: &ParserId) -> String {
         EXTRACTIONS_SEGMENT,
         parser.key()
     )
-}
-
-/// Build the key for a hash index entry
-#[inline]
-fn hash_index_key(hash: &Hash) -> String {
-    format!("{}{}", HASH_INDEX_PREFIX, hash)
 }
 
 /// Check if a key is a document metadata entry
@@ -405,19 +397,25 @@ impl Storage {
     /// - `files/{id}/meta` - document metadata (JSON)
     /// - `files/{id}/source` - original file bytes
     ///
-    /// Also creates a hash index entry for duplicate detection, keyed by the
-    /// BLAKE3 hash that iroh-blobs computed for the source blob. A source
-    /// already present in the collection is rejected.
+    /// The document's id is the BLAKE3 hash iroh computes for the source, so
+    /// a source already present in the collection is the same document and
+    /// adding it again throws.
     pub async fn add_document(
         &self,
         namespace_id: NamespaceId,
-        metadata: DocumentMetadata,
+        name: &str,
+        file_type: &str,
         source_content: &[u8],
-    ) -> Result<()> {
-        let source_hash = Hash::new(source_content);
-        if self.has_source_hash(namespace_id, &source_hash).await? {
-            anyhow::bail!("Duplicate document: {}", metadata.name);
-        }
+    ) -> Result<DocumentMetadata> {
+        let source_hash = self.store_blob(source_content).await?;
+        let metadata = DocumentMetadata {
+            id: source_hash.to_hex(),
+            name: name.to_string(),
+            file_type: file_type.to_string(),
+            extraction: None,
+            tags: Vec::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
 
         let doc = self
             .docs
@@ -426,28 +424,22 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
+        let meta_key = doc_meta_key(&metadata.id);
+        if doc
+            .get_one(Query::key_exact(meta_key.as_bytes()))
+            .await?
+            .is_some()
+        {
+            anyhow::bail!("Duplicate document: {name}");
+        }
+
         self.store_meta_inner(&doc, &metadata.id, &metadata).await?;
 
-        // Store source entry at files/{id}/source
-        let source_blob_hash = self.store_blob(source_content).await?;
-        let source_key = doc_source_key(&metadata.id);
         doc.set_hash(
             self.author_id,
-            source_key.into_bytes(),
-            source_blob_hash,
+            doc_source_key(&metadata.id).into_bytes(),
+            source_hash,
             source_content.len() as u64,
-        )
-        .await?;
-
-        // Create hash index entry for O(1) duplicate detection
-        let index_key = hash_index_key(&source_blob_hash);
-        let doc_id_bytes = metadata.id.as_bytes();
-        let doc_id_hash = self.store_blob(doc_id_bytes).await?;
-        doc.set_hash(
-            self.author_id,
-            index_key.into_bytes(),
-            doc_id_hash,
-            doc_id_bytes.len() as u64,
         )
         .await?;
 
@@ -459,7 +451,7 @@ impl Storage {
             namespace_id
         );
 
-        Ok(())
+        Ok(metadata)
     }
 
     /// List all documents in a collection
@@ -749,32 +741,10 @@ impl Storage {
         Ok(source)
     }
 
-    /// Check if a document with the given source hash exists (O(1) lookup via hash index)
-    ///
-    /// Uses the `_hash_index/{hash}` key for constant-time duplicate detection.
-    pub async fn has_source_hash(
-        &self,
-        namespace_id: NamespaceId,
-        source_hash: &Hash,
-    ) -> Result<bool> {
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(false),
-        };
-
-        let key = hash_index_key(source_hash);
-        let query = Query::key_exact(key.as_bytes());
-        let entry = doc.get_one(query).await?;
-
-        doc.close().await?;
-        Ok(entry.is_some())
-    }
-
     /// Delete a document from a collection
     ///
-    /// Sweeps every entry under `files/{id}/` (meta, source, extractions,
-    /// and anything added later) plus the
-    /// `_hash_index/{source_hash}` entry used for duplicate detection.
+    /// Sweeps every entry under `files/{id}/`: meta, source, extractions and
+    /// anything added later.
     pub async fn delete_document(
         &self,
         namespace_id: NamespaceId,
@@ -787,33 +757,17 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        // Single sweep over `files/{id}/` collects every part of the doc
-        // along with the source's content_hash for hash_index cleanup.
         let prefix = format!("{}{}/", FILES_PREFIX, document_id);
         let stream = doc.get_many(Query::key_prefix(prefix.as_bytes())).await?;
         tokio::pin!(stream);
 
-        let source_suffix = format!("{}/source", document_id);
         let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
-        let mut source_hash: Option<Hash> = None;
         while let Some(result) = stream.next().await {
-            let entry = result?;
-            let key = entry.key().to_vec();
-            if let Ok(s) = std::str::from_utf8(&key) {
-                if s.strip_prefix(FILES_PREFIX) == Some(source_suffix.as_str()) {
-                    source_hash = Some(entry.content_hash());
-                }
-            }
-            keys_to_delete.push(key);
+            keys_to_delete.push(result?.key().to_vec());
         }
 
         for key in keys_to_delete {
             doc.del(self.author_id, key).await?;
-        }
-
-        if let Some(hash) = source_hash {
-            let index_key = hash_index_key(&hash);
-            doc.del(self.author_id, index_key.into_bytes()).await?;
         }
 
         doc.close().await?;
@@ -1033,7 +987,8 @@ impl Storage {
     /// to iroh storage without text extraction. Creates:
     /// - `files/{id}/meta` - metadata with no canonical extraction yet
     /// - `files/{id}/source` - original PDF bytes
-    /// - `_hash_index/{hash}` - duplicate detection index
+    ///
+    /// The document's id is the source's BLAKE3 hash.
     ///
     /// Returns the new document's metadata for the next phase.
     ///
@@ -1050,22 +1005,12 @@ impl Storage {
 
         let pdf_bytes = std::fs::read(path).context("Failed to read PDF file")?;
 
-        let doc_id = uuid::Uuid::new_v4().to_string();
-
-        let metadata = DocumentMetadata {
-            id: doc_id.clone(),
-            name: file_name.clone(),
-            file_type: "application/pdf".to_string(),
-            extraction: None,
-            tags: vec![],
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-
-        self.add_document(namespace_id, metadata.clone(), &pdf_bytes)
+        let metadata = self
+            .add_document(namespace_id, &file_name, "application/pdf", &pdf_bytes)
             .await?;
 
         tracing::info!(
-            doc_id = %doc_id,
+            doc_id = %metadata.id,
             "Stored PDF source for {file_name}"
         );
 
@@ -1226,15 +1171,18 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    fn document(id: &str, name: &str) -> DocumentMetadata {
-        DocumentMetadata {
-            id: id.to_string(),
-            name: name.to_string(),
-            file_type: "application/pdf".to_string(),
-            extraction: None,
-            tags: Vec::new(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-        }
+    /// Add a document, returning its id: the source's BLAKE3 hash.
+    async fn add_document(
+        storage: &Storage,
+        collection_id: NamespaceId,
+        name: &str,
+        source: &[u8],
+    ) -> String {
+        storage
+            .add_document(collection_id, name, "application/pdf", source)
+            .await
+            .unwrap()
+            .id
     }
 
     fn parser(name: &str) -> ParserId {
@@ -1274,18 +1222,15 @@ mod tests {
         let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
 
         let source_content = b"PDF bytes here";
-        storage
-            .add_document(collection_id, document("doc-1", "test.pdf"), source_content)
-            .await
-            .unwrap();
+        let doc_id = add_document(&storage, collection_id, "test.pdf", source_content).await;
 
         let extraction = extraction(parser("test-parser"), "0123456789", vec![2, 4, 6, 8, 10]);
         storage
-            .write_extraction(collection_id, "doc-1", &extraction)
+            .write_extraction(collection_id, &doc_id, &extraction)
             .await
             .unwrap();
         storage
-            .set_canonical_extraction(collection_id, "doc-1", &extraction.parser)
+            .set_canonical_extraction(collection_id, &doc_id, &extraction.parser)
             .await
             .unwrap();
 
@@ -1296,23 +1241,23 @@ mod tests {
         // List documents (should return 1 document metadata)
         let docs = storage.list_documents(collection_id).await.unwrap();
         assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].id, "doc-1");
+        assert_eq!(docs[0].id, doc_id);
         assert_eq!(docs[0].name, "test.pdf");
         assert_eq!(docs[0].extraction, Some(extraction.parser.clone()));
         assert_eq!(
-            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            storage.page_count(collection_id, &doc_id).await.unwrap(),
             Some(5)
         );
 
         // Verify we can retrieve the canonical extraction and source
         let stored = storage
-            .get_canonical_extraction(collection_id, "doc-1")
+            .get_canonical_extraction(collection_id, &doc_id)
             .await
             .unwrap();
         assert_eq!(stored, Some(extraction));
 
         let source = storage
-            .get_document_source(collection_id, "doc-1")
+            .get_document_source(collection_id, &doc_id)
             .await
             .unwrap();
         assert_eq!(source, Some(source_content.to_vec()));
@@ -1324,80 +1269,77 @@ mod tests {
         let storage = Storage::open(temp_dir.path()).await.unwrap();
         let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
 
-        storage
-            .add_document(collection_id, document("doc-1", "test.pdf"), b"source")
-            .await
-            .unwrap();
+        let doc_id = add_document(&storage, collection_id, "test.pdf", b"source").await;
 
         let first = extraction(parser("first"), "one page", vec![8]);
         let second = extraction(parser("second"), "two pages", vec![3, 9]);
         storage
-            .write_extraction(collection_id, "doc-1", &first)
+            .write_extraction(collection_id, &doc_id, &first)
             .await
             .unwrap();
         storage
-            .write_extraction(collection_id, "doc-1", &second)
+            .write_extraction(collection_id, &doc_id, &second)
             .await
             .unwrap();
 
         // Writing extractions does not choose a canonical one.
         assert_eq!(
             storage
-                .get_canonical_extraction(collection_id, "doc-1")
+                .get_canonical_extraction(collection_id, &doc_id)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
             storage
-                .get_extraction(collection_id, "doc-1", &first.parser)
+                .get_extraction(collection_id, &doc_id, &first.parser)
                 .await
                 .unwrap(),
             Some(first.clone())
         );
         assert_eq!(
             storage
-                .get_extraction(collection_id, "doc-1", &second.parser)
+                .get_extraction(collection_id, &doc_id, &second.parser)
                 .await
                 .unwrap(),
             Some(second.clone())
         );
 
         storage
-            .set_canonical_extraction(collection_id, "doc-1", &first.parser)
+            .set_canonical_extraction(collection_id, &doc_id, &first.parser)
             .await
             .unwrap();
         assert_eq!(
             storage
-                .get_canonical_extraction(collection_id, "doc-1")
+                .get_canonical_extraction(collection_id, &doc_id)
                 .await
                 .unwrap(),
             Some(first.clone())
         );
         assert_eq!(
-            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            storage.page_count(collection_id, &doc_id).await.unwrap(),
             Some(1)
         );
 
         storage
-            .set_canonical_extraction(collection_id, "doc-1", &second.parser)
+            .set_canonical_extraction(collection_id, &doc_id, &second.parser)
             .await
             .unwrap();
         assert_eq!(
             storage
-                .get_canonical_extraction(collection_id, "doc-1")
+                .get_canonical_extraction(collection_id, &doc_id)
                 .await
                 .unwrap(),
             Some(second)
         );
         assert_eq!(
-            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            storage.page_count(collection_id, &doc_id).await.unwrap(),
             Some(2)
         );
 
         // Selecting an extraction that was never written throws.
         assert!(storage
-            .set_canonical_extraction(collection_id, "doc-1", &parser("missing"))
+            .set_canonical_extraction(collection_id, &doc_id, &parser("missing"))
             .await
             .is_err());
     }
@@ -1409,22 +1351,16 @@ mod tests {
 
         let (collection_id, _) = storage.create_collection("My Docs").await.unwrap();
 
-        storage
-            .add_document(collection_id, document("doc-1", "first.pdf"), b"source1")
-            .await
-            .unwrap();
-        storage
-            .add_document(collection_id, document("doc-2", "second.pdf"), b"source2")
-            .await
-            .unwrap();
+        let doc_id = add_document(&storage, collection_id, "first.pdf", b"source1").await;
+        add_document(&storage, collection_id, "second.pdf", b"source2").await;
 
         let worked = extraction(parser("worked"), "doc one", vec![7]);
         storage
-            .write_extraction(collection_id, "doc-1", &worked)
+            .write_extraction(collection_id, &doc_id, &worked)
             .await
             .unwrap();
         storage
-            .set_canonical_extraction(collection_id, "doc-1", &worked.parser)
+            .set_canonical_extraction(collection_id, &doc_id, &worked.parser)
             .await
             .unwrap();
 
@@ -1434,27 +1370,27 @@ mod tests {
 
         // Delete first document
         storage
-            .delete_document(collection_id, "doc-1")
+            .delete_document(collection_id, &doc_id)
             .await
             .unwrap();
 
         // Its extraction is gone with it.
         assert_eq!(
             storage
-                .get_extraction(collection_id, "doc-1", &worked.parser)
+                .get_extraction(collection_id, &doc_id, &worked.parser)
                 .await
                 .unwrap(),
             None
         );
         assert_eq!(
-            storage.page_count(collection_id, "doc-1").await.unwrap(),
+            storage.page_count(collection_id, &doc_id).await.unwrap(),
             None
         );
 
         // Should have 1 document left
         let docs = storage.list_documents(collection_id).await.unwrap();
         assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].id, "doc-2");
+        assert_eq!(docs[0].name, "second.pdf");
     }
 
     #[tokio::test]
@@ -1485,52 +1421,30 @@ mod tests {
         let (collection_id, _) = storage.create_collection("Duplicates Test").await.unwrap();
 
         let source_content = b"unique source content";
-        let source_hash = Hash::new(source_content);
-        let other_hash = Hash::new(b"different content");
+        let doc_id = add_document(&storage, collection_id, "report.pdf", source_content).await;
 
-        // Initially, no document with this hash exists
-        assert!(!storage
-            .has_source_hash(collection_id, &source_hash)
-            .await
-            .unwrap());
-
-        // Add a document
-        storage
-            .add_document(
-                collection_id,
-                document("doc-1", "report.pdf"),
-                source_content,
-            )
-            .await
-            .unwrap();
-
-        // Now the hash should be detected, and a duplicate is rejected.
+        // The id is the hash iroh computed for the source, so the same source
+        // imported again is the same document.
+        assert_eq!(doc_id, Hash::new(source_content).to_hex());
         assert!(storage
-            .has_source_hash(collection_id, &source_hash)
-            .await
-            .unwrap());
-        assert!(storage
-            .add_document(collection_id, document("doc-2", "copy.pdf"), source_content)
+            .add_document(collection_id, "copy.pdf", "application/pdf", source_content)
             .await
             .is_err());
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);
 
-        // Different hash should not be detected
-        assert!(!storage
-            .has_source_hash(collection_id, &other_hash)
-            .await
-            .unwrap());
+        // A different source is a different document.
+        add_document(&storage, collection_id, "other.pdf", b"different content").await;
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 2);
 
-        // Delete the document
+        // Deleting and re-importing the source yields one document again.
         storage
-            .delete_document(collection_id, "doc-1")
+            .delete_document(collection_id, &doc_id)
             .await
             .unwrap();
-
-        // Hash index should be cleaned up
-        assert!(!storage
-            .has_source_hash(collection_id, &source_hash)
-            .await
-            .unwrap());
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);
+        let re_added = add_document(&storage, collection_id, "report.pdf", source_content).await;
+        assert_eq!(re_added, doc_id);
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 2);
     }
 
     #[tokio::test]
@@ -1553,8 +1467,7 @@ mod tests {
             .await
             .unwrap();
         let doc_id = document.id;
-        assert!(!doc_id.is_empty());
-        let source_hash = Hash::new(&pdf_bytes);
+        assert_eq!(doc_id, Hash::new(&pdf_bytes).to_hex());
 
         // After phase 1: metadata exists but no extraction is canonical.
         let meta1 = storage.get_document(collection_id, &doc_id).await.unwrap();
@@ -1603,10 +1516,11 @@ mod tests {
         assert_eq!(canonical.units.len(), 1);
         assert!(!canonical.text.is_empty());
 
-        // Duplicate detection should work
+        // The same PDF is the same document, so it cannot be imported twice.
         assert!(storage
-            .has_source_hash(collection_id, &source_hash)
+            .store_pdf_source(&pdf_path, collection_id)
             .await
-            .unwrap());
+            .is_err());
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);
     }
 }

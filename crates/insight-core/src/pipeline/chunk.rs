@@ -61,7 +61,7 @@ mod tests {
     use super::*;
     use crate::pipeline::{AppEvent, IndexJob, ProgressTracker, Stage};
     use crate::search::{get_indexed_chunk, search_index, IndexedChunk, SearchParams};
-    use crate::storage::{DocumentMetadata, Storage};
+    use crate::storage::Storage;
     use crate::text::{Extraction, ParserId, TextSpan, Unit, UnitKind};
 
     /// Drives the real pipeline index worker over a temporary storage and
@@ -114,19 +114,20 @@ mod tests {
         }
 
         /// Store a document's source and return its ID.
-        async fn store_document(&self, metadata: DocumentMetadata) -> String {
-            let doc_id = metadata.id.clone();
+        async fn store_document(&self, name: &str) -> String {
+            let source = format!("source-{name}");
             self.storage
                 .read()
                 .await
                 .add_document(
                     self.namespace_id,
-                    metadata,
-                    format!("source-{doc_id}").as_bytes(),
+                    name,
+                    "application/pdf",
+                    source.as_bytes(),
                 )
                 .await
-                .unwrap();
-            doc_id
+                .unwrap()
+                .id
         }
 
         /// Write an extraction for a document.
@@ -192,8 +193,8 @@ mod tests {
         }
 
         /// Store a document with its canonical extraction and index it.
-        async fn index_document(&mut self, metadata: DocumentMetadata, extraction: Extraction) {
-            let doc_id = self.store_document(metadata).await;
+        async fn index_document(&mut self, name: &str, extraction: Extraction) {
+            let doc_id = self.store_document(name).await;
             self.write_extraction(&doc_id, &extraction).await;
             self.set_canonical(&doc_id, &extraction.parser).await;
             self.run_index(&doc_id).await;
@@ -219,17 +220,6 @@ mod tests {
                         .expect("hit must deserialize as an indexed chunk")
                 })
                 .collect()
-        }
-    }
-
-    fn document(id: &str, name: &str) -> DocumentMetadata {
-        DocumentMetadata {
-            id: id.to_string(),
-            name: name.to_string(),
-            file_type: "application/pdf".to_string(),
-            extraction: None,
-            tags: Vec::new(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
         }
     }
 
@@ -268,7 +258,7 @@ mod tests {
         let text = "Global temperatures continue to rise across the decade.";
         harness
             .index_document(
-                document("doc1", "Climate_Report_2024.pdf"),
+                "Climate_Report_2024.pdf",
                 extraction(parser("test"), text, vec![text.len()]),
             )
             .await;
@@ -290,10 +280,7 @@ mod tests {
         let p3 = text.len();
         let name = "pages.pdf";
         harness
-            .index_document(
-                document("doc1", name),
-                extraction(parser("test"), &text, vec![p1, p2, p3]),
-            )
+            .index_document(name, extraction(parser("test"), &text, vec![p1, p2, p3]))
             .await;
 
         let mut chunks: Vec<IndexedChunk> = harness.search("report");
@@ -315,17 +302,17 @@ mod tests {
     async fn test_index_worker_ignores_non_canonical_extraction() {
         let mut harness = IndexHarness::new().await;
         let draft = extraction(parser("draft"), "alpha draft content", vec![19]);
-        harness.store_document(document("doc1", "Draft.pdf")).await;
-        harness.write_extraction("doc1", &draft).await;
+        let draft_id = harness.store_document("Draft.pdf").await;
+        harness.write_extraction(&draft_id, &draft).await;
 
         // Wait for the non-canonical job to finish before indexing anything
         // else, so its completion cannot satisfy the sentinel wait.
-        harness.run_index("doc1").await;
+        harness.run_index(&draft_id).await;
 
         let sentinel_text = "sentinel report content";
         harness
             .index_document(
-                document("doc2", "Sentinel.pdf"),
+                "Sentinel.pdf",
                 extraction(parser("final"), sentinel_text, vec![sentinel_text.len()]),
             )
             .await;
@@ -337,11 +324,9 @@ mod tests {
     #[tokio::test]
     async fn test_index_worker_completes_jobs_without_canonical_extraction() {
         let mut harness = IndexHarness::new().await;
-        harness
-            .store_document(document("doc1", "No_Extraction.pdf"))
-            .await;
+        let doc_id = harness.store_document("No_Extraction.pdf").await;
 
-        harness.run_index("doc1").await;
+        harness.run_index(&doc_id).await;
 
         let collection_id = harness.namespace_id.to_string();
         let progress = harness.progress.get(&collection_id).await.unwrap();
@@ -352,18 +337,18 @@ mod tests {
     #[tokio::test]
     async fn test_index_worker_reindexes_when_canonical_extraction_changes() {
         let mut harness = IndexHarness::new().await;
-        harness.store_document(document("doc1", "Report.pdf")).await;
+        let doc_id = harness.store_document("Report.pdf").await;
 
         let first = extraction(parser("first"), "alpha findings", vec![14]);
-        harness.write_extraction("doc1", &first).await;
-        harness.set_canonical("doc1", &first.parser).await;
-        harness.run_index("doc1").await;
+        harness.write_extraction(&doc_id, &first).await;
+        harness.set_canonical(&doc_id, &first.parser).await;
+        harness.run_index(&doc_id).await;
         assert_eq!(harness.search("alpha").len(), 1);
 
         let second = extraction(parser("second"), "beta findings", vec![13]);
-        harness.write_extraction("doc1", &second).await;
-        harness.set_canonical("doc1", &second.parser).await;
-        harness.run_index("doc1").await;
+        harness.write_extraction(&doc_id, &second).await;
+        harness.set_canonical(&doc_id, &second.parser).await;
+        harness.run_index(&doc_id).await;
 
         assert!(harness.search("alpha").is_empty());
         assert_eq!(harness.search("beta").len(), 1);

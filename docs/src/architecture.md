@@ -56,17 +56,13 @@ Each collection is an iroh-docs namespace. Sharing a collection means sharing na
 ```
 Namespace: 7f3a8b2c... ("Climate Research")
 │
-├── files/abc123/meta                         → document metadata (JSON)
-├── files/abc123/source                       → original PDF bytes
-├── files/abc123/extractions/mupdf-pdf-text@1 → extraction record (JSON)
-├── files/def456/meta                         → document metadata (JSON)
-├── files/def456/source                       → original PDF bytes
-├── files/def456/extractions/mupdf-pdf-text@1 → extraction record (JSON)
-├── _hash_index/{hash}                        → duplicate detection index
+├── files/{hash}/meta                         → document metadata (JSON)
+├── files/{hash}/source                       → original PDF bytes
+├── files/{hash}/extractions/mupdf-pdf-text@1 → extraction record (JSON)
 └── _collection                               → collection settings
 ```
 
-A document's source is immutable. Text is a derivation of that source: a document may have many extractions, each produced by a parser and stored under `{name}@{version}`. The extraction record points at a text blob and carries the source unit mapping:
+A document's id is the BLAKE3 hash iroh computed for its source blob, so the entries of the same source share one id and re-importing it is rejected as a duplicate. A document's source is immutable. Text is a derivation of that source: a document may have many extractions, each produced by a parser and stored under `{name}@{version}`. The extraction record points at a text blob and carries the source unit mapping:
 
 ```json
 {
@@ -83,7 +79,7 @@ A document's source is immutable. Text is a derivation of that source: a documen
 
 ```json
 {
-	"id": "abc123",
+	"id": "9f2c…",
 	"name": "paper.pdf",
 	"file_type": "application/pdf",
 	"extraction": { "name": "mupdf-pdf-text", "version": "1" },
@@ -99,7 +95,7 @@ A document's source is immutable. Text is a derivation of that source: a documen
 All file content (PDFs and extraction text) is stored in iroh-blobs using content-addressing:
 
 - Files are identified by their BLAKE3 hash
-- Duplicate sources are detected by hash and rejected on import
+- A document is identified by its source's hash, so duplicate sources collide with the existing document and are rejected on import
 - Content can be verified for integrity
 
 ## Data Flow
@@ -107,7 +103,7 @@ All file content (PDFs and extraction text) is stored in iroh-blobs using conten
 ### Local Import
 
 1. User adds PDF to collection
-2. **Store**: original PDF bytes written to `files/{id}/source` (iroh), with `files/{id}/meta` and the `_hash_index` duplicate check
+2. **Store**: original PDF bytes written to `files/{id}/source` (iroh) with `files/{id}/meta`, where `{id}` is the source's hash
 3. **Extract**: MuPDF produces an extraction (digital text only; one unit per page with its text spans) written to `files/{id}/extractions/{parser_key}`. The first extraction becomes the document's canonical extraction
 4. **Index**: the watcher triggers the index worker, which chunks the canonical extraction's text (~1500 chars, ~200 overlap) and indexes chunks in milli for full-text search. Chunks store the byte span they occupy in the extraction text; page references are not stored on the chunk
 
