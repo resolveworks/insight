@@ -6,11 +6,11 @@ import Layout from './+layout.svelte';
 
 describe('App layout navigation', () => {
 	afterEach(() => {
-		page.url = new URL('http://localhost/files');
+		page.url = new URL('http://localhost/collections');
 	});
 
 	it('links to every section', () => {
-		page.url = new URL('http://localhost/files/abc');
+		page.url = new URL('http://localhost/collections/abc/research');
 
 		render(Layout, {
 			props: {
@@ -20,12 +20,28 @@ describe('App layout navigation', () => {
 
 		const links = screen.getAllByRole('link');
 		expect(links.map((link) => link.textContent?.trim())).toEqual([
-			'Files',
+			'Collections',
 			'Settings',
 		]);
 		expect(links.map((link) => link.getAttribute('href'))).toEqual([
-			'/files',
+			'/collections',
 			'/settings',
 		]);
+		expect(links[0]).toHaveAttribute('aria-current', 'page');
+		expect(links[1]).not.toHaveAttribute('aria-current');
+	});
+
+	it('marks Settings current outside the collections section', () => {
+		page.url = new URL('http://localhost/settings');
+
+		render(Layout, {
+			props: {
+				children: createRawSnippet(() => ({ render: () => '<span></span>' })),
+			},
+		});
+
+		const links = screen.getAllByRole('link');
+		expect(links[0]).not.toHaveAttribute('aria-current');
+		expect(links[1]).toHaveAttribute('aria-current', 'page');
 	});
 });

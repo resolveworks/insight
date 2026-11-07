@@ -4,7 +4,6 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
-	import * as collections from '#lib/stores/collections.svelte.js';
 	import type { Document } from '#lib/stores/collections.svelte.js';
 
 	let document = $state<Document | null>(null);
@@ -20,15 +19,11 @@
 
 	const collectionId = $derived(page.params.collectionId);
 	const documentId = $derived(page.params.documentId);
-	const collection = $derived(
-		collectionId ? collections.getCollection(collectionId) : undefined,
-	);
 
 	const breadcrumbs = $derived([
-		{ label: 'Files', href: resolve('files') },
 		{
-			label: collection?.name || 'Collection',
-			href: resolve(`files/${collectionId}`),
+			label: 'Documents',
+			href: resolve(`collections/${collectionId}/documents`),
 		},
 		{ label: document?.name || 'Document' },
 	]);
@@ -132,10 +127,10 @@
 			<div class="rounded-lg border border-error/50 bg-error/10 p-4">
 				<p class="text-error">{error}</p>
 				<a
-					href={resolve(`files/${collectionId}`)}
+					href={resolve(`collections/${collectionId}/documents`)}
 					class="mt-2 inline-block text-sm text-neutral-500 hover:text-neutral-700"
 				>
-					Back to collection
+					Back to documents
 				</a>
 			</div>
 		{:else if document}
@@ -283,11 +278,11 @@
 			</div>
 
 			<a
-				href={resolve(`files/${collectionId}`)}
+				href={resolve(`collections/${collectionId}/documents`)}
 				class="mt-6 inline-flex items-center gap-2 text-sm text-neutral-500 transition-colors hover:text-primary-600"
 			>
 				<span>&larr;</span>
-				<span>Back to collection</span>
+				<span>Back to documents</span>
 			</a>
 		{/if}
 	</div>

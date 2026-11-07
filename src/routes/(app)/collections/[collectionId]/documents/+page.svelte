@@ -3,7 +3,6 @@
 	import { resolve } from '$app/paths';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import Button from '#lib/components/Button.svelte';
-	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import type { Document } from '#lib/stores/collections.svelte.js';
@@ -11,10 +10,6 @@
 	let deletingDocument = $state<Document | null>(null);
 
 	const collectionId = $derived(page.params.collectionId);
-	const collection = $derived(
-		collectionId ? collections.getCollection(collectionId) : undefined,
-	);
-	const collectionName = $derived(collection?.name ?? 'Collection');
 	const documents = $derived(
 		collectionId ? collections.getDocuments(collectionId) : [],
 	);
@@ -35,11 +30,6 @@
 				]
 			: [],
 	);
-
-	const breadcrumbs = $derived([
-		{ label: 'Files', href: resolve('files') },
-		{ label: collectionName },
-	]);
 
 	// Load this collection's documents on first view; the store keeps them
 	// current afterwards via invalidation.
@@ -75,23 +65,15 @@
 </script>
 
 <div class="flex h-full flex-col">
-	<!-- Header -->
-	<header class="border-b border-neutral-200 bg-surface-bright px-6 py-4">
-		<div class="flex items-center justify-between">
-			<Breadcrumb segments={breadcrumbs} />
-			<div class="flex items-center gap-2">
-				<a
-					href={resolve(`research/${collectionId}`)}
-					class="inline-flex items-center justify-center rounded-md border border-neutral-300 bg-surface-bright px-4 py-2 text-sm font-medium text-neutral-700 hover:border-primary-300 hover:text-primary-600"
-				>
-					Chats
-				</a>
-				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
-			</div>
+	<!-- Content -->
+	<div class="flex-1 overflow-y-auto p-6">
+		<!-- Actions row -->
+		<div class="mb-6 flex items-center justify-end">
+			<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
 		</div>
 
 		{#if processing && stages.length > 0}
-			<div class="mt-4 grid grid-cols-3 gap-4">
+			<div class="mb-6 grid grid-cols-3 gap-4">
 				{#each stages as stage (stage.name)}
 					{@const total =
 						stage.data.pending +
@@ -115,10 +97,7 @@
 				{/each}
 			</div>
 		{/if}
-	</header>
 
-	<!-- Content -->
-	<div class="flex-1 overflow-y-auto p-6">
 		{#if documents.length === 0}
 			<div class="flex flex-col items-center justify-center py-12">
 				<p class="text-neutral-500">No documents yet</p>
@@ -132,7 +111,10 @@
 					<li
 						class="group flex items-center justify-between rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
-						<a href={resolve(`files/${collectionId}/${doc.id}`)} class="flex-1">
+						<a
+							href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
+							class="flex-1"
+						>
 							<span
 								class="text-neutral-800 transition-colors hover:text-primary-600"
 								>{doc.name}</span
