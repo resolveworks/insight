@@ -8,7 +8,7 @@
 	import SetupScreen from './SetupScreen.svelte';
 	import ToolBlock from './ToolBlock.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
-	import { documentCountLabel } from '#lib/stores/collections.svelte.js';
+	import { documentCountLabel } from '#lib/api/collection.js';
 
 	type Props = {
 		collectionId: string;
