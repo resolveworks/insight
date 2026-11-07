@@ -47,9 +47,13 @@ Not production-ready. Built to learn and prototype.
 | LLM      | rig (27 vendor selections) | Remote inference via API (or local servers), user-configured |
 | P2P      | iroh                       | Modern QUIC-based, handles NAT traversal                     |
 | Search   | milli                      | Full-text keyword search (BM25), local                       |
-| PDF      | lopdf                      | Digital text extraction                                      |
+| PDF      | MuPDF                      | Digital text extraction                                      |
 
 ## Building
+
+Prerequisites beyond Rust and Node: libclang, for `mupdf-sys`'s bindgen step
+(`clang` on Arch, `libclang-dev` + `clang` on Debian/Ubuntu, Xcode command line
+tools on macOS, LLVM on Windows) and the usual Tauri system libraries.
 
 ```bash
 pnpm install

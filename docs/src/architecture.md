@@ -15,7 +15,7 @@ Insight is built as a Tauri 2.0 desktop application with a Rust backend and Svel
 | Metadata sync   | iroh-docs   | CRDT key-value store for metadata                                                |
 | Real-time       | iroh-gossip | Pub/sub for live updates                                                         |
 | Search          | milli       | Full-text keyword search (BM25)                                                  |
-| PDF text        | lopdf       | Digital text extraction                                                          |
+| PDF text        | MuPDF       | Digital text extraction                                                          |
 
 [rig]: https://github.com/0xPlaygrounds/rig
 
@@ -86,10 +86,10 @@ All file content (PDFs, extracted text) is stored in iroh-blobs using content-ad
 
 1. User adds PDF to collection
 2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
-3. **Extract**: per-page text extracted with lopdf (digital text only; page boundaries recorded), written to `files/{id}/text` alongside `files/{id}/meta`
+3. **Extract**: per-page text extracted with MuPDF (digital text only; page boundaries recorded), written to `files/{id}/text` alongside `files/{id}/meta`
 4. **Index**: the watcher triggers the index worker, which chunks text (~1500 chars, ~200 overlap, page-mapped) and indexes chunks in milli for full-text search
 
-**No OCR**: extraction uses lopdf only. Scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable.
+**No OCR**: extraction uses MuPDF's text layer only. Scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable.
 
 ### On Sync
 

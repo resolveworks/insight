@@ -19,7 +19,7 @@ Newsrooms have documents but no good way to search, analyze, and share them with
 | Metadata sync   | iroh-docs   | CRDT key-value store for metadata                                             |
 | Real-time       | iroh-gossip | Pub/sub for live updates                                                      |
 | Search          | milli       | Full-text keyword search (BM25)                                               |
-| PDF text        | lopdf       | Digital text extraction                                                       |
+| PDF text        | MuPDF       | Digital text extraction                                                       |
 
 [rig]: https://github.com/0xPlaygrounds/rig
 
@@ -120,10 +120,10 @@ Search is local keyword indexing over synced text: each peer builds its own mill
 
 1. User adds PDF to collection
 2. **Store**: original PDF bytes written to `files/{id}/source` (iroh)
-3. **Extract**: per-page text extracted with lopdf (digital text only; page boundaries recorded), written to `files/{id}/text`, alongside `files/{id}/meta`
+3. **Extract**: per-page text extracted with MuPDF (digital text only; page boundaries recorded), written to `files/{id}/text`, alongside `files/{id}/meta`
 4. **Index**: the watcher triggers the index worker, which chunks text with a character-based splitter (~1500 chars, ~200 overlap, page-mapped) and indexes chunks in milli for full-text search
 
-**No OCR**: text extraction uses lopdf only, so scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable. This is a known limitation.
+**No OCR**: text extraction uses MuPDF's text layer only (its OCR device is not built), so scanned PDFs (images of text) import fine but yield little or no extracted text and are not text-searchable. This is a known limitation.
 
 ### On Sync
 
@@ -155,6 +155,10 @@ Settings v2 (`~/.local/share/insight/settings.json`):
 `provider` is `null` when chat is unconfigured. `family` is a rig provider selection id; `api_key` is required only by selections rig says need a credential, and `base_url` overrides the selection's endpoint. The configured provider is the only place a key is stored. There is intentionally no migration of older settings files — no users yet.
 
 ## Development
+
+Requires libclang for `mupdf-sys`'s bindgen step: `pacman -S clang` on Arch,
+`apt install libclang-dev clang` on Debian/Ubuntu, Xcode command line tools on
+macOS, LLVM (`LIBCLANG_PATH`) on Windows.
 
 ```bash
 pnpm install
