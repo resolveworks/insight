@@ -4,36 +4,14 @@
 
 {{#include generated/downloads.html}}
 
-### Which file do I download?
+Choose the installer for your computer:
 
-- **macOS**: Download the `.dmg` file. Choose `aarch64` for newer Macs (M1/M2/M3/M4) or `x64` for older Intel Macs.
-- **Windows**: Download the `.exe` installer. (IT departments may prefer the `.msi`.)
-- **Linux**: Download `.deb` for Ubuntu/Debian, `.rpm` for Fedora/Red Hat, or `.AppImage` to run on any distribution.
+- **macOS:** `.dmg`, using `aarch64` for Apple silicon or `x64` for Intel Macs.
+- **Windows:** `.exe`, or `.msi` if your IT department prefers it.
+- **Linux:** `.deb` for Ubuntu/Debian, `.rpm` for Fedora/Red Hat, or `.AppImage` for other distributions.
 
-## Configure an AI Provider
+## Choose an AI provider
 
-Insight supports 27 chat-provider vendors across 34 provider selections (OpenAI, Anthropic, Gemini, Groq, and local servers like Ollama and llama.cpp). Pick one in Settings and add an API key where required to get started. This works well on any computer.
+Insight supports hosted services such as OpenAI, Anthropic, and Gemini, as well as local model servers such as Ollama and llama.cpp. Configure a provider and model in **Settings** before starting a conversation.
 
-Your documents are always processed and stored locally—only your questions and the AI's answers go through the provider.
-
-**You don't need the biggest model.** Smaller models like GPT-5 mini or Claude Haiku work well with Insight's agent—they're faster, cheaper, and handle document research tasks effectively. The agent harness does the heavy lifting of breaking down queries and gathering evidence, so even lightweight models produce good results.
-
-## Create a Collection
-
-Collections are folders for organizing your documents. You might create one for each investigation or story you're working on.
-
-1. Enter a name in the field under Files and click **Create**
-2. Open the collection and click **Import PDF**
-3. Choose the PDFs to add
-
-Insight will process each document so the AI can search and read them. Note: text extraction works on digital PDFs; scanned PDFs (images of text) won't be text-searchable.
-
-## Ask Questions
-
-Once your documents are processed, just ask questions in plain language:
-
-- "What was the total spending on consultants?"
-- "Find all mentions of Company X"
-- "Summarize the main findings from these reports"
-
-The AI will search through your documents, find relevant passages, and give you an answer citing the documents it drew on.
+The provider processes your conversation and the document excerpts Insight retrieves to answer your questions. Choose a provider and model that meet your newsroom's confidentiality requirements; a local model server avoids sending that material to a third-party service.

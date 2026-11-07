@@ -1,24 +1,16 @@
 # Insight
 
-An AI research assistant for journalists. Your documents stay on your computer.
+Insight is an experimental, local-first research assistant for journalists. Build collections of PDFs, ask questions in plain language, and get answers that cite their sources. You can also share a collection directly with colleagues, without uploading it to a central service.
 
-## Why Insight?
+## Your documents, your choices
 
-Newsrooms deal with mountains of documents—court filings, FOIA responses, leaked files—but searching and analyzing them usually means uploading to cloud services you may not trust.
+Your PDFs, extracted text, and search index are stored on your computer. Sharing a collection gives its recipients their own copies. When you use chat, your configured AI provider receives the conversation and the document excerpts retrieved to answer your questions—not access to your document library. You can choose a hosted provider or a model server running on your own machine.
 
-Insight is different. Your documents are processed, stored, and searched locally—they never leave your computer unless you choose to share them with a colleague. Chat runs on a provider of your choice (OpenAI, Anthropic, Gemini, or a local server like Ollama), configured in Settings with an API key where the provider requires one.
+## Explore the guide
 
-## What Can It Do?
+- [Getting Started](./getting-started.md): install Insight and configure a model.
+- [Collections](./collections.md): import documents and share an investigation.
+- [Chat](./chat.md): ask questions and check the answers.
+- [Architecture](./architecture.md): understand how Insight works and why it is built this way.
 
-- **Answer questions about your documents** — Ask in plain language, get answers that cite the documents they draw on.
-- **Search smartly** — Full-text search over your collection, driven by an AI agent that knows what to look for.
-- **Share securely** — Send collections directly to colleagues, laptop-to-laptop, without a server in between.
-- **Own your documents** — Storage, indexing, and sync all run locally; no account required.
-
-## Quick Start
-
-1. [Download Insight](./getting-started.md) for your computer
-2. Create a collection and add your documents
-3. Start asking questions
-
-See [Getting Started](./getting-started.md) for step-by-step instructions.
+Insight is a research project, not a production-ready records management or security solution.

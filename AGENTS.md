@@ -2,7 +2,7 @@
 
 Tauri 2 desktop app: Rust backend (`crates/insight-core`, `src-tauri`), SvelteKit + Svelte 5 frontend, Tailwind 4.
 
-Architecture, data model, ingestion, storage layout and the user-facing behaviour live in `docs/src/` (`architecture.md`, `development.md`, …). Read those rather than re-deriving them from source.
+Product behaviour and high-level architecture live in `docs/src/`. Read those rather than re-deriving them from source.
 
 **Product invariant:** document storage, search and sync stay local. Only the conversation — queries and retrieved excerpts — is sent to the configured chat provider. No code path may ship document content off-device.
 
@@ -43,7 +43,7 @@ Adding data: if Rust knows it, it is a command read through a load. If it change
 - Sources are immutable; text is a derivation stored per `{parser}@{version}`. Parser names may not contain `/` or `@`; bump the version by hand when a parser's output changes.
 - A document's page count is derived from its canonical extraction's units, never stored.
 - Conversations are local and never sync; collections sync fully, blobs included.
-- No migrations anywhere — settings, conversation layouts, documents predating extractions. There are no users; invalid legacy state throws or is ignored, never bridged.
+- There is one stored shape: the one the current build writes. Nothing we persist or emit carries a compatibility contract. We're early stage with no users, so state written by an older build is not the app's problem — it gets re-imported or deleted by hand, not read, detected, or converted.
 - A dependency's stored or wire format and stream semantics stop at the Rust boundary; the UI and its DTOs are app-owned.
 
 ## Conventions
@@ -54,6 +54,7 @@ Adding data: if Rust knows it, it is a command read through a load. If it change
 - Do not add a dependency for what the stdlib or the framework already does.
 - rig: work from the local checkout at `~/Projects/rig` (tag `v0.46.0`, matching the crates.io dependency), its `AGENTS.md` and `examples/`. For other Rust dependencies prefer `cargo doc`, `cargo tree` and `~/.cargo/registry/src` over the web. Local references: `~/Projects/tauri`, `~/Projects/tauri-docs`, `~/Projects/kit`, `~/Projects/svelte`.
 - Commit messages: conventional prefix (`refactor(chat): …`, `fix(ui): …`); integration merges are `merge: <topic>`.
+- Documentation updates are out of scope unless explicitly requested.
 
 ## Testing
 

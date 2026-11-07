@@ -11,4 +11,3 @@
 # Technical
 
 - [Architecture](./architecture.md)
-- [Development](./development.md)

@@ -1,73 +1,46 @@
 # Insight
 
-**AI-powered research agent for journalists and newsrooms.**
+**Local-first document research for journalists.**
 
-Search documents, ask questions, get answers with citations. Your documents stay local; chat runs on your configured AI provider.
+Insight lets you build collections of PDFs, ask questions in plain language, and receive answers with citations. Documents and search indexes stay on your computer. Collections can sync directly between colleagues, and you choose the AI provider used for chat.
 
-## What Insight Does
+## Project status
 
-- **Ask questions, get answers** — AI agent searches your documents and synthesizes answers with citations
-- **Documents stay local** — your files are stored, indexed, and searched on your machine, never uploaded
-- **Choice of provider** — 27 LLM vendors for chat (OpenAI, Anthropic, Gemini, Groq, local servers like Ollama), configured in Settings with an API key where required
-- **Share with colleagues** — sync collections peer-to-peer, no server required
+Insight is a research project exploring AI-assisted document research, peer-to-peer collaboration, and local-first tools for journalism. It is not production-ready.
 
-## How It Works
+## Documentation
 
-```
-You: "What do these documents say about the 2019 contract?"
-    ↓
-AI agent searches your documents
-    ↓
-Reads relevant files, synthesizes answer
-    ↓
-"According to the March 2019 filing [doc: contract-v2.pdf]..."
-```
+The [Insight guide](https://resolveworks.github.io/insight/) covers installation, collections, chat, privacy, and sharing. Its [architecture overview](https://resolveworks.github.io/insight/architecture.html) explains what Insight is built on, how it talks to models, and how sync works.
 
-Your documents are indexed locally using [milli](https://github.com/meilisearch/milli) for full-text keyword search (BM25). The AI agent—running on the [rig](https://github.com/0xPlaygrounds/rig) framework with your configured provider—searches and reads documents to answer your questions. Only your conversation (questions and retrieved excerpts) goes to the provider; the documents themselves never leave your machine.
+## Development
 
-Collections sync peer-to-peer using [iroh](https://iroh.computer/), so collaborators get full copies of documents and extracted text. Each peer builds its own search index locally.
+### Prerequisites
 
-## Project Status
+- [Rust](https://rustup.rs/) (stable)
+- [Node.js](https://nodejs.org/) 20 or newer
+- [pnpm](https://pnpm.io/)
+- [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/)
+- libclang for `mupdf-sys`'s bindgen step (`clang` on Arch, `libclang-dev` and `clang` on Debian/Ubuntu, Xcode Command Line Tools on macOS, or LLVM on Windows)
 
-This is a **research project** exploring:
-
-- AI-assisted document research for journalism
-- Practical P2P sync for document workflows
-- Agent-driven search with full-text retrieval
-- Trust models for journalist collaboration
-
-Not production-ready. Built to learn and prototype.
-
-## Technology
-
-| Layer    | Choice                       | Why                                                          |
-| -------- | ---------------------------- | ------------------------------------------------------------ |
-| App      | Tauri + Rust                 | Single binary, cross-platform, no Electron                   |
-| Frontend | Svelte 5                     | Fast, minimal                                                |
-| LLM      | rig (34 provider selections) | Remote inference via API (or local servers), user-configured |
-| P2P      | iroh                         | Modern QUIC-based, handles NAT traversal                     |
-| Search   | milli                        | Full-text keyword search (BM25), local                       |
-| PDF      | MuPDF                        | Digital text extraction                                      |
-
-## Building
-
-Prerequisites beyond Rust and Node: libclang, for `mupdf-sys`'s bindgen step
-(`clang` on Arch, `libclang-dev` + `clang` on Debian/Ubuntu, Xcode command line
-tools on macOS, LLVM on Windows) and the usual Tauri system libraries.
+### Run and build
 
 ```bash
 pnpm install
-pnpm tauri dev          # Desktop app with hot reload
-pnpm tauri build        # Release build
+pnpm tauri dev           # Desktop app with hot reload
+pnpm tauri build         # Release build
 ```
 
-## Who This Is For
+For a development build, use `pnpm tauri build --debug`.
 
-- **Journalists** managing document collections for investigations
-- **Newsrooms** wanting AI-assisted research without uploading documents
-- **Investigators** who need to analyze and search large document sets
-- **Researchers** exploring AI tools for document-based work
+### Checks
 
----
+```bash
+pnpm test:run
+pnpm check
+pnpm lint
 
-_A research exploration of AI-assisted journalism tools._
+cd src-tauri
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo fmt --all --check
+```
