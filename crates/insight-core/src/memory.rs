@@ -39,10 +39,6 @@ pub enum MemoryStoreError {
     #[error("memory store I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A stored JSON file failed to parse.
-    #[error("memory store JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
     /// Rig could not load or save a conversation session.
     #[error("conversation session error: {0}")]
     Session(#[from] SessionError),
@@ -122,15 +118,22 @@ impl FileConversationMemory {
     }
 
     fn read_meta(&self, store: &DirStore) -> Result<Option<SessionMeta>, MemoryStoreError> {
+        if let Some(meta) = SessionMeta::read(store) {
+            return Ok(Some(meta));
+        }
+        // `SessionMeta::read` reports a missing file and an unreadable one
+        // alike; a file that is there must not read as no metadata.
         match store.read_file(META) {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Ok(_) => Err(MemoryStoreError::InvalidMetadata(format!(
+                "{META} does not parse"
+            ))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
     fn write_meta(&self, store: &DirStore, meta: &SessionMeta) -> Result<(), MemoryStoreError> {
-        store.write_file(META, &serde_json::to_vec_pretty(meta)?)?;
+        meta.write(store)?;
         Ok(())
     }
 
@@ -492,8 +495,31 @@ mod tests {
 
         assert!(matches!(
             store.list_summaries(&collection).await,
-            Err(MemoryStoreError::Json(_))
+            Err(MemoryStoreError::InvalidMetadata(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn corrupt_meta_is_invalid_and_absent_meta_is_none() {
+        let (_dir, store) = temp_store();
+        let collection = collection_id(1);
+        store.create(&collection, "conv").await.unwrap();
+
+        store
+            .store(&collection, "conv")
+            .unwrap()
+            .write_file(META, b"{not json")
+            .unwrap();
+
+        assert!(matches!(
+            store.load_meta(&collection, "conv").await,
+            Err(MemoryStoreError::InvalidMetadata(_))
+        ));
+        assert!(store
+            .load_meta(&collection, "missing")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
