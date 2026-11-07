@@ -88,7 +88,7 @@ Namespace: 7f3a8b2c... ("Climate Research")
 └── _collection                      → collection settings
 ```
 
-All document data is grouped under `files/{doc_id}/`. This is the idiomatic iroh pattern: each entry's content IS the blob data. When iroh-docs syncs entries, it automatically syncs their content blobs, enabling seamless P2P document sharing.
+All document data is grouped under `files/{doc_id}/`. That grouping is our convention, not something iroh prescribes: iroh-docs keys are opaque bytes, and an entry's value is a blob hash. iroh-docs syncs entries and, under its default download policy, fetches the blobs they reference. That is what lets a collection share as a unit.
 
 ### Document Metadata (files/{id}/meta)
 
