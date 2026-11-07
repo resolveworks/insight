@@ -71,10 +71,12 @@ pub fn spawn_extract_workers(
                             parser = ?metadata.extraction.as_ref().map(|p| p.key()),
                             "Extracted text"
                         );
-                        progress.finish_ok(&collection_id, Stage::Extract).await;
+                        // Hand off to the index stage before settling this
+                        // one so progress never reports every stage idle.
                         index_queue
                             .enqueue(job.namespace_id, job.doc_id.clone())
                             .await;
+                        progress.finish_ok(&collection_id, Stage::Extract).await;
                     }
                     Ok(None) => {
                         // The job is still terminal: the document vanished or

@@ -202,8 +202,10 @@ impl Pipeline {
             match result {
                 Ok(metadata) => {
                     tracing::info!(doc_id = %metadata.id, path = %path.display(), "Stored PDF source");
-                    self.progress.finish_ok(&collection_id, Stage::Store).await;
+                    // Queue the next stage before settling this one so progress
+                    // never reports every stage idle between the handoff.
                     self.progress.enqueue(&collection_id, Stage::Extract).await;
+                    self.progress.finish_ok(&collection_id, Stage::Store).await;
                     let _ = self.extract_tx.send(ExtractJob {
                         namespace_id,
                         doc_id: metadata.id.clone(),
