@@ -33,10 +33,16 @@ function mockDefaultIPC() {
 				id: 'c1',
 				collection_id: 'col1',
 				title: 'Local history',
-				messages: [
+				transcript: [
 					{
-						role: 'user',
-						content: [{ type: 'text', text: 'Earlier question' }],
+						key: '0-0',
+						kind: 'user_text',
+						name: '',
+						text: 'Earlier question',
+						provisional: false,
+						is_error: false,
+						executing: false,
+						streaming: false,
 					},
 				],
 			};

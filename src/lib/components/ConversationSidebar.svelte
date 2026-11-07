@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ConversationSummary } from '#lib/api/conversation.js';
+	import type { ConversationSummary } from '#lib/types/chat.js';
 	import Button from './Button.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
