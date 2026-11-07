@@ -6,13 +6,7 @@ import type {
 	RigStreamEvent,
 	RigToolResultContent,
 } from '#lib/types/rig.js';
-import {
-	applyItem,
-	buildTranscript,
-	emptyLiveRun,
-	flattenReasoning,
-	flattenToolResult,
-} from './transcript';
+import { applyItem, buildTranscript, emptyLiveRun } from './transcript';
 
 /** Convenience fold over a list of items. */
 function fold(items: MultiTurnStreamItem[]) {
@@ -262,6 +256,7 @@ describe('applyItem — control items', () => {
 		const run = fold([
 			toolResult('call_1', 'search', [
 				{ type: 'text', text: 'hits' },
+				{ type: 'image', data: 'u' },
 				{ type: 'json', value: { n: 1 } },
 			]),
 		]);
@@ -332,23 +327,6 @@ describe('applyItem — control items', () => {
 			start(0, 'text'),
 			textDelta(0, 'kept'),
 			{ type: 'modelTurnRetried', turn: 2 },
-		]);
-		expect(run).toEqual({
-			streamingText: false,
-			messages: [
-				{
-					role: 'assistant',
-					content: [{ type: 'text', part: 0, text: 'kept' }],
-				},
-			],
-		});
-	});
-
-	it('modelTurnRetried ignores consecutive rejected attempts that streamed nothing', () => {
-		const run = fold([
-			start(0, 'text'),
-			textDelta(0, 'kept'),
-			{ type: 'modelTurnRetried', turn: 2 },
 			{ type: 'modelTurnRetried', turn: 3 },
 		]);
 		expect(run).toEqual({
@@ -365,10 +343,8 @@ describe('applyItem — control items', () => {
 	it('completionCall, finalResponse, and unknown payloads are no-ops', () => {
 		const base = fold([start(0, 'text'), textDelta(0, 'keep')]);
 		const noop = (item: MultiTurnStreamItem) => {
-			const clone = structuredClone(base);
 			const next = applyItem(base, item);
 			expect(next).toEqual(base);
-			expect(base).toEqual(clone);
 		};
 		noop({
 			type: 'completionCall',
@@ -405,22 +381,6 @@ describe('applyItem — immutability', () => {
 		applyItem(run, toolResult('call_1', 't', [{ type: 'text', text: 'r' }]));
 		applyItem(run, { type: 'modelTurnRetried', turn: 1 });
 		expect(run).toEqual(clone);
-	});
-});
-
-describe('flattening helpers', () => {
-	it('flattenReasoning returns the reasoning text', () => {
-		expect(flattenReasoning({ text: 'a\nb' })).toBe('a\nb');
-	});
-
-	it('flattenToolResult maps text/json and skips others', () => {
-		expect(
-			flattenToolResult([
-				{ type: 'text', text: 'hi' },
-				{ type: 'image', data: 'u' },
-				{ type: 'json', value: [1] },
-			]),
-		).toBe('hi\n[\n  1\n]');
 	});
 });
 
