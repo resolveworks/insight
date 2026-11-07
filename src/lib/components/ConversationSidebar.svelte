@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
+	import Button from './Button.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
+	import LoadingSpinner from './LoadingSpinner.svelte';
 
 	type Props = {
 		onSelect?: (id: string) => void;
@@ -34,41 +36,38 @@
 </script>
 
 <div class="flex h-full flex-col">
-	<div class="border-b border-neutral-200 p-3">
-		<button
-			onclick={() => onNew?.()}
-			class="w-full rounded-md border border-neutral-300 bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-neutral-400 hover:text-neutral-900"
-		>
+	<div class="border-b border-line p-3">
+		<Button variant="secondary" fullWidth onclick={() => onNew?.()}>
 			New Chat
-		</button>
+		</Button>
 	</div>
 
 	<div class="flex-1 overflow-y-auto p-2">
 		<h3
-			class="px-2 py-1 text-xs font-medium uppercase tracking-wide text-neutral-400"
+			class="px-2 py-1 text-xs font-medium uppercase tracking-wide text-subtle"
 		>
 			Conversations
 		</h3>
 
 		{#if !listLoaded}
-			<p class="px-2 py-4 text-sm text-neutral-400">Loading...</p>
+			<div class="px-2 py-4">
+				<LoadingSpinner size="sm" ariaLabel="Loading conversations" />
+			</div>
 		{:else if conversations.length === 0}
-			<p class="px-2 py-4 text-sm italic text-neutral-400">
-				No conversations yet
-			</p>
+			<p class="px-2 py-4 text-sm italic text-subtle">No conversations yet</p>
 		{:else}
 			<ul class="space-y-1">
 				{#each conversations as conv (conv.id)}
 					<li
-						class="group flex items-center rounded transition-colors
+						class="group flex items-center rounded-sm transition-colors
 							{activeId === conv.id
-							? 'bg-neutral-200 text-neutral-900'
+							? 'bg-surface-dim text-neutral-900'
 							: 'text-neutral-600 hover:bg-neutral-100'}"
 					>
 						<button
 							onclick={() => onSelect?.(conv.id)}
 							aria-current={activeId === conv.id ? 'true' : undefined}
-							class="min-w-0 flex-1 truncate rounded px-2 py-1.5 text-left text-sm focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:outline-none"
+							class="min-w-0 flex-1 truncate rounded-sm px-2 py-1.5 text-left text-sm focus-visible:focus-ring"
 						>
 							{conv.title}
 						</button>
@@ -80,7 +79,7 @@
 									title: conv.title,
 								};
 							}}
-							class="rounded px-2 py-1.5 text-neutral-400 transition-colors hover:text-error focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:outline-none"
+							class="rounded-sm px-2 py-1.5 text-subtle transition-colors hover:text-error focus-visible:focus-ring"
 							title="Delete chat"
 							aria-label="Delete chat"
 						>

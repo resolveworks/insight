@@ -84,9 +84,10 @@ const toolResult = (
 	id: string,
 	name: string,
 	content: RigToolResultContent[],
+	isError = false,
 ): MultiTurnStreamItem => ({
 	type: 'toolResult',
-	tool_result: { call: callId(id), name, content },
+	tool_result: { call: callId(id), name, content, is_error: isError },
 });
 
 describe('applyItem — text', () => {
@@ -169,7 +170,13 @@ describe('applyItem — chronological interleaving', () => {
 		expect(run.messages[1]).toEqual({
 			role: 'user',
 			content: [
-				{ type: 'tool_result', call: 'call_1', name: 'search', text: 'hits' },
+				{
+					type: 'tool_result',
+					call: 'call_1',
+					name: 'search',
+					text: 'hits',
+					isError: false,
+				},
 			],
 		});
 		expect(run.messages[2].role).toBe('assistant');
@@ -268,8 +275,21 @@ describe('applyItem — control items', () => {
 					call: 'call_1',
 					name: 'search',
 					text: 'hits\n{\n  "n": 1\n}',
+					isError: false,
 				},
 			],
+		});
+	});
+
+	it('carries a failed tool result through to the transcript item', () => {
+		const run = fold([
+			toolResult('call_1', 'search', [{ type: 'text', text: 'boom' }], true),
+		]);
+		expect(buildTranscript([], run)[0]).toMatchObject({
+			kind: 'toolResult',
+			name: 'search',
+			text: 'boom',
+			isError: true,
 		});
 	});
 
@@ -315,6 +335,7 @@ describe('applyItem — control items', () => {
 							call: 'call_1',
 							name: 'search',
 							text: 'hits',
+							isError: false,
 						},
 					],
 				},
@@ -412,6 +433,7 @@ describe('buildTranscript', () => {
 					call: callId('c1'),
 					name: 'search',
 					content: [{ type: 'text', text: 'result' }],
+					is_error: true,
 				},
 			],
 		},
@@ -451,6 +473,7 @@ describe('buildTranscript', () => {
 			role: 'user',
 			name: 'search',
 			text: 'result',
+			isError: true,
 		});
 		for (const item of items) {
 			expect(item.provisional).toBe(false);

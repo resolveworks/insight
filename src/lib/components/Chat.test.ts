@@ -138,6 +138,74 @@ describe('Chat', () => {
 		).not.toBeInTheDocument();
 	});
 
+	it('renders reasoning and tool activity as open disclosures, flagging a failed result', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'list_conversations') {
+				return [{ id: 'c1', title: 'Existing chat' }];
+			}
+			if (cmd === 'list_providers') return [];
+			if (cmd === 'load_conversation') {
+				return {
+					id: 'c1',
+					collection_id: 'tools',
+					title: 'Existing chat',
+					messages: [
+						{
+							role: 'user',
+							content: [{ type: 'text', text: 'Question' }],
+						},
+						{
+							role: 'assistant',
+							content: [
+								{ type: 'reasoning', text: 'Looking around' },
+								{
+									type: 'tool_call',
+									id: { provider: 'call_1' },
+									function: {
+										name: 'search',
+										arguments: { query: 'x' },
+									},
+								},
+							],
+						},
+						{
+							role: 'user',
+							content: [
+								{
+									type: 'tool_result',
+									call: { provider: 'call_1' },
+									name: 'search',
+									content: [{ type: 'text', text: 'index unavailable' }],
+									is_error: true,
+								},
+							],
+						},
+					],
+				};
+			}
+		});
+
+		await chat.initialize('tools');
+		// Provider setup (not the composer) below the transcript keeps the
+		// prediction timer out of the test.
+		render(Chat, {
+			props: { ...props, collectionId: 'tools', providerReady: false },
+		});
+
+		const titles = await Promise.all([
+			screen.findByText('Reasoning'),
+			screen.findByText('Tool: search'),
+			screen.findByText('Tool result: search'),
+		]);
+		for (const title of titles) {
+			expect(title.closest('details')).toHaveAttribute('open');
+		}
+		expect(screen.getByText('index unavailable')).toBeInTheDocument();
+		expect(titles[2].closest('details')?.className).toContain(
+			'border-error/50',
+		);
+	});
+
 	it('does not request a next-message prediction without documents', async () => {
 		const calls: string[] = [];
 		mockIPC((cmd) => {
