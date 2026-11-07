@@ -58,9 +58,11 @@ describe('Collections landing page', () => {
 
 		await renderPage();
 
-		expect(await screen.findByRole('status')).toHaveTextContent(
-			'Loading collections',
-		);
+		expect(
+			(await screen.findAllByRole('status')).some((status) =>
+				status.textContent?.includes('Loading collections'),
+			),
+		).toBe(true);
 		expect(screen.queryByText('No collections yet')).not.toBeInTheDocument();
 
 		resolveCollections([]);

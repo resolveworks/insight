@@ -3,7 +3,7 @@
 	import { resolve } from '$app/paths';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import Button from '#lib/components/Button.svelte';
-	import ErrorAlert from '#lib/components/ErrorAlert.svelte';
+	import Alert from '#lib/components/Alert.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
@@ -107,7 +107,7 @@
 
 		{#if !documentsLoaded && documentsError}
 			<div class="flex flex-col items-start gap-3 py-12">
-				<ErrorAlert>Failed to load documents: {documentsError}</ErrorAlert>
+				<Alert>Failed to load documents: {documentsError}</Alert>
 				<Button variant="secondary" onclick={retryDocuments}>Retry</Button>
 			</div>
 		{:else if !documentsLoaded}

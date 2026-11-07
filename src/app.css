@@ -52,12 +52,18 @@
 	--color-neutral-700: #4c4c4c;
 	--color-neutral-800: #383838;
 	--color-neutral-900: #1f2937;
-	--color-neutral-950: #111827;
 
 	/* Semantic colors */
 	--color-error: #cc0202;
+	--color-error-hover: #a30202;
 	--color-warning: #fc8f32;
 	--color-success: #22c55e;
+
+	/* Role colors */
+	--color-muted: var(--color-neutral-500);
+	--color-subtle: var(--color-neutral-400);
+	--color-line: var(--color-neutral-200);
+	--color-line-strong: var(--color-neutral-300);
 
 	/* Surface colors */
 	--color-surface: #f9fafb;
@@ -71,7 +77,6 @@
 	--radius-sm: 0.25rem;
 	--radius-md: 0.4rem;
 	--radius-lg: 0.5rem;
-	--radius-xl: 0.75rem;
 
 	/* Shadows */
 	--shadow-soft: 0 0 1rem 0 rgba(0, 0, 0, 0.15);
@@ -81,7 +86,7 @@
 /* Base styles */
 @layer base {
 	body {
-		@apply bg-neutral-700 text-neutral-800 font-sans antialiased;
+		@apply bg-surface-dim text-neutral-800 font-sans antialiased;
 	}
 
 	h1,
@@ -96,4 +101,16 @@
 	a {
 		@apply text-primary-600 hover:underline;
 	}
+}
+
+@utility card {
+	@apply rounded-lg border border-line bg-surface-bright;
+}
+
+@utility panel {
+	@apply rounded-lg bg-surface-bright shadow-medium;
+}
+
+@utility focus-ring {
+	@apply outline-2 outline-offset-2 outline-primary-500;
 }

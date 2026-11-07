@@ -3,8 +3,8 @@
 	import { resolve } from '$app/paths';
 	import Markdown from './Markdown.svelte';
 	import Button from './Button.svelte';
-	import GhostInput from './GhostInput.svelte';
-	import ErrorAlert from './ErrorAlert.svelte';
+	import Input from './Input.svelte';
+	import Alert from './Alert.svelte';
 	import SetupScreen from './SetupScreen.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
@@ -241,14 +241,14 @@
 
 	<!-- Error display -->
 	{#if error}
-		<ErrorAlert variant="banner">{error}</ErrorAlert>
+		<Alert>{error}</Alert>
 	{/if}
 
 	{#if providerReady}
 		<!-- Input Area -->
 		<div class="border-t border-neutral-300 bg-surface-bright p-4">
 			<div class="flex gap-2">
-				<GhostInput
+				<Input
 					type="text"
 					bind:value={inputValue}
 					ghostText={prediction}

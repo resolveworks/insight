@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
-	import ErrorAlert from './ErrorAlert.svelte';
+	import Alert from './Alert.svelte';
 	import {
 		configureProvider,
 		describeError,
@@ -95,10 +95,10 @@
 
 <div class="space-y-4">
 	{#if stateError}
-		<ErrorAlert>{stateError}</ErrorAlert>
+		<Alert>{stateError}</Alert>
 	{/if}
 	{#if statusError}
-		<ErrorAlert>{statusError}</ErrorAlert>
+		<Alert>{statusError}</Alert>
 	{/if}
 
 	<div>
@@ -173,6 +173,6 @@
 	</div>
 
 	{#if error}
-		<ErrorAlert>{error}</ErrorAlert>
+		<Alert>{error}</Alert>
 	{/if}
 </div>

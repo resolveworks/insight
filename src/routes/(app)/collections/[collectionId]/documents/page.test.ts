@@ -60,9 +60,11 @@ describe('Collection documents page', () => {
 
 		await renderPage();
 
-		expect(await screen.findByRole('status')).toHaveTextContent(
-			'Loading documents',
-		);
+		expect(
+			(await screen.findAllByRole('status')).some((status) =>
+				status.textContent?.includes('Loading documents'),
+			),
+		).toBe(true);
 		expect(screen.queryByText('No documents yet')).not.toBeInTheDocument();
 
 		resolveDocuments([]);
