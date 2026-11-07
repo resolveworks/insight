@@ -3,6 +3,7 @@
 	import { resolve } from '$app/paths';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import Button from '#lib/components/Button.svelte';
+	import ErrorAlert from '#lib/components/ErrorAlert.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
@@ -16,6 +17,9 @@
 	);
 	const documentsLoaded = $derived(
 		collectionId ? collections.hasLoadedDocuments(collectionId) : false,
+	);
+	const documentsError = $derived(
+		collectionId ? collections.getDocumentsError(collectionId) : null,
 	);
 
 	// Pipeline progress from global store (persists across navigation)
@@ -40,6 +44,10 @@
 	$effect(() => {
 		if (collectionId) collections.ensureDocuments(collectionId);
 	});
+
+	function retryDocuments() {
+		if (collectionId) collections.ensureDocuments(collectionId);
+	}
 
 	async function importPdf() {
 		if (!collectionId) {
@@ -97,7 +105,12 @@
 			</div>
 		{/if}
 
-		{#if !documentsLoaded}
+		{#if !documentsLoaded && documentsError}
+			<div class="flex flex-col items-start gap-3 py-12">
+				<ErrorAlert>Failed to load documents: {documentsError}</ErrorAlert>
+				<Button variant="secondary" onclick={retryDocuments}>Retry</Button>
+			</div>
+		{:else if !documentsLoaded}
 			<div
 				class="flex flex-col items-center justify-center py-12"
 				role="status"
