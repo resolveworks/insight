@@ -23,9 +23,6 @@ function mockDefaultIPC() {
 		if (cmd === 'get_provider_status') {
 			return { family: null, model: null, error: null };
 		}
-		if (cmd === 'get_collections') return [collection];
-		if (cmd === 'get_documents') return [];
-		if (cmd === 'get_pipeline_progress') return [];
 		if (cmd === 'list_conversations') {
 			return [{ id: 'c1', title: 'Local history' }];
 		}
@@ -51,6 +48,7 @@ beforeAll(async () => {
 	page.url = new URL('http://localhost/collections/col1/research');
 	page.params = { collectionId: 'col1' };
 	page.data = {
+		collection,
 		provider: {
 			current: null,
 			status: { family: null, model: null, error: null },
@@ -65,6 +63,7 @@ beforeEach(() => {
 	page.url = new URL('http://localhost/collections/col1/research');
 	page.params = { collectionId: 'col1' };
 	page.data = {
+		collection,
 		provider: {
 			current: null,
 			status: { family: null, model: null, error: null },
@@ -109,7 +108,7 @@ describe('Research workspace without a chat provider', () => {
 		const data = await rootLoad({
 			depends,
 		} as unknown as Parameters<typeof rootLoad>[0]);
-		page.data = data as unknown as typeof page.data;
+		page.data = { ...data, collection } as unknown as typeof page.data;
 		render(Page);
 
 		expect(await screen.findByText(reason)).toBeInTheDocument();

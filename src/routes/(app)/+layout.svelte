@@ -1,8 +1,14 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
+	import { startInvalidationListeners } from '#lib/invalidation.js';
 
 	let { children } = $props();
+
+	onMount(() => {
+		void startInvalidationListeners();
+	});
 
 	type Tab = { id: string; label: string; href: 'collections' | 'settings' };
 	const tabs: Tab[] = [

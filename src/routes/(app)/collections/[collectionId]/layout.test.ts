@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { createRawSnippet } from 'svelte';
 import { page } from '$app/state';
+import Layout from './+layout.svelte';
+import { load } from './+layout';
 
 vi.mock('@tauri-apps/api/event', () => ({
 	listen: vi.fn(async () => () => {}),
@@ -15,15 +17,21 @@ const collection = {
 	total_pages: 10,
 };
 
-let Layout: typeof import('./+layout.svelte').default;
+const document = {
+	id: 'doc1',
+	name: 'report.pdf',
+	file_type: 'application/pdf',
+	page_count: 12,
+	tags: [],
+	created_at: '2024-01-15T10:30:00Z',
+};
 
-beforeAll(async () => {
+const providerStatus = { family: null, model: null, error: null };
+
+beforeEach(() => {
 	mockIPC((cmd) => {
-		if (cmd === 'get_collections') return [collection];
 		if (cmd === 'get_documents') return [];
-		if (cmd === 'get_pipeline_progress') return [];
 	});
-	Layout = (await import('./+layout.svelte')).default;
 });
 
 function renderWorkspace(pathname: string) {
@@ -34,17 +42,48 @@ function renderWorkspace(pathname: string) {
 	page.params = { collectionId: 'col1' };
 	render(Layout, {
 		props: {
+			params: { collectionId: 'col1' },
+			data: {
+				collections: [collection],
+				collection,
+				documents: [],
+				provider: { current: null, status: providerStatus },
+				providerError: null,
+			},
 			children: createRawSnippet(() => ({ render: () => '<span></span>' })),
 		},
 	});
 }
 
+describe('Collection workspace load', () => {
+	it('registers its dependency, finds the collection, and returns its documents', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_documents') return [document];
+		});
+		const depends = vi.fn();
+		const parent = vi.fn(async () => ({ collections: [collection] }));
+
+		const data = (await load({
+			params: { collectionId: 'col1' },
+			depends,
+			parent,
+		} as unknown as Parameters<typeof load>[0])) as {
+			collection: unknown;
+			documents: unknown[];
+		};
+
+		expect(depends).toHaveBeenCalledWith('app:collection:col1');
+		expect(data.collection).toEqual(collection);
+		expect(data.documents).toEqual([document]);
+	});
+});
+
 describe('Collection workspace shell', () => {
-	it('shows the collection name and both section tabs', async () => {
+	it('shows the collection name and both section tabs', () => {
 		renderWorkspace('/collections/col1/research');
 
 		expect(
-			await screen.findByRole('heading', { name: 'Climate Research' }),
+			screen.getByRole('heading', { name: 'Climate Research' }),
 		).toBeInTheDocument();
 		const links = screen.getAllByRole('link');
 		expect(links.map((link) => link.textContent?.trim())).toEqual([
@@ -59,10 +98,9 @@ describe('Collection workspace shell', () => {
 		expect(links[1]).not.toHaveAttribute('aria-current');
 	});
 
-	it('marks Documents current on the document list', async () => {
+	it('marks Documents current on the document list', () => {
 		renderWorkspace('/collections/col1/documents');
 
-		await screen.findByRole('heading', { name: 'Climate Research' });
 		const links = screen.getAllByRole('link');
 		expect(links[0]).not.toHaveAttribute('aria-current');
 		expect(links[1]).toHaveAttribute('aria-current', 'page');
