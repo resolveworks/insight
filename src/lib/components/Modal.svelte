@@ -9,12 +9,48 @@
 
 	let { title, onClose, children }: Props = $props();
 
+	const titleId = $props.id();
+	const focusableSelector =
+		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+
 	let panel: HTMLDivElement | undefined = $state();
+
+	function focusableElements() {
+		if (!panel) return [];
+		return Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector));
+	}
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			onClose?.();
+			return;
+		}
+
+		if (e.key !== 'Tab' || !panel) return;
+
+		const focusable = focusableElements();
+		if (focusable.length === 0) {
+			e.preventDefault();
+			panel.focus();
+			return;
+		}
+
+		const first = focusable[0];
+		const last = focusable[focusable.length - 1];
+		const activeIndex = focusable.indexOf(
+			document.activeElement as HTMLElement,
+		);
+
+		if (e.shiftKey && activeIndex <= 0) {
+			e.preventDefault();
+			last.focus();
+		} else if (
+			!e.shiftKey &&
+			(activeIndex === -1 || activeIndex === focusable.length - 1)
+		) {
+			e.preventDefault();
+			first.focus();
 		}
 	}
 
@@ -22,11 +58,44 @@
 		if (e.target === panel?.parentElement) onClose?.();
 	}
 
-	// Autofocus the first focusable element inside the panel
+	function inertBackground(overlay: HTMLElement) {
+		const changed: { element: HTMLElement; inert: boolean }[] = [];
+		let node: HTMLElement | null = overlay;
+
+		while (node && node !== document.body) {
+			const parent: HTMLElement = node.parentElement!;
+			for (const sibling of parent.children) {
+				if (sibling === node || !(sibling instanceof HTMLElement)) continue;
+				changed.push({ element: sibling, inert: sibling.inert });
+				sibling.inert = true;
+			}
+			node = parent;
+		}
+
+		return () => {
+			for (const { element, inert } of changed) element.inert = inert;
+		};
+	}
+
 	$effect(() => {
 		if (!panel) return;
-		const focusable = panel.querySelector<HTMLElement>('[data-autofocus]');
-		focusable?.focus();
+
+		const previouslyFocused =
+			document.activeElement instanceof HTMLElement
+				? document.activeElement
+				: null;
+		const restoreBackground = inertBackground(panel.parentElement!);
+
+		const target =
+			panel.querySelector<HTMLElement>('[data-autofocus]') ??
+			focusableElements()[0] ??
+			panel;
+		target.focus();
+
+		return () => {
+			restoreBackground();
+			previouslyFocused?.focus();
+		};
 	});
 </script>
 
@@ -36,18 +105,20 @@
 	role="presentation"
 	class="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/50 p-4"
 	onclick={handleBackdropClick}
-	onkeydown={(e) => e.key === 'Escape' && onClose?.()}
 >
 	<div
 		bind:this={panel}
 		role="dialog"
 		aria-modal="true"
-		aria-label={title}
+		aria-labelledby={title ? titleId : undefined}
+		tabindex="-1"
 		class="w-full max-w-md rounded-lg bg-surface-bright p-6 shadow-lg"
 	>
 		{#if title}
 			<div class="mb-4 flex items-center justify-between">
-				<h2 class="text-base font-semibold text-neutral-800">{title}</h2>
+				<h2 id={titleId} class="text-base font-semibold text-neutral-800">
+					{title}
+				</h2>
 				<button
 					onclick={onClose}
 					class="cursor-pointer rounded p-1 text-neutral-400 transition-colors hover:text-neutral-700"
