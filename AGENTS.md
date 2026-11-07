@@ -128,14 +128,14 @@ A source is immutable. Text is a derivation: a document may have many extraction
 
 ### What Syncs vs What's Local
 
-| Data            | Syncs                          | Stored in  |
-| --------------- | ------------------------------ | ---------- |
-| PDF files       | Yes                            | iroh-blobs |
-| Extractions     | Yes                            | iroh-blobs |
-| File metadata   | Yes                            | iroh-docs  |
-| Collection info | Yes                            | iroh-docs  |
-| Search index    | No (built from synced text)    | milli      |
-| Conversations   | No                             | local disk |
+| Data            | Syncs                       | Stored in  |
+| --------------- | --------------------------- | ---------- |
+| PDF files       | Yes                         | iroh-blobs |
+| Extractions     | Yes                         | iroh-blobs |
+| File metadata   | Yes                         | iroh-docs  |
+| Collection info | Yes                         | iroh-docs  |
+| Search index    | No (built from synced text) | milli      |
+| Conversations   | No                          | local disk |
 
 Search is local keyword indexing over the canonical extraction's text: each peer builds its own milli index from the synced extraction text. Nothing beyond the raw document data is derived or replicated.
 
@@ -267,7 +267,7 @@ mockIPC((cmd, args) => {
             └── files/meta.json                # rig SessionMeta (title, updated ms)
 ```
 
-Collection ids are canonical `iroh_docs::NamespaceId` strings, so the directory names cannot escape the conversations root. Each conversation is one rig `DirStore`; `SessionMeta` is the only conversation metadata, with no separate `metadata/*.json` sidecar and no `logs/` at the root. The old `conversations/{id}/messages.json` + `meta.json` layout is rejected, not migrated.
+Collection ids are canonical `iroh_docs::NamespaceId` strings, so the directory names cannot escape the conversations root. Each conversation is one rig `DirStore`; `SessionMeta` is the only conversation metadata, with no separate `metadata/*.json` sidecar and no `logs/` at the root. There is no migration from earlier conversation layouts; they are not read.
 
 ## Conventions
 
