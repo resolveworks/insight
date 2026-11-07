@@ -113,24 +113,22 @@ pub async fn get_documents(
     let storage = state.storage.read().await;
 
     let namespace_id = collection_id.namespace();
-    let documents = storage.list_documents(namespace_id).await.storage_err()?;
+    let documents = storage
+        .list_documents_with_page_counts(namespace_id)
+        .await
+        .storage_err()?;
 
-    let mut result = Vec::with_capacity(documents.len());
-    for document in documents {
-        let page_count = storage
-            .page_count(namespace_id, &document.id)
-            .await
-            .storage_err()?;
-        result.push(DocumentInfo {
+    Ok(documents
+        .into_iter()
+        .map(|(document, page_count)| DocumentInfo {
             page_count: page_count.map(|p| p as u32),
             id: document.id,
             name: document.name,
             file_type: document.file_type,
             tags: document.tags,
             created_at: document.created_at,
-        });
-    }
-    Ok(result)
+        })
+        .collect())
 }
 
 /// Get a single document from a collection by ID

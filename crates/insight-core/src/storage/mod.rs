@@ -517,6 +517,73 @@ impl Storage {
         Ok(documents)
     }
 
+    /// List all documents in a collection with their canonical page counts.
+    ///
+    /// Page counts come from one collection-level scan: the listing identifies
+    /// each document's canonical extraction key, and only those extraction
+    /// records are read.
+    pub async fn list_documents_with_page_counts(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> Result<Vec<(DocumentMetadata, Option<usize>)>> {
+        let documents = self.list_documents(namespace_id).await?;
+
+        let canonical_keys: std::collections::HashMap<String, String> = documents
+            .iter()
+            .filter_map(|document| {
+                document.extraction.as_ref().map(|parser| {
+                    (
+                        doc_extraction_key(&document.id, parser),
+                        document.id.clone(),
+                    )
+                })
+            })
+            .collect();
+
+        if canonical_keys.is_empty() {
+            return Ok(documents
+                .into_iter()
+                .map(|document| (document, None))
+                .collect());
+        }
+
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        let query = Query::key_prefix(b"files/");
+        let stream = doc.get_many(query).await?;
+        tokio::pin!(stream);
+
+        let mut page_counts = std::collections::HashMap::new();
+        while let Some(result) = stream.next().await {
+            let entry = result?;
+            let key = String::from_utf8_lossy(entry.key());
+            let Some(doc_id) = canonical_keys.get(key.as_ref()) else {
+                continue;
+            };
+
+            let page_count = match self.get_blob(&entry.content_hash()).await? {
+                Some(bytes) => serde_json::from_slice::<ExtractionRecord>(&bytes)?.page_count(),
+                None => None,
+            };
+            page_counts.insert(doc_id.clone(), page_count);
+        }
+
+        doc.close().await?;
+
+        Ok(documents
+            .into_iter()
+            .map(|document| {
+                let page_count = page_counts.get(&document.id).copied().flatten();
+                (document, page_count)
+            })
+            .collect())
+    }
+
     /// Get a single document's metadata from a collection by ID
     pub async fn get_document(
         &self,
@@ -1372,6 +1439,106 @@ mod tests {
             .set_canonical_extraction(collection_id, &doc_id, &parser("missing"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_with_page_counts_matches_single_document_reads() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Page Counts").await.unwrap();
+
+        let no_extraction = add_document(
+            &storage,
+            collection_id,
+            "no-extraction.pdf",
+            b"no extraction",
+        )
+        .await;
+        let one_page =
+            add_document(&storage, collection_id, "one-page.pdf", b"one page source").await;
+        let many_pages = add_document(
+            &storage,
+            collection_id,
+            "many-pages.pdf",
+            b"many pages source",
+        )
+        .await;
+        let untyped = add_document(&storage, collection_id, "untyped.pdf", b"untyped source").await;
+        let blank = add_document(&storage, collection_id, "blank.pdf", b"blank source").await;
+
+        let one = extraction(parser("one"), "012345678", vec![9]);
+        storage
+            .write_extraction(collection_id, &one_page, &one)
+            .await
+            .unwrap();
+        storage
+            .set_canonical_extraction(collection_id, &one_page, &one.parser)
+            .await
+            .unwrap();
+
+        // Only the canonical extraction's page count may be listed.
+        let short = extraction(parser("short"), "012345678", vec![9]);
+        let long = extraction(parser("long"), "012345678", vec![3, 6, 9]);
+        for candidate in [&short, &long] {
+            storage
+                .write_extraction(collection_id, &many_pages, candidate)
+                .await
+                .unwrap();
+        }
+        storage
+            .set_canonical_extraction(collection_id, &many_pages, &long.parser)
+            .await
+            .unwrap();
+
+        let mut untyped_extraction = extraction(parser("untyped"), "012345678", vec![9]);
+        untyped_extraction.unit_kind = None;
+        storage
+            .write_extraction(collection_id, &untyped, &untyped_extraction)
+            .await
+            .unwrap();
+        storage
+            .set_canonical_extraction(collection_id, &untyped, &untyped_extraction.parser)
+            .await
+            .unwrap();
+
+        let blank_extraction = extraction(parser("blank"), "", vec![]);
+        storage
+            .write_extraction(collection_id, &blank, &blank_extraction)
+            .await
+            .unwrap();
+        storage
+            .set_canonical_extraction(collection_id, &blank, &blank_extraction.parser)
+            .await
+            .unwrap();
+
+        let listed = storage
+            .list_documents_with_page_counts(collection_id)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 5);
+
+        let counts: std::collections::HashMap<&str, Option<usize>> = listed
+            .iter()
+            .map(|(document, count)| (document.id.as_str(), *count))
+            .collect();
+        assert_eq!(counts[no_extraction.as_str()], None);
+        assert_eq!(counts[one_page.as_str()], Some(1));
+        assert_eq!(counts[many_pages.as_str()], Some(3));
+        assert_eq!(counts[untyped.as_str()], None);
+        assert_eq!(counts[blank.as_str()], Some(0));
+
+        // The batch listing reports exactly what the single-document API does.
+        for (document, count) in &listed {
+            assert_eq!(
+                *count,
+                storage
+                    .page_count(collection_id, &document.id)
+                    .await
+                    .unwrap(),
+                "page count for {}",
+                document.name
+            );
+        }
     }
 
     #[tokio::test]
