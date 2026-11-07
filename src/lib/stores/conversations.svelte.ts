@@ -1,30 +1,25 @@
 /**
- * Conversations store. Owns the active conversation's state (messages) and
- * the streaming chat pipeline.
+ * Conversations store. Owns the active conversation's transcript and the
+ * streaming chat run.
  *
- * Each send opens a Tauri Channel; the backend streams serialized rig
- * `MultiTurnStreamItem`s through it, and the live assistant state (text
- * deltas, streamed tool-call arguments, reasoning, tool results) is assembled
- * here from those items. After `finalResponse` (or `streamError`) the
- * authoritative history is re-fetched via `load_conversation`.
+ * Each send opens a Tauri Channel; the backend streams `ChatEvent`s carrying
+ * app-owned `TranscriptItem`s, which the store applies to the active
+ * transcript in place. After the run finishes or fails, the authoritative
+ * history is re-read via `load_conversation`.
  */
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { invalidate } from '$app/navigation';
-import type { MultiTurnStreamItem, RigMessage } from '#lib/types/rig.js';
 import {
 	deleteConversation as deleteConversationCommand,
 	loadConversation,
 	startChat,
-	type ConversationSummary,
-	type ConversationView,
 } from '#lib/api/conversation.js';
-import {
-	applyItem,
-	buildTranscript,
-	emptyLiveRun,
-	type LiveRun,
-	type TranscriptItem,
-} from '#lib/chat/transcript.js';
+import type {
+	ChatEvent,
+	ConversationSummary,
+	ConversationView,
+	TranscriptItem,
+} from '#lib/types/chat.js';
 
 // =============================================================================
 // State
@@ -47,11 +42,7 @@ function readStoredId(collectionId: string): string | null {
 
 let activeCollectionId = $state<string | null>(null);
 let activeId = $state<string | null>(null);
-let activeMessages = $state<RigMessage[]>([]);
-let live = $state<LiveRun>(emptyLiveRun());
-// Stored-message count when the current run started: slices the optimistic
-// user message (and any prior run) out when adopting a finalResponse payload.
-let runBase = 0;
+let items = $state<TranscriptItem[]>([]);
 let isGenerating = $state(false);
 let isLoading = $state(false);
 let error = $state<string | null>(null);
@@ -82,9 +73,7 @@ function persistActiveId() {
 /** Drop the active conversation's state. */
 function resetActive() {
 	activeId = null;
-	activeMessages = [];
-	runBase = 0;
-	live = emptyLiveRun();
+	items = [];
 	isGenerating = false;
 }
 
@@ -96,55 +85,56 @@ function clearActive() {
 
 function adoptConversation(conv: ConversationView) {
 	activeId = conv.id;
-	activeMessages = conv.messages ?? [];
-	runBase = conv.messages?.length ?? 0;
-	live = emptyLiveRun();
+	items = conv.transcript;
 }
 
-/**
- * Apply one streamed item to the live run (pure fold over `LiveRun`).
- *
- * Unknown provider payloads and usage records are ignored: they carry
- * nothing the transcript view needs. `finalResponse`/`streamError` are
- * terminal and handled by `handleAgentEvent`, not the fold.
- */
-export function applyStreamItem(item: MultiTurnStreamItem): void {
-	live = applyItem(live, item);
+/** Replace the item with the same key, or append it when absent. */
+function upsertItem(item: TranscriptItem): void {
+	const index = items.findIndex((existing) => existing.key === item.key);
+	if (index === -1) {
+		items = [...items, item];
+		return;
+	}
+	const next = items.slice();
+	next[index] = item;
+	items = next;
 }
 
-async function handleAgentEvent(convId: string, payload: MultiTurnStreamItem) {
-	// Events may arrive for a stale listener right after switching chats.
-	if (convId !== activeId) return;
+/** Re-read the active conversation after a run, then refresh the list. */
+function reconcile(): void {
+	const conversationId = activeId;
+	const collectionId = activeCollectionId;
+	if (!conversationId || !collectionId) {
+		throw new Error('Cannot reconcile a run without an active conversation');
+	}
+	void (async () => {
+		await loadById(conversationId, { silent: true });
+		await invalidate(`app:conversations:${collectionId}`);
+	})();
+}
 
-	switch (payload.type) {
-		case 'finalResponse': {
-			// The event carries the run's authoritative transcript (including
-			// the user message): adopt it synchronously so Svelte swaps
-			// provisional -> committed without a blank frame. The silent reload
-			// afterwards is pure reconciliation (meta/title/authority).
-			isGenerating = false;
-			activeMessages = [
-				...activeMessages.slice(0, runBase),
-				...payload.messages,
-			];
-			live = emptyLiveRun();
-			await loadById(convId, { silent: true });
-			await invalidate(`app:conversations:${activeCollectionId}`);
+/** Apply one streamed event to the active transcript. */
+export function applyEvent(event: ChatEvent): void {
+	switch (event.type) {
+		case 'item_upserted':
+			upsertItem(event.item);
 			break;
-		}
 
-		case 'streamError': {
-			error = payload.message || 'Unknown error';
-			console.error('Agent stream error:', payload.message);
-			isGenerating = false;
-			live = emptyLiveRun();
-			await loadById(convId, { silent: true });
-			await invalidate(`app:conversations:${activeCollectionId}`);
+		case 'item_removed':
+			items = items.filter((item) => item.key !== event.key);
 			break;
-		}
 
-		default:
-			applyStreamItem(payload);
+		case 'run_finished':
+			items = [...items.filter((item) => !item.provisional), ...event.items];
+			isGenerating = false;
+			reconcile();
+			break;
+
+		case 'run_failed':
+			items = items.filter((item) => !item.provisional);
+			error = event.message;
+			isGenerating = false;
+			reconcile();
 			break;
 	}
 }
@@ -313,18 +303,12 @@ export async function sendMessage(text: string): Promise<void> {
 
 		const convId = activeId!;
 		error = null;
-		runBase = activeMessages.length;
-		activeMessages = [
-			...activeMessages,
-			{ role: 'user', content: [{ type: 'text', text: trimmed }] },
-		];
 		isGenerating = true;
-		live = emptyLiveRun();
 
-		const channel = new Channel<MultiTurnStreamItem>();
-		channel.onmessage = (item) => {
+		const channel = new Channel<ChatEvent>();
+		channel.onmessage = (event) => {
 			if (convId !== activeId) return;
-			void handleAgentEvent(convId, item);
+			applyEvent(event);
 		};
 
 		try {
@@ -371,13 +355,8 @@ export function getActiveId(): string | null {
 	return activeId;
 }
 
-export function getActiveMessages(): RigMessage[] {
-	return activeMessages;
-}
-
-/** Stored history + live run as one flat renderable list. */
-export function getTranscript(): TranscriptItem[] {
-	return buildTranscript(activeMessages, live);
+export function getItems(): TranscriptItem[] {
+	return items;
 }
 
 export function getIsGenerating(): boolean {
