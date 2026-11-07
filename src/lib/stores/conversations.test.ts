@@ -1,20 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
+import { Channel } from '@tauri-apps/api/core';
 import type {
 	MultiTurnStreamItem,
 	RigMessage,
 	RigStreamEvent,
 	RigToolResultContent,
 } from '#lib/types/rig.js';
-type EventListener = (event: { payload: unknown }) => void;
-const listeners = new Map<string, EventListener>();
 
-vi.mock('@tauri-apps/api/event', () => ({
-	listen: vi.fn(async (name: string, cb: EventListener) => {
-		listeners.set(name, cb);
-		return () => listeners.delete(name);
-	}),
-}));
+let channel: Channel<MultiTurnStreamItem> | undefined;
+let messageIndex = 0;
 
 /**
  * The conversations store keeps module-level $state, so each test re-imports
@@ -22,12 +17,28 @@ vi.mock('@tauri-apps/api/event', () => ({
  */
 async function importStore() {
 	vi.resetModules();
-	listeners.clear();
+	channel = undefined;
+	messageIndex = 0;
 	return await import('./conversations.svelte');
 }
 
-function emit(conversationId: string, payload: MultiTurnStreamItem) {
-	listeners.get(`agent-event-${conversationId}`)?.({ payload });
+function captureChannel(args: unknown) {
+	channel = (args as { onEvent: Channel<MultiTurnStreamItem> }).onEvent;
+	messageIndex = 0;
+}
+
+function emit(payload: MultiTurnStreamItem) {
+	if (!channel) throw new Error('send_message has not opened a channel');
+	(
+		window as unknown as {
+			__TAURI_INTERNALS__: {
+				runCallback: (id: number, data: unknown) => void;
+			};
+		}
+	).__TAURI_INTERNALS__.runCallback(channel.id, {
+		index: messageIndex++,
+		message: payload,
+	});
 }
 
 const callId = (id: string) => ({ provider: id });
@@ -132,7 +143,7 @@ function conversationView(
 	};
 }
 
-const userMessage = (text: string) => ({
+const userMessage = (text: string): RigMessage => ({
 	role: 'user',
 	content: [{ type: 'text', text }],
 });
@@ -182,22 +193,33 @@ describe('conversations store event handling', () => {
 		};
 		let currentView = views.empty;
 		const loadCalls: Array<Record<string, unknown>> = [];
+		const sendCalls: Array<Record<string, unknown>> = [];
 
 		mockIPC((cmd, args) => {
-			if (cmd === 'list_conversations') return [summary('conv1')];
 			if (cmd === 'load_conversation') {
 				loadCalls.push(args as Record<string, unknown>);
 				return currentView;
 			}
-			if (cmd === 'send_message') return null;
+			if (cmd === 'send_message') {
+				sendCalls.push(args as Record<string, unknown>);
+				captureChannel(args);
+				return null;
+			}
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		await store.initialize('col1', [summary('conv1')]);
 		expect(store.getActiveId()).toBe('conv1');
 		loadCalls.length = 0;
 
 		await store.sendMessage('find papers');
+		expect(sendCalls).toEqual([
+			expect.objectContaining({
+				collectionId: 'col1',
+				conversationId: 'conv1',
+				message: 'find papers',
+			}),
+		]);
 		expect(store.getIsGenerating()).toBe(true);
 		expect(store.getActiveMessages()).toEqual([
 			{ role: 'user', content: [{ type: 'text', text: 'find papers' }] },
@@ -205,12 +227,12 @@ describe('conversations store event handling', () => {
 
 		// Stream: reasoning, text, tool-call arguments, complete call,
 		// committed execution, tool result, usage record.
-		emit('conv1', start(0, 'reasoning'));
-		emit('conv1', reasoningDelta(0, 'Thinking'));
-		emit('conv1', endReasoning(0, 'Thinking'));
-		emit('conv1', start(1, 'text'));
-		emit('conv1', textDelta(1, 'Let me search'));
-		emit('conv1', textDelta(1, ' the index.'));
+		emit(start(0, 'reasoning'));
+		emit(reasoningDelta(0, 'Thinking'));
+		emit(endReasoning(0, 'Thinking'));
+		emit(start(1, 'text'));
+		emit(textDelta(1, 'Let me search'));
+		emit(textDelta(1, ' the index.'));
 
 		const items = store.getTranscript().map((item) => item.kind);
 		expect(items).toEqual(['userText', 'reasoning', 'assistantText']);
@@ -220,12 +242,12 @@ describe('conversations store event handling', () => {
 			store.getTranscript().find((item) => item.kind === 'assistantText'),
 		).toMatchObject({ text: 'Let me search the index.', streaming: true });
 
-		emit('conv1', endText(1, 'Let me search the index.'));
-		emit('conv1', startToolCall(2, 'search'));
-		emit('conv1', argumentsDelta(2, '{"q": "pap'));
-		emit('conv1', argumentsDelta(2, 'ers"}'));
-		emit('conv1', endToolCall(2, 'call1', 'search', { q: 'papers' }));
-		emit('conv1', committedToolCall('call1', 'search', { q: 'papers' }));
+		emit(endText(1, 'Let me search the index.'));
+		emit(startToolCall(2, 'search'));
+		emit(argumentsDelta(2, '{"q": "pap'));
+		emit(argumentsDelta(2, 'ers"}'));
+		emit(endToolCall(2, 'call1', 'search', { q: 'papers' }));
+		emit(committedToolCall('call1', 'search', { q: 'papers' }));
 
 		const callItem = () =>
 			store.getTranscript().find((item) => item.kind === 'toolCall')!;
@@ -236,14 +258,11 @@ describe('conversations store event handling', () => {
 			executing: true,
 		});
 
-		emit('conv1', executedToolCall('call1', 'search', { q: 'papers' }));
+		emit(executedToolCall('call1', 'search', { q: 'papers' }));
 		expect(callItem().executing).toBe(false);
 
-		emit(
-			'conv1',
-			toolResult('call1', 'search', [{ type: 'text', text: '3 results' }]),
-		);
-		emit('conv1', {
+		emit(toolResult('call1', 'search', [{ type: 'text', text: '3 results' }]));
+		emit({
 			type: 'completionCall',
 			call_index: 0,
 			usage: USAGE,
@@ -268,7 +287,7 @@ describe('conversations store event handling', () => {
 
 		// Terminal: adopt the event's authoritative transcript synchronously.
 		currentView = views.final;
-		emit('conv1', {
+		emit({
 			type: 'finalResponse',
 			usage: USAGE,
 			messages: finalMessages,
@@ -306,23 +325,25 @@ describe('conversations store event handling', () => {
 	it('surfaces stream errors and refreshes history', async () => {
 		const currentView = conversationView('conv2', 'col1');
 		const loadCalls: string[] = [];
-		mockIPC((cmd) => {
-			if (cmd === 'list_conversations') return [];
+		mockIPC((cmd, args) => {
 			if (cmd === 'start_chat') return currentView;
 			if (cmd === 'load_conversation') {
 				loadCalls.push('load');
 				return currentView;
 			}
-			if (cmd === 'send_message') return null;
+			if (cmd === 'send_message') {
+				captureChannel(args);
+				return null;
+			}
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		await store.initialize('col1', []);
 		await store.sendMessage('hello');
-		emit('conv2', start(0, 'text'));
-		emit('conv2', textDelta(0, 'partial'));
-		emit('conv2', endText(0, 'partial'));
-		emit('conv2', { type: 'streamError', message: 'provider exploded' });
+		emit(start(0, 'text'));
+		emit(textDelta(0, 'partial'));
+		emit(endText(0, 'partial'));
+		emit({ type: 'streamError', message: 'provider exploded' });
 
 		await vi.waitFor(() => {
 			expect(store.getError()).toBe('provider exploded');
@@ -336,15 +357,12 @@ describe('conversations store event handling', () => {
 		expect(store.getError()).toBeNull();
 	});
 
-	it('initializing a collection opens its most recent conversation', async () => {
-		const listCalls: Array<Record<string, unknown>> = [];
+	it('initializing a collection opens its most recent loaded conversation', async () => {
+		const calls: string[] = [];
 		const loadCalls: Array<Record<string, unknown>> = [];
 
 		mockIPC((cmd, args) => {
-			if (cmd === 'list_conversations') {
-				listCalls.push(args as Record<string, unknown>);
-				return [summary('recent'), summary('older')];
-			}
+			calls.push(cmd);
 			if (cmd === 'load_conversation') {
 				loadCalls.push(args as Record<string, unknown>);
 				const { conversationId } = args as { conversationId: string };
@@ -353,9 +371,9 @@ describe('conversations store event handling', () => {
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		await store.initialize('col1', [summary('recent'), summary('older')]);
 
-		expect(listCalls).toEqual([{ collectionId: 'col1' }]);
+		expect(calls).not.toContain('list_conversations');
 		expect(loadCalls).toEqual([
 			{ collectionId: 'col1', conversationId: 'recent' },
 		]);
@@ -374,9 +392,6 @@ describe('conversations store event handling', () => {
 				collectionId: string;
 				conversationId?: string;
 			};
-			if (cmd === 'list_conversations') {
-				return lists[collectionId].map(summary);
-			}
 			if (cmd === 'load_conversation') {
 				return conversationView(conversationId!, collectionId, [
 					userMessage(collectionId),
@@ -385,15 +400,13 @@ describe('conversations store event handling', () => {
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		await store.initialize('col1', lists.col1.map(summary));
 		expect(store.getActiveId()).toBe('a1');
-		expect(store.getConversations().map((c) => c.id)).toEqual(['a1']);
 		expect(store.getActiveMessages()).toEqual([userMessage('col1')]);
 
-		await store.initialize('col2');
+		await store.initialize('col2', lists.col2.map(summary));
 		expect(store.getActiveCollectionId()).toBe('col2');
 		expect(store.getActiveId()).toBe('b1');
-		expect(store.getConversations().map((c) => c.id)).toEqual(['b1']);
 		expect(store.getActiveMessages()).toEqual([userMessage('col2')]);
 	});
 
@@ -402,13 +415,15 @@ describe('conversations store event handling', () => {
 
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
-			if (cmd === 'list_conversations') return [];
 			if (cmd === 'start_chat') return conversationView('new1', 'col1');
-			if (cmd === 'send_message') return null;
+			if (cmd === 'send_message') {
+				captureChannel(args);
+				return null;
+			}
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		await store.initialize('col1', []);
 		expect(store.getActiveId()).toBeNull();
 
 		await store.sendMessage('hello');
@@ -416,10 +431,14 @@ describe('conversations store event handling', () => {
 		expect(calls.find((c) => c.cmd === 'start_chat')?.args).toEqual({
 			collectionId: 'col1',
 		});
-		expect(calls.find((c) => c.cmd === 'send_message')?.args).toEqual({
-			conversationId: 'new1',
-			message: 'hello',
-		});
+		expect(calls.find((c) => c.cmd === 'send_message')?.args).toEqual(
+			expect.objectContaining({
+				collectionId: 'col1',
+				conversationId: 'new1',
+				message: 'hello',
+				onEvent: expect.anything(),
+			}),
+		);
 		expect(store.getActiveId()).toBe('new1');
 		expect(store.getActiveMessages()).toEqual([userMessage('hello')]);
 		expect(store.getIsGenerating()).toBe(true);
@@ -438,9 +457,6 @@ describe('conversations store event handling', () => {
 				collectionId: string;
 				conversationId?: string;
 			};
-			if (cmd === 'list_conversations') {
-				return lists[collectionId].map(summary);
-			}
 			if (cmd === 'load_conversation') {
 				return conversationView(conversationId!, collectionId);
 			}
@@ -448,14 +464,14 @@ describe('conversations store event handling', () => {
 
 		const store = await importStore();
 		// No stored chat for col1: it opens the most recent one.
-		await store.initialize('col1');
+		await store.initialize('col1', lists.col1.map(summary));
 		expect(store.getActiveId()).toBe('a1');
 		expect(localStorage.getItem('insight:activeConversationId:col1')).toBe(
 			'a1',
 		);
 
 		// col2 has a stored chat that is not the most recent one.
-		await store.initialize('col2');
+		await store.initialize('col2', lists.col2.map(summary));
 		expect(store.getActiveId()).toBe('b1');
 	});
 
@@ -463,21 +479,21 @@ describe('conversations store event handling', () => {
 		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
-			if (cmd === 'list_conversations') return [summary('c1')];
 			if (cmd === 'load_conversation') return conversationView('c1', 'col1');
 			if (cmd === 'delete_conversation') return null;
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		const { invalidate } = await import('$app/navigation');
+		await store.initialize('col1', [summary('c1')]);
 		expect(store.getActiveId()).toBe('c1');
 
-		await store.deleteConversation('c1');
+		await store.deleteConversation('c1', []);
 		expect(calls.find((c) => c.cmd === 'delete_conversation')?.args).toEqual({
 			collectionId: 'col1',
 			conversationId: 'c1',
 		});
-		expect(store.getConversations()).toEqual([]);
+		expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
 		// No auto-create: the user lands in the draft state.
 		expect(store.getActiveId()).toBeNull();
 		expect(store.getActiveMessages()).toEqual([]);
@@ -487,13 +503,12 @@ describe('conversations store event handling', () => {
 		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 		mockIPC((cmd, args) => {
 			calls.push({ cmd, args: args as Record<string, unknown> });
-			if (cmd === 'list_conversations') return [summary('c1')];
 			if (cmd === 'load_conversation') return conversationView('c1', 'col1');
 			if (cmd === 'predict_next_message') return 'next words';
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		await store.initialize('col1', [summary('c1')]);
 
 		expect(await store.predictNextMessage()).toBe('next words');
 		expect(calls.find((c) => c.cmd === 'predict_next_message')?.args).toEqual({
@@ -502,14 +517,36 @@ describe('conversations store event handling', () => {
 		});
 	});
 
+	it('refreshes the conversation list when a run terminates', async () => {
+		const view = conversationView('c1', 'col1');
+		mockIPC((cmd, args) => {
+			if (cmd === 'load_conversation') return view;
+			if (cmd === 'send_message') {
+				captureChannel(args);
+				return null;
+			}
+		});
+
+		const store = await importStore();
+		const { invalidate } = await import('$app/navigation');
+		await store.initialize('col1', [summary('c1')]);
+		await store.sendMessage('hello');
+		emit({
+			type: 'finalResponse',
+			usage: USAGE,
+			messages: [userMessage('hello')],
+			content: [{ type: 'text', text: 'hi' }],
+		});
+
+		await vi.waitFor(() => {
+			expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
+		});
+	});
+
 	describe('draft (lazy) conversations', () => {
 		it('initializes an empty collection in the draft state', async () => {
-			mockIPC((cmd) => {
-				if (cmd === 'list_conversations') return [];
-			});
-
 			const store = await importStore();
-			await store.initialize('col1');
+			await store.initialize('col1', []);
 
 			expect(store.getActiveCollectionId()).toBe('col1');
 			expect(store.getActiveId()).toBeNull();
@@ -517,13 +554,12 @@ describe('conversations store event handling', () => {
 
 		it('newConversation resets to a draft within the collection', async () => {
 			mockIPC((cmd) => {
-				if (cmd === 'list_conversations') return [summary('c1')];
 				if (cmd === 'load_conversation')
 					return conversationView('c1', 'col1', [userMessage('hi')]);
 			});
 
 			const store = await importStore();
-			await store.initialize('col1');
+			await store.initialize('col1', [summary('c1')]);
 			expect(store.getActiveId()).toBe('c1');
 
 			store.newConversation();
@@ -536,10 +572,12 @@ describe('conversations store event handling', () => {
 	it('cancels generation via cancel_generation', async () => {
 		const cancelled: string[] = [];
 		mockIPC((cmd, args) => {
-			if (cmd === 'list_conversations') return [];
 			if (cmd === 'start_chat') return conversationView('c9', 'col1');
 			if (cmd === 'load_conversation') return conversationView('c9', 'col1');
-			if (cmd === 'send_message') return null;
+			if (cmd === 'send_message') {
+				captureChannel(args);
+				return null;
+			}
 			if (cmd === 'cancel_generation') {
 				cancelled.push((args as { conversationId: string }).conversationId);
 				return null;
@@ -547,7 +585,7 @@ describe('conversations store event handling', () => {
 		});
 
 		const store = await importStore();
-		await store.initialize('col1');
+		await store.initialize('col1', []);
 		await store.sendMessage('hi');
 		await store.cancelGeneration();
 

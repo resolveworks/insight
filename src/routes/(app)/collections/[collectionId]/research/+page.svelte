@@ -1,23 +1,32 @@
 <script lang="ts">
-	import { page } from '$app/state';
+	import type { PageProps } from './$types';
 	import Chat from '#lib/components/Chat.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import { isProviderReady } from '#lib/api/provider.js';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
-	const collectionId = $derived(page.params.collectionId ?? '');
-	const collection = $derived(page.data.collection);
-	const providerReady = $derived(isProviderReady(page.data.provider));
+	let { data }: PageProps = $props();
+
+	const collection = $derived(data.collection);
+	const collectionId = $derived(data.collection.id);
+	const conversations = $derived(data.conversations);
+	const providerReady = $derived(isProviderReady(data.provider));
 	const activeCollectionId = $derived(chat.getActiveCollectionId());
+	const activeId = $derived(chat.getActiveId());
 
 	// Conversation history is local: bind it as soon as the collection is
 	// known, independent of the chat provider. Only the main pane is gated.
 	$effect(() => {
-		if (collectionId) {
-			void chat.initialize(collectionId);
-		}
+		void chat.initialize(collectionId, conversations);
 	});
+
+	function handleDelete(id: string) {
+		void chat.deleteConversation(
+			id,
+			conversations.filter((conversation) => conversation.id !== id),
+		);
+	}
 </script>
 
 <div class="flex h-full overflow-hidden">
@@ -27,8 +36,11 @@
 	>
 		{#if activeCollectionId === collectionId}
 			<ConversationSidebar
+				{conversations}
+				{activeId}
 				onSelect={(id) => chat.selectConversation(id)}
 				onNew={() => chat.newConversation()}
+				onDelete={handleDelete}
 			/>
 		{:else}
 			<div class="flex h-full items-center justify-center">

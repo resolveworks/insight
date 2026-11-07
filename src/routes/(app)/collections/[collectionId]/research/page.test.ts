@@ -3,16 +3,21 @@ import { render, screen } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { page } from '$app/state';
 import { load as rootLoad } from '../../../../+layout';
-
-vi.mock('@tauri-apps/api/event', () => ({
-	listen: vi.fn(async () => () => {}),
-}));
+import { load as researchLoad } from './+page';
+import type { PageProps } from './$types';
 
 const collection = {
 	id: 'col1',
 	name: 'Climate Research',
 	document_count: 2,
 	total_pages: 10,
+};
+
+const conversations = [{ id: 'c1', title: 'Local history' }];
+
+const provider = {
+	current: null,
+	status: { family: null, model: null, error: null },
 };
 
 let Page: typeof import('./+page.svelte').default;
@@ -22,9 +27,6 @@ function mockDefaultIPC() {
 		if (cmd === 'get_current_provider') return null;
 		if (cmd === 'get_provider_status') {
 			return { family: null, model: null, error: null };
-		}
-		if (cmd === 'list_conversations') {
-			return [{ id: 'c1', title: 'Local history' }];
 		}
 		if (cmd === 'load_conversation') {
 			return {
@@ -45,38 +47,51 @@ function mockDefaultIPC() {
 
 beforeAll(async () => {
 	mockDefaultIPC();
-	page.url = new URL('http://localhost/collections/col1/research');
-	page.params = { collectionId: 'col1' };
-	page.data = {
-		collection,
-		provider: {
-			current: null,
-			status: { family: null, model: null, error: null },
-		},
-		providerError: null,
-	};
 	Page = (await import('./+page.svelte')).default;
 });
 
 beforeEach(() => {
 	mockDefaultIPC();
-	page.url = new URL('http://localhost/collections/col1/research');
-	page.params = { collectionId: 'col1' };
-	page.data = {
-		collection,
-		provider: {
-			current: null,
-			status: { family: null, model: null, error: null },
-		},
-		providerError: null,
-	};
+});
+
+function renderPage(data: PageProps['data']) {
+	page.data = data;
+	render(Page, {
+		props: { data, params: { collectionId: data.collection.id } },
+	});
+}
+
+describe('Research conversations load', () => {
+	it('registers its dependency and returns the collection’s conversations', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'list_conversations') return conversations;
+		});
+		const depends = vi.fn();
+
+		const data = (await researchLoad({
+			params: { collectionId: 'col1' },
+			depends,
+		} as unknown as Parameters<typeof researchLoad>[0])) as {
+			conversations: typeof conversations;
+		};
+
+		expect(depends).toHaveBeenCalledWith('app:conversations:col1');
+		expect(data.conversations).toEqual(conversations);
+	});
 });
 
 describe('Research workspace without a chat provider', () => {
 	it('keeps the local conversation sidebar available beside provider setup', async () => {
-		render(Page);
+		renderPage({
+			collections: [collection],
+			collection,
+			documents: [],
+			conversations,
+			provider,
+			providerError: null,
+		});
 
-		expect(await screen.findByText('Local history')).toBeInTheDocument();
+		expect(screen.getByText('Local history')).toBeInTheDocument();
 		expect(
 			screen.getByRole('button', { name: 'New Chat' }),
 		).toBeInTheDocument();
@@ -101,15 +116,18 @@ describe('Research workspace without a chat provider', () => {
 			if (cmd === 'get_collections') return [collection];
 			if (cmd === 'get_documents') return [];
 			if (cmd === 'get_pipeline_progress') return [];
-			if (cmd === 'list_conversations') return [];
 			if (cmd === 'list_providers') return [];
 		});
 		const depends = vi.fn();
-		const data = await rootLoad({
+		const data = (await rootLoad({
 			depends,
-		} as unknown as Parameters<typeof rootLoad>[0]);
-		page.data = { ...data, collection } as unknown as typeof page.data;
-		render(Page);
+		} as unknown as Parameters<typeof rootLoad>[0])) as PageProps['data'];
+		renderPage({
+			...data,
+			collection,
+			documents: [],
+			conversations: [],
+		});
 
 		expect(await screen.findByText(reason)).toBeInTheDocument();
 		expect(
