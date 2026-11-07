@@ -23,7 +23,7 @@
 	const hasDocuments = $derived(documentCount > 0);
 
 	// Reactive reads from the conversations store
-	const transcript = $derived(chat.getTranscript());
+	const transcript = $derived(chat.getItems());
 	const isGenerating = $derived(chat.getIsGenerating());
 	const error = $derived(chat.getError());
 
@@ -32,14 +32,11 @@
 	let messagesContainer: HTMLElement | undefined;
 
 	// Auto-scroll to bottom whenever chat content changes. Reading the
-	// transcript length plus the last item's text/args sizes is what tells
-	// $effect to re-run — growing text AND growing tool-call args scroll.
+	// transcript length plus the last item's text size is what tells $effect
+	// to re-run — text, reasoning and tool-call args all grow `text`.
 	$effect(() => {
 		const last = transcript[transcript.length - 1];
-		if (
-			transcript.length === 0 ||
-			(last.text.length === 0 && last.args.length === 0)
-		) {
+		if (transcript.length === 0 || last.text.length === 0) {
 			return;
 		}
 
@@ -108,11 +105,10 @@
 				</div>
 			{/if}
 		{:else}
-			<!-- One renderer over the unified transcript: stored history and the
-			     live run are the same view model, so a run committing only
-			     flips provisional/executing flags — blocks stay in place. -->
+			<!-- One renderer over the transcript: a run committing only flips
+			     provisional/executing flags — blocks stay in place. -->
 			{#each transcript as item (item.key)}
-				{#if item.kind === 'userText'}
+				{#if item.kind === 'user_text'}
 					<div class="flex justify-end">
 						<div
 							class="max-w-[80%] min-w-0 break-words rounded-lg bg-primary-600 px-4 py-2 text-white"
@@ -120,7 +116,7 @@
 							<Markdown content={item.text} />
 						</div>
 					</div>
-				{:else if item.kind === 'assistantText'}
+				{:else if item.kind === 'assistant_text'}
 					<div class="flex justify-start">
 						<div
 							class="max-w-[80%] min-w-0 break-words rounded-lg border border-line bg-surface-bright px-4 py-2 text-neutral-800"
@@ -135,22 +131,22 @@
 						<pre
 							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{item.text}</pre>
 					</ToolBlock>
-				{:else if item.kind === 'toolCall'}
+				{:else if item.kind === 'tool_call'}
 					<ToolBlock title="Tool: {item.name || '…'}">
 						{#snippet summaryExtra()}
 							{#if item.executing}
 								<span class="animate-pulse text-primary-500">...</span>
 							{/if}
 						{/snippet}
-						{#if item.args}
+						{#if item.text}
 							<pre
-								class="max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{item.args}</pre>
+								class="max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{item.text}</pre>
 						{/if}
 					</ToolBlock>
-				{:else if item.kind === 'toolResult'}
+				{:else if item.kind === 'tool_result'}
 					<ToolBlock
 						title="Tool result: {item.name}"
-						tone={item.isError ? 'error' : 'neutral'}
+						tone={item.is_error ? 'error' : 'neutral'}
 					>
 						<pre
 							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{item.text}</pre>

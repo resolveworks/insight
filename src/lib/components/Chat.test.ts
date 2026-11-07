@@ -4,6 +4,11 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 import { page } from '$app/state';
 import Chat from './Chat.svelte';
 import * as chat from '#lib/stores/conversations.svelte.js';
+import type {
+	ConversationSummary,
+	TranscriptItem,
+	TranscriptKind,
+} from '#lib/types/chat.js';
 
 const props = {
 	collectionId: 'col1',
@@ -13,12 +18,29 @@ const props = {
 };
 
 type RenderOptions = {
-	conversations?: Array<{ id: string; title: string }>;
-	messages?: Array<{
-		role: 'user' | 'assistant';
-		content: Array<{ type: 'text'; text: string }>;
-	}>;
+	conversations?: ConversationSummary[];
+	transcript?: TranscriptItem[];
 };
+
+function item(
+	key: string,
+	kind: TranscriptKind,
+	fields: Partial<TranscriptItem> = {},
+): TranscriptItem {
+	return {
+		key,
+		kind,
+		name: '',
+		text: '',
+		provisional: false,
+		is_error: false,
+		executing: false,
+		streaming: false,
+		...fields,
+	};
+}
+
+const userItem = (text: string) => item('0-0', 'user_text', { text });
 
 beforeEach(() => {
 	localStorage.clear();
@@ -39,7 +61,7 @@ async function renderChat(
 				id: 'c1',
 				collection_id: collectionId,
 				title: 'Existing chat',
-				messages: opts.messages ?? [],
+				transcript: opts.transcript ?? [],
 			};
 		}
 		if (cmd === 'list_providers') return [];
@@ -84,18 +106,13 @@ describe('Chat', () => {
 		expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
 	});
 
-	it('keeps stored messages and disables the composer in an empty collection', async () => {
+	it('keeps a stored transcript and disables the composer in an empty collection', async () => {
 		await renderChat(
 			'no-docs-with-history',
 			{ documentCount: 0 },
 			{
 				conversations: [{ id: 'c1', title: 'Existing chat' }],
-				messages: [
-					{
-						role: 'user',
-						content: [{ type: 'text', text: 'Earlier question' }],
-					},
-				],
+				transcript: [userItem('Earlier question')],
 			},
 		);
 
@@ -106,18 +123,13 @@ describe('Chat', () => {
 		expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
 	});
 
-	it('shows stored message bodies with provider setup below and no input', async () => {
+	it('shows a stored transcript with provider setup below and no input', async () => {
 		await renderChat(
 			'no-provider',
 			{ providerReady: false },
 			{
 				conversations: [{ id: 'c1', title: 'Existing chat' }],
-				messages: [
-					{
-						role: 'user',
-						content: [{ type: 'text', text: 'Earlier question' }],
-					},
-				],
+				transcript: [userItem('Earlier question')],
 			},
 		);
 
@@ -134,51 +146,26 @@ describe('Chat', () => {
 	});
 
 	it('renders reasoning and tool activity as open disclosures, flagging a failed result', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'list_providers') return [];
-			if (cmd === 'load_conversation') {
-				return {
-					id: 'c1',
-					collection_id: 'tools',
-					title: 'Existing chat',
-					messages: [
-						{
-							role: 'user',
-							content: [{ type: 'text', text: 'Question' }],
-						},
-						{
-							role: 'assistant',
-							content: [
-								{ type: 'reasoning', text: 'Looking around' },
-								{
-									type: 'tool_call',
-									id: { provider: 'call_1' },
-									function: {
-										name: 'search',
-										arguments: { query: 'x' },
-									},
-								},
-							],
-						},
-						{
-							role: 'user',
-							content: [
-								{
-									type: 'tool_result',
-									call: { provider: 'call_1' },
-									name: 'search',
-									content: [{ type: 'text', text: 'index unavailable' }],
-									is_error: true,
-								},
-							],
-						},
-					],
-				};
-			}
-		});
-
-		await chat.initialize('tools', [{ id: 'c1', title: 'Existing chat' }]);
-		render(Chat, { props: { ...props, collectionId: 'tools' } });
+		await renderChat(
+			'tools',
+			{},
+			{
+				conversations: [{ id: 'c1', title: 'Existing chat' }],
+				transcript: [
+					userItem('Question'),
+					item('1-0', 'reasoning', { text: 'Looking around' }),
+					item('1-1', 'tool_call', {
+						name: 'search',
+						text: JSON.stringify({ query: 'x' }, null, 2),
+					}),
+					item('2-0', 'tool_result', {
+						name: 'search',
+						text: 'index unavailable',
+						is_error: true,
+					}),
+				],
+			},
+		);
 
 		const titles = await Promise.all([
 			screen.findByText('Reasoning'),

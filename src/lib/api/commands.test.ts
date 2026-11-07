@@ -181,7 +181,7 @@ describe('Conversation commands', () => {
 		id: 'c1',
 		collection_id: 'col1',
 		title: 'Climate research',
-		messages: [],
+		transcript: [],
 	};
 
 	it('lists and loads conversations without re-reading the list', async () => {

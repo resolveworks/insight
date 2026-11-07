@@ -2,13 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 import { Channel } from '@tauri-apps/api/core';
 import type {
-	MultiTurnStreamItem,
-	RigMessage,
-	RigStreamEvent,
-	RigToolResultContent,
-} from '#lib/types/rig.js';
+	ChatEvent,
+	ConversationView,
+	TranscriptItem,
+	TranscriptKind,
+} from '#lib/types/chat.js';
 
-let channel: Channel<MultiTurnStreamItem> | undefined;
+let channel: Channel<ChatEvent> | undefined;
 let messageIndex = 0;
 
 /**
@@ -23,11 +23,11 @@ async function importStore() {
 }
 
 function captureChannel(args: unknown) {
-	channel = (args as { onEvent: Channel<MultiTurnStreamItem> }).onEvent;
+	channel = (args as { onEvent: Channel<ChatEvent> }).onEvent;
 	messageIndex = 0;
 }
 
-function emit(payload: MultiTurnStreamItem) {
+function emit(event: ChatEvent) {
 	if (!channel) throw new Error('send_message has not opened a channel');
 	(
 		window as unknown as {
@@ -37,94 +37,47 @@ function emit(payload: MultiTurnStreamItem) {
 		}
 	).__TAURI_INTERNALS__.runCallback(channel.id, {
 		index: messageIndex++,
-		message: payload,
+		message: event,
 	});
 }
 
-const callId = (id: string) => ({ provider: id });
+function item(
+	key: string,
+	kind: TranscriptKind,
+	fields: Partial<TranscriptItem> = {},
+): TranscriptItem {
+	return {
+		key,
+		kind,
+		name: '',
+		text: '',
+		provisional: false,
+		is_error: false,
+		executing: false,
+		streaming: false,
+		...fields,
+	};
+}
 
-const streamEvent = (value: RigStreamEvent): MultiTurnStreamItem => ({
-	type: 'streamAssistantItem',
-	item: 'event',
-	value,
+const userItem = (key: string, text: string, provisional = false) =>
+	item(key, 'user_text', { text, provisional });
+
+const upserted = (value: TranscriptItem): ChatEvent => ({
+	type: 'item_upserted',
+	item: value,
 });
 
-const start = (part: number, kind: 'text' | 'reasoning') =>
-	streamEvent({ event: 'start', part, kind });
+const removed = (key: string): ChatEvent => ({ type: 'item_removed', key });
 
-const textDelta = (part: number, text: string): MultiTurnStreamItem =>
-	streamEvent({ event: 'text', part, text });
-
-const endText = (part: number, text: string): MultiTurnStreamItem =>
-	streamEvent({ event: 'end', part, content: { type: 'text', text } });
-
-const startToolCall = (part: number, name: string): MultiTurnStreamItem =>
-	streamEvent({ event: 'start', part, kind: 'tool_call', name });
-
-const argumentsDelta = (part: number, json: string): MultiTurnStreamItem =>
-	streamEvent({ event: 'arguments', part, json });
-
-const endToolCall = (
-	part: number,
-	id: string,
-	name: string,
-	args: Record<string, unknown>,
-): MultiTurnStreamItem =>
-	streamEvent({
-		event: 'end',
-		part,
-		content: {
-			type: 'tool_call',
-			id: callId(id),
-			function: { name, arguments: args },
-		},
-	});
-
-const reasoningDelta = (part: number, text: string): MultiTurnStreamItem =>
-	streamEvent({ event: 'reasoning', part, text });
-
-const endReasoning = (part: number, text: string): MultiTurnStreamItem =>
-	streamEvent({
-		event: 'end',
-		part,
-		content: { type: 'reasoning', text },
-	});
-
-const committedToolCall = (
-	id: string,
-	name: string,
-	args: Record<string, unknown> = {},
-): MultiTurnStreamItem => ({
-	type: 'toolCall',
-	tool_call: { id: callId(id), function: { name, arguments: args } },
+const finished = (items: TranscriptItem[]): ChatEvent => ({
+	type: 'run_finished',
+	items,
 });
 
-const executedToolCall = (
-	id: string,
-	name: string,
-	args: Record<string, unknown> = {},
-): MultiTurnStreamItem => ({
-	type: 'toolExecutionCommitted',
-	tool_call: { id: callId(id), function: { name, arguments: args } },
+const failed = (message: string): ChatEvent => ({
+	type: 'run_failed',
+	message,
 });
-
-const toolResult = (
-	id: string,
-	name: string,
-	content: RigToolResultContent[],
-): MultiTurnStreamItem => ({
-	type: 'toolResult',
-	tool_result: { call: callId(id), name, content },
-});
-
-const USAGE = {
-	input_tokens: 0,
-	output_tokens: 0,
-	total_tokens: 0,
-	cached_input_tokens: 0,
-	cache_creation_input_tokens: 0,
-	reasoning_tokens: 0,
-};
 
 function summary(id: string) {
 	return { id, title: `Chat ${id}` };
@@ -133,75 +86,58 @@ function summary(id: string) {
 function conversationView(
 	id: string,
 	collectionId: string,
-	messages: unknown[] = [],
-) {
+	transcript: TranscriptItem[] = [],
+): ConversationView {
 	return {
 		id,
 		collection_id: collectionId,
 		title: `Chat ${id}`,
-		messages,
+		transcript,
 	};
 }
 
-const userMessage = (text: string): RigMessage => ({
-	role: 'user',
-	content: [{ type: 'text', text }],
-});
+const storedTranscript = [
+	userItem('0-0', 'find papers'),
+	item('1-0', 'reasoning', { text: 'Thinking' }),
+	item('1-1', 'tool_call', {
+		name: 'search',
+		text: JSON.stringify({ q: 'papers' }, null, 2),
+	}),
+	item('2-0', 'tool_result', { name: 'search', text: '3 results' }),
+];
 
-describe('conversations store event handling', () => {
+describe('conversations store', () => {
 	beforeEach(() => {
 		clearMocks();
 		localStorage.clear();
 	});
 
-	it('builds a chronological transcript from a streamed multi-turn sequence', async () => {
-		const finalMessages: RigMessage[] = [
-			{ role: 'user', content: [{ type: 'text', text: 'find papers' }] },
-			{
-				role: 'assistant',
-				content: [
-					{ type: 'reasoning', text: 'Thinking' },
-					{ type: 'text', text: 'Let me search the index.' },
-					{
-						type: 'tool_call',
-						id: callId('call1'),
-						function: { name: 'search', arguments: { q: 'papers' } },
-					},
-				],
-			},
-			{
-				role: 'user',
-				content: [
-					{
-						type: 'tool_result',
-						call: callId('call1'),
-						name: 'search',
-						content: [{ type: 'text', text: '3 results' }],
-					},
-				],
-			},
-			{
-				role: 'assistant',
-				content: [{ type: 'text', text: 'Found 3 results.' }],
-			},
-		];
-		const views: Record<string, unknown> = {
-			// First load (initialize): empty history
-			empty: conversationView('conv1', 'col1'),
-			// Authoritative refresh after finalResponse
-			final: conversationView('conv1', 'col1', finalMessages),
-		};
-		let currentView = views.empty;
-		const loadCalls: Array<Record<string, unknown>> = [];
-		const sendCalls: Array<Record<string, unknown>> = [];
+	it('loads a stored transcript with its tool call and result', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'load_conversation')
+				return conversationView('conv1', 'col1', storedTranscript);
+		});
 
+		const store = await importStore();
+		await store.initialize('col1', [summary('conv1')]);
+
+		expect(store.getActiveId()).toBe('conv1');
+		expect(store.getItems()).toEqual(storedTranscript);
+		expect(store.getItems().map((entry) => entry.kind)).toEqual([
+			'user_text',
+			'reasoning',
+			'tool_call',
+			'tool_result',
+		]);
+	});
+
+	it('applies a run’s streamed events to the transcript in place', async () => {
 		mockIPC((cmd, args) => {
-			if (cmd === 'load_conversation') {
-				loadCalls.push(args as Record<string, unknown>);
-				return currentView;
-			}
+			if (cmd === 'load_conversation')
+				return conversationView('conv1', 'col1', [
+					userItem('0-0', 'earlier question'),
+				]);
 			if (cmd === 'send_message') {
-				sendCalls.push(args as Record<string, unknown>);
 				captureChannel(args);
 				return null;
 			}
@@ -209,126 +145,69 @@ describe('conversations store event handling', () => {
 
 		const store = await importStore();
 		await store.initialize('col1', [summary('conv1')]);
-		expect(store.getActiveId()).toBe('conv1');
-		loadCalls.length = 0;
-
 		await store.sendMessage('find papers');
-		expect(sendCalls).toEqual([
-			expect.objectContaining({
-				collectionId: 'col1',
-				conversationId: 'conv1',
-				message: 'find papers',
-			}),
-		]);
 		expect(store.getIsGenerating()).toBe(true);
-		expect(store.getActiveMessages()).toEqual([
-			{ role: 'user', content: [{ type: 'text', text: 'find papers' }] },
+		expect(store.getItems()).toEqual([userItem('0-0', 'earlier question')]);
+
+		emit(upserted(userItem('1-0', 'find papers', true)));
+		emit(
+			upserted(
+				item('2-0', 'assistant_text', { provisional: true, streaming: true }),
+			),
+		);
+		expect(store.getItems().map((entry) => entry.key)).toEqual([
+			'0-0',
+			'1-0',
+			'2-0',
 		]);
+		expect(store.getItems()[2]).toMatchObject({ text: '', streaming: true });
 
-		// Stream: reasoning, text, tool-call arguments, complete call,
-		// committed execution, tool result, usage record.
-		emit(start(0, 'reasoning'));
-		emit(reasoningDelta(0, 'Thinking'));
-		emit(endReasoning(0, 'Thinking'));
-		emit(start(1, 'text'));
-		emit(textDelta(1, 'Let me search'));
-		emit(textDelta(1, ' the index.'));
+		emit(
+			upserted(
+				item('2-0', 'assistant_text', {
+					text: 'Let me search',
+					provisional: true,
+					streaming: true,
+				}),
+			),
+		);
+		expect(store.getItems()[2]).toMatchObject({
+			key: '2-0',
+			text: 'Let me search',
+			streaming: true,
+		});
+		expect(store.getItems()).toHaveLength(3);
 
-		const items = store.getTranscript().map((item) => item.kind);
-		expect(items).toEqual(['userText', 'reasoning', 'assistantText']);
-		const liveItems = store.getTranscript().slice(1);
-		expect(liveItems.every((item) => item.provisional)).toBe(true);
-		expect(
-			store.getTranscript().find((item) => item.kind === 'assistantText'),
-		).toMatchObject({ text: 'Let me search the index.', streaming: true });
-
-		emit(endText(1, 'Let me search the index.'));
-		emit(startToolCall(2, 'search'));
-		emit(argumentsDelta(2, '{"q": "pap'));
-		emit(argumentsDelta(2, 'ers"}'));
-		emit(endToolCall(2, 'call1', 'search', { q: 'papers' }));
-		emit(committedToolCall('call1', 'search', { q: 'papers' }));
-
-		const callItem = () =>
-			store.getTranscript().find((item) => item.kind === 'toolCall')!;
-		const prettyArgs = JSON.stringify({ q: 'papers' }, null, 2);
-		expect(callItem()).toMatchObject({
+		emit(
+			upserted(
+				item('2-1', 'tool_call', {
+					name: 'search',
+					text: JSON.stringify({ q: 'papers' }, null, 2),
+					provisional: true,
+					executing: true,
+				}),
+			),
+		);
+		expect(store.getItems()[3]).toMatchObject({
+			kind: 'tool_call',
 			name: 'search',
-			args: prettyArgs,
 			executing: true,
 		});
 
-		emit(executedToolCall('call1', 'search', { q: 'papers' }));
-		expect(callItem().executing).toBe(false);
-
-		emit(toolResult('call1', 'search', [{ type: 'text', text: '3 results' }]));
-		emit({
-			type: 'completionCall',
-			call_index: 0,
-			usage: USAGE,
-			raw: null,
-		});
-
-		expect(store.getTranscript().map((item) => item.kind)).toEqual([
-			'userText',
-			'reasoning',
-			'assistantText',
-			'toolCall',
-			'toolResult',
+		emit(removed('2-1'));
+		expect(store.getItems().map((entry) => entry.key)).toEqual([
+			'0-0',
+			'1-0',
+			'2-0',
 		]);
-		expect(
-			store.getTranscript().find((item) => item.kind === 'toolResult'),
-		).toMatchObject({ text: '3 results' });
-		expect(store.getIsGenerating()).toBe(true);
-
-		// Keys of the live tail — committing the run must keep every one of
-		// them (same keys = same DOM nodes = nothing remounts or collapses).
-		const liveKeys = store.getTranscript().map((item) => item.key);
-
-		// Terminal: adopt the event's authoritative transcript synchronously.
-		currentView = views.final;
-		emit({
-			type: 'finalResponse',
-			usage: USAGE,
-			messages: finalMessages,
-			content: [{ type: 'text', text: 'Found 3 results.' }],
-		});
-
-		// No await: the swap must already be rendered.
-		expect(store.getIsGenerating()).toBe(false);
-		expect(store.getActiveMessages()).toHaveLength(4);
-		const adopted = store.getTranscript();
-		expect(adopted.map((item) => item.kind)).toEqual([
-			'userText',
-			'reasoning',
-			'assistantText',
-			'toolCall',
-			'toolResult',
-			'assistantText',
-		]);
-		expect(adopted.every((item) => !item.provisional)).toBe(true);
-		// The live blocks keep their exact keys; only the final answer is new.
-		expect(adopted.map((item) => item.key).slice(0, -1)).toEqual(liveKeys);
-
-		await vi.waitFor(() => {
-			expect(loadCalls).toContainEqual({
-				collectionId: 'col1',
-				conversationId: 'conv1',
-			});
-		});
-		expect(store.getActiveMessages()[3]?.content[0]).toEqual({
-			type: 'text',
-			text: 'Found 3 results.',
-		});
 	});
 
-	it('surfaces stream errors and refreshes history', async () => {
-		const currentView = conversationView('conv2', 'col1');
-		const loadCalls: string[] = [];
+	it('commits a finished run over its provisional items without duplicating it', async () => {
+		let currentView = conversationView('conv1', 'col1');
+		const loadCalls: Array<Record<string, unknown>> = [];
 		mockIPC((cmd, args) => {
-			if (cmd === 'start_chat') return currentView;
 			if (cmd === 'load_conversation') {
-				loadCalls.push('load');
+				loadCalls.push(args as Record<string, unknown>);
 				return currentView;
 			}
 			if (cmd === 'send_message') {
@@ -338,22 +217,119 @@ describe('conversations store event handling', () => {
 		});
 
 		const store = await importStore();
-		await store.initialize('col1', []);
-		await store.sendMessage('hello');
-		emit(start(0, 'text'));
-		emit(textDelta(0, 'partial'));
-		emit(endText(0, 'partial'));
-		emit({ type: 'streamError', message: 'provider exploded' });
+		await store.initialize('col1', [summary('conv1')]);
+		loadCalls.length = 0;
+
+		await store.sendMessage('find papers');
+		emit(upserted(userItem('0-0', 'find papers', true)));
+		emit(
+			upserted(
+				item('1-0', 'assistant_text', {
+					text: 'Found 3 results.',
+					provisional: true,
+				}),
+			),
+		);
+
+		const final = [
+			userItem('0-0', 'find papers'),
+			item('1-0', 'reasoning', { text: 'Thinking' }),
+			item('1-1', 'tool_call', {
+				name: 'search',
+				text: JSON.stringify({ q: 'papers' }, null, 2),
+			}),
+			item('2-0', 'tool_result', { name: 'search', text: '3 results' }),
+			item('3-0', 'assistant_text', { text: 'Found 3 results.' }),
+		];
+		currentView = conversationView('conv1', 'col1', final);
+		emit(finished(final));
+
+		// The commit is visible without waiting for the reconciliation reload.
+		expect(store.getIsGenerating()).toBe(false);
+		expect(store.getItems()).toEqual(final);
+		expect(store.getItems().map((entry) => entry.key)).toEqual(
+			final.map((entry) => entry.key),
+		);
 
 		await vi.waitFor(() => {
-			expect(store.getError()).toBe('provider exploded');
+			expect(loadCalls).toContainEqual({
+				collectionId: 'col1',
+				conversationId: 'conv1',
+			});
 		});
+		const { invalidate } = await import('$app/navigation');
+		expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
+		expect(store.getItems()).toEqual(final);
+	});
+
+	it('clears a failed run’s provisional items and shows its error', async () => {
+		const stored = [userItem('0-0', 'hello')];
+		const loadCalls: string[] = [];
+		mockIPC((cmd, args) => {
+			if (cmd === 'load_conversation') {
+				loadCalls.push((args as { conversationId: string }).conversationId);
+				return conversationView('conv1', 'col1', stored);
+			}
+			if (cmd === 'send_message') {
+				captureChannel(args);
+				return null;
+			}
+		});
+
+		const store = await importStore();
+		await store.initialize('col1', [summary('conv1')]);
+		loadCalls.length = 0;
+
+		await store.sendMessage('hello');
+		emit(
+			upserted(
+				item('1-0', 'assistant_text', { text: 'partial', provisional: true }),
+			),
+		);
+		emit(failed('provider exploded'));
+
+		expect(store.getItems()).toEqual(stored);
+		expect(store.getError()).toBe('provider exploded');
 		expect(store.getIsGenerating()).toBe(false);
+
 		await vi.waitFor(() => {
-			expect(store.getTranscript()).toEqual([]);
+			expect(loadCalls).toEqual(['conv1']);
 		});
-		expect(loadCalls).toContain('load');
+		const { invalidate } = await import('$app/navigation');
+		expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
+
 		store.clearError();
+		expect(store.getError()).toBeNull();
+	});
+
+	it('ignores events for a conversation that is no longer active', async () => {
+		mockIPC((cmd, args) => {
+			const { conversationId } = args as { conversationId: string };
+			if (cmd === 'load_conversation') {
+				return conversationView(
+					conversationId,
+					'col1',
+					conversationId === 'conv2' ? [userItem('0-0', 'other chat')] : [],
+				);
+			}
+			if (cmd === 'send_message') {
+				captureChannel(args);
+				return null;
+			}
+		});
+
+		const store = await importStore();
+		await store.initialize('col1', [summary('conv1')]);
+		await store.sendMessage('hello');
+
+		await store.selectConversation('conv2');
+		const otherTranscript = store.getItems();
+		expect(otherTranscript).toEqual([userItem('0-0', 'other chat')]);
+
+		emit(upserted(item('1-0', 'assistant_text', { text: 'stale' })));
+		emit(failed('stale failure'));
+
+		expect(store.getItems()).toEqual(otherTranscript);
 		expect(store.getError()).toBeNull();
 	});
 
@@ -394,7 +370,7 @@ describe('conversations store event handling', () => {
 			};
 			if (cmd === 'load_conversation') {
 				return conversationView(conversationId!, collectionId, [
-					userMessage(collectionId),
+					userItem('0-0', collectionId),
 				]);
 			}
 		});
@@ -402,12 +378,12 @@ describe('conversations store event handling', () => {
 		const store = await importStore();
 		await store.initialize('col1', lists.col1.map(summary));
 		expect(store.getActiveId()).toBe('a1');
-		expect(store.getActiveMessages()).toEqual([userMessage('col1')]);
+		expect(store.getItems()).toEqual([userItem('0-0', 'col1')]);
 
 		await store.initialize('col2', lists.col2.map(summary));
 		expect(store.getActiveCollectionId()).toBe('col2');
 		expect(store.getActiveId()).toBe('b1');
-		expect(store.getActiveMessages()).toEqual([userMessage('col2')]);
+		expect(store.getItems()).toEqual([userItem('0-0', 'col2')]);
 	});
 
 	it('sending from a draft starts the chat in its collection, then sends', async () => {
@@ -440,7 +416,8 @@ describe('conversations store event handling', () => {
 			}),
 		);
 		expect(store.getActiveId()).toBe('new1');
-		expect(store.getActiveMessages()).toEqual([userMessage('hello')]);
+		// No optimistic user item: the run's first upsert carries it.
+		expect(store.getItems()).toEqual([]);
 		expect(store.getIsGenerating()).toBe(true);
 	});
 
@@ -496,33 +473,7 @@ describe('conversations store event handling', () => {
 		expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
 		// No auto-create: the user lands in the draft state.
 		expect(store.getActiveId()).toBeNull();
-		expect(store.getActiveMessages()).toEqual([]);
-	});
-
-	it('refreshes the conversation list when a run terminates', async () => {
-		const view = conversationView('c1', 'col1');
-		mockIPC((cmd, args) => {
-			if (cmd === 'load_conversation') return view;
-			if (cmd === 'send_message') {
-				captureChannel(args);
-				return null;
-			}
-		});
-
-		const store = await importStore();
-		const { invalidate } = await import('$app/navigation');
-		await store.initialize('col1', [summary('c1')]);
-		await store.sendMessage('hello');
-		emit({
-			type: 'finalResponse',
-			usage: USAGE,
-			messages: [userMessage('hello')],
-			content: [{ type: 'text', text: 'hi' }],
-		});
-
-		await vi.waitFor(() => {
-			expect(invalidate).toHaveBeenCalledWith('app:conversations:col1');
-		});
+		expect(store.getItems()).toEqual([]);
 	});
 
 	describe('draft (lazy) conversations', () => {
@@ -537,7 +488,7 @@ describe('conversations store event handling', () => {
 		it('newConversation resets to a draft within the collection', async () => {
 			mockIPC((cmd) => {
 				if (cmd === 'load_conversation')
-					return conversationView('c1', 'col1', [userMessage('hi')]);
+					return conversationView('c1', 'col1', [userItem('0-0', 'hi')]);
 			});
 
 			const store = await importStore();
@@ -546,7 +497,7 @@ describe('conversations store event handling', () => {
 
 			store.newConversation();
 			expect(store.getActiveId()).toBeNull();
-			expect(store.getActiveMessages()).toEqual([]);
+			expect(store.getItems()).toEqual([]);
 			expect(store.getActiveCollectionId()).toBe('col1');
 		});
 	});

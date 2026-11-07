@@ -1,22 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { invalidate } from '$app/navigation';
-import type { RigMessage } from '#lib/types/rig.js';
-
-// =============================================================================
-// Types (backend contract)
-// =============================================================================
-
-export interface ConversationView {
-	id: string;
-	collection_id: string;
-	title: string;
-	messages: RigMessage[];
-}
-
-export interface ConversationSummary {
-	id: string;
-	title: string;
-}
+import type { ConversationSummary, ConversationView } from '#lib/types/chat.js';
 
 // =============================================================================
 // Commands
@@ -29,7 +13,7 @@ export function listConversations(
 	return invoke<ConversationSummary[]>('list_conversations', { collectionId });
 }
 
-/** Load a conversation's title and full message history. */
+/** Load a conversation's title and full transcript. */
 export function loadConversation(
 	collectionId: string,
 	conversationId: string,
