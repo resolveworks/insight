@@ -16,11 +16,12 @@ pub struct DocumentInfo {
     pub created_at: String,
 }
 
-/// Event payload for document added
+/// Event payload for a collection whose document listing may have changed.
+///
+/// Carries only the identity: listeners re-read storage via `get_documents`.
 #[derive(Debug, Clone, Serialize)]
-pub struct DocumentAddedEvent {
+pub struct CollectionInvalidated {
     pub collection_id: String,
-    pub document: DocumentInfo,
 }
 
 /// Start importing files into a collection.

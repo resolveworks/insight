@@ -1,10 +1,15 @@
 /**
- * Global store for collections state.
- * Provides a unified API for all collection operations including imports.
- * Queries backend for initial state and listens for real-time updates.
+ * Global store for collections and their documents.
+ *
+ * The Rust side owns the truth; this module only mirrors it for the UI.
+ * Changes the UI initiates re-read what they touched; changes the backend
+ * initiates (import pipeline stages, peer sync) arrive as
+ * `collection-invalidated` signals carrying only the collection id, and the
+ * store re-reads the affected collection. Signals are coalesced so a burst of
+ * entry writes causes one refresh rather than one per write.
  */
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 
 export interface Collection {
 	id: string;
@@ -39,35 +44,21 @@ export interface PipelineProgress {
 	index: StageProgress;
 }
 
-interface DocumentAddedEvent {
+interface CollectionInvalidated {
 	collection_id: string;
-	document: Document;
 }
 
-// Module-level reactive state
-let collections = $state<Collection[]>([]);
+// Module-level reactive state. Replaced wholesale, never mutated in place.
+let collections = $state.raw<Collection[]>([]);
+let documents = $state.raw<Record<string, Document[]>>({});
+let pipelineProgress = $state.raw<Record<string, PipelineProgress>>({});
 let loading = $state(false);
 let error = $state<string | null>(null);
-let pipelineProgress = $state<Record<string, PipelineProgress>>({});
 
-// Track unlisten functions for cleanup
-let unlistenDocAdded: UnlistenFn | null = null;
-let unlistenPipelineProgress: UnlistenFn | null = null;
-
-function updateCollectionDocCount(collectionId: string, delta: number) {
-	collections = collections.map((c) =>
-		c.id === collectionId
-			? { ...c, document_count: c.document_count + delta }
-			: c,
-	);
-}
-
-/** Check if a stage has active work */
 function stageIsActive(stage: StageProgress): boolean {
 	return stage.pending > 0 || stage.active > 0;
 }
 
-/** Check if any stage in the pipeline is active */
 function pipelineIsActive(progress: PipelineProgress): boolean {
 	return (
 		stageIsActive(progress.store) ||
@@ -76,122 +67,122 @@ function pipelineIsActive(progress: PipelineProgress): boolean {
 	);
 }
 
-function updatePipelineProgress(progress: PipelineProgress) {
-	if (!pipelineIsActive(progress)) {
-		// Pipeline complete for this collection, remove from tracking
-		const updated = { ...pipelineProgress };
-		delete updated[progress.collection_id];
-		pipelineProgress = updated;
-
-		// Refresh collections to get updated document counts
-		loadCollections();
-	} else {
-		pipelineProgress = {
-			...pipelineProgress,
-			[progress.collection_id]: progress,
-		};
-	}
-}
+// =============================================================================
+// Mirror refresh
+// =============================================================================
 
 async function loadCollections() {
-	if (loading) return;
 	loading = true;
 	error = null;
-
 	try {
 		collections = await invoke<Collection[]>('get_collections');
 	} catch (e) {
 		console.error('Failed to load collections:', e);
-		error = e instanceof Error ? e.message : 'Failed to load collections';
+		error = e instanceof Error ? e.message : String(e);
 	} finally {
 		loading = false;
 	}
 }
 
-async function loadPipelineProgress() {
+async function loadDocuments(collectionId: string) {
+	const docs = await invoke<Document[]>('get_documents', { collectionId });
+	documents = { ...documents, [collectionId]: docs };
+}
+
+// Per-collection refresh bookkeeping: a burst of invalidations collapses into
+// one follow-up read, and reads never overlap, so an older snapshot cannot
+// overwrite a newer one.
+const refreshing: Record<string, boolean> = {};
+const stale: Record<string, boolean> = {};
+
+function invalidate(collectionId: string) {
+	if (refreshing[collectionId]) {
+		stale[collectionId] = true;
+		return;
+	}
+	void refresh(collectionId);
+}
+
+async function refresh(collectionId: string) {
+	refreshing[collectionId] = true;
 	try {
-		const allProgress = await invoke<PipelineProgress[]>(
-			'get_pipeline_progress',
-		);
-		for (const progress of allProgress) {
-			updatePipelineProgress(progress);
-		}
+		do {
+			stale[collectionId] = false;
+			await Promise.all([loadCollections(), loadDocuments(collectionId)]);
+		} while (stale[collectionId]);
 	} catch (e) {
-		console.error('Failed to get pipeline progress:', e);
+		console.error(`Failed to refresh collection ${collectionId}:`, e);
+	} finally {
+		refreshing[collectionId] = false;
 	}
 }
 
+async function loadPipelineProgress() {
+	try {
+		const active = await invoke<PipelineProgress[]>('get_pipeline_progress');
+		for (const progress of active) applyProgress(progress);
+	} catch (e) {
+		console.error('Failed to load pipeline progress:', e);
+	}
+}
+
+function applyProgress(progress: PipelineProgress) {
+	const next = { ...pipelineProgress };
+	if (pipelineIsActive(progress)) {
+		next[progress.collection_id] = progress;
+	} else {
+		// Finished collections are not tracked: nothing left to display.
+		delete next[progress.collection_id];
+	}
+	pipelineProgress = next;
+}
+
 async function setupEventListeners() {
-	unlistenDocAdded = await listen<DocumentAddedEvent>(
-		'document-added',
-		(event) => {
-			const { collection_id } = event.payload;
-			updateCollectionDocCount(collection_id, 1);
-		},
-	);
-
-	unlistenPipelineProgress = await listen<PipelineProgress>(
-		'pipeline-progress',
-		(event) => {
-			updatePipelineProgress(event.payload);
-		},
-	);
+	await listen<CollectionInvalidated>('collection-invalidated', (event) => {
+		invalidate(event.payload.collection_id);
+	});
+	await listen<PipelineProgress>('pipeline-progress', (event) => {
+		applyProgress(event.payload);
+	});
 }
 
-// Initialize on module load
+// Initialize on module load. The module is the app's singleton sync layer.
 if (typeof window !== 'undefined') {
-	loadCollections();
-	loadPipelineProgress();
-	setupEventListeners();
-}
-
-/**
- * Cleanup event listeners. Call this on app unmount if needed.
- */
-export function cleanup() {
-	unlistenDocAdded?.();
-	unlistenDocAdded = null;
-	unlistenPipelineProgress?.();
-	unlistenPipelineProgress = null;
+	void setupEventListeners();
+	void loadCollections();
+	void loadPipelineProgress();
 }
 
 // =============================================================================
 // Collection queries
 // =============================================================================
 
-/**
- * Get all collections (reactive).
- */
 export function getCollections(): Collection[] {
 	return collections;
 }
 
-/**
- * Check if store is loading.
- */
-export function isLoading(): boolean {
-	return loading;
-}
-
-/**
- * Get any error that occurred during loading.
- */
-export function getError(): string | null {
-	return error;
-}
-
-/**
- * Find a collection by ID.
- */
 export function getCollection(id: string): Collection | undefined {
 	return collections.find((c) => c.id === id);
 }
 
+export function getDocuments(collectionId: string): Document[] {
+	return documents[collectionId] ?? [];
+}
+
 /**
- * Refresh collections from backend.
+ * Load a collection's documents on first view. The list page calls this when
+ * the route param changes; subsequent updates arrive through invalidation.
  */
-export async function refresh(): Promise<void> {
-	await loadCollections();
+export function ensureDocuments(collectionId: string) {
+	if (documents[collectionId] === undefined) invalidate(collectionId);
+}
+
+export function isLoading(): boolean {
+	return loading;
+}
+
+export function getError(): string | null {
+	return error;
 }
 
 // =============================================================================
@@ -224,7 +215,13 @@ export async function createCollection(
  */
 export async function deleteCollection(collectionId: string): Promise<boolean> {
 	const previousCollections = collections;
+	const previousDocuments = documents;
 	collections = collections.filter((c) => c.id !== collectionId);
+	if (documents[collectionId] !== undefined) {
+		const next = { ...documents };
+		delete next[collectionId];
+		documents = next;
+	}
 
 	try {
 		await invoke('delete_collection', { collectionId });
@@ -232,6 +229,7 @@ export async function deleteCollection(collectionId: string): Promise<boolean> {
 	} catch (e) {
 		console.error('Failed to delete collection:', e);
 		collections = previousCollections;
+		documents = previousDocuments;
 		return false;
 	}
 }
@@ -274,12 +272,14 @@ export async function importCollection(
 }
 
 // =============================================================================
-// Document imports and pipeline progress
+// Document mutations and pipeline progress
 // =============================================================================
 
 /**
  * Start importing files into a collection.
- * Progress updates are tracked automatically via events.
+ *
+ * Progress and the resulting document listing arrive through events; nothing
+ * is refreshed here.
  */
 export async function startImport(
 	collectionId: string,
@@ -290,12 +290,21 @@ export async function startImport(
 			paths,
 			collectionId,
 		});
-		updatePipelineProgress(progress);
+		applyProgress(progress);
 		return true;
 	} catch (e) {
 		console.error('Failed to start import:', e);
 		return false;
 	}
+}
+
+/** Delete a document, then refresh the collection's listing. */
+export async function deleteDocument(
+	collectionId: string,
+	documentId: string,
+): Promise<void> {
+	await invoke('delete_document', { collectionId, documentId });
+	invalidate(collectionId);
 }
 
 /**
@@ -312,8 +321,7 @@ export function getPipelineProgress(
  */
 export function isProcessing(collectionId: string): boolean {
 	const progress = pipelineProgress[collectionId];
-	if (!progress) return false;
-	return pipelineIsActive(progress);
+	return progress !== undefined && pipelineIsActive(progress);
 }
 
 /**

@@ -1,17 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { invoke } from '@tauri-apps/api/core';
 	import { open } from '@tauri-apps/plugin-dialog';
-	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy, onMount } from 'svelte';
 	import Button from '#lib/components/Button.svelte';
 	import Breadcrumb from '#lib/components/Breadcrumb.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import type { Document } from '#lib/stores/collections.svelte.js';
 
-	let documents = $state<Document[]>([]);
 	let deletingDocument = $state<Document | null>(null);
 
 	const collectionId = $derived(page.params.collectionId);
@@ -19,6 +15,9 @@
 		collectionId ? collections.getCollection(collectionId) : undefined,
 	);
 	const collectionName = $derived(collection?.name ?? 'Collection');
+	const documents = $derived(
+		collectionId ? collections.getDocuments(collectionId) : [],
+	);
 
 	// Pipeline progress from global store (persists across navigation)
 	const processing = $derived(
@@ -42,7 +41,11 @@
 		{ label: collectionName },
 	]);
 
-	let unlistenDocAdded: UnlistenFn;
+	// Load this collection's documents on first view; the store keeps them
+	// current afterwards via invalidation.
+	$effect(() => {
+		if (collectionId) collections.ensureDocuments(collectionId);
+	});
 
 	async function importPdf() {
 		if (!collectionId) {
@@ -61,55 +64,14 @@
 		await collections.startImport(collectionId, paths);
 	}
 
-	async function loadDocuments() {
-		if (!collectionId) return;
-		try {
-			documents = await invoke<Document[]>('get_documents', { collectionId });
-		} catch (e) {
-			console.error('Failed to load documents:', e);
-			documents = [];
-		}
-	}
-
 	function confirmDeleteDocument() {
 		if (!deletingDocument || !collectionId) return;
 		const documentId = deletingDocument.id;
 		deletingDocument = null;
-		const previousDocuments = documents;
-		documents = documents.filter((d) => d.id !== documentId);
-		invoke('delete_document', { collectionId, documentId }).catch((e) => {
+		collections.deleteDocument(collectionId, documentId).catch((e) => {
 			console.error('Failed to delete document:', e);
-			documents = previousDocuments;
 		});
 	}
-
-	onMount(async () => {
-		await loadDocuments();
-
-		unlistenDocAdded = await listen<{
-			collection_id: string;
-			document: Document;
-		}>('document-added', (event) => {
-			const { collection_id, document } = event.payload;
-			if (
-				collectionId === collection_id &&
-				!documents.some((d) => d.id === document.id)
-			) {
-				documents = [...documents, document];
-			}
-		});
-	});
-
-	onDestroy(() => {
-		unlistenDocAdded?.();
-	});
-
-	// Reload documents when collection changes
-	$effect(() => {
-		if (collectionId) {
-			loadDocuments();
-		}
-	});
 </script>
 
 <div class="flex h-full flex-col">
@@ -162,10 +124,7 @@
 					<li
 						class="group flex items-center justify-between rounded-lg border border-neutral-200 bg-surface-bright px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
-						<a
-							href={resolve(`files/${collectionId}/${doc.id}`)}
-							class="flex-1"
-						>
+						<a href={resolve(`files/${collectionId}/${doc.id}`)} class="flex-1">
 							<span
 								class="text-neutral-800 transition-colors hover:text-primary-600"
 								>{doc.name}</span

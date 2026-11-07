@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 
 use super::types::{ProgressUpdate, Stage};
+use super::AppEvent;
 
 /// Progress for a single processing stage.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -65,20 +66,16 @@ impl PipelineProgress {
 #[derive(Clone)]
 pub struct ProgressTracker {
     collections: Arc<RwLock<HashMap<String, PipelineProgress>>>,
-    /// Channel to notify listeners of progress changes
-    notify_tx: mpsc::Sender<PipelineProgress>,
+    /// Channel to notify the application layer of progress changes
+    notify_tx: mpsc::UnboundedSender<AppEvent>,
 }
 
 impl ProgressTracker {
-    pub fn new() -> (Self, mpsc::Receiver<PipelineProgress>) {
-        let (notify_tx, notify_rx) = mpsc::channel(256);
-        (
-            Self {
-                collections: Arc::new(RwLock::new(HashMap::new())),
-                notify_tx,
-            },
-            notify_rx,
-        )
+    pub fn new(events: mpsc::UnboundedSender<AppEvent>) -> Self {
+        Self {
+            collections: Arc::new(RwLock::new(HashMap::new())),
+            notify_tx: events,
+        }
     }
 
     /// Queue a job for processing.
@@ -146,7 +143,7 @@ impl ProgressTracker {
 
         // Notify listeners of the updated progress
         if let Some(progress) = collections.get(&collection_id) {
-            let _ = self.notify_tx.try_send(progress.clone());
+            let _ = self.notify_tx.send(AppEvent::Progress(progress.clone()));
         }
     }
 

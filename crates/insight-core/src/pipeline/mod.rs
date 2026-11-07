@@ -53,6 +53,18 @@ use workers::{spawn_extract_workers, SharedReceiver};
 /// Number of workers per stage.
 const EXTRACT_WORKERS: usize = 4;
 
+/// Events the pipeline surfaces to the application layer.
+///
+/// Progress is display state; invalidation says only *that* a collection's
+/// entries changed, never what they now contain — listeners re-read storage.
+#[derive(Debug, Clone)]
+pub enum AppEvent {
+    /// Pipeline progress changed for a collection.
+    Progress(PipelineProgress),
+    /// Entries in a collection changed; readers of its document listing must re-read.
+    CollectionInvalidated { namespace: NamespaceId },
+}
+
 /// Event-driven document processing pipeline.
 ///
 /// Coordinates workers and watchers for document processing.
@@ -72,18 +84,22 @@ pub struct Pipeline {
 
     // Master cancellation token
     cancel: CancellationToken,
+
+    // Application-layer event sink (progress + invalidation)
+    events: mpsc::UnboundedSender<AppEvent>,
 }
 
 impl Pipeline {
     /// Create a new pipeline.
     ///
     /// Spawns worker pools for extract and index stages.
-    /// Returns the pipeline and a receiver for progress updates.
+    /// Returns the pipeline and the receiver for application-layer events.
     pub fn new(
         storage: Arc<RwLock<Storage>>,
         index_worker: IndexWorkerHandle,
-    ) -> (Self, mpsc::Receiver<PipelineProgress>) {
-        let (progress, progress_rx) = ProgressTracker::new();
+    ) -> (Self, mpsc::UnboundedReceiver<AppEvent>) {
+        let (events, events_rx) = mpsc::unbounded_channel();
+        let progress = ProgressTracker::new(events.clone());
         let cancel = CancellationToken::new();
 
         // Create unbounded channels (avoids blocking the event watcher)
@@ -114,8 +130,9 @@ impl Pipeline {
                 watchers: Arc::new(RwLock::new(HashMap::new())),
                 progress,
                 cancel,
+                events,
             },
-            progress_rx,
+            events_rx,
         )
     }
 
@@ -133,6 +150,7 @@ impl Pipeline {
         let senders = JobSenders {
             extract: self.extract_tx.clone(),
             index: self.index_tx.clone(),
+            events: self.events.clone(),
         };
 
         let watcher = CollectionWatcher::spawn(

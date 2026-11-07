@@ -46,7 +46,7 @@ pub struct CollectionInfo {
 
 pub use config::{Config, Settings, SettingsError};
 pub use memory::{ConversationMeta, ConversationSummary, FileConversationMemory};
-pub use pipeline::{Pipeline, PipelineProgress, StageProgress};
+pub use pipeline::{AppEvent, Pipeline, PipelineProgress, StageProgress};
 pub use providers::{ModelChoice, ProviderSettings};
 pub use runtime::{predict_next_message, send_message, BASE_SYSTEM_PROMPT};
 pub use search::{spawn_index_worker, IndexWorkerHandle};
@@ -77,11 +77,12 @@ impl AppState {
     /// Create AppState with initialized storage and search.
     /// Called from setup() where Tauri's async runtime is available.
     ///
-    /// Returns the state and a receiver for pipeline progress events
-    /// that should be forwarded to the frontend.
+    /// Returns the state and a receiver for application-layer events
+    /// (pipeline progress and collection invalidation) that should be
+    /// forwarded to the frontend.
     pub async fn new(
         config: Config,
-    ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<PipelineProgress>)> {
+    ) -> anyhow::Result<(Self, tokio::sync::mpsc::UnboundedReceiver<AppEvent>)> {
         // Fast async init - just opens files
         let storage = Storage::open(&config.iroh_dir).await?;
 
@@ -100,7 +101,7 @@ impl AppState {
         )?);
 
         // Create event-driven pipeline for document processing
-        let (pipeline, progress_rx) = Pipeline::new(storage.clone(), index_worker.clone());
+        let (pipeline, events_rx) = Pipeline::new(storage.clone(), index_worker.clone());
 
         Ok((
             Self {
@@ -113,7 +114,7 @@ impl AppState {
                 active_predictions: Arc::new(RwLock::new(Default::default())),
                 pipeline: Arc::new(pipeline),
             },
-            progress_rx,
+            events_rx,
         ))
     }
 

@@ -4,7 +4,8 @@ pub mod error;
 
 use tauri::Manager;
 
-use crate::core::{AppState, Config};
+use crate::commands::documents::CollectionInvalidated;
+use crate::core::{AppEvent, AppState, Config};
 
 /// Initialize tracing/logging with the given directives
 pub fn init_logging(directives: &[&str]) {
@@ -29,17 +30,28 @@ pub fn run() {
             config.ensure_dirs()?;
 
             // Initialize state using Tauri's async runtime (fast, ~100ms)
-            let (state, mut pipeline_progress_rx) =
-                tauri::async_runtime::block_on(AppState::new(config))?;
+            let (state, mut app_events_rx) = tauri::async_runtime::block_on(AppState::new(config))?;
             app.manage(state);
             let state = app.state::<AppState>();
 
-            // Forward pipeline progress events to frontend
+            // Forward pipeline events to the frontend
             let pipeline_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 use tauri::Emitter;
-                while let Some(progress) = pipeline_progress_rx.recv().await {
-                    let _ = pipeline_handle.emit("pipeline-progress", &progress);
+                while let Some(event) = app_events_rx.recv().await {
+                    match event {
+                        AppEvent::Progress(progress) => {
+                            let _ = pipeline_handle.emit("pipeline-progress", &progress);
+                        }
+                        AppEvent::CollectionInvalidated { namespace } => {
+                            let _ = pipeline_handle.emit(
+                                "collection-invalidated",
+                                CollectionInvalidated {
+                                    collection_id: namespace.to_string(),
+                                },
+                            );
+                        }
+                    }
                 }
             });
 

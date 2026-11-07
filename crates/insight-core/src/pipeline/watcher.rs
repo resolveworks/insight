@@ -13,11 +13,13 @@ use crate::storage::{LiveEvent, Storage};
 
 use super::progress::ProgressTracker;
 use super::types::{ExtractJob, IndexJob, Stage};
+use super::AppEvent;
 
 /// Grouped job dispatch channels for pipeline stages.
 pub struct JobSenders {
     pub extract: mpsc::UnboundedSender<ExtractJob>,
     pub index: mpsc::UnboundedSender<IndexJob>,
+    pub events: mpsc::UnboundedSender<AppEvent>,
 }
 
 /// Check if key is a source entry: files/{doc_id}/source
@@ -148,12 +150,28 @@ async fn handle_event(
     progress: &ProgressTracker,
 ) {
     let (key_bytes, is_local) = match event {
-        LiveEvent::InsertLocal { entry, .. } => (entry.key(), true),
+        LiveEvent::InsertLocal { entry } => (entry.key(), true),
         LiveEvent::InsertRemote { entry, .. } => (entry.key(), false),
+        // Content landing or a peer sync can change what a collection lists
+        // (a metadata blob becomes readable, a peer deletes entries), without
+        // any insert event reaching us.
+        LiveEvent::ContentReady { .. }
+        | LiveEvent::PendingContentReady
+        | LiveEvent::SyncFinished(_) => {
+            invalidate(namespace_id, senders);
+            return;
+        }
         _ => return,
     };
 
     let key = String::from_utf8_lossy(key_bytes);
+    if !key.starts_with("files/") {
+        return;
+    }
+
+    // Any files/ entry can change the document listing.
+    invalidate(namespace_id, senders);
+
     let doc_id = match extract_doc_id(&key) {
         Some(id) => id.to_string(),
         None => return,
@@ -176,6 +194,13 @@ async fn handle_event(
             doc_id,
         });
     }
+}
+
+/// Tell the application layer that this collection's entries changed.
+fn invalidate(namespace_id: NamespaceId, senders: &JobSenders) {
+    let _ = senders.events.send(AppEvent::CollectionInvalidated {
+        namespace: namespace_id,
+    });
 }
 
 #[cfg(test)]
