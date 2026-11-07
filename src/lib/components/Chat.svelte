@@ -1,38 +1,18 @@
 <script lang="ts">
-	import { tick, untrack } from 'svelte';
-	import CollectionFilter from './CollectionFilter.svelte';
+	import { tick } from 'svelte';
 	import Markdown from './Markdown.svelte';
 	import Button from './Button.svelte';
 	import GhostInput from './GhostInput.svelte';
 	import ErrorAlert from './ErrorAlert.svelte';
-	import { isProviderReady } from '#lib/stores/provider-state.svelte.js';
-	import { resolve } from '$app/paths';
-	import * as collectionsStore from '#lib/stores/collections.svelte.js';
 	import * as chat from '#lib/stores/conversations.svelte.js';
-
-	// Provider state
-	const providerReady = $derived(isProviderReady());
 
 	// Reactive reads from the conversations store
 	const activeId = $derived(chat.getActiveId());
 	const messages = $derived(chat.getActiveMessages());
-	const collections = $derived(chat.getActiveCollections());
 	const transcript = $derived(chat.getTranscript());
 	const isGenerating = $derived(chat.getIsGenerating());
 	const isLoading = $derived(chat.getIsLoading());
 	const error = $derived(chat.getError());
-
-	// Collections available to scope the conversation to
-	const allCollections = $derived(collectionsStore.getCollections());
-
-	const hasCollection = $derived(collections.length > 0);
-
-	type EmptyState = 'pick-collection' | 'no-messages' | null;
-
-	const emptyState = $derived.by<EmptyState>(() => {
-		if (messages.length > 0) return null;
-		return hasCollection ? 'no-messages' : 'pick-collection';
-	});
 
 	// View-local state
 	let inputValue = $state('');
@@ -40,67 +20,6 @@
 	let isPredicting = $state(false);
 	let predictionTimeout: ReturnType<typeof setTimeout> | undefined;
 	let messagesContainer: HTMLElement | undefined;
-
-	// Conversations already auto-scoped this session. Deliberately
-	// non-reactive and module-scoped: it survives remounts and only
-	// dedupes, so a user removing scope is never re-added.
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- deliberately non-reactive
-	const autoScoped = new Set<string>();
-	let autoScopedDraft = false;
-	let prevChatKey = 'init';
-
-	// Initialize the store once the language provider is ready.
-	$effect(() => {
-		if (providerReady) {
-			untrack(() => {
-				chat.ensureInitialized();
-			});
-		}
-	});
-
-	// Single-collection auto-scope: a fresh, unscoped conversation (or draft)
-	// gets the user's only collection added automatically. Fires at most once
-	// per conversation id per session — and at most once per draft (the flag
-	// resets whenever a new draft starts: after "New Chat" or deleting the
-	// last conversation).
-	$effect(() => {
-		const chatKey = activeId ?? 'draft';
-		if (
-			activeId === null &&
-			messages.length === 0 &&
-			collections.length === 0 &&
-			prevChatKey !== 'draft'
-		) {
-			autoScopedDraft = false;
-		}
-		// A conversation created from an auto-scoped draft inherits the flag,
-		// so removing its scope later is never re-auto-scoped.
-		if (prevChatKey === 'draft' && activeId !== null && autoScopedDraft) {
-			autoScoped.add(activeId);
-		}
-		prevChatKey = chatKey;
-	});
-
-	$effect(() => {
-		if (
-			!providerReady ||
-			messages.length > 0 ||
-			collections.length > 0 ||
-			allCollections.length !== 1
-		) {
-			return;
-		}
-		if (activeId) {
-			if (autoScoped.has(activeId)) return;
-			autoScoped.add(activeId);
-		} else {
-			if (autoScopedDraft) return;
-			autoScopedDraft = true;
-		}
-		untrack(() => {
-			void chat.addActiveCollection(allCollections[0]);
-		});
-	});
 
 	// Auto-scroll to bottom whenever chat content changes. Reading the
 	// transcript length plus the last item's text/args sizes is what tells
@@ -121,13 +40,8 @@
 		});
 	});
 
-	async function handleAddCollection(id: string) {
-		const found = collectionsStore.getCollection(id);
-		if (found) await chat.addActiveCollection(found);
-	}
-
 	async function sendMessage() {
-		if (!inputValue.trim() || isGenerating || !hasCollection) return;
+		if (!inputValue.trim() || isGenerating) return;
 		const text = inputValue;
 		inputValue = '';
 		await chat.sendMessage(text);
@@ -188,50 +102,13 @@
 		bind:this={messagesContainer}
 		class="flex-1 space-y-4 overflow-y-auto p-4"
 	>
-		{#if emptyState === 'pick-collection'}
-			{#if allCollections.length === 0}
-				<div class="flex h-full items-center justify-center">
-					<div class="w-full max-w-md text-center">
-						<h2 class="mb-1 text-lg font-medium text-neutral-800">
-							Choose collections to search
-						</h2>
-						<p class="mb-4 text-sm text-neutral-500">
-							Collections hold the documents your agent searches.
-						</p>
-						<a
-							href={resolve('files')}
-							class="inline-flex items-center justify-center rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
-						>
-							Go to Files
-						</a>
-					</div>
-				</div>
-			{:else}
-				<div class="flex h-full items-center justify-center">
-					<div
-						class="w-full max-w-md rounded-lg border border-neutral-200 bg-surface-bright p-6"
-					>
-						<h2 class="mb-1 text-lg font-medium text-neutral-800">
-							Choose collections to search
-						</h2>
-						<p class="mb-4 text-sm text-neutral-500">
-							Your agent searches only the collections you pick.
-						</p>
-						<CollectionFilter
-							collections={allCollections}
-							selected={collections}
-							onAdd={handleAddCollection}
-							onRemove={chat.removeActiveCollection}
-						/>
-					</div>
-				</div>
-			{/if}
-		{:else if emptyState === 'no-messages'}
+		{#if messages.length === 0}
 			<div class="flex h-full items-center justify-center">
 				<div class="text-center text-neutral-500">
 					<div class="mb-2 text-lg">Ask questions about your documents</div>
 					<div class="text-sm">
-						The agent can search and read documents to help you find information
+						The agent can search and read this collection's documents to help
+						you find information
 					</div>
 				</div>
 			</div>
@@ -331,18 +208,13 @@
 				ghostText={prediction}
 				onkeydown={handleKeydown}
 				onAcceptGhost={handleAcceptPrediction}
-				placeholder={hasCollection
-					? 'Ask about your documents...'
-					: 'Pick a collection to begin'}
-				disabled={isGenerating || !providerReady || !hasCollection}
+				placeholder="Ask about your documents..."
+				disabled={isGenerating}
 			/>
 			{#if isGenerating}
 				<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
 			{:else}
-				<Button
-					onclick={sendMessage}
-					disabled={!inputValue.trim() || !providerReady || !hasCollection}
-				>
+				<Button onclick={sendMessage} disabled={!inputValue.trim()}>
 					Send
 				</Button>
 			{/if}

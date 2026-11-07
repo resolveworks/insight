@@ -4,21 +4,20 @@
 
 	let { children } = $props();
 
-	type Tab = { id: string; label: string; href: string };
+	type Tab = { id: string; label: string; href: 'files' | 'settings' };
 	const tabs: Tab[] = [
-		{ id: 'research', label: 'Research', href: 'research' },
 		{ id: 'files', label: 'Files', href: 'files' },
 		{ id: 'settings', label: 'Settings', href: 'settings' },
 	];
 
-	const currentTab = $derived(page.url.pathname.split('/')[1] || 'research');
+	const currentTab = $derived(page.url.pathname.split('/')[1] || 'files');
 </script>
 
 <main class="flex h-screen flex-col bg-surface-dim text-neutral-800">
 	<nav class="flex bg-neutral-700">
 		{#each tabs as tab (tab.id)}
 			<a
-				href={resolve(tab.href as 'research')}
+				href={resolve(tab.href)}
 				class="px-6 py-3 text-sm font-medium transition-colors {currentTab ===
 				tab.id
 					? 'border-b-2 border-primary-500 text-surface'

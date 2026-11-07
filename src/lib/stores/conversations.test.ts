@@ -115,23 +115,32 @@ const USAGE = {
 	reasoning_tokens: 0,
 };
 
+function summary(id: string) {
+	return { id, title: `Chat ${id}` };
+}
+
 function conversationView(
 	id: string,
-	opts: { messages?: unknown[]; collections?: unknown[] } = {},
+	collectionId: string,
+	messages: unknown[] = [],
 ) {
 	return {
 		id,
-		title: 'Test chat',
-		created_at: '2024-01-01T00:00:00Z',
-		updated_at: '2024-01-01T00:00:00Z',
-		collections: opts.collections ?? [],
-		messages: opts.messages ?? [],
+		collection_id: collectionId,
+		title: `Chat ${id}`,
+		messages,
 	};
 }
+
+const userMessage = (text: string) => ({
+	role: 'user',
+	content: [{ type: 'text', text }],
+});
 
 describe('conversations store event handling', () => {
 	beforeEach(() => {
 		clearMocks();
+		localStorage.clear();
 	});
 
 	it('builds a chronological transcript from a streamed multi-turn sequence', async () => {
@@ -166,33 +175,25 @@ describe('conversations store event handling', () => {
 			},
 		];
 		const views: Record<string, unknown> = {
-			// First load (start_chat): empty history
-			empty: conversationView('conv1'),
+			// First load (initialize): empty history
+			empty: conversationView('conv1', 'col1'),
 			// Authoritative refresh after finalResponse
-			final: conversationView('conv1', { messages: finalMessages }),
+			final: conversationView('conv1', 'col1', finalMessages),
 		};
 		let currentView = views.empty;
-		const loadCalls: string[] = [];
+		const loadCalls: Array<Record<string, unknown>> = [];
 
-		mockIPC((cmd) => {
-			if (cmd === 'list_conversations')
-				return [
-					{
-						id: 'conv1',
-						title: 'Test chat',
-						updated_at: '2024-01-01T00:00:00Z',
-					},
-				];
-			if (cmd === 'start_chat') return currentView;
+		mockIPC((cmd, args) => {
+			if (cmd === 'list_conversations') return [summary('conv1')];
 			if (cmd === 'load_conversation') {
-				loadCalls.push('load');
+				loadCalls.push(args as Record<string, unknown>);
 				return currentView;
 			}
 			if (cmd === 'send_message') return null;
 		});
 
 		const store = await importStore();
-		await store.ensureInitialized();
+		await store.initialize('col1');
 		expect(store.getActiveId()).toBe('conv1');
 		loadCalls.length = 0;
 
@@ -291,7 +292,10 @@ describe('conversations store event handling', () => {
 		expect(adopted.map((item) => item.key).slice(0, -1)).toEqual(liveKeys);
 
 		await vi.waitFor(() => {
-			expect(loadCalls).toContain('load');
+			expect(loadCalls).toContainEqual({
+				collectionId: 'col1',
+				conversationId: 'conv1',
+			});
 		});
 		expect(store.getActiveMessages()[3]?.content[0]).toEqual({
 			type: 'text',
@@ -300,7 +304,7 @@ describe('conversations store event handling', () => {
 	});
 
 	it('surfaces stream errors and refreshes history', async () => {
-		const currentView = conversationView('conv2');
+		const currentView = conversationView('conv2', 'col1');
 		const loadCalls: string[] = [];
 		mockIPC((cmd) => {
 			if (cmd === 'list_conversations') return [];
@@ -313,13 +317,7 @@ describe('conversations store event handling', () => {
 		});
 
 		const store = await importStore();
-		store.newConversation();
-		await store.addActiveCollection({
-			id: 'col1',
-			name: 'Test',
-			document_count: 0,
-			total_pages: null,
-		});
+		await store.initialize('col1');
 		await store.sendMessage('hello');
 		emit('conv2', start(0, 'text'));
 		emit('conv2', textDelta(0, 'partial'));
@@ -338,189 +336,200 @@ describe('conversations store event handling', () => {
 		expect(store.getError()).toBeNull();
 	});
 
-	it('switches collection scope via set_conversation_collections', async () => {
-		let scope: unknown[] | null = null;
+	it('initializing a collection opens its most recent conversation', async () => {
+		const listCalls: Array<Record<string, unknown>> = [];
+		const loadCalls: Array<Record<string, unknown>> = [];
+
 		mockIPC((cmd, args) => {
-			if (cmd === 'list_conversations')
-				return [
-					{
-						id: 'conv3',
-						title: 'Test chat',
-						updated_at: '2024-01-01T00:00:00Z',
-					},
-				];
-			if (cmd === 'load_conversation') return conversationView('conv3');
-			if (cmd === 'set_conversation_collections') {
-				scope = (args as { collections: unknown[] }).collections;
-				return conversationView('conv3', {
-					collections: scope.map((c) => ({
-						...(c as object),
-						document_count: 5,
-						total_pages: 100,
-					})),
-				});
+			if (cmd === 'list_conversations') {
+				listCalls.push(args as Record<string, unknown>);
+				return [summary('recent'), summary('older')];
+			}
+			if (cmd === 'load_conversation') {
+				loadCalls.push(args as Record<string, unknown>);
+				const { conversationId } = args as { conversationId: string };
+				return conversationView(conversationId, 'col1');
 			}
 		});
 
 		const store = await importStore();
-		await store.ensureInitialized();
-		expect(store.getActiveId()).toBe('conv3');
+		await store.initialize('col1');
 
-		await store.addActiveCollection({
-			id: 'col1',
-			name: 'Climate',
-			document_count: 0,
-			total_pages: null,
-		});
-
-		// The server-enriched counts are adopted.
-		expect(store.getActiveCollections()).toEqual([
-			{ id: 'col1', name: 'Climate', document_count: 5, total_pages: 100 },
+		expect(listCalls).toEqual([{ collectionId: 'col1' }]);
+		expect(loadCalls).toEqual([
+			{ collectionId: 'col1', conversationId: 'recent' },
 		]);
-
-		await store.removeActiveCollection('col1');
-		expect(store.getActiveCollections()).toEqual([]);
+		expect(store.getActiveId()).toBe('recent');
+		expect(store.getActiveCollectionId()).toBe('col1');
 	});
 
-	it('deletes the active conversation and lands in a draft when none remain', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'list_conversations')
-				return [
-					{ id: 'c1', title: 'Only chat', updated_at: '2024-01-01T00:00:00Z' },
-				];
-			if (cmd === 'load_conversation') return conversationView('c1');
+	it('switching collections resets to that collection without leaking the previous chat', async () => {
+		const lists: Record<string, string[]> = {
+			col1: ['a1'],
+			col2: ['b1'],
+		};
+
+		mockIPC((cmd, args) => {
+			const { collectionId, conversationId } = args as {
+				collectionId: string;
+				conversationId?: string;
+			};
+			if (cmd === 'list_conversations') {
+				return lists[collectionId].map(summary);
+			}
+			if (cmd === 'load_conversation') {
+				return conversationView(conversationId!, collectionId, [
+					userMessage(collectionId),
+				]);
+			}
+		});
+
+		const store = await importStore();
+		await store.initialize('col1');
+		expect(store.getActiveId()).toBe('a1');
+		expect(store.getConversations().map((c) => c.id)).toEqual(['a1']);
+		expect(store.getActiveMessages()).toEqual([userMessage('col1')]);
+
+		await store.initialize('col2');
+		expect(store.getActiveCollectionId()).toBe('col2');
+		expect(store.getActiveId()).toBe('b1');
+		expect(store.getConversations().map((c) => c.id)).toEqual(['b1']);
+		expect(store.getActiveMessages()).toEqual([userMessage('col2')]);
+	});
+
+	it('sending from a draft starts the chat in its collection, then sends', async () => {
+		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+
+		mockIPC((cmd, args) => {
+			calls.push({ cmd, args: args as Record<string, unknown> });
+			if (cmd === 'list_conversations') return [];
+			if (cmd === 'start_chat') return conversationView('new1', 'col1');
+			if (cmd === 'send_message') return null;
+		});
+
+		const store = await importStore();
+		await store.initialize('col1');
+		expect(store.getActiveId()).toBeNull();
+
+		await store.sendMessage('hello');
+
+		expect(calls.find((c) => c.cmd === 'start_chat')?.args).toEqual({
+			collectionId: 'col1',
+		});
+		expect(calls.find((c) => c.cmd === 'send_message')?.args).toEqual({
+			conversationId: 'new1',
+			message: 'hello',
+		});
+		expect(store.getActiveId()).toBe('new1');
+		expect(store.getActiveMessages()).toEqual([userMessage('hello')]);
+		expect(store.getIsGenerating()).toBe(true);
+	});
+
+	it('remembers the active conversation per collection', async () => {
+		localStorage.setItem('insight:activeConversationId:col2', 'b1');
+
+		const lists: Record<string, string[]> = {
+			col1: ['a1'],
+			col2: ['b2', 'b1'],
+		};
+
+		mockIPC((cmd, args) => {
+			const { collectionId, conversationId } = args as {
+				collectionId: string;
+				conversationId?: string;
+			};
+			if (cmd === 'list_conversations') {
+				return lists[collectionId].map(summary);
+			}
+			if (cmd === 'load_conversation') {
+				return conversationView(conversationId!, collectionId);
+			}
+		});
+
+		const store = await importStore();
+		// No stored chat for col1: it opens the most recent one.
+		await store.initialize('col1');
+		expect(store.getActiveId()).toBe('a1');
+		expect(localStorage.getItem('insight:activeConversationId:col1')).toBe(
+			'a1',
+		);
+
+		// col2 has a stored chat that is not the most recent one.
+		await store.initialize('col2');
+		expect(store.getActiveId()).toBe('b1');
+	});
+
+	it('deletes a conversation in the active collection', async () => {
+		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+		mockIPC((cmd, args) => {
+			calls.push({ cmd, args: args as Record<string, unknown> });
+			if (cmd === 'list_conversations') return [summary('c1')];
+			if (cmd === 'load_conversation') return conversationView('c1', 'col1');
 			if (cmd === 'delete_conversation') return null;
 		});
 
 		const store = await importStore();
-		await store.ensureInitialized();
+		await store.initialize('col1');
 		expect(store.getActiveId()).toBe('c1');
 
 		await store.deleteConversation('c1');
+		expect(calls.find((c) => c.cmd === 'delete_conversation')?.args).toEqual({
+			collectionId: 'col1',
+			conversationId: 'c1',
+		});
 		expect(store.getConversations()).toEqual([]);
 		// No auto-create: the user lands in the draft state.
 		expect(store.getActiveId()).toBeNull();
 		expect(store.getActiveMessages()).toEqual([]);
 	});
 
-	describe('draft (lazy) conversations', () => {
-		beforeEach(() => {
-			clearMocks();
+	it('predicts the next message within the active collection', async () => {
+		const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+		mockIPC((cmd, args) => {
+			calls.push({ cmd, args: args as Record<string, unknown> });
+			if (cmd === 'list_conversations') return [summary('c1')];
+			if (cmd === 'load_conversation') return conversationView('c1', 'col1');
+			if (cmd === 'predict_next_message') return 'next words';
 		});
 
-		it('ensureInitialized lands in a draft when no conversations exist', async () => {
+		const store = await importStore();
+		await store.initialize('col1');
+
+		expect(await store.predictNextMessage()).toBe('next words');
+		expect(calls.find((c) => c.cmd === 'predict_next_message')?.args).toEqual({
+			collectionId: 'col1',
+			conversationId: 'c1',
+		});
+	});
+
+	describe('draft (lazy) conversations', () => {
+		it('initializes an empty collection in the draft state', async () => {
 			mockIPC((cmd) => {
 				if (cmd === 'list_conversations') return [];
 			});
 
 			const store = await importStore();
-			await store.ensureInitialized();
+			await store.initialize('col1');
 
-			expect(store.getIsInitialized()).toBe(true);
+			expect(store.getActiveCollectionId()).toBe('col1');
 			expect(store.getActiveId()).toBeNull();
 		});
 
-		it('newConversation resets to a draft', async () => {
+		it('newConversation resets to a draft within the collection', async () => {
 			mockIPC((cmd) => {
-				if (cmd === 'list_conversations')
-					return [
-						{
-							id: 'c1',
-							title: 'Test chat',
-							updated_at: '2024-01-01T00:00:00Z',
-						},
-					];
+				if (cmd === 'list_conversations') return [summary('c1')];
 				if (cmd === 'load_conversation')
-					return conversationView('c1', {
-						messages: [
-							{ role: 'user', content: [{ type: 'text', text: 'hi' }] },
-						],
-					});
+					return conversationView('c1', 'col1', [userMessage('hi')]);
 			});
 
 			const store = await importStore();
-			await store.ensureInitialized();
+			await store.initialize('col1');
 			expect(store.getActiveId()).toBe('c1');
 
 			store.newConversation();
 			expect(store.getActiveId()).toBeNull();
 			expect(store.getActiveMessages()).toEqual([]);
-			expect(store.getActiveCollections()).toEqual([]);
-		});
-
-		it('addActiveCollection in a draft updates the local scope', async () => {
-			mockIPC((cmd) => {
-				if (cmd === 'list_conversations') return [];
-			});
-
-			const store = await importStore();
-			await store.ensureInitialized();
-			const col = {
-				id: 'col1',
-				name: 'Climate',
-				document_count: 0,
-				total_pages: null,
-			};
-			await store.addActiveCollection(col);
-
-			expect(store.getActiveId()).toBeNull();
-			expect(store.getActiveCollections()).toEqual([col]);
-
-			await store.removeActiveCollection('col1');
-			expect(store.getActiveCollections()).toEqual([]);
-		});
-
-		it('sendMessage from a draft creates the conversation with the draft scope, then sends', async () => {
-			mockIPC((cmd, args) => {
-				if (cmd === 'list_conversations') return [];
-				if (cmd === 'start_chat') {
-					const { collections } = args as {
-						collections: Array<Record<string, unknown>>;
-					};
-					return conversationView('new1', {
-						collections: collections.map((c) => ({
-							...c,
-							document_count: 2,
-							total_pages: 10,
-						})),
-					});
-				}
-				if (cmd === 'send_message') return null;
-			});
-
-			const store = await importStore();
-			await store.ensureInitialized();
-			await store.addActiveCollection({
-				id: 'col1',
-				name: 'Climate',
-				document_count: 0,
-				total_pages: null,
-			});
-
-			await store.sendMessage('hello');
-
-			expect(store.getActiveId()).toBe('new1');
-			expect(store.getActiveCollections()).toEqual([
-				{ id: 'col1', name: 'Climate', document_count: 2, total_pages: 10 },
-			]);
-			expect(store.getActiveMessages()).toEqual([
-				{ role: 'user', content: [{ type: 'text', text: 'hello' }] },
-			]);
-			expect(store.getIsGenerating()).toBe(true);
-		});
-
-		it('sendMessage from an unscoped draft does nothing', async () => {
-			mockIPC((cmd) => {
-				if (cmd === 'list_conversations') return [];
-			});
-
-			const store = await importStore();
-			await store.ensureInitialized();
-
-			await store.sendMessage('hello');
-			expect(store.getActiveId()).toBeNull();
-			expect(store.getActiveMessages()).toEqual([]);
-			expect(store.getIsGenerating()).toBe(false);
+			expect(store.getActiveCollectionId()).toBe('col1');
 		});
 	});
 
@@ -528,8 +537,8 @@ describe('conversations store event handling', () => {
 		const cancelled: string[] = [];
 		mockIPC((cmd, args) => {
 			if (cmd === 'list_conversations') return [];
-			if (cmd === 'start_chat') return conversationView('c9');
-			if (cmd === 'load_conversation') return conversationView('c9');
+			if (cmd === 'start_chat') return conversationView('c9', 'col1');
+			if (cmd === 'load_conversation') return conversationView('c9', 'col1');
 			if (cmd === 'send_message') return null;
 			if (cmd === 'cancel_generation') {
 				cancelled.push((args as { conversationId: string }).conversationId);
@@ -538,13 +547,7 @@ describe('conversations store event handling', () => {
 		});
 
 		const store = await importStore();
-		store.newConversation();
-		await store.addActiveCollection({
-			id: 'col1',
-			name: 'Test',
-			document_count: 0,
-			total_pages: null,
-		});
+		await store.initialize('col1');
 		await store.sendMessage('hi');
 		await store.cancelGeneration();
 

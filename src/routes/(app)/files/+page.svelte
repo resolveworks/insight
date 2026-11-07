@@ -151,6 +151,26 @@
 						<div
 							class="absolute right-3 top-3 flex gap-2 opacity-60 transition-opacity hover:opacity-100 group-hover:opacity-100"
 						>
+							<a
+								href={resolve(`research/${collection.id}`)}
+								class="cursor-pointer text-neutral-400 hover:text-primary-600"
+								aria-label="Chats for {collection.name}"
+								title="Chats"
+							>
+								<svg
+									class="h-4 w-4"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+								>
+									<path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										stroke-width="2"
+										d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"
+									/>
+								</svg>
+							</a>
 							<button
 								onclick={() => openShareModal(collection.id)}
 								class="cursor-pointer text-neutral-400 hover:text-tertiary-500"
