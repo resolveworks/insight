@@ -2,6 +2,8 @@
 
 Insight uses AI to help you find and understand information in your documents. Just ask questions in plain language—the AI does the searching for you.
 
+Open a collection and start a chat from its research view; each conversation belongs to that one collection, so the AI only searches and reads documents there. To research a different set of documents, start a conversation in that collection. Conversations are stored on your computer and are not shared when you share a collection.
+
 ## How It Works
 
 When you ask a question:

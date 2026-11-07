@@ -35,9 +35,17 @@ Synthesized Answer (with citations)
 
 Inference is remote-only: the chat provider is configured in Settings as a canonical rig `ProviderId` selection (for example `openai/openai` or `anthropic/anthropic`) plus a model and optional API key / base URL. Insight exposes one curated selection per vendor from [rig](https://github.com/0xPlaygrounds/rig)'s provider registry — 27 vendors including OpenAI, Anthropic, Gemini, Groq, OpenRouter, and local servers like Ollama and llama.cpp. The registry currently registers 34 selections; Insight does not expose every one. Only the conversation—queries and retrieved excerpts—goes to the provider. Documents are stored, searched, and synced entirely on your machine.
 
-The runtime (`crates/insight-core/src/runtime.rs`) builds a fresh rig agent per request: a stable preamble, four manual `Tool` implementations, and file-backed conversation memory. Each tool owns a clone of the per-run `ToolState` (search index, storage, active collections); Insight keeps these live handles on the tool instances rather than in `ToolContext`. The conversation's active collections are attached as a run document with `AgentRunner::document` on every turn, so a mid-conversation scope change applies to the next model call without touching stored history. `generate_title` and `predict_next_message` are bare-model completions over the same provider settings. Conversation history persists in rig's `DirStore` at `conversations/logs/{id}.jsonl`, with app metadata at `conversations/metadata/{id}.json`. Agent progress streams to the frontend as rig `MultiTurnStreamItem` JSON events; the Tauri command emits a single terminal `streamError` when the run fails.
+The runtime (`crates/insight-core/src/runtime.rs`) builds a fresh rig agent per request: a stable preamble, four manual `Tool` implementations, and file-backed conversation memory. Each tool owns a clone of the per-run `ToolState` (search index, storage, the conversation's collection); Insight keeps these live handles on the tool instances rather than in `ToolContext`. The conversation's collection is attached as an `active_collection` run document naming it on every turn; the preamble and tools are scoped to that one collection. Title generation runs after the first successful turn, falling back to rig-memory's `title_of` of the first user message. `predict_next_message` is a bare-model completion over the same provider settings. Conversation history persists in a per-conversation rig `DirStore`: `conversations/{collection_id}/{conversation_id}/logs/{conversation_id}.jsonl` for the session log and `conversations/{collection_id}/{conversation_id}/files/meta.json` for `rig_memory::SessionMeta` (title and updated). Agent progress streams to the frontend as rig `MultiTurnStreamItem` JSON events; the Tauri command emits a single terminal `streamError` when the run fails.
 
-The agent has four typed tools (search, read_chunk, list_documents, get_collection_terms) built on milli search and iroh storage. It iteratively gathers evidence to answer questions, citing sources along the way. There is no direct user-facing search—all document retrieval happens through the agent.
+The agent has four typed tools (search, read_chunk, list_documents, get_collection_terms) built on milli search and iroh storage, all scoped to the conversation's collection. It iteratively gathers evidence to answer questions, citing sources along the way. There is no direct user-facing search—all document retrieval happens through the agent.
+
+## Conversation Model
+
+A conversation belongs to exactly one evidence collection, fixed at creation. There is no multi-collection scope and no mid-conversation scope change: a different collection means a different conversation. Conversations live only on the local device and do not sync; sharing a collection shares its documents, not its chats.
+
+The Tauri command layer (`src-tauri/src/commands/conversations.rs`) scopes every conversation command by collection: `start_chat(collectionId)`, `list_conversations(collectionId)`, `load_conversation(collectionId, conversationId)`, `send_message(collectionId, conversationId, message)`, `predict_next_message(collectionId, conversationId)`, and `delete_conversation(collectionId, conversationId)`. Deleting a collection also deletes its conversations.
+
+In the UI, research is entered per collection at `/research/{collectionId}`, with that collection's conversations in a sidebar beside the chat. The top-level tabs are Files and Settings; `/` redirects to Files, and collection pages link to that collection's chats.
 
 ## Data Model
 
@@ -125,6 +133,7 @@ When document entries arrive from a peer, iroh-docs automatically syncs the entr
 | File metadata   | Yes                         | iroh-docs  |
 | Collection info | Yes                         | iroh-docs  |
 | Search index    | No (built from synced text) | milli      |
+| Conversations   | No                          | local disk |
 
 Search is local keyword indexing over the canonical extraction's text: each peer builds its own milli index. Nothing beyond the raw document data is derived or replicated.
 
@@ -136,8 +145,10 @@ Search is local keyword indexing over the canonical extraction's text: each peer
 ├── search/             # milli index
 ├── settings.json       # settings v2
 └── conversations/
-    ├── logs/           # rig conversation history, {id}.jsonl
-    └── metadata/       # app metadata, {id}.json
+    └── {collection_id}/
+        └── {conversation_id}/
+            ├── logs/{conversation_id}.jsonl   # rig session log
+            └── files/meta.json                # rig SessionMeta (title, updated ms)
 ```
 
-Chat provider configuration (settings v2: active `provider` plus per-selection `api_keys`) lives in `~/.local/share/insight/settings.json`. The active `family` and the `api_keys` entries use canonical `ProviderId` selection ids such as `openai/openai` and `anthropic/anthropic`. The legacy `conversations/{id}/messages.json` + `meta.json` layout is rejected, not migrated. On Windows, app data is under `%LOCALAPPDATA%\insight\`.
+Collection ids are canonical namespace-id strings. Each conversation is one rig `DirStore`; `SessionMeta` is the only conversation metadata, with no separate metadata sidecar and no `logs/` at the root. Chat provider configuration (settings v2: active `provider` plus per-selection `api_keys`) lives in `~/.local/share/insight/settings.json`. The active `family` and the `api_keys` entries use canonical `ProviderId` selection ids such as `openai/openai` and `anthropic/anthropic`. The legacy `conversations/{id}/messages.json` + `meta.json` layout is rejected, not migrated. On Windows, app data is under `%LOCALAPPDATA%\insight\`.
