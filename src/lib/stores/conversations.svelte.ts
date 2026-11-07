@@ -470,10 +470,6 @@ export function getActiveCollections(): CollectionInfo[] {
 	return activeCollections;
 }
 
-export function getLiveState(): LiveRun {
-	return live;
-}
-
 /** Stored history + live run as one flat renderable list. */
 export function getTranscript(): TranscriptItem[] {
 	return buildTranscript(activeMessages, live);
