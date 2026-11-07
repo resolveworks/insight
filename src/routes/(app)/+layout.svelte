@@ -10,7 +10,11 @@
 		{ id: 'settings', label: 'Settings', href: 'settings' },
 	];
 
-	const currentTab = $derived(page.url.pathname.split('/')[1] || 'files');
+	const currentTab = $derived.by(() => {
+		// A collection's chats live under Files.
+		const section = page.url.pathname.split('/')[1] || 'files';
+		return section === 'research' ? 'files' : section;
+	});
 </script>
 
 <main class="flex h-screen flex-col bg-surface-dim text-neutral-800">
