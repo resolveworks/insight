@@ -112,7 +112,7 @@
 		aria-modal="true"
 		aria-labelledby={title ? titleId : undefined}
 		tabindex="-1"
-		class="w-full max-w-md rounded-lg bg-surface-bright p-6 shadow-lg"
+		class="panel w-full max-w-md p-6"
 	>
 		{#if title}
 			<div class="mb-4 flex items-center justify-between">
@@ -121,7 +121,7 @@
 				</h2>
 				<button
 					onclick={onClose}
-					class="cursor-pointer rounded p-1 text-neutral-400 transition-colors hover:text-neutral-700"
+					class="cursor-pointer rounded-sm p-1 text-subtle transition-colors hover:text-neutral-700 focus-visible:focus-ring"
 					aria-label="Close dialog"
 					title="Close"
 				>
