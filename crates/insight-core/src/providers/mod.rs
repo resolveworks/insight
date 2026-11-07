@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn models_come_from_the_catalog_with_rigs_names() {
+    fn models_list_chat_models_from_the_catalog() {
         let deepseek = models("deepseek").expect("bare vendor with one family resolves");
         assert_eq!(
             models("deepseek/openai").unwrap(),
