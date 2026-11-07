@@ -7,6 +7,7 @@ export default defineConfig({
 	resolve: {
 		conditions: ['browser'],
 		alias: {
+			'$app/navigation': path.resolve('./src/tests/mocks/app-navigation.ts'),
 			'$app/paths': path.resolve('./src/tests/mocks/app-paths.ts'),
 			'$app/environment': path.resolve('./src/tests/mocks/app-environment.ts'),
 			'$app/state': path.resolve('./src/tests/mocks/app-state.ts'),

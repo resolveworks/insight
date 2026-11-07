@@ -5,6 +5,7 @@
 	import Button from '#lib/components/Button.svelte';
 	import Input from '#lib/components/Input.svelte';
 	import ErrorAlert from '#lib/components/ErrorAlert.svelte';
+	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import * as collections from '#lib/stores/collections.svelte.js';
@@ -30,6 +31,8 @@
 	const breadcrumbs = [{ label: 'Collections' }];
 
 	const collectionList = $derived(collections.getCollections());
+	const loading = $derived(collections.isLoading());
+	const loadError = $derived(collections.getError());
 
 	async function handleCreateCollection() {
 		if (!newCollectionName.trim()) return;
@@ -124,18 +127,28 @@
 		</div>
 
 		<!-- Collections grid -->
-		{#if collectionList.length === 0}
+		{#if loading}
+			<div
+				class="flex flex-col items-center justify-center py-12"
+				role="status"
+			>
+				<LoadingSpinner size="lg" />
+				<p class="sr-only">Loading collections…</p>
+			</div>
+		{:else if loadError}
+			<ErrorAlert>Failed to load collections: {loadError}</ErrorAlert>
+		{:else if collectionList.length === 0}
 			<div class="flex flex-col items-center justify-center py-12">
 				<p class="text-neutral-500">No collections yet</p>
 				<p class="mt-1 text-sm text-neutral-400">
-					Create a collection to start organizing your documents.
+					Create one above to start organizing your documents.
 				</p>
 			</div>
 		{:else}
 			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				{#each collectionList as collection (collection.id)}
-					<div
-						class="group relative rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
+					<article
+						class="flex flex-col rounded-lg border border-neutral-200 bg-surface-bright p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
 						<a href={resolve(`collections/${collection.id}`)} class="block">
 							<h3 class="font-medium text-neutral-800">
@@ -145,90 +158,33 @@
 								{collection.document_count}
 								{collection.document_count === 1 ? 'document' : 'documents'}
 							</p>
+							<p class="mt-3 text-sm font-medium text-primary-600">
+								Open research workspace
+								<span aria-hidden="true">→</span>
+							</p>
 						</a>
 
-						<!-- Action buttons -->
-						<div
-							class="absolute right-3 top-3 flex gap-2 opacity-60 transition-opacity hover:opacity-100 group-hover:opacity-100"
-						>
-							<a
-								href={resolve(`collections/${collection.id}/research`)}
-								class="cursor-pointer text-neutral-400 hover:text-primary-600"
-								aria-label="Chats for {collection.name}"
-								title="Chats"
-							>
-								<svg
-									class="h-4 w-4"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-								>
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"
-									/>
-								</svg>
-							</a>
-							<button
+						<div class="mt-4 flex gap-2 border-t border-neutral-100 pt-3">
+							<Button
+								variant="secondary"
+								size="sm"
 								onclick={() => openShareModal(collection.id)}
-								class="cursor-pointer text-neutral-400 hover:text-tertiary-500"
-								aria-label="Share collection"
-								title="Share collection"
 							>
-								<svg
-									class="h-4 w-4"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-								>
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M7 11L7 17 17 17 17 11"
-									/>
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M12 3v10"
-									/>
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M8 7l4-4 4 4"
-									/>
-								</svg>
-							</button>
-							<button
+								Share
+							</Button>
+							<Button
+								variant="danger"
+								size="sm"
 								onclick={() =>
 									(deletingCollection = {
 										id: collection.id,
 										name: collection.name,
 									})}
-								class="cursor-pointer text-neutral-400 hover:text-error"
-								aria-label="Delete collection"
-								title="Delete collection"
 							>
-								<svg
-									class="h-4 w-4"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-								>
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-									/>
-								</svg>
-							</button>
+								Delete
+							</Button>
 						</div>
-					</div>
+					</article>
 				{/each}
 			</div>
 		{/if}
@@ -278,6 +234,9 @@
 				<p class="text-xs text-neutral-400">
 					Share this ticket with others to sync this collection
 				</p>
+				<p class="text-xs text-neutral-500">
+					Access cannot be revoked once shared.
+				</p>
 			</div>
 		{:else if shareError}
 			<ErrorAlert>{shareError}</ErrorAlert>
@@ -291,7 +250,7 @@
 {#if deletingCollection}
 	<ConfirmDialog
 		title="Delete collection"
-		message="Delete &quot;{deletingCollection.name}&quot;? This removes the collection and its documents from this machine."
+		message="Delete &quot;{deletingCollection.name}&quot;? This deletes the collection, its documents, and its local conversations. This cannot be undone."
 		onConfirm={handleDeleteCollection}
 		onCancel={() => (deletingCollection = null)}
 	/>
