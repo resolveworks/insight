@@ -17,6 +17,7 @@ pub mod providers;
 pub mod runtime;
 pub mod search;
 pub mod storage;
+pub mod text;
 pub mod tools;
 
 use anyhow::Context;
@@ -36,12 +37,22 @@ pub struct CollectionInfo {
     /// Number of documents in this collection
     #[serde(default)]
     pub document_count: usize,
-    /// Total pages across all documents
+    /// Total pages across the documents that report a page count.
+    /// `None` when no document in the collection reports pages.
     #[serde(default)]
-    pub total_pages: usize,
+    pub total_pages: Option<usize>,
     /// When the collection was created (ISO 8601)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+}
+
+/// Sum of the known page counts, or `None` when no document reports pages.
+pub fn sum_page_counts(pages: impl IntoIterator<Item = Option<usize>>) -> Option<usize> {
+    let mut total = None;
+    for pages in pages.into_iter().flatten() {
+        *total.get_or_insert(0) += pages;
+    }
+    total
 }
 
 pub use config::{Config, Settings, SettingsError};

@@ -77,7 +77,7 @@ pub fn spawn_extract_workers(
                     Ok(Some(metadata)) => {
                         tracing::debug!(
                             doc_id = %job.doc_id,
-                            pages = metadata.page_count,
+                            pages = metadata.page_count(),
                             "Extracted text"
                         );
                         progress
@@ -215,13 +215,12 @@ pub fn spawn_index_worker(
                             .map(|(i, content)| {
                                 let chunk_start_offset = offsets.get(i).copied().unwrap_or(0);
                                 let chunk_end_offset = chunk_start_offset + content.len();
-                                let start_page = crate::pdf::char_offset_to_page(
-                                    chunk_start_offset,
-                                    &metadata.page_boundaries,
-                                );
-                                let end_page = crate::pdf::char_offset_to_page(
-                                    chunk_end_offset,
-                                    &metadata.page_boundaries,
+                                let start_page =
+                                    metadata.page_at_offset(chunk_start_offset).expect(
+                                        "text is indexed only after extraction records its pages",
+                                    );
+                                let end_page = metadata.page_at_offset(chunk_end_offset).expect(
+                                    "text is indexed only after extraction records its pages",
                                 );
 
                                 ChunkToIndex {
@@ -231,7 +230,9 @@ pub fn spawn_index_worker(
                                     chunk_index: i,
                                     content: format!("[{}]\n\n{}", metadata.name, content),
                                     collection_id: collection_id.clone(),
-                                    page_count: metadata.page_count,
+                                    page_count: metadata.page_count().expect(
+                                        "text is indexed only after extraction records its pages",
+                                    ),
                                     start_page,
                                     end_page,
                                 }

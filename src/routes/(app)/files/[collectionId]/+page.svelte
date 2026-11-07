@@ -129,9 +129,11 @@
 								class="text-neutral-800 transition-colors hover:text-primary-600"
 								>{doc.name}</span
 							>
-							<span class="ml-2 text-xs text-neutral-500"
-								>{doc.page_count} pages</span
-							>
+							{#if doc.page_count !== null}
+								<span class="ml-2 text-xs text-neutral-500"
+									>{doc.page_count} pages</span
+								>
+							{/if}
 						</a>
 						<button
 							onclick={() => (deletingDocument = doc)}

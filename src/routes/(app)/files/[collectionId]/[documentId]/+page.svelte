@@ -162,14 +162,16 @@
 								>{document.file_type}</td
 							>
 						</tr>
-						<tr>
-							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
-								>Pages</td
-							>
-							<td class="px-4 py-3 text-sm text-neutral-700"
-								>{document.page_count}</td
-							>
-						</tr>
+						{#if document.page_count !== null}
+							<tr>
+								<td class="px-4 py-3 text-sm font-medium text-neutral-500"
+									>Pages</td
+								>
+								<td class="px-4 py-3 text-sm text-neutral-700"
+									>{document.page_count}</td
+								>
+							</tr>
+						{/if}
 						<tr>
 							<td class="px-4 py-3 text-sm font-medium text-neutral-500"
 								>Tags</td

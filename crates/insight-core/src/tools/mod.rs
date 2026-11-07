@@ -394,7 +394,10 @@ impl Tool for ListDocuments {
         all_documents.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name)));
 
         let total = all_documents.len();
-        let total_pages: usize = all_documents.iter().map(|(_, _, d)| d.page_count).sum();
+        let total_pages: usize = all_documents
+            .iter()
+            .filter_map(|(_, _, d)| d.page_count())
+            .sum();
         let truncated = total > MAX_DOCS_TO_SHOW;
 
         // Group by collection, in sorted order.
@@ -414,9 +417,9 @@ impl Tool for ListDocuments {
                 }
             };
             group.documents.push(DocumentEntry {
+                page_count: doc.page_count().unwrap_or_default(),
                 name: doc.name,
                 id: doc.id,
-                page_count: doc.page_count,
             });
         }
 
@@ -575,7 +578,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             document_count: 1,
-            total_pages: 10,
+            total_pages: Some(10),
             created_at: None,
         }]
     }

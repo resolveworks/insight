@@ -11,7 +11,7 @@ pub struct DocumentInfo {
     pub id: String,
     pub name: String,
     pub file_type: String,
-    pub page_count: usize,
+    pub page_count: Option<u32>,
     pub tags: Vec<String>,
     pub created_at: String,
 }
@@ -128,10 +128,10 @@ pub async fn get_documents(
     Ok(documents
         .into_iter()
         .map(|m| DocumentInfo {
+            page_count: m.page_count().map(|p| p as u32),
             id: m.id,
             name: m.name,
             file_type: m.file_type,
-            page_count: m.page_count,
             tags: m.tags,
             created_at: m.created_at,
         })
@@ -154,10 +154,10 @@ pub async fn get_document(
         .ok_or(CommandError::document_not_found())?;
 
     Ok(DocumentInfo {
+        page_count: document.page_count().map(|p| p as u32),
         id: document.id,
         name: document.name,
         file_type: document.file_type,
-        page_count: document.page_count,
         tags: document.tags,
         created_at: document.created_at,
     })
