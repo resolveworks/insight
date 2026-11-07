@@ -178,17 +178,14 @@ async fn handle_event(
             content_status,
             ..
         } => (entry.key(), false, *content_status, entry.content_hash()),
-        // Content landing or a peer sync can change what a collection lists
-        // (a metadata blob becomes readable, a peer deletes entries), without
-        // any insert event reaching us.
         LiveEvent::ContentReady { hash } => {
-            invalidate(namespace_id, senders);
             if let Some(doc_id) = pending_extractions.remove(hash) {
                 queue_index(namespace_id, collection_id, &doc_id, senders, progress).await;
             }
             return;
         }
-        LiveEvent::PendingContentReady | LiveEvent::SyncFinished(_) => {
+        // A peer sync can add, change or delete entries with no local command.
+        LiveEvent::SyncFinished(_) => {
             invalidate(namespace_id, senders);
             return;
         }
@@ -199,9 +196,6 @@ async fn handle_event(
     if !key.starts_with("files/") {
         return;
     }
-
-    // Any files/ entry can change the document listing.
-    invalidate(namespace_id, senders);
 
     let doc_id = match extract_doc_id(&key) {
         Some(id) => id.to_string(),
@@ -246,7 +240,10 @@ async fn queue_index(
     });
 }
 
-/// Tell the application layer that this collection's entries changed.
+/// Tell the application layer that a peer changed this collection's entries.
+///
+/// The signal exists because a peer's changes can alter a collection's listing
+/// with no local command; it is not a general change feed.
 fn invalidate(namespace_id: NamespaceId, senders: &JobSenders) {
     let _ = senders.events.send(AppEvent::CollectionInvalidated {
         namespace: namespace_id,
@@ -300,7 +297,7 @@ mod tests {
             }
             match recv_within(rx, remaining).await {
                 Some(AppEvent::CollectionInvalidated { namespace: ns }) if ns == namespace => {
-                    panic!("non-files/ entry invalidated the collection");
+                    panic!("a local change invalidated the collection");
                 }
                 Some(_) => continue,
                 None => return,
@@ -352,19 +349,20 @@ mod tests {
             CancellationToken::new(),
         );
 
-        // The watcher subscribes from its own task, so probe with a files/ entry
-        // until its invalidation arrives; distinct values guarantee a fresh
-        // InsertLocal event per attempt. `other` matches no job route.
+        // The watcher subscribes from its own task, so probe with a metadata
+        // entry until its index job arrives; distinct values guarantee a fresh
+        // InsertLocal event per attempt.
         let live = tokio::time::timeout(Duration::from_secs(30), async {
             for attempt in 0.. {
                 set_entry(
                     &storage,
                     namespace,
-                    "files/probe/other",
+                    "files/probe/meta",
                     format!("probe {attempt}").as_bytes(),
                 )
                 .await;
-                if await_invalidation(&mut events_rx, namespace, Duration::from_millis(500)).await {
+                if let Some(job) = recv_within(&mut index_rx, Duration::from_millis(500)).await {
+                    assert_eq!(job.doc_id, "probe");
                     return;
                 }
             }
@@ -392,34 +390,34 @@ mod tests {
             .is_none());
         assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
 
-        // Writing document metadata must queue indexing for its document.
+        // Writing document metadata must queue indexing for its document,
+        // with no invalidation: the local command reports its own outcome.
         set_entry(&storage, namespace, "files/meta-doc/meta", b"{}").await;
         let job = recv_within(&mut index_rx, Duration::from_secs(10))
             .await
             .expect("metadata insert was not queued for indexing");
         assert_eq!(job.doc_id, "meta-doc");
         assert_eq!(job.namespace_id, namespace);
+        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
 
         // Storing a source file must queue extraction for its document.
         let pdf_path = temp_dir.path().join("paper.pdf");
         tokio::fs::write(&pdf_path, b"%PDF-1.4 watcher test")
             .await
             .unwrap();
-        let doc_id = storage
+        let document = storage
             .read()
             .await
             .store_pdf_source(&pdf_path, namespace)
             .await
             .unwrap();
+        let doc_id = document.id;
         let job = recv_within(&mut extract_rx, Duration::from_secs(10))
             .await
             .expect("stored source was not queued for extraction");
         assert_eq!(job.doc_id, doc_id);
         assert_eq!(job.namespace_id, namespace);
-        assert!(
-            await_invalidation(&mut events_rx, namespace, Duration::from_secs(10)).await,
-            "stored source did not invalidate the collection"
-        );
+        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
 
         // Writing an extraction must queue indexing for the same document.
         let text = "page one text";
@@ -449,8 +447,75 @@ mod tests {
             .expect("stored extraction was not queued for indexing");
         assert_eq!(job.doc_id, doc_id);
         assert_eq!(job.namespace_id, namespace);
+        assert_quiet(&mut events_rx, namespace, Duration::from_millis(500)).await;
 
         watcher.stop();
+    }
+
+    /// A finished peer sync changes a collection's listing with no local
+    /// command, so it invalidates the collection; content landing on its own
+    /// does not.
+    #[tokio::test]
+    async fn reports_collection_changed_only_for_peer_sync() {
+        use std::time::SystemTime;
+
+        use iroh::SecretKey;
+        use iroh_docs::engine::{Origin, SyncEvent};
+
+        let namespace = NamespaceId::default();
+        let (extract_tx, _extract_rx) = mpsc::unbounded_channel();
+        let (index_tx, _index_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let senders = JobSenders {
+            extract: extract_tx,
+            index: index_tx,
+            events: events_tx.clone(),
+        };
+        let progress = ProgressTracker::new(events_tx);
+        let mut pending = HashMap::new();
+
+        let sync = LiveEvent::SyncFinished(SyncEvent {
+            peer: SecretKey::generate().public(),
+            origin: Origin::Accept,
+            started: SystemTime::now(),
+            finished: SystemTime::now(),
+            result: Err("test sync".to_string()),
+        });
+        handle_event(
+            &sync,
+            namespace,
+            &namespace.to_string(),
+            &senders,
+            &progress,
+            &mut pending,
+        )
+        .await;
+        assert!(
+            await_invalidation(&mut events_rx, namespace, Duration::from_secs(1)).await,
+            "peer sync did not invalidate the collection"
+        );
+
+        handle_event(
+            &LiveEvent::PendingContentReady,
+            namespace,
+            &namespace.to_string(),
+            &senders,
+            &progress,
+            &mut pending,
+        )
+        .await;
+        handle_event(
+            &LiveEvent::ContentReady {
+                hash: Hash::new(b"landed content"),
+            },
+            namespace,
+            &namespace.to_string(),
+            &senders,
+            &progress,
+            &mut pending,
+        )
+        .await;
+        assert_quiet(&mut events_rx, namespace, Duration::from_millis(300)).await;
     }
 
     /// A remote extraction entry whose content is not local yet waits for

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::State;
 
 use super::CollectionId;
 use crate::core::{AppState, PipelineProgress};
@@ -24,71 +24,73 @@ pub struct CollectionInvalidated {
     pub collection_id: String,
 }
 
+/// A file that could not be stored during an import.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportFailure {
+    pub path: String,
+    pub message: String,
+}
+
+/// What an import stored, plus the files it could not store.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportOutcome {
+    pub documents: Vec<DocumentInfo>,
+    pub failures: Vec<ImportFailure>,
+}
+
 /// Start importing files into a collection.
 ///
-/// This queues files for the event-driven import pipeline:
+/// Runs the store stage of the event-driven import pipeline:
 /// 1. Store source → triggers extract
 /// 2. Extract text → triggers index
 /// 3. Chunk + index → document searchable
 ///
-/// Progress is tracked per-stage via the pipeline.
-/// Returns immediately with initial progress.
+/// Progress flows through the pipeline's progress tracker. Returns the
+/// documents this import stored so the caller need not re-read them.
 #[tauri::command]
-pub async fn start_import<R: tauri::Runtime>(
+pub async fn start_import(
     paths: Vec<String>,
     collection_id: CollectionId,
-    app: AppHandle<R>,
     state: State<'_, AppState>,
-) -> CommandResult<PipelineProgress> {
+) -> CommandResult<ImportOutcome> {
     let namespace_id = collection_id.namespace();
-    let collection_id = namespace_id.to_string();
 
     tracing::info!(
         "Starting import: {} files into collection {}",
         paths.len(),
-        collection_id
+        namespace_id
     );
 
-    // Convert paths to PathBuf
     let paths: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
 
-    // Clone pipeline for async task
-    let pipeline = state.pipeline.clone();
-    let app_clone = app.clone();
-    let collection_id_clone = collection_id.clone();
+    let (documents, errors) = state.pipeline.import_files(namespace_id, paths).await;
 
-    // Spawn async task to import files
-    tokio::spawn(async move {
-        let (success, errors) = pipeline.import_files(namespace_id, paths).await;
+    for (path, error) in &errors {
+        tracing::error!("Failed to import {:?}: {}", path, error);
+    }
 
-        tracing::info!(
-            "Import complete for {}: {} successful, {} failed",
-            collection_id_clone,
-            success,
-            errors.len()
-        );
+    Ok(ImportOutcome {
+        documents: documents.into_iter().map(stored_document).collect(),
+        failures: errors
+            .into_iter()
+            .map(|(path, message)| ImportFailure {
+                path: path.display().to_string(),
+                message,
+            })
+            .collect(),
+    })
+}
 
-        for (path, error) in &errors {
-            tracing::error!("Failed to import {:?}: {}", path, error);
-        }
-
-        // Emit progress update
-        if let Some(progress) = pipeline.get_progress(&collection_id_clone).await {
-            let _ = app_clone.emit("pipeline-progress", &progress);
-        }
-    });
-
-    // Return initial progress
-    let progress = state
-        .pipeline
-        .get_progress(&collection_id)
-        .await
-        .unwrap_or_else(|| PipelineProgress {
-            collection_id: collection_id.clone(),
-            ..Default::default()
-        });
-
-    Ok(progress)
+/// A document that was just stored has no extraction yet, so no page count.
+fn stored_document(metadata: insight_core::storage::DocumentMetadata) -> DocumentInfo {
+    DocumentInfo {
+        id: metadata.id,
+        name: metadata.name,
+        file_type: metadata.file_type,
+        page_count: None,
+        tags: metadata.tags,
+        created_at: metadata.created_at,
+    }
 }
 
 /// Get pipeline progress for all active collections

@@ -1035,14 +1035,14 @@ impl Storage {
     /// - `files/{id}/source` - original PDF bytes
     /// - `_hash_index/{hash}` - duplicate detection index
     ///
-    /// Returns the new `doc_id` for the next phase.
+    /// Returns the new document's metadata for the next phase.
     ///
     /// Note: No extraction exists until `extract_and_dispatch()` is called.
     pub async fn store_pdf_source(
         &self,
         path: &std::path::Path,
         namespace_id: NamespaceId,
-    ) -> Result<String> {
+    ) -> Result<DocumentMetadata> {
         let file_name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -1061,7 +1061,7 @@ impl Storage {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        self.add_document(namespace_id, metadata, &pdf_bytes)
+        self.add_document(namespace_id, metadata.clone(), &pdf_bytes)
             .await?;
 
         tracing::info!(
@@ -1069,7 +1069,7 @@ impl Storage {
             "Stored PDF source for {file_name}"
         );
 
-        Ok(doc_id)
+        Ok(metadata)
     }
 
     /// Phase 2: Extract text from the stored PDF and write it out.
@@ -1548,10 +1548,11 @@ mod tests {
         std::fs::write(&pdf_path, &pdf_bytes).unwrap();
 
         // Phase 1: Store source
-        let doc_id = storage
+        let document = storage
             .store_pdf_source(&pdf_path, collection_id)
             .await
             .unwrap();
+        let doc_id = document.id;
         assert!(!doc_id.is_empty());
         let source_hash = Hash::new(&pdf_bytes);
 
