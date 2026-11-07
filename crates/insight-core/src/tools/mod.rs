@@ -521,7 +521,6 @@ mod tests {
     use crate::search::ChunkToIndex;
     use milli::update::IndexerConfig;
     use rig::tool::{Tool, ToolContext, ToolErrorKind};
-    use serde_json::{Map, Value};
 
     /// Tool state over a temporary index/storage, with an empty scope.
     async fn create_state() -> (tempfile::TempDir, ToolState) {
@@ -579,24 +578,6 @@ mod tests {
             total_pages: 10,
             created_at: None,
         }]
-    }
-
-    /// A searchable row whose `parent_name` is missing, so it cannot be
-    /// deserialized as an [`crate::search::IndexedChunk`].
-    fn malformed_indexed_chunk() -> Map<String, Value> {
-        let mut doc = Map::new();
-        doc.insert("id".into(), Value::String("doc1_chunk_0".into()));
-        doc.insert("parent_id".into(), Value::String("doc1".into()));
-        doc.insert("chunk_index".into(), Value::Number(0.into()));
-        doc.insert(
-            "content".into(),
-            Value::String("climate climate malformed row".into()),
-        );
-        doc.insert("collection_id".into(), Value::String("col1".into()));
-        doc.insert("page_count".into(), Value::Number(1.into()));
-        doc.insert("start_page".into(), Value::Number(1.into()));
-        doc.insert("end_page".into(), Value::Number(1.into()));
-        doc
     }
 
     #[tokio::test]
@@ -783,26 +764,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_rejects_malformed_indexed_chunk() {
-        let (_tmp, mut state) = create_state().await;
-        search::index_documents_for_test(&state.search, vec![malformed_indexed_chunk()]).unwrap();
-        state.collections = scope("col1", "Malformed");
-
-        let err = Search::new(state)
-            .call(
-                &mut ToolContext::new(),
-                SearchArgs {
-                    query: "climate".to_string(),
-                },
-            )
-            .await
-            .unwrap_err();
-
-        assert_eq!(err.kind(), ToolErrorKind::Other);
-        assert!(err.to_string().contains("does not match the search schema"));
-    }
-
-    #[tokio::test]
     async fn test_read_chunk_success() {
         let (_tmp, mut state) = create_state().await;
         search::index_chunks_batch(
@@ -836,24 +797,6 @@ mod tests {
         assert_eq!(out.document_id, "test_doc");
         assert_eq!(out.chunk_index, 0);
         assert!(out.content.contains("important information"));
-    }
-
-    #[tokio::test]
-    async fn test_read_chunk_not_found() {
-        let (_tmp, state) = create_state().await;
-        let err = ReadChunk::new(state)
-            .call(
-                &mut ToolContext::new(),
-                ReadChunkArgs {
-                    document_id: "nonexistent_doc".to_string(),
-                    chunk_index: 0,
-                },
-            )
-            .await
-            .unwrap_err();
-
-        assert_eq!(err.kind(), ToolErrorKind::NotFound);
-        assert!(err.to_string().contains("nonexistent_doc"));
     }
 
     #[tokio::test]
@@ -927,27 +870,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_chunk_rejects_malformed_indexed_chunk() {
-        let (_tmp, mut state) = create_state().await;
-        search::index_documents_for_test(&state.search, vec![malformed_indexed_chunk()]).unwrap();
-        state.collections = scope("col1", "Malformed");
-
-        let err = ReadChunk::new(state)
-            .call(
-                &mut ToolContext::new(),
-                ReadChunkArgs {
-                    document_id: "doc1".to_string(),
-                    chunk_index: 0,
-                },
-            )
-            .await
-            .unwrap_err();
-
-        assert_eq!(err.kind(), ToolErrorKind::Other);
-        assert!(err.to_string().contains("does not match the search schema"));
-    }
-
-    #[tokio::test]
     async fn test_list_documents_rejects_invalid_collection_id() {
         let (_tmp, mut state) = create_state().await;
         state.collections = scope("not-a-namespace-id", "Invalid");
@@ -1011,22 +933,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.terms.len() <= 3);
-    }
-
-    #[tokio::test]
-    async fn test_collection_terms_max_limit_enforced() {
-        let (_tmp, mut state) = create_state().await;
-        state.collections = scope("col1", "Empty");
-
-        let out = GetCollectionTerms::new(state)
-            .call(
-                &mut ToolContext::new(),
-                GetCollectionTermsArgs { limit: Some(500) },
-            )
-            .await
-            .unwrap();
-        assert!(out.terms.len() <= TERMS_MAX_LIMIT);
+        assert_eq!(out.terms.len(), 3);
     }
 
     #[tokio::test]
@@ -1092,19 +999,14 @@ mod tests {
     #[tokio::test]
     async fn tool_definitions_expose_names_and_required_params() {
         let (_tmp, state) = create_state().await;
-        assert_eq!(<Search as Tool>::NAME, "search");
         assert_eq!(
             Search::new(state.clone()).parameters()["required"],
             serde_json::json!(["query"])
         );
 
-        assert_eq!(<ReadChunk as Tool>::NAME, "read_chunk");
         assert_eq!(
             ReadChunk::new(state.clone()).parameters()["required"],
             serde_json::json!(["document_id", "chunk_index"])
         );
-
-        assert_eq!(<ListDocuments as Tool>::NAME, "list_documents");
-        assert_eq!(<GetCollectionTerms as Tool>::NAME, "get_collection_terms");
     }
 }

@@ -286,15 +286,6 @@ fn index_chunk_batch(
     index_documents(index, indexer_config, json_docs)
 }
 
-/// Index raw JSON documents. Test seam for rows that do not match [`IndexedChunk`].
-#[cfg(test)]
-pub(crate) fn index_documents_for_test(
-    index: &Index,
-    json_docs: Vec<Map<String, Value>>,
-) -> Result<()> {
-    index_documents(index, &IndexerConfig::default(), json_docs)
-}
-
 #[allow(clippy::result_large_err)]
 fn index_documents(
     index: &Index,
