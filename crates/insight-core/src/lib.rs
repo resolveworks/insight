@@ -180,6 +180,19 @@ impl AppState {
         for (namespace_id, metadata) in &collections {
             self.pipeline.watch(*namespace_id).await;
             tracing::debug!("Watching collection '{}' ({})", metadata.name, namespace_id);
+
+            if let Err(e) = self
+                .pipeline
+                .resume_collection(*namespace_id, &self.search)
+                .await
+            {
+                tracing::warn!(
+                    namespace = %namespace_id,
+                    collection = %metadata.name,
+                    error = %e,
+                    "Failed to resume collection pipeline at startup"
+                );
+            }
         }
 
         tracing::info!(
