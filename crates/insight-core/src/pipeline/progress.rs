@@ -2,12 +2,17 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
+use tokio::time::MissedTickBehavior;
 
 use super::types::Stage;
 use super::AppEvent;
+
+/// How often buffered progress snapshots are forwarded to the application.
+const PROGRESS_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Progress for a single processing stage.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -71,15 +76,17 @@ impl PipelineProgress {
 #[derive(Clone)]
 pub struct ProgressTracker {
     collections: Arc<RwLock<HashMap<String, PipelineProgress>>>,
-    /// Channel to notify the application layer of progress changes
-    notify_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Channel to the task that coalesces progress before forwarding it.
+    notify_tx: mpsc::UnboundedSender<PipelineProgress>,
 }
 
 impl ProgressTracker {
     pub fn new(events: mpsc::UnboundedSender<AppEvent>) -> Self {
+        let (notify_tx, notify_rx) = mpsc::unbounded_channel();
+        tokio::spawn(forward_progress(notify_rx, events));
         Self {
             collections: Arc::new(RwLock::new(HashMap::new())),
-            notify_tx: events,
+            notify_tx,
         }
     }
 
@@ -147,7 +154,7 @@ impl ProgressTracker {
     }
 
     fn notify(&self, progress: &PipelineProgress) {
-        let _ = self.notify_tx.send(AppEvent::Progress(progress.clone()));
+        let _ = self.notify_tx.send(progress.clone());
     }
 
     /// Get progress for a collection.
@@ -169,6 +176,57 @@ impl ProgressTracker {
     /// Remove a collection from tracking.
     pub async fn remove(&self, collection_id: &str) {
         self.collections.write().await.remove(collection_id);
+    }
+}
+
+/// Coalesce active snapshots by collection until the next flush, but forward
+/// an idle snapshot immediately and discard any buffered active state for it.
+async fn forward_progress(
+    mut updates: mpsc::UnboundedReceiver<PipelineProgress>,
+    events: mpsc::UnboundedSender<AppEvent>,
+) {
+    let mut latest = HashMap::new();
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + PROGRESS_FLUSH_INTERVAL,
+        PROGRESS_FLUSH_INTERVAL,
+    );
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            update = updates.recv() => {
+                let Some(progress) = update else {
+                    flush(&mut latest, &events);
+                    break;
+                };
+                observe(&mut latest, &events, progress);
+            }
+            _ = interval.tick() => {
+                while let Ok(progress) = updates.try_recv() {
+                    observe(&mut latest, &events, progress);
+                }
+                flush(&mut latest, &events);
+            }
+        }
+    }
+}
+
+fn observe(
+    latest: &mut HashMap<String, PipelineProgress>,
+    events: &mpsc::UnboundedSender<AppEvent>,
+    progress: PipelineProgress,
+) {
+    if progress.is_active() {
+        latest.insert(progress.collection_id.clone(), progress);
+    } else {
+        latest.remove(&progress.collection_id);
+        let _ = events.send(AppEvent::Progress(progress));
+    }
+}
+
+fn flush(latest: &mut HashMap<String, PipelineProgress>, events: &mpsc::UnboundedSender<AppEvent>) {
+    for (_, progress) in latest.drain() {
+        let _ = events.send(AppEvent::Progress(progress));
     }
 }
 
@@ -267,5 +325,107 @@ mod tests {
 
         progress.enqueue(collection_id, Stage::Index).await;
         progress.finish_ok(collection_id, Stage::Index).await;
+    }
+
+    async fn next_progress(events: &mut mpsc::UnboundedReceiver<AppEvent>) -> PipelineProgress {
+        match events.recv().await.expect("progress event channel closed") {
+            AppEvent::Progress(progress) => progress,
+            other => panic!("expected progress event, got {other:?}"),
+        }
+    }
+
+    /// Several active snapshots within one flush window produce a single
+    /// event carrying the latest state.
+    #[tokio::test(start_paused = true)]
+    async fn active_updates_coalesce_to_the_latest_snapshot() {
+        let (progress, mut events) = tracker();
+        let collection_id = "collection";
+
+        for _ in 0..3 {
+            progress.enqueue(collection_id, Stage::Extract).await;
+        }
+        progress.start(collection_id, Stage::Extract).await;
+        progress.start(collection_id, Stage::Extract).await;
+
+        assert!(
+            events.try_recv().is_err(),
+            "an active snapshot was forwarded before the flush interval"
+        );
+
+        tokio::time::sleep(PROGRESS_FLUSH_INTERVAL).await;
+        let progress = next_progress(&mut events).await;
+        assert_eq!(progress.collection_id, collection_id);
+        assert_eq!(progress.extract.pending, 1);
+        assert_eq!(progress.extract.active, 2);
+        assert_eq!(progress.extract.total(), 3);
+        assert!(
+            tokio::time::timeout(PROGRESS_FLUSH_INTERVAL, events.recv())
+                .await
+                .is_err(),
+            "more than one active snapshot was forwarded"
+        );
+    }
+
+    /// An idle snapshot is forwarded immediately and drops the buffered active
+    /// snapshot, so no stale active event follows it.
+    #[tokio::test(start_paused = true)]
+    async fn idle_snapshot_is_forwarded_immediately_and_discards_stale_active() {
+        let (progress, mut events) = tracker();
+        let collection_id = "collection";
+
+        progress.enqueue(collection_id, Stage::Index).await;
+        progress.start(collection_id, Stage::Index).await;
+        assert!(
+            events.try_recv().is_err(),
+            "an active snapshot was forwarded before the flush interval"
+        );
+
+        progress.finish_ok(collection_id, Stage::Index).await;
+        let progress = next_progress(&mut events).await;
+        assert_eq!(progress.collection_id, collection_id);
+        assert_eq!(progress.index.pending, 0);
+        assert_eq!(progress.index.active, 0);
+        assert_eq!(progress.index.completed, 1);
+        assert_eq!(progress.index.failed, 0);
+
+        assert!(
+            tokio::time::timeout(PROGRESS_FLUSH_INTERVAL * 2, events.recv())
+                .await
+                .is_err(),
+            "a stale active snapshot was forwarded after the idle snapshot"
+        );
+    }
+
+    /// Coalescing changes only the notifications; reads and the forwarded
+    /// snapshot carry the exact counters.
+    #[tokio::test(start_paused = true)]
+    async fn counters_remain_exact_while_notifications_coalesce() {
+        let (progress, mut events) = tracker();
+        let collection_id = "collection";
+
+        for _ in 0..3 {
+            progress.enqueue(collection_id, Stage::Index).await;
+        }
+        progress.start(collection_id, Stage::Index).await;
+        progress.start(collection_id, Stage::Index).await;
+        progress.finish_err(collection_id, Stage::Index).await;
+
+        let current = progress
+            .get(collection_id)
+            .await
+            .expect("collection progress");
+        assert_eq!(current.index.pending, 1);
+        assert_eq!(current.index.active, 1);
+        assert_eq!(current.index.completed, 0);
+        assert_eq!(current.index.failed, 1);
+        assert_eq!(current.index.total(), 3);
+
+        tokio::time::sleep(PROGRESS_FLUSH_INTERVAL).await;
+        let notified = next_progress(&mut events).await;
+        assert_eq!(notified.index.pending, current.index.pending);
+        assert_eq!(notified.index.active, current.index.active);
+        assert_eq!(notified.index.completed, current.index.completed);
+        assert_eq!(notified.index.failed, current.index.failed);
+        assert_eq!(notified.index.total(), current.index.total());
     }
 }
