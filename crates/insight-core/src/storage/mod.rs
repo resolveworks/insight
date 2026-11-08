@@ -822,6 +822,28 @@ impl Storage {
         Ok(source)
     }
 
+    /// Return the author of a document's source entry.
+    ///
+    /// Returns `Ok(None)` when the document or its source entry is absent.
+    pub async fn source_author(
+        &self,
+        namespace_id: NamespaceId,
+        document_id: &str,
+    ) -> Result<Option<AuthorId>> {
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let entry = doc
+            .get_one(Query::key_exact(doc_source_key(document_id).as_bytes()))
+            .await?;
+        let author = entry.map(|entry| entry.author());
+
+        doc.close().await?;
+        Ok(author)
+    }
+
     /// Delete a document from a collection
     ///
     /// Deletes the whole `files/{id}/` prefix in one tombstone: meta, source,

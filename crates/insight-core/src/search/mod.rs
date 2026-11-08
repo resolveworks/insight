@@ -2,6 +2,7 @@ mod index_worker;
 
 pub use index_worker::{spawn_index_worker, IndexWorkerHandle};
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -485,6 +486,45 @@ pub fn get_indexed_chunk_by_external_id(
         Some(internal_id) => get_indexed_chunk(index, &rtxn, internal_id),
         None => Ok(None),
     }
+}
+
+/// Distinct parent document IDs that currently have indexed chunks in exactly
+/// `collection_id`.
+///
+/// Document IDs repeat across collections, so the collection scope is part of
+/// the lookup.
+pub fn indexed_parent_ids(index: &Index, collection_id: &str) -> Result<HashSet<String>> {
+    let rtxn = index.read_txn()?;
+    let filter_str = format!("collection_id = \"{collection_id}\"");
+    let progress = Progress::quiet();
+    let fields_ids_map = index.fields_ids_map(&rtxn)?;
+    let mut search = milli::Search::new(
+        &rtxn,
+        index,
+        &fields_ids_map,
+        "insight",
+        OffsetDateTime::now_utc(),
+        &progress,
+    );
+    search.query("");
+    search.limit(usize::MAX);
+    if let Some(f) = parse_index_filter(&filter_str)? {
+        search.filter(Some(f));
+    }
+
+    let result = search.execute()?;
+    let mut parents = HashSet::new();
+    for doc_id in result.documents_ids.iter() {
+        let document =
+            get_document(index, &rtxn, *doc_id)?.context("indexed chunk has no stored document")?;
+        let parent_id = document
+            .get("parent_id")
+            .and_then(Value::as_str)
+            .context("indexed chunk has no parent_id")?;
+        parents.insert(parent_id.to_string());
+    }
+
+    Ok(parents)
 }
 
 /// Delete all chunks belonging to a document in one collection.

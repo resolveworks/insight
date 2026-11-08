@@ -32,7 +32,7 @@ pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
 pub use types::{ExtractJob, IndexJob, Stage};
 pub use watcher::{CollectionWatcher, JobSenders};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -40,7 +40,7 @@ use iroh_docs::NamespaceId;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::search::IndexWorkerHandle;
+use crate::search::{indexed_parent_ids, IndexWorkerHandle};
 use crate::storage::{DocumentMetadata, Storage};
 
 use workers::{spawn_extract_workers, SharedReceiver};
@@ -204,12 +204,9 @@ impl Pipeline {
                     tracing::info!(doc_id = %metadata.id, path = %path.display(), "Stored PDF source");
                     // Queue the next stage before settling this one so progress
                     // never reports every stage idle between the handoff.
-                    self.progress.enqueue(&collection_id, Stage::Extract).await;
+                    self.enqueue_extract(namespace_id, metadata.id.clone())
+                        .await;
                     self.progress.finish_ok(&collection_id, Stage::Store).await;
-                    let _ = self.extract_tx.send(ExtractJob {
-                        namespace_id,
-                        doc_id: metadata.id.clone(),
-                    });
                     documents.push(metadata);
                 }
                 Err(e) => {
@@ -221,6 +218,78 @@ impl Pipeline {
         }
 
         (documents, errors)
+    }
+
+    /// Queue catch-up work for a collection after startup.
+    ///
+    /// Locally authored documents without a canonical extraction are queued
+    /// for extraction. Documents with a canonical extraction but no indexed
+    /// chunks are queued for index reconciliation, as are indexed documents
+    /// that no longer exist in storage (their chunks are evicted).
+    ///
+    /// Returns after enqueueing the work; the workers run it asynchronously.
+    pub async fn resume_collection(
+        &self,
+        namespace_id: NamespaceId,
+        index: &milli::Index,
+    ) -> anyhow::Result<()> {
+        let collection_id = namespace_id.to_string();
+
+        let (documents, to_extract) = {
+            let storage = self.storage.read().await;
+            let documents = storage.list_documents(namespace_id).await?;
+            let local_author = storage.author_id();
+            let mut to_extract = Vec::new();
+            for document in &documents {
+                if document.extraction.is_none()
+                    && storage.source_author(namespace_id, &document.id).await?
+                        == Some(local_author)
+                {
+                    to_extract.push(document.id.clone());
+                }
+            }
+            (documents, to_extract)
+        };
+
+        let indexed = indexed_parent_ids(index, &collection_id)?;
+        let present: HashSet<&str> = documents
+            .iter()
+            .map(|document| document.id.as_str())
+            .collect();
+
+        for doc_id in to_extract {
+            self.enqueue_extract(namespace_id, doc_id).await;
+        }
+
+        for document in &documents {
+            if document.extraction.is_some() && !indexed.contains(&document.id) {
+                self.index_queue
+                    .enqueue(namespace_id, document.id.clone())
+                    .await;
+            }
+        }
+
+        for parent_id in indexed
+            .iter()
+            .filter(|parent_id| !present.contains(parent_id.as_str()))
+        {
+            self.index_queue
+                .enqueue(namespace_id, parent_id.clone())
+                .await;
+        }
+
+        Ok(())
+    }
+
+    /// Queue an extraction job and its progress accounting.
+    async fn enqueue_extract(&self, namespace_id: NamespaceId, doc_id: String) {
+        self.progress
+            .enqueue(&namespace_id.to_string(), Stage::Extract)
+            .await;
+        let _ = self.extract_tx.send(ExtractJob {
+            namespace_id,
+            doc_id,
+        });
     }
 
     /// Get progress for a collection.
@@ -256,17 +325,53 @@ mod tests {
     use std::time::Duration;
 
     use milli::update::IndexerConfig;
+    use tokio::sync::mpsc;
 
     use super::*;
-    use crate::search::{get_indexed_chunk, search_index, SearchParams};
+    use crate::search::{
+        chunk_external_id, get_indexed_chunk, get_indexed_chunk_by_external_id, indexed_parent_ids,
+        search_index, ChunkToIndex, SearchParams,
+    };
+    use crate::storage::{doc_meta_key, doc_source_key};
+    use crate::text::{Extraction, ParserId};
+
+    /// One-page PDF with a standard Helvetica text run.
+    const TEXT_PDF: &[u8] = include_bytes!("../../tests/fixtures/text.pdf");
+
+    /// A real pipeline over temporary storage and a temporary search index.
+    struct TestPipeline {
+        _temp: tempfile::TempDir,
+        storage: Arc<RwLock<Storage>>,
+        index: Arc<milli::Index>,
+        index_worker: IndexWorkerHandle,
+        pipeline: Pipeline,
+        _events: mpsc::UnboundedReceiver<AppEvent>,
+    }
+
+    async fn test_pipeline() -> TestPipeline {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Arc::new(RwLock::new(
+            Storage::open(&temp.path().join("iroh")).await.unwrap(),
+        ));
+        let index = Arc::new(crate::search::open_index(&temp.path().join("search")).unwrap());
+        let index_worker =
+            crate::search::spawn_index_worker(index.clone(), IndexerConfig::default());
+        let (pipeline, events) = Pipeline::new(storage.clone(), index_worker.clone());
+
+        TestPipeline {
+            _temp: temp,
+            storage,
+            index,
+            index_worker,
+            pipeline,
+            _events: events,
+        }
+    }
 
     /// A local import runs Store → Extract → Index exactly once per document
     /// and the document becomes searchable by its extracted text.
     #[tokio::test]
     async fn import_stores_extracts_indexes_and_becomes_searchable() {
-        /// One-page PDF with a standard Helvetica text run.
-        const TEXT_PDF: &[u8] = include_bytes!("../../tests/fixtures/text.pdf");
-
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(RwLock::new(
             Storage::open(&temp_dir.path().join("iroh")).await.unwrap(),
@@ -331,5 +436,341 @@ mod tests {
         assert_eq!(chunk.parent_id, doc_id);
 
         pipeline.shutdown();
+    }
+    /// A locally authored document with no canonical extraction is extracted
+    /// and indexed by the startup resume pass.
+    #[tokio::test]
+    async fn resume_extracts_and_indexes_local_document_without_extraction() {
+        let test = test_pipeline().await;
+        let (namespace_id, _) = test
+            .storage
+            .read()
+            .await
+            .create_collection("Resume Local")
+            .await
+            .unwrap();
+        let document = test
+            .storage
+            .read()
+            .await
+            .add_document(namespace_id, "text.pdf", "application/pdf", TEXT_PDF)
+            .await
+            .unwrap();
+
+        test.pipeline
+            .resume_collection(namespace_id, &test.index)
+            .await
+            .unwrap();
+
+        let collection_id = namespace_id.to_string();
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let progress = test
+                    .pipeline
+                    .get_progress(&collection_id)
+                    .await
+                    .expect("collection progress");
+                assert_eq!(progress.extract.failed, 0);
+                assert_eq!(progress.index.failed, 0);
+                if progress.extract.completed == 1
+                    && progress.index.completed == 1
+                    && !progress.is_active()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("resumed pipeline did not settle");
+
+        let extraction = test
+            .storage
+            .read()
+            .await
+            .get_canonical_extraction(namespace_id, &document.id)
+            .await
+            .unwrap();
+        assert!(
+            extraction.is_some(),
+            "resume did not extract the local document"
+        );
+
+        let results = search_index(
+            &test.index,
+            SearchParams {
+                query: "digital",
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.hits.len(), 1, "resumed document is not searchable");
+        let rtxn = test.index.read_txn().unwrap();
+        let chunk = get_indexed_chunk(&test.index, &rtxn, results.hits[0].doc_id)
+            .unwrap()
+            .expect("hit must deserialize as an indexed chunk");
+        assert_eq!(chunk.parent_id, document.id);
+
+        test.pipeline.shutdown();
+    }
+
+    /// A source written by a peer is not extracted locally, even though it has
+    /// no canonical extraction yet.
+    #[tokio::test]
+    async fn resume_skips_peer_authored_source_without_extraction() {
+        let test = test_pipeline().await;
+        let (namespace_id, peer, document_id) = {
+            let storage = test.storage.read().await;
+            let doc = storage.docs().create().await.unwrap();
+            let namespace_id = doc.id();
+            let peer = storage.docs().author_create().await.unwrap();
+            let source_hash = storage.store_blob(TEXT_PDF).await.unwrap();
+            let document_id = source_hash.to_hex();
+            let metadata = DocumentMetadata {
+                id: document_id.clone(),
+                name: "peer.pdf".to_string(),
+                file_type: "application/pdf".to_string(),
+                extraction: None,
+                tags: Vec::new(),
+                created_at: "test".to_string(),
+            };
+            let meta_bytes = serde_json::to_vec(&metadata).unwrap();
+            let meta_hash = storage.store_blob(&meta_bytes).await.unwrap();
+            doc.set_hash(
+                peer,
+                doc_meta_key(&document_id).into_bytes(),
+                meta_hash,
+                meta_bytes.len() as u64,
+            )
+            .await
+            .unwrap();
+            doc.set_hash(
+                peer,
+                doc_source_key(&document_id).into_bytes(),
+                source_hash,
+                TEXT_PDF.len() as u64,
+            )
+            .await
+            .unwrap();
+            doc.close().await.unwrap();
+            (namespace_id, peer, document_id)
+        };
+
+        assert_eq!(
+            test.storage
+                .read()
+                .await
+                .source_author(namespace_id, &document_id)
+                .await
+                .unwrap(),
+            Some(peer)
+        );
+
+        test.pipeline
+            .resume_collection(namespace_id, &test.index)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let extraction = test
+            .storage
+            .read()
+            .await
+            .get_canonical_extraction(namespace_id, &document_id)
+            .await
+            .unwrap();
+        assert!(
+            extraction.is_none(),
+            "peer-authored source was extracted locally"
+        );
+        assert!(
+            test.pipeline
+                .get_progress(&namespace_id.to_string())
+                .await
+                .is_none(),
+            "peer-authored source was queued for extraction"
+        );
+
+        test.pipeline.shutdown();
+    }
+
+    /// A canonical extraction with no chunks in its own collection is queued
+    /// for indexing, even when the same document ID is indexed elsewhere.
+    #[tokio::test]
+    async fn resume_indexes_canonical_extraction_missing_from_its_collection() {
+        let test = test_pipeline().await;
+        let (namespace_id, _) = test
+            .storage
+            .read()
+            .await
+            .create_collection("Resume Canonical")
+            .await
+            .unwrap();
+        let document = test
+            .storage
+            .read()
+            .await
+            .add_document(
+                namespace_id,
+                "report.pdf",
+                "application/pdf",
+                b"canonical source",
+            )
+            .await
+            .unwrap();
+
+        let parser = ParserId {
+            name: "test".to_string(),
+            version: "1".to_string(),
+        };
+        let extraction = Extraction {
+            parser: parser.clone(),
+            text: "resume marker text".to_string(),
+            unit_kind: None,
+            units: Vec::new(),
+        };
+        {
+            let storage = test.storage.read().await;
+            storage
+                .write_extraction(namespace_id, &document.id, &extraction)
+                .await
+                .unwrap();
+            storage
+                .set_canonical_extraction(namespace_id, &document.id, &parser)
+                .await
+                .unwrap();
+        }
+
+        let other_collection = "other-collection";
+        let other_chunk = ChunkToIndex {
+            id: chunk_external_id(other_collection, &document.id, 0),
+            parent_id: document.id.clone(),
+            parent_name: "report.pdf".to_string(),
+            chunk_index: 0,
+            content: "other collection text".to_string(),
+            collection_id: other_collection.to_string(),
+            text_offset_start: 0,
+            text_offset_end: 21,
+        };
+        test.index_worker
+            .index_chunks(vec![other_chunk])
+            .await
+            .unwrap();
+
+        test.pipeline
+            .resume_collection(namespace_id, &test.index)
+            .await
+            .unwrap();
+
+        let collection_id = namespace_id.to_string();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let progress = test
+                    .pipeline
+                    .get_progress(&collection_id)
+                    .await
+                    .expect("collection progress");
+                assert_eq!(progress.index.failed, 0);
+                if progress.index.completed == 1 && !progress.is_active() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("resume did not index the canonical extraction");
+
+        let parents = indexed_parent_ids(&test.index, &collection_id).unwrap();
+        assert!(parents.contains(&document.id));
+        assert!(
+            indexed_parent_ids(&test.index, other_collection)
+                .unwrap()
+                .contains(&document.id),
+            "the other collection's chunks were changed"
+        );
+
+        let collection_ids = [collection_id];
+        let results = search_index(
+            &test.index,
+            SearchParams {
+                query: "marker",
+                limit: 10,
+                collection_ids: Some(&collection_ids),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            results.hits.len(),
+            1,
+            "canonical extraction was not indexed"
+        );
+
+        test.pipeline.shutdown();
+    }
+
+    /// Indexed chunks whose document no longer exists in storage are
+    /// reconciled away by the startup resume pass.
+    #[tokio::test]
+    async fn resume_evicts_chunks_for_documents_absent_from_storage() {
+        let test = test_pipeline().await;
+        let (namespace_id, _) = test
+            .storage
+            .read()
+            .await
+            .create_collection("Resume Evict")
+            .await
+            .unwrap();
+        let collection_id = namespace_id.to_string();
+        let ghost_id = "vanished-document";
+        let external_id = chunk_external_id(&collection_id, ghost_id, 0);
+        test.index_worker
+            .index_chunks(vec![ChunkToIndex {
+                id: external_id.clone(),
+                parent_id: ghost_id.to_string(),
+                parent_name: "vanished.pdf".to_string(),
+                chunk_index: 0,
+                content: "vanished document text".to_string(),
+                collection_id: collection_id.clone(),
+                text_offset_start: 0,
+                text_offset_end: 23,
+            }])
+            .await
+            .unwrap();
+        assert!(get_indexed_chunk_by_external_id(&test.index, &external_id)
+            .unwrap()
+            .is_some());
+
+        test.pipeline
+            .resume_collection(namespace_id, &test.index)
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let progress = test
+                    .pipeline
+                    .get_progress(&collection_id)
+                    .await
+                    .expect("collection progress");
+                assert_eq!(progress.index.failed, 0);
+                if progress.index.completed == 1 && !progress.is_active() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("resume did not reconcile the vanished document");
+
+        assert!(
+            get_indexed_chunk_by_external_id(&test.index, &external_id)
+                .unwrap()
+                .is_none(),
+            "chunks for a vanished document were not evicted"
+        );
+
+        test.pipeline.shutdown();
     }
 }
