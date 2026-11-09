@@ -8,7 +8,7 @@
  * history is re-read via `load_conversation`.
  */
 import { Channel, invoke } from '@tauri-apps/api/core';
-import { invalidate } from '$app/navigation';
+import { refreshConversations } from '#lib/invalidation.js';
 import {
 	deleteConversation as deleteConversationCommand,
 	loadConversation,
@@ -109,7 +109,7 @@ function reconcile(): void {
 	}
 	void (async () => {
 		await loadById(conversationId, { silent: true });
-		await invalidate(`app:conversations:${collectionId}`);
+		await refreshConversations(collectionId);
 	})();
 }
 

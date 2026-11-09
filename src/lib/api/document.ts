@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { invalidate } from '$app/navigation';
+import { refreshCollection } from '#lib/invalidation.js';
 import type {
 	Document,
 	ImportOutcome,
@@ -17,10 +17,7 @@ export async function deleteDocument(
 	documentId: string,
 ): Promise<void> {
 	await invoke('delete_document', { collectionId, documentId });
-	await Promise.all([
-		invalidate('app:collections'),
-		invalidate(`app:collection:${collectionId}`),
-	]);
+	await refreshCollection(collectionId);
 }
 
 /** Start importing files into a collection and re-read the affected data. */
@@ -32,10 +29,7 @@ export async function startImport(
 		paths,
 		collectionId,
 	});
-	await Promise.all([
-		invalidate('app:collections'),
-		invalidate(`app:collection:${collectionId}`),
-	]);
+	await refreshCollection(collectionId);
 	return outcome;
 }
 
