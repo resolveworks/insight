@@ -9,6 +9,7 @@
 	const sectionTabs = [
 		{ id: 'research', label: 'Research' },
 		{ id: 'documents', label: 'Documents' },
+		{ id: 'settings', label: 'Settings' },
 	];
 	const currentTab = $derived(page.route.id?.split('/').at(-1));
 </script>

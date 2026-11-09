@@ -1,0 +1,135 @@
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import Alert from '#lib/components/Alert.svelte';
+	import Button from '#lib/components/Button.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import Modal from '#lib/components/Modal.svelte';
+	import { deleteCollection, shareCollection } from '#lib/api/collection.js';
+	import type { PageProps } from './$types';
+
+	let { data }: PageProps = $props();
+
+	const collection = $derived(data.collection);
+
+	// Share modal state
+	let showShareModal = $state(false);
+	let shareTicket = $state<string | null>(null);
+	let shareError = $state<string | null>(null);
+	let ticketCopied = $state(false);
+
+	// Delete confirmation state
+	let confirmingDelete = $state(false);
+
+	async function openShareModal() {
+		showShareModal = true;
+		shareTicket = null;
+		shareError = null;
+		ticketCopied = false;
+
+		try {
+			const ticket = await shareCollection(collection.id);
+			if (!showShareModal) return; // modal was closed meanwhile
+			shareTicket = ticket;
+		} catch (e) {
+			if (!showShareModal) return;
+			console.error('Failed to share collection:', e);
+			shareError = 'Failed to generate share ticket';
+		}
+	}
+
+	function closeShareModal() {
+		showShareModal = false;
+		shareTicket = null;
+		shareError = null;
+	}
+
+	async function copyTicket() {
+		if (!shareTicket) return;
+		try {
+			await navigator.clipboard.writeText(shareTicket);
+			ticketCopied = true;
+			setTimeout(() => (ticketCopied = false), 2000);
+		} catch (e) {
+			console.error('Failed to copy ticket:', e);
+		}
+	}
+
+	async function handleDelete() {
+		confirmingDelete = false;
+		try {
+			await deleteCollection(collection.id);
+			await goto(resolve('collections'));
+		} catch (e) {
+			console.error('Failed to delete collection:', e);
+		}
+	}
+</script>
+
+<div class="flex h-full flex-col">
+	<div class="flex-1 overflow-y-auto p-6">
+		<div class="max-w-2xl space-y-6">
+			<section class="card p-6">
+				<h2 class="text-sm font-semibold text-neutral-800">Share</h2>
+				<p class="mt-1 text-sm text-muted">
+					Generate a ticket to sync this collection, documents included, to
+					another device.
+				</p>
+				<div class="mt-4">
+					<Button variant="secondary" onclick={openShareModal}>Share</Button>
+				</div>
+			</section>
+
+			<section class="card border-error/30 p-6">
+				<h2 class="text-sm font-semibold text-neutral-800">
+					Delete collection
+				</h2>
+				<p class="mt-1 text-sm text-muted">
+					This deletes the collection, its documents, and its local
+					conversations. This cannot be undone.
+				</p>
+				<div class="mt-4">
+					<Button variant="danger" onclick={() => (confirmingDelete = true)}
+						>Delete collection</Button
+					>
+				</div>
+			</section>
+		</div>
+	</div>
+</div>
+
+<!-- Share collection modal -->
+{#if showShareModal}
+	<Modal title="Share collection" onClose={closeShareModal}>
+		{#if shareTicket}
+			<div class="space-y-3">
+				<div class="flex items-start gap-2">
+					<code class="flex-1 break-all text-xs text-neutral-600">
+						{shareTicket}
+					</code>
+					<Button size="sm" variant="secondary" onclick={copyTicket}>
+						{ticketCopied ? 'Copied!' : 'Copy'}
+					</Button>
+				</div>
+				<p class="text-xs text-subtle">
+					Share this ticket with others to sync this collection
+				</p>
+				<p class="text-xs text-muted">Access cannot be revoked once shared.</p>
+			</div>
+		{:else if shareError}
+			<Alert>{shareError}</Alert>
+		{:else}
+			<p class="text-sm text-subtle">Generating ticket...</p>
+		{/if}
+	</Modal>
+{/if}
+
+<!-- Delete collection confirmation -->
+{#if confirmingDelete}
+	<ConfirmDialog
+		title="Delete collection"
+		message="Delete &quot;{collection.name}&quot;? This deletes the collection, its documents, and its local conversations. This cannot be undone."
+		onConfirm={handleDelete}
+		onCancel={() => (confirmingDelete = false)}
+	/>
+{/if}

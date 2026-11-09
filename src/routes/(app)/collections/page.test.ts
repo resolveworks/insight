@@ -74,11 +74,7 @@ describe('Collections landing page', () => {
 		expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument();
 	});
 
-	it('opens the research workspace from a card with labeled actions', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'share_collection') return 'ticket-123';
-		});
-
+	it('opens the research workspace from a card', async () => {
 		renderPage();
 
 		expect(
@@ -89,16 +85,6 @@ describe('Collections landing page', () => {
 		});
 		expect(workspaceLink).toHaveAttribute('href', '/collections/col1');
 		expect(screen.getByText('2 documents')).toBeInTheDocument();
-
-		const share = screen.getByRole('button', { name: 'Share' });
-		const del = screen.getByRole('button', { name: 'Delete' });
-		expect(share.closest('a')).toBeNull();
-		expect(del.closest('a')).toBeNull();
-
-		await fireEvent.click(share);
-		expect(
-			await screen.findByText('Access cannot be revoked once shared.'),
-		).toBeInTheDocument();
 	});
 
 	it('keeps loaded cards visible while a background refresh is pending', async () => {
@@ -132,18 +118,5 @@ describe('Collections landing page', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
 		expect(invalidate).toHaveBeenLastCalledWith('app:collections');
-	});
-
-	it('states the deletion consequence before confirming', async () => {
-		renderPage();
-
-		await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-
-		const dialog = await screen.findByRole('dialog', {
-			name: 'Delete collection',
-		});
-		expect(dialog).toHaveTextContent(
-			'This deletes the collection, its documents, and its local conversations.',
-		);
 	});
 });

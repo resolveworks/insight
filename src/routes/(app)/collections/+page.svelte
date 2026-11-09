@@ -7,13 +7,10 @@
 	import Input from '#lib/components/Input.svelte';
 	import Alert from '#lib/components/Alert.svelte';
 	import Modal from '#lib/components/Modal.svelte';
-	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import {
 		createCollection,
-		deleteCollection,
 		documentCountLabel,
 		importCollection,
-		shareCollection,
 	} from '#lib/api/collection.js';
 	import type { PageProps } from './$types';
 
@@ -22,20 +19,11 @@
 	// Create collection state
 	let newCollectionName = $state('');
 
-	// Share modal state
-	let sharingCollectionId = $state<string | null>(null);
-	let shareTicket = $state<string | null>(null);
-	let shareError = $state<string | null>(null);
-	let ticketCopied = $state(false);
-
 	// Import modal state
 	let showImportModal = $state(false);
 	let importTicket = $state('');
 	let importingCollection = $state(false);
 	let importError = $state<string | null>(null);
-
-	// Delete confirmation state
-	let deletingCollection = $state<{ id: string; name: string } | null>(null);
 
 	const collectionList = $derived(data.collections);
 
@@ -47,40 +35,6 @@
 			goto(resolve(`collections/${collection.id}`));
 		} catch (e) {
 			console.error('Failed to create collection:', e);
-		}
-	}
-
-	async function openShareModal(collectionId: string) {
-		sharingCollectionId = collectionId;
-		shareTicket = null;
-		shareError = null;
-		ticketCopied = false;
-
-		try {
-			const ticket = await shareCollection(collectionId);
-			if (sharingCollectionId !== collectionId) return; // modal was closed meanwhile
-			shareTicket = ticket;
-		} catch (e) {
-			if (sharingCollectionId !== collectionId) return;
-			console.error('Failed to share collection:', e);
-			shareError = 'Failed to generate share ticket';
-		}
-	}
-
-	function closeShareModal() {
-		sharingCollectionId = null;
-		shareTicket = null;
-		shareError = null;
-	}
-
-	async function copyTicket() {
-		if (!shareTicket) return;
-		try {
-			await navigator.clipboard.writeText(shareTicket);
-			ticketCopied = true;
-			setTimeout(() => (ticketCopied = false), 2000);
-		} catch (e) {
-			console.error('Failed to copy ticket:', e);
 		}
 	}
 
@@ -100,17 +54,6 @@
 			importError = 'Failed to import collection';
 		} finally {
 			importingCollection = false;
-		}
-	}
-
-	async function handleDeleteCollection() {
-		if (!deletingCollection) return;
-		const id = deletingCollection.id;
-		deletingCollection = null;
-		try {
-			await deleteCollection(id);
-		} catch (e) {
-			console.error('Failed to delete collection:', e);
 		}
 	}
 </script>
@@ -148,7 +91,7 @@
 			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				{#each collectionList as collection (collection.id)}
 					<article
-						class="card flex flex-col p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
+						class="card p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
 					>
 						<a href={resolve(`collections/${collection.id}`)} class="block">
 							<h3 class="font-medium text-neutral-800">
@@ -162,27 +105,6 @@
 								<span aria-hidden="true">→</span>
 							</p>
 						</a>
-
-						<div class="mt-4 flex gap-2 border-t border-line pt-3">
-							<Button
-								variant="secondary"
-								size="sm"
-								onclick={() => openShareModal(collection.id)}
-							>
-								Share
-							</Button>
-							<Button
-								variant="danger"
-								size="sm"
-								onclick={() =>
-									(deletingCollection = {
-										id: collection.id,
-										name: collection.name,
-									})}
-							>
-								Delete
-							</Button>
-						</div>
 					</article>
 				{/each}
 			</div>
@@ -214,40 +136,4 @@
 			{/if}
 		</div>
 	</Modal>
-{/if}
-
-<!-- Share collection modal -->
-{#if sharingCollectionId !== null}
-	<Modal title="Share collection" onClose={closeShareModal}>
-		{#if shareTicket}
-			<div class="space-y-3">
-				<div class="flex items-start gap-2">
-					<code class="flex-1 break-all text-xs text-neutral-600">
-						{shareTicket}
-					</code>
-					<Button size="sm" variant="secondary" onclick={copyTicket}>
-						{ticketCopied ? 'Copied!' : 'Copy'}
-					</Button>
-				</div>
-				<p class="text-xs text-subtle">
-					Share this ticket with others to sync this collection
-				</p>
-				<p class="text-xs text-muted">Access cannot be revoked once shared.</p>
-			</div>
-		{:else if shareError}
-			<Alert>{shareError}</Alert>
-		{:else}
-			<p class="text-sm text-subtle">Generating ticket...</p>
-		{/if}
-	</Modal>
-{/if}
-
-<!-- Delete collection confirmation -->
-{#if deletingCollection}
-	<ConfirmDialog
-		title="Delete collection"
-		message="Delete &quot;{deletingCollection.name}&quot;? This deletes the collection, its documents, and its local conversations. This cannot be undone."
-		onConfirm={handleDeleteCollection}
-		onCancel={() => (deletingCollection = null)}
-	/>
 {/if}

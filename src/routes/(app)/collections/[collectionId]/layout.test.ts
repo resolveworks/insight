@@ -38,7 +38,9 @@ function renderWorkspace(pathname: string) {
 	page.url = new URL(`http://localhost${pathname}`);
 	page.route.id = pathname.endsWith('/documents')
 		? '/(app)/collections/[collectionId]/documents'
-		: '/(app)/collections/[collectionId]/research';
+		: pathname.endsWith('/settings')
+			? '/(app)/collections/[collectionId]/settings'
+			: '/(app)/collections/[collectionId]/research';
 	page.params = { collectionId: 'col1' };
 	render(Layout, {
 		props: {
@@ -79,7 +81,7 @@ describe('Collection workspace load', () => {
 });
 
 describe('Collection workspace shell', () => {
-	it('shows the collection name and both section tabs', () => {
+	it('shows the collection name and every section tab', () => {
 		renderWorkspace('/collections/col1/research');
 
 		expect(
@@ -89,13 +91,16 @@ describe('Collection workspace shell', () => {
 		expect(links.map((link) => link.textContent?.trim())).toEqual([
 			'Research',
 			'Documents',
+			'Settings',
 		]);
 		expect(links.map((link) => link.getAttribute('href'))).toEqual([
 			'/collections/col1/research',
 			'/collections/col1/documents',
+			'/collections/col1/settings',
 		]);
 		expect(links[0]).toHaveAttribute('aria-current', 'page');
 		expect(links[1]).not.toHaveAttribute('aria-current');
+		expect(links[2]).not.toHaveAttribute('aria-current');
 	});
 
 	it('marks Documents current on the document list', () => {
@@ -104,5 +109,12 @@ describe('Collection workspace shell', () => {
 		const links = screen.getAllByRole('link');
 		expect(links[0]).not.toHaveAttribute('aria-current');
 		expect(links[1]).toHaveAttribute('aria-current', 'page');
+	});
+
+	it('marks Settings current on the settings page', () => {
+		renderWorkspace('/collections/col1/settings');
+
+		const links = screen.getAllByRole('link');
+		expect(links[2]).toHaveAttribute('aria-current', 'page');
 	});
 });
