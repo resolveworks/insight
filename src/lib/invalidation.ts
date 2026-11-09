@@ -21,12 +21,14 @@ export async function refreshCollections(): Promise<void> {
 	await invalidate(dataKeys.collections);
 }
 
+/** Re-read a collection and its document list. */
+export async function refreshDocuments(collectionId: string): Promise<void> {
+	await invalidate(dataKeys.collection(collectionId));
+}
+
 /** Re-read a collection and the collection list. */
 export async function refreshCollection(collectionId: string): Promise<void> {
-	await Promise.all([
-		invalidate(dataKeys.collections),
-		invalidate(dataKeys.collection(collectionId)),
-	]);
+	await Promise.all([refreshCollections(), refreshDocuments(collectionId)]);
 }
 
 /** Re-read a collection's conversation list. */
