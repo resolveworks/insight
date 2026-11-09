@@ -5,7 +5,7 @@
  * layout load reads it, and mutations invalidate that load.
  */
 import { invoke } from '@tauri-apps/api/core';
-import { invalidate } from '$app/navigation';
+import { refreshProvider } from '#lib/invalidation.js';
 
 // =============================================================================
 // Types (backend contract)
@@ -64,13 +64,13 @@ export async function configureProvider(opts: {
 		baseUrl: opts.baseUrl ?? null,
 		model: opts.model,
 	});
-	await invalidate('app:provider');
+	await refreshProvider();
 }
 
 /** Disable the configured provider, then refresh the root layout's provider config. */
 export async function disableProvider(): Promise<void> {
 	await invoke('disable_provider');
-	await invalidate('app:provider');
+	await refreshProvider();
 }
 
 // =============================================================================

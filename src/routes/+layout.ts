@@ -9,12 +9,13 @@ import {
 	type CurrentProvider,
 	type ProviderStatus,
 } from '#lib/api/provider.js';
+import { dataKeys } from '#lib/invalidation.js';
 
 export const ssr = false;
 
 /** Supply the app-global provider configuration; this load never gates. */
 export const load: LayoutLoad = async ({ depends }) => {
-	depends('app:provider');
+	depends(dataKeys.provider);
 
 	try {
 		const [current, status] = await Promise.all([

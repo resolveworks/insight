@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { invalidate } from '$app/navigation';
+import { refreshConversations } from '#lib/invalidation.js';
 import type { ConversationSummary, ConversationView } from '#lib/types/chat.js';
 
 // =============================================================================
@@ -31,7 +31,7 @@ export async function startChat(
 	const conversation = await invoke<ConversationView>('start_chat', {
 		collectionId,
 	});
-	await invalidate(`app:conversations:${collectionId}`);
+	await refreshConversations(collectionId);
 	return conversation;
 }
 
@@ -41,5 +41,5 @@ export async function deleteConversation(
 	conversationId: string,
 ): Promise<void> {
 	await invoke('delete_conversation', { collectionId, conversationId });
-	await invalidate(`app:conversations:${collectionId}`);
+	await refreshConversations(collectionId);
 }
