@@ -20,7 +20,7 @@
 </script>
 
 <Modal {title} onClose={onCancel}>
-	<p class="text-sm text-neutral-600">{message}</p>
+	<p class="text-sm text-muted">{message}</p>
 	<div class="mt-6 flex justify-end gap-2">
 		<Button variant="secondary" onclick={onCancel} data-autofocus>Cancel</Button
 		>
