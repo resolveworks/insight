@@ -124,6 +124,11 @@ impl SharingTracker {
             .last_sync = Some(summary);
     }
 
+    /// Forget all live state for a collection.
+    pub(crate) async fn clear(&self, namespace: NamespaceId) {
+        self.live.write().await.remove(&namespace);
+    }
+
     /// Read the live state for a collection.
     pub(crate) async fn snapshot(
         &self,

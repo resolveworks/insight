@@ -36,6 +36,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use futures::StreamExt;
+use iroh::Watcher;
 use iroh_docs::NamespaceId;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -58,6 +60,9 @@ pub enum AppEvent {
     Progress(PipelineProgress),
     /// A peer changed entries in a collection; readers of its document listing must re-read.
     CollectionInvalidated { namespace: NamespaceId },
+    /// Live sharing state changed: one collection's when `namespace` is set,
+    /// otherwise the device's network reachability.
+    SharingStatusChanged { namespace: Option<NamespaceId> },
 }
 
 /// Event-driven document processing pipeline.
@@ -106,6 +111,10 @@ impl Pipeline {
         // Shared receiver for multi-worker stage
         let extract_rx = SharedReceiver::new_unbounded(extract_rx);
 
+        // Relay reachability is display state mirrored by the sharing read
+        // model; this task only signals that it changed.
+        spawn_relay_watcher(storage.clone(), events.clone(), cancel.child_token());
+
         // Spawn worker pools
         spawn_extract_workers(
             EXTRACT_WORKERS,
@@ -140,18 +149,22 @@ impl Pipeline {
 
     /// Start watching a collection for events.
     ///
-    /// The watcher subscribes to iroh-docs events and dispatches to workers.
-    pub async fn watch(&self, namespace_id: NamespaceId) {
+    /// Subscribes to iroh-docs events and dispatches them to workers. Returns
+    /// once the subscription is active, so a caller may start sync afterwards
+    /// without missing events.
+    pub async fn watch(&self, namespace_id: NamespaceId) -> anyhow::Result<()> {
         let mut watchers = self.watchers.write().await;
 
         if watchers.contains_key(&namespace_id) {
             tracing::debug!(namespace = %namespace_id, "Already watching");
-            return;
+            return Ok(());
         }
 
+        let sharing = self.storage.read().await.sharing().clone();
         let senders = JobSenders {
             index: self.index_queue.clone(),
             events: self.events.clone(),
+            sharing,
         };
 
         let watcher = CollectionWatcher::spawn(
@@ -159,10 +172,12 @@ impl Pipeline {
             self.storage.clone(),
             senders,
             self.cancel.child_token(),
-        );
+        )
+        .await?;
 
         watchers.insert(namespace_id, watcher);
         tracing::info!(namespace = %namespace_id, "Started watching collection");
+        Ok(())
     }
 
     /// Stop watching a collection.
@@ -320,6 +335,39 @@ impl Drop for Pipeline {
     }
 }
 
+/// Emit a device-level sharing status change whenever home relay state changes.
+fn spawn_relay_watcher(
+    storage: Arc<RwLock<Storage>>,
+    events: mpsc::UnboundedSender<AppEvent>,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let statuses = {
+            let storage = storage.read().await;
+            storage.home_relay_status().stream_updates_only()
+        };
+        tokio::pin!(statuses);
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                status = statuses.next() => {
+                    if status.is_none() {
+                        break;
+                    }
+                    if events
+                        .send(AppEvent::SharingStatusChanged { namespace: None })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -387,7 +435,7 @@ mod tests {
             .unwrap();
 
         let (pipeline, _events) = Pipeline::new(storage.clone(), index_worker);
-        pipeline.watch(namespace_id).await;
+        pipeline.watch(namespace_id).await.unwrap();
 
         let pdf_path = temp_dir.path().join("text.pdf");
         tokio::fs::write(&pdf_path, TEXT_PDF).await.unwrap();
