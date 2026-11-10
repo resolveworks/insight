@@ -19,25 +19,27 @@
 </script>
 
 {#if state.status === 'ready'}
-	<div class="flex items-start gap-2">
-		<code class="flex-1 break-all font-mono text-xs text-neutral-500">
-			{state.ticket}
-		</code>
-		<Button size="sm" variant="secondary" onclick={onCopy}>
-			{copied ? 'Copied!' : 'Copy'}
-		</Button>
+	<div class="space-y-3">
+		<div class="flex items-start gap-2">
+			<code class="flex-1 break-all font-mono text-xs text-neutral-500">
+				{state.ticket}
+			</code>
+			<Button size="sm" variant="secondary" onclick={onCopy}>
+				{copied ? 'Copied!' : 'Copy'}
+			</Button>
+		</div>
+		<p class="text-xs text-neutral-400">
+			Share this ticket with others so they can add, change, and delete
+			documents in this collection.
+		</p>
+		{#if copyError}
+			<Alert>{copyError}</Alert>
+		{/if}
+		<p class="text-xs text-neutral-500">
+			Access cannot be revoked once shared. Syncing requires this peer to be
+			available.
+		</p>
 	</div>
-	<p class="text-xs text-neutral-400">
-		Share this ticket with others so they can add, change, and delete documents
-		in this collection.
-	</p>
-	{#if copyError}
-		<Alert>{copyError}</Alert>
-	{/if}
-	<p class="text-xs text-neutral-500">
-		Access cannot be revoked once shared. Syncing requires this peer to be
-		available.
-	</p>
 {:else if state.status === 'error'}
 	<Alert>{state.message}</Alert>
 {:else}
