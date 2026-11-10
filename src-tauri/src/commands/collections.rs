@@ -4,7 +4,7 @@ use tauri::State;
 use super::CollectionId;
 use crate::core::storage::CollectionSharingStatus;
 use crate::core::{sum_page_counts, AppState, CollectionInfo};
-use crate::error::{CommandError, CommandResult, ResultExt};
+use crate::error::{CommandResult, ResultExt};
 
 /// Event payload for a collection's sharing status or the device network.
 ///
@@ -67,7 +67,7 @@ pub async fn create_collection(
     drop(storage);
 
     // Start watching the new collection for sync events (documents from peers)
-    state.watch_namespace(namespace_id).await;
+    state.watch_namespace(namespace_id).await.internal_err()?;
 
     Ok(CollectionInfo {
         id: namespace_id.to_string(),
@@ -85,63 +85,7 @@ pub async fn delete_collection(
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
     let namespace_id = collection_id.namespace();
-    let collection_id = namespace_id.to_string();
-    tracing::info!("Deleting collection {}", collection_id);
-
-    // Cancel any in-flight work belonging to the collection's conversations
-    // before their data disappears.
-    let summaries = state
-        .memory
-        .list_summaries(&collection_id)
-        .await
-        .storage_err()?;
-    for summary in summaries {
-        if let Some(token) = state.active_generations.write().await.remove(&summary.id) {
-            token.cancel();
-        }
-    }
-
-    // Delete from storage first
-    {
-        let storage = state.storage.read().await;
-        storage
-            .delete_collection(namespace_id)
-            .await
-            .storage_err()?;
-    }
-
-    // Delete all chunks from search index in background
-    let index_worker = state.index_worker.clone();
-    let index_collection_id = collection_id.clone();
-    tokio::spawn(async move {
-        match index_worker
-            .delete_collection_chunks(index_collection_id.clone())
-            .await
-        {
-            Ok(deleted_count) => {
-                tracing::info!(
-                    "Removed {} chunks from search index for collection {}",
-                    deleted_count,
-                    index_collection_id
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to remove chunks from search index for collection {}: {}",
-                    index_collection_id,
-                    e
-                );
-            }
-        }
-    });
-
-    state
-        .memory
-        .delete_collection(&collection_id)
-        .await
-        .storage_err()?;
-
-    Ok(())
+    state.delete_collection(namespace_id).await.storage_err()
 }
 
 /// Read a collection's current sharing status.
@@ -187,13 +131,7 @@ pub async fn import_collection(
 ) -> CommandResult<CollectionInfo> {
     tracing::info!("Importing collection from ticket");
 
-    let namespace_id = {
-        let storage = state.storage.read().await;
-        storage.import_collection(&ticket).await.storage_err()?
-    };
-
-    // Start watching the imported collection for sync events
-    state.watch_namespace(namespace_id).await;
+    let (namespace_id, metadata) = state.import_collection(&ticket).await.storage_err()?;
 
     // The initial sync events may have completed before the watcher attached,
     // so queue pipeline work for whatever the imported state already holds.
@@ -205,12 +143,6 @@ pub async fn import_collection(
 
     // Fetch collection info
     let storage = state.storage.read().await;
-
-    let metadata = storage
-        .get_collection_metadata(namespace_id)
-        .await
-        .storage_err()?
-        .ok_or(CommandError::collection_not_found())?;
 
     let documents = storage
         .list_documents(namespace_id)

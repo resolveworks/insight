@@ -17,7 +17,7 @@ pub use iroh_docs::engine::LiveEvent;
 use iroh_docs::net::ALPN as DOCS_ALPN;
 use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
-use iroh_docs::{AuthorId, ContentStatus, DocTicket, Entry, NamespaceId};
+use iroh_docs::{AuthorId, DocTicket, Entry, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
@@ -1226,132 +1226,81 @@ impl Storage {
         Ok(ticket.to_string())
     }
 
-    /// Import a collection from a share ticket
-    ///
-    /// This registers the namespace locally and starts syncing with the peer
-    /// who shared it. Waits for the collection metadata to sync before returning.
-    /// The DocWatcher will pick up InsertRemote events and trigger
-    /// indexing automatically for document entries.
-    pub async fn import_collection(&self, ticket_str: &str) -> Result<NamespaceId> {
-        use std::time::Duration;
-        use tokio::time::timeout;
-
-        let ticket: DocTicket = ticket_str.parse().context("Invalid share ticket")?;
-
-        // Log ticket info for debugging
-        tracing::info!("Ticket contains {} peer(s)", ticket.nodes.len());
-        for node in &ticket.nodes {
-            tracing::info!("  Peer {}: {:?}", node.id.fmt_short(), node.addrs);
+    /// Returns whether a collection namespace exists locally.
+    pub async fn collection_exists(&self, namespace_id: NamespaceId) -> Result<bool> {
+        match self.open_collection(namespace_id).await? {
+            Some(doc) => {
+                doc.close().await?;
+                Ok(true)
+            }
+            None => Ok(false),
         }
+    }
 
-        // Import and subscribe to events so we can wait for the _collection entry
-        let (doc, mut events) = self.docs.api().import_and_subscribe(ticket).await?;
-        let namespace_id = doc.id();
-
+    /// Register an imported collection without starting sync.
+    ///
+    /// The namespace becomes locally known once this returns; its entries and
+    /// metadata may still be missing until sync reaches a peer.
+    pub async fn register_collection_import(&self, ticket: &DocTicket) -> Result<NamespaceId> {
         tracing::info!(
-            "Importing collection {}, waiting for metadata...",
-            namespace_id
+            "Registering collection {} from ticket with {} peer(s)",
+            ticket.capability.id(),
+            ticket.nodes.len()
         );
 
-        // Check if _collection entry already exists (re-import case)
-        let query = Query::key_exact(b"_collection");
-        if let Some(entry) = doc.get_one(query).await? {
-            tracing::info!(
-                "Collection metadata already exists (hash: {})",
-                entry.content_hash()
-            );
-            doc.close().await?;
-            return Ok(namespace_id);
-        }
-
-        // Wait for the _collection entry to sync AND its content to be downloaded
-        // If peer is offline, this will timeout but the collection is still registered
-        // and will sync when the peer comes online
-        let sync_timeout = Duration::from_secs(30);
-        let wait_result = timeout(sync_timeout, async {
-            // Track if we need to wait for content download
-            let mut pending_content_hash: Option<iroh_blobs::Hash> = None;
-
-            while let Some(event) = events.next().await {
-                match &event {
-                    Ok(e) => tracing::debug!("Import event: {}", e),
-                    Err(e) => tracing::debug!("Import event error: {}", e),
-                }
-                match event {
-                    Ok(LiveEvent::InsertRemote {
-                        entry,
-                        content_status,
-                        ..
-                    }) => {
-                        let key = String::from_utf8_lossy(entry.key());
-                        if key == "_collection" {
-                            let hash = entry.content_hash();
-                            tracing::info!(
-                                "Received _collection entry from peer (hash: {}, status: {:?})",
-                                hash,
-                                content_status
-                            );
-
-                            match content_status {
-                                ContentStatus::Complete => {
-                                    // Content already available, we're done
-                                    return Ok(());
-                                }
-                                _ => {
-                                    // Content needs to be downloaded, wait for ContentReady
-                                    tracing::info!("Waiting for content download...");
-                                    pending_content_hash = Some(hash);
-                                }
-                            }
-                        }
-                    }
-                    Ok(LiveEvent::ContentReady { hash }) => {
-                        tracing::debug!("Content ready: {}", hash);
-                        if pending_content_hash == Some(hash) {
-                            tracing::info!("Collection content downloaded");
-                            return Ok(());
-                        }
-                    }
-                    Ok(LiveEvent::SyncFinished(result)) => {
-                        // Sync finished - check if we have the _collection entry now
-                        tracing::info!("Sync finished: {:?}", result);
-                        if pending_content_hash.is_none() {
-                            let query = Query::key_exact(b"_collection");
-                            if doc.get_one(query).await?.is_some() {
-                                return Ok(());
-                            }
-                        }
-                        // If we're waiting for content, keep listening
-                    }
-                    Err(e) => {
-                        tracing::warn!("Event stream error during import: {}", e);
-                    }
-                    _ => {}
-                }
-            }
-            anyhow::bail!("Event stream ended without receiving _collection entry")
-        })
-        .await;
-
-        match wait_result {
-            Ok(Ok(())) => {
-                tracing::info!("Imported collection {}", namespace_id);
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("Import warning for {}: {}", namespace_id, e);
-                // Still return the namespace - the collection may sync later
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "Timeout waiting for collection metadata for {}",
-                    namespace_id
-                );
-                // Still return the namespace - the collection may sync later
-            }
-        }
-
+        let doc = self
+            .docs
+            .api()
+            .import_namespace(ticket.capability.clone())
+            .await?;
+        let namespace_id = doc.id();
         doc.close().await?;
+
         Ok(namespace_id)
+    }
+
+    /// Start syncing a registered collection with the peers from its ticket.
+    pub async fn start_collection_sync(&self, ticket: &DocTicket) -> Result<()> {
+        let namespace_id = ticket.capability.id();
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        doc.start_sync(ticket.nodes.clone()).await?;
+        doc.close().await?;
+
+        tracing::info!("Started sync for collection {}", namespace_id);
+
+        Ok(())
+    }
+
+    /// Wait until a collection's metadata is readable locally.
+    ///
+    /// Polls storage because sync delivers entries asynchronously. A read
+    /// error or the timeout is returned as an error.
+    pub async fn wait_for_collection_metadata(
+        &self,
+        namespace_id: NamespaceId,
+        timeout: std::time::Duration,
+    ) -> Result<CollectionMetadata> {
+        let poll_interval = std::time::Duration::from_millis(100);
+        tokio::time::timeout(timeout, async {
+            loop {
+                if let Some(metadata) = self.get_collection_metadata(namespace_id).await? {
+                    return Ok(metadata);
+                }
+                tokio::time::sleep(poll_interval).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Timed out after {timeout:?} waiting for collection metadata for {namespace_id}"
+            )
+        })?
     }
 
     // =========================================================================
@@ -1844,12 +1793,18 @@ mod tests {
             .await
             .unwrap();
 
-        let ticket = source.share_collection(collection_id).await.unwrap();
+        let ticket: DocTicket = source
+            .share_collection(collection_id)
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
 
         let target_dir = tempfile::tempdir().unwrap();
         let target = Storage::open(target_dir.path()).await.unwrap();
-        let imported = target.import_collection(&ticket).await.unwrap();
+        let imported = target.register_collection_import(&ticket).await.unwrap();
         assert_eq!(imported, collection_id);
+        target.start_collection_sync(&ticket).await.unwrap();
 
         let synced = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
@@ -2554,6 +2509,40 @@ mod tests {
         let storage = Storage::open(temp_dir.path()).await.unwrap();
 
         assert!(storage.resume_sync(NamespaceId::default()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_collection_metadata_errors_on_timeout() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = Storage::open(source_dir.path()).await.unwrap();
+        let (collection_id, _) = source.create_collection("Unreachable").await.unwrap();
+        let ticket: DocTicket = source
+            .share_collection(collection_id)
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = Storage::open(target_dir.path()).await.unwrap();
+        target.register_collection_import(&ticket).await.unwrap();
+
+        let started = std::time::Instant::now();
+        let err = target
+            .wait_for_collection_metadata(collection_id, std::time::Duration::from_millis(100))
+            .await
+            .unwrap_err();
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "timeout primitive should return promptly, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            err.to_string().contains("Timed out"),
+            "unexpected error: {err}"
+        );
+        assert!(target.collection_exists(collection_id).await.unwrap());
     }
 
     #[tokio::test]
