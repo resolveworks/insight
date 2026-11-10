@@ -48,11 +48,11 @@
 	</aside>
 
 	<!-- Main pane: chat, which points at Settings when no model is configured -->
-	<main class="min-w-0 flex-1 overflow-hidden bg-surface">
+	<div class="min-w-0 flex-1 overflow-hidden bg-surface">
 		{#if activeCollectionId !== collectionId || !collection}
 			<LoadingScreen label="Loading collection" />
 		{:else}
 			<Chat {collection} {providerReady} />
 		{/if}
-	</main>
+	</div>
 </div>

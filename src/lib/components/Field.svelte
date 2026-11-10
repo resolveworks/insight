@@ -5,14 +5,13 @@
 		id?: string | null;
 		label?: string;
 		hint?: string;
-		class?: string;
 		children: Snippet;
 	}
 
-	let { id, label, hint, class: className = '', children }: Props = $props();
+	let { id, label, hint, children }: Props = $props();
 </script>
 
-<div class="flex flex-col gap-2 {className}">
+<div class="flex flex-col gap-2">
 	{#if label}
 		<label for={id} class="text-sm font-medium text-neutral-800">{label}</label>
 	{/if}
