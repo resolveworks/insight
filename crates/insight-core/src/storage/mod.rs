@@ -1,3 +1,5 @@
+mod sharing;
+
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -18,6 +20,11 @@ use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
 use crate::text::{Extraction, ParserId, Unit, UnitKind};
+
+pub use sharing::{
+    CollectionAccess, CollectionSharingStatus, LastSyncSummary, SharingNetwork, SharingStatusError,
+    SharingTracker,
+};
 
 // =============================================================================
 // Key Structure Constants
@@ -164,6 +171,8 @@ pub struct Storage {
     /// Serializes document mutations that must observe one consistent state:
     /// extraction commits and document deletion.
     document_mutations: tokio::sync::Mutex<()>,
+    /// Live sharing state fed by the collection watcher.
+    sharing: SharingTracker,
 }
 
 impl Storage {
@@ -233,6 +242,7 @@ impl Storage {
             router,
             author_id,
             document_mutations: tokio::sync::Mutex::new(()),
+            sharing: SharingTracker::new(),
         })
     }
 
@@ -244,6 +254,76 @@ impl Storage {
     /// Get the docs API for direct access
     pub fn docs(&self) -> &DocsApi {
         self.docs.api()
+    }
+
+    /// Live sharing state for the collection watcher to update.
+    pub fn sharing(&self) -> &SharingTracker {
+        &self.sharing
+    }
+
+    /// Read one collection's current sharing status.
+    ///
+    /// Capability, sync readiness and known peers come from iroh-docs; network
+    /// reachability comes from the endpoint's home relays; connected peers and
+    /// the last sync come from the live sharing tracker.
+    pub async fn collection_sharing_status(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> Result<CollectionSharingStatus> {
+        let access = self.collection_access(namespace_id).await?;
+
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .ok_or(SharingStatusError::CollectionNotFound(namespace_id))?;
+        let sync_running = doc.status().await?.sync;
+        let known_peers = doc.get_sync_peers().await?.map_or(0, |peers| peers.len());
+        doc.close().await?;
+
+        let (connected_peers, last_sync) = self.sharing.snapshot(namespace_id).await;
+
+        Ok(CollectionSharingStatus {
+            access,
+            sync_running,
+            network: self.sharing_network(),
+            connected_peers,
+            known_peers,
+            last_sync,
+        })
+    }
+
+    /// Read the local capability for a namespace.
+    async fn collection_access(&self, namespace_id: NamespaceId) -> Result<CollectionAccess> {
+        let mut namespaces = self.docs.api().list().await?;
+        while let Some(item) = namespaces.next().await {
+            let (id, capability) = item?;
+            if id == namespace_id {
+                return Ok(match capability {
+                    iroh_docs::CapabilityKind::Write => CollectionAccess::Write,
+                    iroh_docs::CapabilityKind::Read => CollectionAccess::ReadOnly,
+                });
+            }
+        }
+        Err(SharingStatusError::CollectionNotFound(namespace_id).into())
+    }
+
+    /// Classify home relay reachability.
+    fn sharing_network(&self) -> SharingNetwork {
+        use iroh::Watcher;
+
+        let relays = self.router.endpoint().home_relay_status().get();
+        if relays.iter().any(|relay| relay.is_connected()) {
+            SharingNetwork::Online
+        } else if relays
+            .iter()
+            .any(|relay| relay.last_error().is_some() || relay.auth_denied_reason().is_some())
+        {
+            SharingNetwork::Offline
+        } else {
+            SharingNetwork::Connecting
+        }
     }
 
     /// Store bytes in blob storage and return the hash
@@ -1726,6 +1806,124 @@ mod tests {
         let collections = storage.list_collections().await.unwrap();
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].0, id2);
+    }
+
+    #[tokio::test]
+    async fn test_collection_sharing_status_for_created_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Shared").await.unwrap();
+
+        let status = storage
+            .collection_sharing_status(collection_id)
+            .await
+            .unwrap();
+        assert_eq!(status.access, CollectionAccess::Write);
+        assert!(!status.sync_running);
+        assert_eq!(status.connected_peers, 0);
+        assert_eq!(status.known_peers, 0);
+        assert_eq!(status.last_sync, None);
+
+        let doc = storage.docs().open(collection_id).await.unwrap().unwrap();
+        doc.start_sync(Vec::new()).await.unwrap();
+        let status = storage
+            .collection_sharing_status(collection_id)
+            .await
+            .unwrap();
+        doc.close().await.unwrap();
+        assert!(status.sync_running);
+    }
+
+    #[tokio::test]
+    async fn test_collection_sharing_status_tracks_live_peers_and_syncs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Tracked").await.unwrap();
+
+        let first = iroh::SecretKey::generate().public();
+        let second = iroh::SecretKey::generate().public();
+        storage.sharing().peer_connected(collection_id, first).await;
+        storage
+            .sharing()
+            .peer_connected(collection_id, second)
+            .await;
+        // A repeated NeighborUp for the same peer is still one connection.
+        storage.sharing().peer_connected(collection_id, first).await;
+        assert_eq!(
+            storage
+                .collection_sharing_status(collection_id)
+                .await
+                .unwrap()
+                .connected_peers,
+            2
+        );
+
+        storage
+            .sharing()
+            .peer_disconnected(collection_id, first)
+            .await;
+        assert_eq!(
+            storage
+                .collection_sharing_status(collection_id)
+                .await
+                .unwrap()
+                .connected_peers,
+            1
+        );
+
+        let summary = LastSyncSummary {
+            peer: "peer-1".to_string(),
+            finished_at: chrono::Utc::now(),
+            entries_received: 3,
+            entries_sent: 2,
+            error: None,
+        };
+        storage
+            .sharing()
+            .sync_finished(collection_id, summary.clone())
+            .await;
+        assert_eq!(
+            storage
+                .collection_sharing_status(collection_id)
+                .await
+                .unwrap()
+                .last_sync,
+            Some(summary)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collection_sharing_status_for_read_only_import() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = Storage::open(source_dir.path()).await.unwrap();
+        let (collection_id, _) = source.create_collection("Read Only").await.unwrap();
+        let ticket = source.share_collection(collection_id, false).await.unwrap();
+
+        let import_dir = tempfile::tempdir().unwrap();
+        let import = Storage::open(import_dir.path()).await.unwrap();
+        let ticket: DocTicket = ticket.parse().unwrap();
+        import
+            .docs()
+            .import_namespace(ticket.capability)
+            .await
+            .unwrap();
+
+        let status = import
+            .collection_sharing_status(collection_id)
+            .await
+            .unwrap();
+        assert_eq!(status.access, CollectionAccess::ReadOnly);
+    }
+
+    #[tokio::test]
+    async fn test_collection_sharing_status_unknown_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+
+        assert!(storage
+            .collection_sharing_status(NamespaceId::default())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
