@@ -2,7 +2,7 @@
 	import type { Snippet } from 'svelte';
 
 	interface Props {
-		eyebrow?: string;
+		eyebrow?: Snippet;
 		title: string;
 		actions?: Snippet;
 		tabs?: Snippet;
@@ -15,7 +15,9 @@
 	<div class="flex items-center justify-between gap-4">
 		<div class="min-w-0">
 			{#if eyebrow}
-				<p class="text-xs uppercase tracking-wide text-subtle">{eyebrow}</p>
+				<div class="mb-1">
+					{@render eyebrow()}
+				</div>
 			{/if}
 			<h1 class="truncate text-xl font-medium text-neutral-800">{title}</h1>
 		</div>

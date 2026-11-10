@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
+	import BackLink from '#lib/components/BackLink.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
 	import type { LayoutProps } from './$types';
 
@@ -15,7 +16,10 @@
 </script>
 
 <div class="flex h-full flex-col bg-surface">
-	<PageHeader eyebrow="Collection" title={data.collection.name}>
+	<PageHeader title={data.collection.name}>
+		{#snippet eyebrow()}
+			<BackLink href={resolve('collections')}>Back to collections</BackLink>
+		{/snippet}
 		{#snippet tabs()}
 			<nav aria-label="Collection sections" class="flex gap-1">
 				{#each sectionTabs as tab (tab.id)}

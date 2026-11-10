@@ -87,7 +87,11 @@ describe('Collection workspace shell', () => {
 		expect(
 			screen.getByRole('heading', { name: 'Climate Research' }),
 		).toBeInTheDocument();
-		const links = screen.getAllByRole('link');
+		expect(
+			screen.getByRole('link', { name: /Back to collections/ }),
+		).toHaveAttribute('href', '/collections');
+
+		const links = screen.getAllByRole('link').slice(1);
 		expect(links.map((link) => link.textContent?.trim())).toEqual([
 			'Research',
 			'Documents',
@@ -106,15 +110,21 @@ describe('Collection workspace shell', () => {
 	it('marks Documents current on the document list', () => {
 		renderWorkspace('/collections/col1/documents');
 
-		const links = screen.getAllByRole('link');
-		expect(links[0]).not.toHaveAttribute('aria-current');
-		expect(links[1]).toHaveAttribute('aria-current', 'page');
+		expect(screen.getByRole('link', { name: 'Research' })).not.toHaveAttribute(
+			'aria-current',
+		);
+		expect(screen.getByRole('link', { name: 'Documents' })).toHaveAttribute(
+			'aria-current',
+			'page',
+		);
 	});
 
 	it('marks Settings current on the settings page', () => {
 		renderWorkspace('/collections/col1/settings');
 
-		const links = screen.getAllByRole('link');
-		expect(links[2]).toHaveAttribute('aria-current', 'page');
+		expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute(
+			'aria-current',
+			'page',
+		);
 	});
 });

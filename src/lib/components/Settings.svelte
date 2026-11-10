@@ -1,10 +1,16 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
+	import BackLink from './BackLink.svelte';
 	import PageHeader from './PageHeader.svelte';
 	import ProviderSelector from './ProviderSelector.svelte';
 </script>
 
 <div class="flex h-full flex-col bg-surface">
-	<PageHeader title="Settings" />
+	<PageHeader title="Settings">
+		{#snippet eyebrow()}
+			<BackLink href={resolve('collections')}>Back to collections</BackLink>
+		{/snippet}
+	</PageHeader>
 	<div class="flex-1 overflow-y-auto p-6">
 		<div class="mx-auto max-w-2xl">
 			<section class="mb-8">

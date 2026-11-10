@@ -132,6 +132,15 @@ describe('Collection import', () => {
 });
 
 describe('Collections landing page', () => {
+	it('links to global settings from the header', () => {
+		renderPage();
+
+		expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute(
+			'href',
+			'/settings',
+		);
+	});
+
 	it('offers collection creation in the genuine empty state', () => {
 		renderPage([]);
 
