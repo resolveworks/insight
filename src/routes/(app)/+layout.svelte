@@ -9,6 +9,6 @@
 	});
 </script>
 
-<main class="h-screen overflow-hidden bg-surface-dim text-neutral-800">
+<main class="h-screen overflow-hidden bg-surface-dim">
 	{@render children()}
 </main>

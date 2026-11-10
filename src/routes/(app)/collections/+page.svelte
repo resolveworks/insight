@@ -4,7 +4,10 @@
 	import PageHeader from '#lib/components/PageHeader.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
+	import ButtonLink from '#lib/components/ButtonLink.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 	import Input from '#lib/components/Input.svelte';
+	import Textarea from '#lib/components/Textarea.svelte';
 	import Alert from '#lib/components/Alert.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import {
@@ -78,34 +81,15 @@
 <div class="flex h-full flex-col">
 	<PageHeader title="Collections">
 		{#snippet actions()}
-			<a
+			<ButtonLink
 				href={resolve('settings')}
+				variant="ghost"
+				size="sm"
 				aria-label="Settings"
-				title="Settings"
-				class="-mr-2 inline-flex rounded-md p-2 text-subtle transition-colors hover:bg-surface-dim hover:text-neutral-700 hover:no-underline focus-visible:focus-ring"
+				class="px-2"
 			>
-				<svg
-					class="h-5 w-5"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-				>
-					<circle
-						cx="12"
-						cy="12"
-						r="3"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="1.75"
-					/>
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="1.75"
-						d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
-					/>
-				</svg>
-			</a>
+				<Icon name="settings" />
+			</ButtonLink>
 		{/snippet}
 	</PageHeader>
 
@@ -136,9 +120,7 @@
 		{:else}
 			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				{#each collectionList as collection (collection.id)}
-					<article
-						class="card p-4 transition-colors hover:border-primary-300 hover:shadow-soft"
-					>
+					<article class="card-interactive p-4">
 						<a href={resolve(`collections/${collection.id}`)} class="block">
 							<h3 class="font-medium text-neutral-800">
 								{collection.name}
@@ -146,9 +128,11 @@
 							<p class="mt-1 text-sm text-muted">
 								{documentCountLabel(collection.document_count)}
 							</p>
-							<p class="mt-3 text-sm font-medium text-primary-600">
+							<p
+								class="mt-3 flex items-center gap-1 text-sm font-medium text-primary-600"
+							>
 								Open research workspace
-								<span aria-hidden="true">→</span>
+								<Icon name="arrow-right" size="sm" />
 							</p>
 						</a>
 					</article>
@@ -162,11 +146,11 @@
 {#if showImportModal}
 	<Modal title="Import shared collection" onClose={closeImportModal}>
 		<div class="space-y-3">
-			<textarea
+			<Textarea
 				placeholder="Paste ticket here..."
 				bind:value={importTicket}
-				rows="3"
-				class="field w-full resize-none text-sm"></textarea>
+				rows={3}
+			/>
 			<Button
 				fullWidth
 				onclick={handleImportCollection}
