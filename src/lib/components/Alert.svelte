@@ -18,12 +18,12 @@
 </script>
 
 <div
-	role="alert"
+	role={variant === 'error' ? 'alert' : 'status'}
 	class="rounded-lg border p-4 text-sm {variantClasses[variant]}"
 >
 	{@render children()}
 	{#if action}
-		<div class="mt-3">
+		<div class="mt-4">
 			{@render action()}
 		</div>
 	{/if}

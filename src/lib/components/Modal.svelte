@@ -7,9 +7,10 @@
 		title?: string;
 		onClose?: () => void;
 		children: Snippet;
+		footer?: Snippet;
 	}
 
-	let { title, onClose, children }: Props = $props();
+	let { title, onClose, children, footer }: Props = $props();
 
 	const titleId = $props.id();
 	const focusableSelector =
@@ -127,5 +128,10 @@
 			</div>
 		{/if}
 		{@render children()}
+		{#if footer}
+			<div class="mt-6 flex justify-end gap-2">
+				{@render footer()}
+			</div>
+		{/if}
 	</div>
 </div>

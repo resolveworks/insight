@@ -211,11 +211,9 @@
 
 		{#if deletedDocuments.length > 0}
 			<section class="mt-8 border-t border-line pt-6">
-				<SectionHeading
-					id="deleted-items-heading"
-					title="Deleted items"
-					class="mb-3"
-				/>
+				<div class="mb-3">
+					<SectionHeading id="deleted-items-heading" title="Deleted items" />
+				</div>
 				<ul class="space-y-2" aria-labelledby="deleted-items-heading">
 					{#each deletedDocuments as doc (doc.id)}
 						<li class="card flex items-center justify-between gap-4 px-4 py-3">
