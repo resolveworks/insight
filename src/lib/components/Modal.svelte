@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import Icon from './Icon.svelte';
+	import IconButton from './IconButton.svelte';
 
 	interface Props {
 		title?: string;
@@ -103,7 +105,7 @@
 
 <div
 	role="presentation"
-	class="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/50 p-4"
+	class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
 	onclick={handleBackdropClick}
 >
 	<div
@@ -112,33 +114,16 @@
 		aria-modal="true"
 		aria-labelledby={title ? titleId : undefined}
 		tabindex="-1"
-		class="panel w-full max-w-md p-6"
+		class="w-full max-w-md rounded-lg bg-surface-bright p-6 shadow-xl"
 	>
 		{#if title}
 			<div class="mb-4 flex items-center justify-between">
 				<h2 id={titleId} class="text-base font-semibold text-neutral-800">
 					{title}
 				</h2>
-				<button
-					onclick={onClose}
-					class="cursor-pointer rounded-sm p-1 text-subtle transition-colors hover:text-neutral-700 focus-visible:focus-ring"
-					aria-label="Close dialog"
-					title="Close"
-				>
-					<svg
-						class="h-4 w-4"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-					>
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M6 18L18 6M6 6l12 12"
-						/>
-					</svg>
-				</button>
+				<IconButton label="Close dialog" size="sm" onclick={onClose}>
+					<Icon name="close" size="sm" />
+				</IconButton>
 			</div>
 		{/if}
 		{@render children()}
