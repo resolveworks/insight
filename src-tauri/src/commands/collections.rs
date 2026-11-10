@@ -195,6 +195,14 @@ pub async fn import_collection(
     // Start watching the imported collection for sync events
     state.watch_namespace(namespace_id).await;
 
+    // The initial sync events may have completed before the watcher attached,
+    // so queue pipeline work for whatever the imported state already holds.
+    state
+        .pipeline
+        .resume_collection(namespace_id, &state.search)
+        .await
+        .internal_err()?;
+
     // Fetch collection info
     let storage = state.storage.read().await;
 
