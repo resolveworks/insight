@@ -13,9 +13,6 @@
 	const collection = $derived(data.collection);
 	const sharing = $derived(data.sharing);
 
-	const accessLabel = $derived(
-		sharing.access === 'read_only' ? 'Read-only' : 'Can write',
-	);
 	const syncLabel = $derived(sharing.sync_running ? 'Running' : 'Not running');
 	const networkLabel = $derived(
 		{
@@ -96,15 +93,12 @@
 			<section class="card p-6">
 				<h2 class="text-sm font-semibold text-neutral-800">Share</h2>
 				<p class="mt-1 text-sm text-muted">
-					Anyone with a ticket can sync this collection, documents included, to
-					another device while this peer is available. Tickets cannot be
+					Anyone with a collaboration ticket can add, change, and delete
+					documents in this collection. They sync with this collection,
+					documents included, while this peer is available. Access cannot be
 					revoked.
 				</p>
 				<dl class="mt-4 divide-y divide-line border-t border-line">
-					<div class="flex items-baseline justify-between gap-4 py-2">
-						<dt class="text-sm text-muted">Access</dt>
-						<dd class="text-sm text-neutral-800">{accessLabel}</dd>
-					</div>
 					<div class="flex items-baseline justify-between gap-4 py-2">
 						<dt class="text-sm text-muted">Sync</dt>
 						<dd class="text-sm text-neutral-800">{syncLabel}</dd>
@@ -148,7 +142,7 @@
 				</dl>
 				<div class="mt-4">
 					<Button variant="secondary" onclick={openShareModal}
-						>Create read-only ticket</Button
+						>Create collaboration ticket</Button
 					>
 				</div>
 			</section>
@@ -185,9 +179,13 @@
 					</Button>
 				</div>
 				<p class="text-xs text-subtle">
-					Share this ticket with others to sync this collection
+					Share this ticket with others so they can add, change, and delete
+					documents in this collection.
 				</p>
-				<p class="text-xs text-muted">Access cannot be revoked once shared.</p>
+				<p class="text-xs text-muted">
+					Access cannot be revoked once shared. Syncing requires this peer to be
+					available.
+				</p>
 			</div>
 		{:else if shareError}
 			<Alert>{shareError}</Alert>

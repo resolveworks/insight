@@ -1,6 +1,3 @@
-/** What this node may do with a collection's entries. */
-export type CollectionAccess = 'read_only' | 'write';
-
 /** Reachability of this node's home relays. */
 export type SharingNetwork = 'online' | 'offline' | 'connecting';
 
@@ -15,7 +12,6 @@ export interface LastSyncSummary {
 
 /** Sharing status for one collection. */
 export interface CollectionSharingStatus {
-	access: CollectionAccess;
 	sync_running: boolean;
 	network: SharingNetwork;
 	connected_peers: number;

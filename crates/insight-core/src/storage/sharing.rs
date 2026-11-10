@@ -13,16 +13,6 @@ use iroh_docs::NamespaceId;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-/// What this node may do with a collection's entries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CollectionAccess {
-    /// The collection was imported with a read-only capability.
-    ReadOnly,
-    /// The collection is writable locally.
-    Write,
-}
-
 /// Reachability of this node's home relays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,8 +43,6 @@ pub struct LastSyncSummary {
 /// Sharing status for one collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CollectionSharingStatus {
-    /// What this node may do with the collection.
-    pub access: CollectionAccess,
     /// Whether the local replica accepts sync requests.
     pub sync_running: bool,
     /// Reachability of this node's home relays.

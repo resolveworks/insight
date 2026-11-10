@@ -22,8 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::text::{Extraction, ParserId, Unit, UnitKind};
 
 pub use sharing::{
-    CollectionAccess, CollectionSharingStatus, LastSyncSummary, SharingNetwork, SharingStatusError,
-    SharingTracker,
+    CollectionSharingStatus, LastSyncSummary, SharingNetwork, SharingStatusError, SharingTracker,
 };
 
 // =============================================================================
@@ -270,8 +269,6 @@ impl Storage {
         &self,
         namespace_id: NamespaceId,
     ) -> Result<CollectionSharingStatus> {
-        let access = self.collection_access(namespace_id).await?;
-
         let doc = self
             .docs
             .api()
@@ -285,28 +282,12 @@ impl Storage {
         let (connected_peers, last_sync) = self.sharing.snapshot(namespace_id).await;
 
         Ok(CollectionSharingStatus {
-            access,
             sync_running,
             network: self.sharing_network(),
             connected_peers,
             known_peers,
             last_sync,
         })
-    }
-
-    /// Read the local capability for a namespace.
-    async fn collection_access(&self, namespace_id: NamespaceId) -> Result<CollectionAccess> {
-        let mut namespaces = self.docs.api().list().await?;
-        while let Some(item) = namespaces.next().await {
-            let (id, capability) = item?;
-            if id == namespace_id {
-                return Ok(match capability {
-                    iroh_docs::CapabilityKind::Write => CollectionAccess::Write,
-                    iroh_docs::CapabilityKind::Read => CollectionAccess::ReadOnly,
-                });
-            }
-        }
-        Err(SharingStatusError::CollectionNotFound(namespace_id).into())
     }
 
     /// Watch this endpoint's home relay connection state.
@@ -1016,15 +997,11 @@ impl Storage {
         Ok(stream)
     }
 
-    /// Generate a share ticket for a collection
+    /// Generate a collaboration ticket for a collection.
     ///
-    /// The ticket string can be shared with others who can then import the collection.
-    /// If `writable` is true, the recipient can also add/edit documents.
-    pub async fn share_collection(
-        &self,
-        namespace_id: NamespaceId,
-        writable: bool,
-    ) -> Result<String> {
+    /// The ticket grants write access: whoever imports it can add, change and
+    /// delete documents in the collection.
+    pub async fn share_collection(&self, namespace_id: NamespaceId) -> Result<String> {
         let doc = self
             .docs
             .api()
@@ -1032,22 +1009,14 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        let mode = if writable {
-            ShareMode::Write
-        } else {
-            ShareMode::Read
-        };
-
         // Include relay + direct addresses so peers can connect
-        let ticket = doc.share(mode, AddrInfoOptions::RelayAndAddresses).await?;
+        let ticket = doc
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await?;
 
         doc.close().await?;
 
-        tracing::info!(
-            "Shared collection {} (writable: {})",
-            namespace_id,
-            writable
-        );
+        tracing::info!("Shared collection {} for collaboration", namespace_id);
 
         Ok(ticket.to_string())
     }
@@ -1846,7 +1815,6 @@ mod tests {
             .collection_sharing_status(collection_id)
             .await
             .unwrap();
-        assert_eq!(status.access, CollectionAccess::Write);
         assert!(!status.sync_running);
         assert_eq!(status.connected_peers, 0);
         assert_eq!(status.known_peers, 0);
@@ -1921,29 +1889,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_collection_sharing_status_for_read_only_import() {
-        let source_dir = tempfile::tempdir().unwrap();
-        let source = Storage::open(source_dir.path()).await.unwrap();
-        let (collection_id, _) = source.create_collection("Read Only").await.unwrap();
-        let ticket = source.share_collection(collection_id, false).await.unwrap();
-
-        let import_dir = tempfile::tempdir().unwrap();
-        let import = Storage::open(import_dir.path()).await.unwrap();
-        let ticket: DocTicket = ticket.parse().unwrap();
-        import
-            .docs()
-            .import_namespace(ticket.capability)
-            .await
-            .unwrap();
-
-        let status = import
-            .collection_sharing_status(collection_id)
-            .await
-            .unwrap();
-        assert_eq!(status.access, CollectionAccess::ReadOnly);
-    }
-
-    #[tokio::test]
     async fn test_resume_sync_starts_for_existing_collection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp_dir.path()).await.unwrap();
@@ -1980,7 +1925,7 @@ mod tests {
         let source = Storage::open(source_dir.path()).await.unwrap();
         let (collection_id, _) = source.create_collection("Reimported").await.unwrap();
         let ticket: DocTicket = source
-            .share_collection(collection_id, false)
+            .share_collection(collection_id)
             .await
             .unwrap()
             .parse()

@@ -159,29 +159,21 @@ pub async fn get_collection_sharing_status(
         .storage_err()
 }
 
-/// Share a collection with others
+/// Create a collaboration ticket for a collection.
 ///
-/// Generates a ticket string that can be shared. The recipient can import
-/// the collection using `import_collection`.
+/// The ticket grants write access; the recipient can import the collection
+/// using `import_collection` and then add, change and delete its documents.
 #[tauri::command]
 pub async fn share_collection(
     collection_id: CollectionId,
-    writable: bool,
     state: State<'_, AppState>,
 ) -> CommandResult<String> {
     let namespace_id = collection_id.namespace();
-    tracing::info!(
-        "Sharing collection {} (writable: {})",
-        namespace_id,
-        writable
-    );
+    tracing::info!("Sharing collection {} for collaboration", namespace_id);
 
     let storage = state.storage.read().await;
 
-    storage
-        .share_collection(namespace_id, writable)
-        .await
-        .storage_err()
+    storage.share_collection(namespace_id).await.storage_err()
 }
 
 /// Import a collection from a share ticket

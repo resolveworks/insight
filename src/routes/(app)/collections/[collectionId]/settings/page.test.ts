@@ -22,7 +22,6 @@ const collection = {
 const providerStatus = { family: null, model: null, error: null };
 
 const sharingStatus: CollectionSharingStatus = {
-	access: 'write',
 	sync_running: true,
 	network: 'online',
 	connected_peers: 1,
@@ -75,8 +74,7 @@ describe('Collection settings sharing status', () => {
 	it('shows the current sharing status and last successful sync', () => {
 		renderPage();
 
-		expect(screen.getByText('Access')).toBeInTheDocument();
-		expect(screen.getByText('Can write')).toBeInTheDocument();
+		expect(screen.queryByText('Access')).not.toBeInTheDocument();
 		expect(screen.getByText('Sync')).toBeInTheDocument();
 		expect(screen.getByText('Running')).toBeInTheDocument();
 		expect(screen.getByText('Network')).toBeInTheDocument();
@@ -94,10 +92,9 @@ describe('Collection settings sharing status', () => {
 		expect(screen.getByText('4 received · 2 sent')).toBeInTheDocument();
 	});
 
-	it('shows read-only access and a not-running, offline, never-synced state', () => {
+	it('shows a not-running, offline, never-synced state', () => {
 		renderPage({
 			...sharingStatus,
-			access: 'read_only',
 			sync_running: false,
 			network: 'offline',
 			connected_peers: 0,
@@ -105,7 +102,6 @@ describe('Collection settings sharing status', () => {
 			last_sync: null,
 		});
 
-		expect(screen.getByText('Read-only')).toBeInTheDocument();
 		expect(screen.getByText('Not running')).toBeInTheDocument();
 		expect(screen.getByText('Offline')).toBeInTheDocument();
 		expect(
@@ -133,19 +129,19 @@ describe('Collection settings sharing status', () => {
 });
 
 describe('Collection settings actions', () => {
-	it('shares the collection with a read-only ticket that cannot be revoked', async () => {
+	it('creates a collaboration ticket that cannot be revoked', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'share_collection') return 'ticket-123';
 		});
 
 		renderPage();
 		await fireEvent.click(
-			screen.getByRole('button', { name: 'Create read-only ticket' }),
+			screen.getByRole('button', { name: 'Create collaboration ticket' }),
 		);
 
 		expect(await screen.findByText('ticket-123')).toBeInTheDocument();
 		expect(
-			screen.getByText('Access cannot be revoked once shared.'),
+			screen.getByText(/Access cannot be revoked once shared/),
 		).toBeInTheDocument();
 	});
 
@@ -161,7 +157,7 @@ describe('Collection settings actions', () => {
 
 		renderPage();
 		await fireEvent.click(
-			screen.getByRole('button', { name: 'Create read-only ticket' }),
+			screen.getByRole('button', { name: 'Create collaboration ticket' }),
 		);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Copy' }));
 
