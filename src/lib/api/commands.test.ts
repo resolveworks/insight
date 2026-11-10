@@ -30,7 +30,6 @@ const collection = {
 };
 
 const sharingStatus = {
-	access: 'write',
 	sync_running: true,
 	network: 'online',
 	connected_peers: 1,
@@ -93,12 +92,12 @@ describe('Collection commands', () => {
 		expect(invalidate).toHaveBeenCalledWith('app:collections');
 	});
 
-	it('creates a read-only share ticket', async () => {
+	it('creates a collaboration ticket without a writable argument', async () => {
 		mockIPC((cmd, args) => {
 			if (
 				cmd === 'share_collection' &&
 				commandArgs(args).collectionId === 'col1' &&
-				commandArgs(args).writable === false
+				!('writable' in commandArgs(args))
 			)
 				return 'ticket-123';
 		});

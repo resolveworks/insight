@@ -21,12 +21,9 @@ export async function deleteCollection(collectionId: string): Promise<void> {
 	await refreshCollections();
 }
 
-/** Generate a read-only share ticket for a collection. */
+/** Create a collaboration ticket that grants write access to a collection. */
 export async function shareCollection(collectionId: string): Promise<string> {
-	const ticket = await invoke<string>('share_collection', {
-		collectionId,
-		writable: false,
-	});
+	const ticket = await invoke<string>('share_collection', { collectionId });
 	await refreshCollections();
 	await refreshSharing();
 	return ticket;
