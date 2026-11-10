@@ -9,6 +9,9 @@
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import IconButton from '#lib/components/IconButton.svelte';
+	import List from '#lib/components/List.svelte';
+	import ListRow from '#lib/components/ListRow.svelte';
+	import Page from '#lib/components/Page.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
 	import ProgressBar from '#lib/components/ProgressBar.svelte';
 	import SectionHeading from '#lib/components/SectionHeading.svelte';
@@ -115,7 +118,7 @@
 	}
 </script>
 
-<div class="flex h-full flex-col">
+<Page>
 	<!-- Content -->
 	<PageContent>
 		{#if importFailures.length > 0}
@@ -180,35 +183,32 @@
 				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
 			</div>
 
-			<ul class="space-y-2">
+			<List>
 				{#each documents as doc (doc.id)}
-					<li
-						class="card-interactive flex items-center justify-between gap-4 px-4 py-3"
-					>
+					<ListRow interactive>
 						<a
 							href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
-							class="min-w-0 flex-1"
+							class="block min-w-0 focus-visible:focus-ring"
 						>
-							<span
-								class="text-neutral-800 transition-colors hover:text-primary-600"
-								>{doc.name}</span
-							>
+							<span class="text-sm text-neutral-800">{doc.name}</span>
 							{#if doc.page_count !== null}
-								<span class="ml-2 text-xs text-muted"
-									>{doc.page_count} pages</span
-								>
+								<p class="mt-1 text-xs text-muted">
+									{doc.page_count} pages
+								</p>
 							{/if}
 						</a>
-						<IconButton
-							variant="danger"
-							label="Delete document"
-							onclick={() => (deletingDocument = doc)}
-						>
-							<Icon name="trash" size="sm" />
-						</IconButton>
-					</li>
+						{#snippet actions()}
+							<IconButton
+								variant="danger"
+								label="Delete document"
+								onclick={() => (deletingDocument = doc)}
+							>
+								<Icon name="trash" size="sm" />
+							</IconButton>
+						{/snippet}
+					</ListRow>
 				{/each}
-			</ul>
+			</List>
 		{/if}
 
 		{#if deletedDocuments.length > 0}
@@ -216,31 +216,31 @@
 				<div class="mb-3">
 					<SectionHeading id="deleted-items-heading" title="Deleted items" />
 				</div>
-				<ul class="space-y-2" aria-labelledby="deleted-items-heading">
+				<List labelledBy="deleted-items-heading">
 					{#each deletedDocuments as doc (doc.id)}
-						<li class="card flex items-center justify-between gap-4 px-4 py-3">
-							<div class="min-w-0 flex-1">
-								<p class="text-neutral-800">{doc.name}</p>
-								<p class="mt-1 text-xs text-muted">
-									Deleted by {shortenId(doc.deleted_by)} · {formatTimestamp(
-										doc.deleted_at,
-									)}
-								</p>
-							</div>
-							<Button
-								variant="secondary"
-								size="sm"
-								onclick={() => undeleteDeletedDocument(doc.id)}
-							>
-								Restore
-							</Button>
-						</li>
+						<ListRow>
+							<p class="text-sm text-neutral-800">{doc.name}</p>
+							<p class="mt-1 text-xs text-muted">
+								Deleted by {shortenId(doc.deleted_by)} · {formatTimestamp(
+									doc.deleted_at,
+								)}
+							</p>
+							{#snippet actions()}
+								<Button
+									variant="secondary"
+									size="sm"
+									onclick={() => undeleteDeletedDocument(doc.id)}
+								>
+									Restore
+								</Button>
+							{/snippet}
+						</ListRow>
 					{/each}
-				</ul>
+				</List>
 			</section>
 		{/if}
 	</PageContent>
-</div>
+</Page>
 
 {#if deletingDocument}
 	<ConfirmDialog
