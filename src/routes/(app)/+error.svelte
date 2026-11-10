@@ -9,6 +9,7 @@
 </script>
 
 <ErrorScreen
+	notFound={page.status === 404}
 	message="Failed to load collections: {page.error?.message}"
 	onRetry={retry}
 />

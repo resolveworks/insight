@@ -57,14 +57,6 @@
 	}
 }
 
-@utility card {
-	@apply rounded-lg border border-line bg-surface-bright;
-}
-
-@utility card-interactive {
-	@apply card transition-colors hover:border-primary-300 hover:shadow-sm;
-}
-
 @utility field {
 	@apply rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-neutral-800 placeholder-subtle focus:focus-ring disabled:opacity-50;
 }

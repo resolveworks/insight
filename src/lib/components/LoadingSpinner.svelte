@@ -5,14 +5,12 @@
 	interface Props {
 		size?: Size;
 		color?: Color;
-		class?: string;
 		ariaLabel?: string;
 	}
 
 	let {
 		size = 'md',
 		color = 'primary',
-		class: className = '',
 		ariaLabel = 'Loading',
 	}: Props = $props();
 
@@ -32,7 +30,7 @@
 <svg
 	role="status"
 	aria-label={ariaLabel}
-	class="animate-spin {sizeClasses[size]} {colorClasses[color]} {className}"
+	class="animate-spin {sizeClasses[size]} {colorClasses[color]}"
 	fill="none"
 	viewBox="0 0 24 24"
 >
