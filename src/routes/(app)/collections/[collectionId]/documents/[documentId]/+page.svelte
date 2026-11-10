@@ -1,17 +1,17 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
-	import Alert from '#lib/components/Alert.svelte';
 	import BackLink from '#lib/components/BackLink.svelte';
 	import Card from '#lib/components/Card.svelte';
 	import DescriptionList from '#lib/components/DescriptionList.svelte';
 	import DescriptionRow from '#lib/components/DescriptionRow.svelte';
-	import Disclosure from '#lib/components/Disclosure.svelte';
-	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
+	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
-	import SectionHeading from '#lib/components/SectionHeading.svelte';
+	import PageSection from '#lib/components/PageSection.svelte';
+	import TagList from '#lib/components/TagList.svelte';
+	import TextChunks from '#lib/components/TextChunks.svelte';
 	import { getDocumentChunks, getDocumentText } from '#lib/api/document.js';
 	import { describeError } from '#lib/api/provider.js';
 	import { formatTimestamp } from '#lib/format.js';
@@ -94,83 +94,20 @@
 					{formatTimestamp(data.document.created_at)}
 				</DescriptionRow>
 				<DescriptionRow label="Tags">
-					{#if data.document.tags.length > 0}
-						<div class="flex flex-wrap gap-1">
-							{#each data.document.tags as tag (tag)}
-								<span
-									class="rounded-sm bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700"
-									>{tag}</span
-								>
-							{/each}
-						</div>
-					{:else}
-						<span class="italic text-neutral-400">(none)</span>
-					{/if}
+					<TagList tags={data.document.tags} />
 				</DescriptionRow>
 			</DescriptionList>
 		</Card>
 
-		<!-- Document Content -->
-		<div>
-			<div class="mb-3">
-				<SectionHeading title="Content" />
-			</div>
-			{#if loadingContent}
-				<LoadingSpinner size="sm" ariaLabel="Loading content" />
-			{:else if contentError}
-				<Alert variant="warning">{contentError}</Alert>
-			{:else if content}
-				<div class="max-h-96 overflow-y-auto">
-					<Card padding="sm">
-						<pre
-							class="whitespace-pre-wrap font-sans text-base leading-relaxed text-neutral-800">{content}</pre>
-					</Card>
-				</div>
-			{:else}
-				<p class="text-sm italic text-neutral-400">No content available</p>
-			{/if}
-		</div>
+		<PageSection title="Content">
+			<DocumentText {content} error={contentError} loading={loadingContent} />
+		</PageSection>
 
-		<!-- Text Chunks -->
-		<div>
-			<Disclosure bind:open={chunksOpen}>
-				{#snippet summary()}
-					<SectionHeading title="Text Chunks" />
-					{#if chunks}
-						<span class="text-xs font-normal text-neutral-400"
-							>({chunks.length} chunks)</span
-						>
-					{/if}
-				{/snippet}
-
-				<div class="mt-3">
-					{#if loadingChunks}
-						<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
-					{:else if chunksError}
-						<Alert variant="warning">{chunksError}</Alert>
-					{:else if chunks && chunks.length > 0}
-						<div class="space-y-3">
-							{#each chunks as chunk, i (i)}
-								<Card padding="sm">
-									<div
-										class="mb-2 flex items-center justify-between text-xs text-neutral-400"
-									>
-										<span>Chunk {i + 1}</span>
-										<span>{chunk.length} chars</span>
-									</div>
-									<p
-										class="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-neutral-700"
-									>
-										{chunk}
-									</p>
-								</Card>
-							{/each}
-						</div>
-					{:else}
-						<p class="text-sm italic text-neutral-400">No chunks generated</p>
-					{/if}
-				</div>
-			</Disclosure>
-		</div>
+		<TextChunks
+			bind:open={chunksOpen}
+			{chunks}
+			error={chunksError}
+			loading={loadingChunks}
+		/>
 	</PageContent>
 </Page>
