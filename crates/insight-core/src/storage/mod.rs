@@ -19,7 +19,7 @@ use iroh_docs::{AuthorId, ContentStatus, DocTicket, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
-use crate::text::{Extraction, ParserId, Unit, UnitKind};
+use crate::text::{Extraction, ParserId};
 
 pub use sharing::{
     CollectionSharingStatus, LastSyncSummary, SharingNetwork, SharingStatusError, SharingTracker,
@@ -129,25 +129,6 @@ pub enum CommitOutcome {
     Written(DocumentMetadata),
     /// The document was deleted before the extraction could be committed.
     DocumentGone,
-}
-
-/// An extraction record stored under `files/{id}/extractions/{parser_key}`.
-///
-/// Holds the text blob hash and the source unit mapping; the text itself is
-/// a separate blob.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ExtractionRecord {
-    parser: ParserId,
-    /// Hex-encoded BLAKE3 hash of the extraction text blob.
-    text_hash: String,
-    unit_kind: Option<UnitKind>,
-    units: Vec<Unit>,
-}
-
-impl ExtractionRecord {
-    fn page_count(&self) -> Option<usize> {
-        (self.unit_kind == Some(UnitKind::Page)).then_some(self.units.len())
-    }
 }
 
 /// Storage layer using iroh for P2P content-addressed storage
@@ -635,7 +616,7 @@ impl Storage {
             };
 
             let page_count = match self.get_blob(&entry.content_hash()).await? {
-                Some(bytes) => serde_json::from_slice::<ExtractionRecord>(&bytes)?.page_count(),
+                Some(bytes) => serde_json::from_slice::<Extraction>(&bytes)?.page_count(),
                 None => None,
             };
             page_counts.insert(doc_id.clone(), page_count);
@@ -704,24 +685,15 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        let text_bytes = extraction.text.as_bytes();
-        let text_hash = self.store_blob(text_bytes).await?;
-
-        let record = ExtractionRecord {
-            parser: extraction.parser.clone(),
-            text_hash: text_hash.to_hex(),
-            unit_kind: extraction.unit_kind,
-            units: extraction.units.clone(),
-        };
-        let record_bytes = serde_json::to_vec(&record)?;
-        let record_hash = self.store_blob(&record_bytes).await?;
+        let extraction_bytes = serde_json::to_vec(extraction)?;
+        let extraction_hash = self.store_blob(&extraction_bytes).await?;
 
         let key = doc_extraction_key(doc_id, &extraction.parser);
         doc.set_hash(
             self.author_id,
             key.into_bytes(),
-            record_hash,
-            record_bytes.len() as u64,
+            extraction_hash,
+            extraction_bytes.len() as u64,
         )
         .await?;
 
@@ -769,7 +741,7 @@ impl Storage {
 
     /// Read one of a document's extractions.
     ///
-    /// Returns `Ok(None)` when the extraction entry is absent or its text blob
+    /// Returns `Ok(None)` when the extraction entry is absent or its content
     /// is not available locally yet (sync in flight).
     pub async fn get_extraction(
         &self,
@@ -777,30 +749,24 @@ impl Storage {
         doc_id: &str,
         parser: &ParserId,
     ) -> Result<Option<Extraction>> {
-        let record = match self
-            .get_extraction_record(namespace_id, doc_id, parser)
-            .await?
-        {
-            Some(record) => record,
+        let doc = match self.docs.api().open(namespace_id).await? {
+            Some(doc) => doc,
             None => return Ok(None),
         };
 
-        let text_hash = record
-            .text_hash
-            .parse::<Hash>()
-            .context("Invalid extraction text hash")?;
-        let text_bytes = match self.get_blob(&text_hash).await? {
-            Some(bytes) => bytes,
-            None => return Ok(None),
+        let key = doc_extraction_key(doc_id, parser);
+        let entry = doc.get_one(Query::key_exact(key.as_bytes())).await?;
+        let extraction = if let Some(entry) = entry {
+            match self.get_blob(&entry.content_hash()).await? {
+                Some(bytes) => Some(serde_json::from_slice(&bytes)?),
+                None => None,
+            }
+        } else {
+            None
         };
-        let text = String::from_utf8(text_bytes).context("Extraction text is not valid UTF-8")?;
 
-        Ok(Some(Extraction {
-            parser: record.parser,
-            text,
-            unit_kind: record.unit_kind,
-            units: record.units,
-        }))
+        doc.close().await?;
+        Ok(extraction)
     }
 
     /// Read a document's canonical extraction, if one is selected.
@@ -833,36 +799,9 @@ impl Storage {
             return Ok(None);
         };
         Ok(self
-            .get_extraction_record(namespace_id, doc_id, &parser)
+            .get_extraction(namespace_id, doc_id, &parser)
             .await?
-            .and_then(|record| record.page_count()))
-    }
-
-    /// Read an extraction record without loading its text blob.
-    async fn get_extraction_record(
-        &self,
-        namespace_id: NamespaceId,
-        doc_id: &str,
-        parser: &ParserId,
-    ) -> Result<Option<ExtractionRecord>> {
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-
-        let key = doc_extraction_key(doc_id, parser);
-        let entry = doc.get_one(Query::key_exact(key.as_bytes())).await?;
-        let record = if let Some(entry) = entry {
-            match self.get_blob(&entry.content_hash()).await? {
-                Some(bytes) => Some(serde_json::from_slice(&bytes)?),
-                None => None,
-            }
-        } else {
-            None
-        };
-
-        doc.close().await?;
-        Ok(record)
+            .and_then(|extraction| extraction.page_count()))
     }
 
     /// Get a document's original source file
@@ -1302,6 +1241,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{Unit, UnitKind};
 
     #[tokio::test]
     async fn test_blob_roundtrip() {
@@ -1538,6 +1478,63 @@ mod tests {
             .set_canonical_extraction(collection_id, &doc_id, &parser("missing"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_shared_extraction_syncs_complete_to_peer() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = Storage::open(source_dir.path()).await.unwrap();
+        let (collection_id, _) = source.create_collection("Shared Extraction").await.unwrap();
+        let doc_id = add_document(&source, collection_id, "synced.pdf", b"synced source").await;
+
+        let expected = extraction(
+            parser("sync-test"),
+            "the complete extraction text must arrive",
+            vec![9, 20, 29, 40],
+        );
+        source
+            .write_extraction(collection_id, &doc_id, &expected)
+            .await
+            .unwrap();
+        source
+            .set_canonical_extraction(collection_id, &doc_id, &expected.parser)
+            .await
+            .unwrap();
+
+        let ticket = source.share_collection(collection_id).await.unwrap();
+
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = Storage::open(target_dir.path()).await.unwrap();
+        let imported = target.import_collection(&ticket).await.unwrap();
+        assert_eq!(imported, collection_id);
+
+        let synced = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if let Some(extraction) = target
+                    .get_extraction(collection_id, &doc_id, &expected.parser)
+                    .await
+                    .unwrap()
+                {
+                    break extraction;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("shared extraction should become locally readable");
+
+        assert_eq!(synced, expected);
+        assert_eq!(
+            target
+                .get_canonical_extraction(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            target.page_count(collection_id, &doc_id).await.unwrap(),
+            Some(4)
+        );
     }
 
     #[tokio::test]
