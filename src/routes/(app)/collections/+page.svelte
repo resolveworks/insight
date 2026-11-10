@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import PageHeader from '#lib/components/PageHeader.svelte';
+	import PageContent from '#lib/components/PageContent.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
@@ -94,7 +95,7 @@
 	</PageHeader>
 
 	<!-- Content -->
-	<div class="flex-1 overflow-y-auto p-6">
+	<PageContent>
 		<!-- Actions row -->
 		<div class="mb-6 flex flex-wrap items-center gap-4">
 			<div class="flex gap-2">
@@ -139,7 +140,7 @@
 				{/each}
 			</div>
 		{/if}
-	</div>
+	</PageContent>
 </div>
 
 <!-- Import shared collection modal -->
