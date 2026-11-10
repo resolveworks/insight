@@ -130,7 +130,6 @@
 		bind:value={baseUrl}
 		placeholder="https://api.example.com/v1"
 		disabled={busy}
-		class="w-full"
 	/>
 
 	<Input
@@ -140,7 +139,6 @@
 		bind:value={apiKey}
 		placeholder="API key"
 		disabled={busy}
-		class="w-full"
 	/>
 
 	<Select

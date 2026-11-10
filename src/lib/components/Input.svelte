@@ -12,6 +12,7 @@
 		label,
 		hint,
 		id,
+		type = 'text',
 		value = $bindable(''),
 		class: className = '',
 		...rest
@@ -19,7 +20,7 @@
 </script>
 
 {#snippet control()}
-	<input {id} bind:value class="field {className}" {...rest} />
+	<input {id} {type} bind:value class="field w-full {className}" {...rest} />
 {/snippet}
 
 {#if label || hint}
