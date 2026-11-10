@@ -92,7 +92,7 @@ describe('Collection commands', () => {
 		expect(invalidate).toHaveBeenCalledWith('app:collections');
 	});
 
-	it('creates a collaboration ticket without a writable argument', async () => {
+	it('creates a collaboration ticket without re-reading the collection list', async () => {
 		mockIPC((cmd, args) => {
 			if (
 				cmd === 'share_collection' &&
@@ -103,8 +103,8 @@ describe('Collection commands', () => {
 		});
 
 		expect(await shareCollection('col1')).toBe('ticket-123');
-		expect(invalidate).toHaveBeenCalledWith('app:collections');
 		expect(invalidate).toHaveBeenCalledWith('app:sharing');
+		expect(invalidate).not.toHaveBeenCalledWith('app:collections');
 	});
 
 	it('reads sharing status without re-reading anything', async () => {

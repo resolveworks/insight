@@ -12,6 +12,7 @@
 		documentCountLabel,
 		importCollection,
 	} from '#lib/api/collection.js';
+	import { describeError } from '#lib/api/provider.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -24,6 +25,7 @@
 	let importTicket = $state('');
 	let importingCollection = $state(false);
 	let importError = $state<string | null>(null);
+	let importOperation = 0;
 
 	const collectionList = $derived(data.collections);
 
@@ -38,22 +40,37 @@
 		}
 	}
 
+	function openImportModal() {
+		importOperation += 1;
+		importingCollection = false;
+		importError = null;
+		showImportModal = true;
+	}
+
+	function closeImportModal() {
+		importOperation += 1;
+		showImportModal = false;
+	}
+
 	async function handleImportCollection() {
 		if (!importTicket.trim()) return;
 
+		const operation = ++importOperation;
 		importingCollection = true;
 		importError = null;
 
 		try {
 			const collection = await importCollection(importTicket);
+			if (operation !== importOperation) return;
 			importTicket = '';
 			showImportModal = false;
 			goto(resolve(`collections/${collection.id}/documents`));
 		} catch (e) {
+			if (operation !== importOperation) return;
 			console.error('Failed to import collection:', e);
-			importError = 'Failed to import collection';
+			importError = `Failed to import collection: ${describeError(e)}`;
 		} finally {
-			importingCollection = false;
+			if (operation === importOperation) importingCollection = false;
 		}
 	}
 </script>
@@ -76,9 +93,7 @@
 				<Button onclick={handleCreateCollection}>Create</Button>
 			</div>
 
-			<Button variant="secondary" onclick={() => (showImportModal = true)}
-				>Import…</Button
-			>
+			<Button variant="secondary" onclick={openImportModal}>Import…</Button>
 		</div>
 
 		<!-- Collections grid -->
@@ -114,10 +129,7 @@
 
 <!-- Import shared collection modal -->
 {#if showImportModal}
-	<Modal
-		title="Import shared collection"
-		onClose={() => (showImportModal = false)}
-	>
+	<Modal title="Import shared collection" onClose={closeImportModal}>
 		<div class="space-y-3">
 			<textarea
 				placeholder="Paste ticket here..."
