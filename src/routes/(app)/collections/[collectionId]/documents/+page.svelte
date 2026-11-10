@@ -7,6 +7,9 @@
 	import Button from '#lib/components/Button.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
+	import PageContent from '#lib/components/PageContent.svelte';
+	import ProgressBar from '#lib/components/ProgressBar.svelte';
+	import SectionHeading from '#lib/components/SectionHeading.svelte';
 	import {
 		deleteDocument,
 		getPipelineProgress,
@@ -14,11 +17,12 @@
 		undeleteDocument,
 	} from '#lib/api/document.js';
 	import { describeError } from '#lib/api/provider.js';
+	import { formatTimestamp, shortenId } from '#lib/format.js';
+	import { pipelineIsActive } from '#lib/pipeline.js';
 	import type {
 		Document,
 		ImportOutcome,
 		PipelineProgress,
-		StageProgress,
 	} from '#lib/types/documents.js';
 	import type { PageProps } from './$types';
 
@@ -43,29 +47,6 @@
 				]
 			: [],
 	);
-
-	function stageIsActive(stage: StageProgress): boolean {
-		return stage.pending > 0 || stage.active > 0;
-	}
-
-	function pipelineIsActive(progress: PipelineProgress): boolean {
-		return (
-			stageIsActive(progress.store) ||
-			stageIsActive(progress.extract) ||
-			stageIsActive(progress.index)
-		);
-	}
-
-	function shortAuthor(author: string): string {
-		return author.length > 12 ? `${author.slice(0, 8)}…` : author;
-	}
-
-	function formatDeletedAt(timestamp: string): string {
-		return new Intl.DateTimeFormat(undefined, {
-			dateStyle: 'medium',
-			timeStyle: 'short',
-		}).format(new Date(timestamp));
-	}
 
 	onMount(() => {
 		void getPipelineProgress().then((active) => {
@@ -134,7 +115,7 @@
 
 <div class="flex h-full flex-col">
 	<!-- Content -->
-	<div class="flex-1 overflow-y-auto p-6">
+	<PageContent>
 		{#if importFailures.length > 0}
 			<div class="mb-6">
 				<Alert variant="warning">
@@ -163,19 +144,12 @@
 						stage.data.completed +
 						stage.data.failed}
 					{@const done = stage.data.completed + stage.data.failed}
-					{@const percent = total > 0 ? (done / total) * 100 : 0}
-					<div class="flex flex-col gap-1">
-						<div class="flex justify-between text-xs text-muted">
-							<span>{stage.name}</span>
-							<span>{done}/{total}</span>
-						</div>
-						<div class="h-1.5 w-full rounded-full bg-surface-dim">
-							<div
-								class="h-1.5 rounded-full bg-primary-500 transition-all"
-								style="width: {percent}%"
-							></div>
-						</div>
-					</div>
+					<ProgressBar
+						label={stage.name}
+						detail={`${done}/${total}`}
+						value={done}
+						max={total}
+					/>
 				{/each}
 			</div>
 		{/if}
@@ -207,7 +181,7 @@
 			<ul class="space-y-2">
 				{#each documents as doc (doc.id)}
 					<li
-						class="card flex items-center justify-between gap-4 px-4 py-3 transition-colors hover:border-primary-300 hover:shadow-soft"
+						class="card-interactive flex items-center justify-between gap-4 px-4 py-3"
 					>
 						<a
 							href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
@@ -236,20 +210,21 @@
 		{/if}
 
 		{#if deletedDocuments.length > 0}
-			<section class="mt-8 border-t border-neutral-200 pt-6">
-				<h2
+			<section class="mt-8 border-t border-line pt-6">
+				<SectionHeading
 					id="deleted-items-heading"
-					class="mb-3 text-sm font-medium text-neutral-700"
-				>
-					Deleted items
-				</h2>
+					title="Deleted items"
+					class="mb-3"
+				/>
 				<ul class="space-y-2" aria-labelledby="deleted-items-heading">
 					{#each deletedDocuments as doc (doc.id)}
-						<li class="card flex items-center justify-between gap-4 px-4 py-3">
+						<li
+							class="card-interactive flex items-center justify-between gap-4 px-4 py-3"
+						>
 							<div class="min-w-0 flex-1">
 								<p class="text-neutral-800">{doc.name}</p>
 								<p class="mt-1 text-xs text-muted">
-									Deleted by {shortAuthor(doc.deleted_by)} · {formatDeletedAt(
+									Deleted by {shortenId(doc.deleted_by)} · {formatTimestamp(
 										doc.deleted_at,
 									)}
 								</p>
@@ -266,7 +241,7 @@
 				</ul>
 			</section>
 		{/if}
-	</div>
+	</PageContent>
 </div>
 
 {#if deletingDocument}
