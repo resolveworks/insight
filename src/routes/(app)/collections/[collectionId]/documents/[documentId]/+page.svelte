@@ -98,13 +98,13 @@
 						<div class="flex flex-wrap gap-1">
 							{#each data.document.tags as tag (tag)}
 								<span
-									class="rounded-sm bg-surface-dim px-2 py-0.5 text-xs text-neutral-700"
+									class="rounded-sm bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700"
 									>{tag}</span
 								>
 							{/each}
 						</div>
 					{:else}
-						<span class="italic text-subtle">(none)</span>
+						<span class="italic text-neutral-400">(none)</span>
 					{/if}
 				</DescriptionRow>
 			</DescriptionList>
@@ -127,7 +127,7 @@
 					</Card>
 				</div>
 			{:else}
-				<p class="text-sm italic text-subtle">No content available</p>
+				<p class="text-sm italic text-neutral-400">No content available</p>
 			{/if}
 		</div>
 
@@ -137,7 +137,7 @@
 				{#snippet summary()}
 					<SectionHeading title="Text Chunks" />
 					{#if chunks}
-						<span class="text-xs font-normal text-subtle"
+						<span class="text-xs font-normal text-neutral-400"
 							>({chunks.length} chunks)</span
 						>
 					{/if}
@@ -153,7 +153,7 @@
 							{#each chunks as chunk, i (i)}
 								<Card padding="sm">
 									<div
-										class="mb-2 flex items-center justify-between text-xs text-subtle"
+										class="mb-2 flex items-center justify-between text-xs text-neutral-400"
 									>
 										<span>Chunk {i + 1}</span>
 										<span>{chunk.length} chars</span>
@@ -167,7 +167,7 @@
 							{/each}
 						</div>
 					{:else}
-						<p class="text-sm italic text-subtle">No chunks generated</p>
+						<p class="text-sm italic text-neutral-400">No chunks generated</p>
 					{/if}
 				</div>
 			</Disclosure>

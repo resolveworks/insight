@@ -6,7 +6,6 @@
 	interface Props {
 		title: string;
 		description?: string;
-		action?: Snippet;
 		footer?: Snippet;
 		tone?: 'default' | 'danger';
 		children?: Snippet;
@@ -15,7 +14,6 @@
 	let {
 		title,
 		description,
-		action,
 		footer,
 		tone = 'default',
 		children,
@@ -23,16 +21,9 @@
 </script>
 
 <Card {tone}>
-	<div class="flex items-start justify-between gap-4">
-		<SectionHeading {title} />
-		{#if action}
-			<div class="shrink-0">
-				{@render action()}
-			</div>
-		{/if}
-	</div>
+	<SectionHeading {title} />
 	{#if description}
-		<p class="mt-1 text-sm text-muted">{description}</p>
+		<p class="mt-1 text-sm text-neutral-500">{description}</p>
 	{/if}
 	{#if children}
 		<div class="mt-4">

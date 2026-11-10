@@ -115,7 +115,7 @@
 		aria-modal="true"
 		aria-labelledby={title ? titleId : undefined}
 		tabindex="-1"
-		class="w-full max-w-md rounded-lg bg-surface-bright p-6 shadow-xl"
+		class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl"
 	>
 		{#if title}
 			<div class="mb-4 flex items-center justify-between">

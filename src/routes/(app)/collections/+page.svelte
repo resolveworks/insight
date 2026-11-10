@@ -121,7 +121,7 @@
 						<h3 class="text-sm font-semibold text-neutral-800">
 							{collection.name}
 						</h3>
-						<p class="mt-1 text-sm text-muted">
+						<p class="mt-1 text-sm text-neutral-500">
 							{documentCountLabel(collection.document_count)}
 						</p>
 						<p class="mt-3 text-sm font-medium text-blue-600">

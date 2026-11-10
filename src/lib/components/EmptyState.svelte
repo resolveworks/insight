@@ -20,7 +20,7 @@
 >
 	<p class="text-neutral-800">{title}</p>
 	{#if description}
-		<p class="mt-1 text-sm text-muted {page ? 'max-w-sm' : ''}">
+		<p class="mt-1 text-sm text-neutral-500 {page ? 'max-w-sm' : ''}">
 			{description}
 		</p>
 	{/if}

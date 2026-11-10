@@ -1,5 +1,5 @@
 <script lang="ts">
-	type Size = 'xs' | 'sm' | 'md' | 'lg';
+	type Size = 'xs' | 'sm' | 'lg';
 	type Color = 'primary' | 'current';
 
 	interface Props {
@@ -9,7 +9,7 @@
 	}
 
 	let {
-		size = 'md',
+		size = 'sm',
 		color = 'primary',
 		ariaLabel = 'Loading',
 	}: Props = $props();
@@ -17,7 +17,6 @@
 	const sizeClasses: Record<Size, string> = {
 		xs: 'h-3.5 w-3.5',
 		sm: 'h-4 w-4',
-		md: 'h-8 w-8',
 		lg: 'h-12 w-12',
 	};
 

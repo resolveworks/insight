@@ -20,7 +20,7 @@
 </script>
 
 <Modal {title} onClose={onCancel}>
-	<p class="text-sm text-muted">{message}</p>
+	<p class="text-sm text-neutral-500">{message}</p>
 	{#snippet footer()}
 		<Button variant="ghost" onclick={onCancel} data-autofocus>Cancel</Button>
 		<Button variant="danger" onclick={onConfirm}>{confirmLabel}</Button>

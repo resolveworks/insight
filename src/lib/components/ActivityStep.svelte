@@ -20,7 +20,7 @@
 			{/if}
 			<span class="shrink-0 font-medium text-neutral-800">Thought</span>
 			{#if !step.streaming && step.text.trim() !== ''}
-				<span class="min-w-0 truncate text-subtle">{step.preview}</span>
+				<span class="min-w-0 truncate text-neutral-400">{step.preview}</span>
 			{/if}
 		{/snippet}
 		<div class="pb-2 pl-6 text-sm leading-relaxed text-neutral-700">
@@ -33,13 +33,13 @@
 			{#if step.executing}
 				<LoadingSpinner size="xs" ariaLabel="Running" />
 			{:else if step.isError}
-				<Icon name="warning" size="xs" class="text-error" label="Failed" />
+				<Icon name="warning" size="xs" class="text-red-600" label="Failed" />
 			{:else}
-				<Icon name="check" size="xs" class="text-success" label="Finished" />
+				<Icon name="check" size="xs" class="text-green-600" label="Finished" />
 			{/if}
 			<span class="min-w-0 truncate">{step.label}</span>
 			{#if step.hint}
-				<span class="ml-auto shrink-0 pl-2 text-subtle">{step.hint}</span>
+				<span class="ml-auto shrink-0 pl-2 text-neutral-400">{step.hint}</span>
 			{/if}
 		{/snippet}
 
@@ -48,7 +48,7 @@
 				<dl class="space-y-1 font-mono text-xs leading-relaxed">
 					{#each step.argsLines as line (line.key)}
 						<div class="flex gap-2">
-							<dt class="shrink-0 text-subtle">{line.key}:</dt>
+							<dt class="shrink-0 text-neutral-400">{line.key}:</dt>
 							<dd
 								class="min-w-0 whitespace-pre-wrap break-words text-neutral-700"
 							>

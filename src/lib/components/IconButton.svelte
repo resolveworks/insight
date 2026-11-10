@@ -19,8 +19,8 @@
 	}: Props = $props();
 
 	const variantClasses: Record<Variant, string> = {
-		ghost: 'text-muted hover:bg-surface-dim hover:text-neutral-800',
-		danger: 'text-muted hover:bg-error/10 hover:text-error',
+		ghost: 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800',
+		danger: 'text-neutral-500 hover:bg-red-600/10 hover:text-red-600',
 	};
 </script>
 

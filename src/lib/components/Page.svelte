@@ -9,7 +9,7 @@
 	let { header, children }: Props = $props();
 </script>
 
-<div class="flex h-full flex-col bg-surface">
+<div class="flex h-full flex-col bg-neutral-50">
 	{@render header()}
 	<div class="min-h-0 flex-1">
 		{@render children()}

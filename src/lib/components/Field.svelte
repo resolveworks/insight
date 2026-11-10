@@ -17,6 +17,6 @@
 	{/if}
 	{@render children()}
 	{#if hint}
-		<p class="text-xs text-muted">{hint}</p>
+		<p class="text-xs text-neutral-500">{hint}</p>
 	{/if}
 </div>

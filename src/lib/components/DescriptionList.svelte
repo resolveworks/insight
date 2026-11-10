@@ -8,6 +8,6 @@
 	let { children }: Props = $props();
 </script>
 
-<dl class="divide-y divide-line border-t border-line">
+<dl class="divide-y divide-neutral-200 border-t border-neutral-200">
 	{@render children()}
 </dl>

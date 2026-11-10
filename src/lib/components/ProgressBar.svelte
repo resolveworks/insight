@@ -13,7 +13,7 @@
 
 {#if label || detail}
 	<div
-		class="mb-1.5 flex items-center justify-between gap-4 text-xs text-muted"
+		class="mb-1.5 flex items-center justify-between gap-4 text-xs text-neutral-500"
 	>
 		<span>{label}</span>
 		<span>{detail}</span>
@@ -25,7 +25,7 @@
 	aria-valuemin="0"
 	aria-valuemax={max}
 	aria-label={label}
-	class="h-1.5 w-full rounded-full bg-surface-dim"
+	class="h-1.5 w-full rounded-full bg-neutral-100"
 >
 	<div
 		class="h-1.5 rounded-full bg-blue-500 transition-all"

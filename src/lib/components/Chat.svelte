@@ -72,7 +72,7 @@
 	}
 </script>
 
-<div class="flex h-full flex-col bg-surface">
+<div class="flex h-full flex-col bg-neutral-50">
 	<!-- Transcript -->
 	<div bind:this={messagesContainer} class="flex-1 overflow-y-auto">
 		<div class="{column} py-6">
@@ -104,14 +104,14 @@
 					{#each blocks as block (block.key)}
 						{#if block.kind === 'activity'}
 							<!-- Consecutive reasoning/tool steps read as one subordinate trail. -->
-							<div class="my-2 space-y-1 border-l border-line pl-4">
+							<div class="my-2 space-y-1 border-l border-neutral-200 pl-4">
 								{#each block.steps as step (step.key)}
 									<ActivityStepView {step} />
 								{/each}
 							</div>
 						{:else if block.item.kind === 'user_text'}
 							<div
-								class="ml-auto w-fit max-w-full break-words rounded-lg border border-line bg-surface-dim px-4 py-3 text-base leading-relaxed text-neutral-800"
+								class="ml-auto w-fit max-w-full break-words rounded-lg border border-neutral-200 bg-neutral-100 px-4 py-3 text-base leading-relaxed text-neutral-800"
 							>
 								<Markdown content={block.item.text} />
 							</div>
@@ -128,7 +128,9 @@
 
 					<!-- Placeholder for the gap between send and the first delta. -->
 					{#if isGenerating && !transcript.some((item) => item.provisional)}
-						<div class="animate-pulse text-sm text-muted">Thinking...</div>
+						<div class="animate-pulse text-sm text-neutral-500">
+							Thinking...
+						</div>
 					{/if}
 				</div>
 			{/if}
@@ -144,7 +146,7 @@
 
 	{#if providerReady}
 		<!-- Composer -->
-		<div class="shrink-0 border-t border-line bg-surface-bright">
+		<div class="shrink-0 border-t border-neutral-200 bg-white">
 			<div class="{column} py-4">
 				<div class="flex items-center gap-2">
 					<Input
@@ -174,9 +176,9 @@
 		</div>
 	{:else}
 		<!-- The provider form lives in Settings; research only points at it. -->
-		<div class="shrink-0 border-t border-line bg-surface-bright">
+		<div class="shrink-0 border-t border-neutral-200 bg-white">
 			<div class="{column} flex items-center justify-between gap-4 py-4">
-				<p class="text-sm text-muted">
+				<p class="text-sm text-neutral-500">
 					No language model configured. Research needs one.
 				</p>
 				<ButtonLink href={resolve('settings')} variant="primary">

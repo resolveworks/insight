@@ -12,7 +12,7 @@
 	let { title, id, divider = false, children }: Props = $props();
 </script>
 
-<section class={divider ? 'border-t border-line pt-6' : ''}>
+<section class={divider ? 'border-t border-neutral-200 pt-6' : ''}>
 	<div class="mb-3">
 		<SectionHeading {title} {id} />
 	</div>
