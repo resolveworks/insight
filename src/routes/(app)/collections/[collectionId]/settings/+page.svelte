@@ -1,20 +1,17 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import Alert from '#lib/components/Alert.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import CardSection from '#lib/components/CardSection.svelte';
 	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import DescriptionList from '#lib/components/DescriptionList.svelte';
-	import DescriptionRow from '#lib/components/DescriptionRow.svelte';
-	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
+	import ShareTicket from '#lib/components/ShareTicket.svelte';
+	import SharingStatus from '#lib/components/SharingStatus.svelte';
 	import { deleteCollection, shareCollection } from '#lib/api/collection.js';
 	import { describeError } from '#lib/api/provider.js';
-	import { formatTimestamp, shortenId } from '#lib/format.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -22,21 +19,20 @@
 	const collection = $derived(data.collection);
 	const sharing = $derived(data.sharing);
 
-	const syncLabel = $derived(sharing.sync_running ? 'Running' : 'Not running');
-	const relayLabel = $derived(
-		{
-			online: 'Connected',
-			connecting: 'Connecting',
-			offline: 'Disconnected',
-		}[sharing.network],
-	);
-
 	// Share modal state
 	let showShareModal = $state(false);
 	let shareTicket = $state<string | null>(null);
 	let shareError = $state<string | null>(null);
 	let ticketCopied = $state(false);
 	let copyError = $state<string | null>(null);
+
+	const shareState = $derived(
+		shareError
+			? { status: 'error' as const, message: shareError }
+			: shareTicket
+				? { status: 'ready' as const, ticket: shareTicket }
+				: { status: 'loading' as const },
+	);
 
 	// Delete confirmation state
 	let confirmingDelete = $state(false);
@@ -100,34 +96,7 @@
 			title="Share"
 			description="Anyone with a collaboration ticket can add, change, and delete documents in this collection. They sync with this collection, documents included, while this peer is available. Access cannot be revoked."
 		>
-			<DescriptionList>
-				<DescriptionRow label="Sync">{syncLabel}</DescriptionRow>
-				<DescriptionRow label="Relays">{relayLabel}</DescriptionRow>
-				<DescriptionRow label="Peers">
-					{sharing.connected_peers} connected · {sharing.known_peers}
-					previously synced
-				</DescriptionRow>
-				<DescriptionRow label="Last sync">
-					{#if sharing.last_sync}
-						<div>
-							{formatTimestamp(sharing.last_sync.finished_at)} ·
-							<span class="font-mono">{shortenId(sharing.last_sync.peer)}</span>
-						</div>
-						{#if sharing.last_sync.error}
-							<div class="text-red-600">
-								Sync failed: {sharing.last_sync.error}
-							</div>
-						{:else}
-							<div>
-								{sharing.last_sync.entries_received} received · {sharing
-									.last_sync.entries_sent} sent
-							</div>
-						{/if}
-					{:else}
-						No sync completed since startup
-					{/if}
-				</DescriptionRow>
-			</DescriptionList>
+			<SharingStatus {sharing} />
 			{#snippet footer()}
 				<Button variant="secondary" onclick={openShareModal}
 					>Create collaboration ticket</Button
@@ -152,36 +121,12 @@
 <!-- Share collection modal -->
 {#if showShareModal}
 	<Modal title="Share collection" onClose={closeShareModal}>
-		{#if shareTicket}
-			<div class="space-y-3">
-				<div class="flex items-start gap-2">
-					<code class="flex-1 break-all font-mono text-xs text-neutral-500">
-						{shareTicket}
-					</code>
-					<Button size="sm" variant="secondary" onclick={copyTicket}>
-						{ticketCopied ? 'Copied!' : 'Copy'}
-					</Button>
-				</div>
-				<p class="text-xs text-neutral-400">
-					Share this ticket with others so they can add, change, and delete
-					documents in this collection.
-				</p>
-				{#if copyError}
-					<Alert>{copyError}</Alert>
-				{/if}
-				<p class="text-xs text-neutral-500">
-					Access cannot be revoked once shared. Syncing requires this peer to be
-					available.
-				</p>
-			</div>
-		{:else if shareError}
-			<Alert>{shareError}</Alert>
-		{:else}
-			<div class="flex items-center gap-2 text-sm text-neutral-400">
-				<LoadingSpinner size="sm" />
-				<span>Generating ticket...</span>
-			</div>
-		{/if}
+		<ShareTicket
+			state={shareState}
+			copied={ticketCopied}
+			{copyError}
+			onCopy={copyTicket}
+		/>
 	</Modal>
 {/if}
 
