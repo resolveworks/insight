@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import Page from '#lib/components/Page.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
+	import Card from '#lib/components/Card.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
 	import Input from '#lib/components/Input.svelte';
 	import Textarea from '#lib/components/Textarea.svelte';
@@ -78,7 +80,7 @@
 	}
 </script>
 
-<div class="flex h-full flex-col">
+<Page>
 	<PageHeader title="Collections">
 		{#snippet actions()}
 			<ButtonLink href={resolve('settings')} variant="ghost" size="sm">
@@ -113,24 +115,22 @@
 		{:else}
 			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				{#each collectionList as collection (collection.id)}
-					<article class="card-interactive p-4">
-						<a href={resolve(`collections/${collection.id}`)} class="block">
-							<h3 class="font-medium text-neutral-800">
-								{collection.name}
-							</h3>
-							<p class="mt-1 text-sm text-muted">
-								{documentCountLabel(collection.document_count)}
-							</p>
-							<p class="mt-3 text-sm font-medium text-primary-600">
-								Open research workspace
-							</p>
-						</a>
-					</article>
+					<Card href={resolve(`collections/${collection.id}`)} padding="sm">
+						<h3 class="text-sm font-semibold text-neutral-800">
+							{collection.name}
+						</h3>
+						<p class="mt-1 text-sm text-muted">
+							{documentCountLabel(collection.document_count)}
+						</p>
+						<p class="mt-3 text-sm font-medium text-primary-600">
+							Open research workspace
+						</p>
+					</Card>
 				{/each}
 			</div>
 		{/if}
 	</PageContent>
-</div>
+</Page>
 
 <!-- Import shared collection modal -->
 {#if showImportModal}
