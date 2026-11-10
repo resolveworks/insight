@@ -6,17 +6,15 @@
 	import PageContent from '#lib/components/PageContent.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
-	import Card from '#lib/components/Card.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
 	import Input from '#lib/components/Input.svelte';
 	import Textarea from '#lib/components/Textarea.svelte';
 	import Alert from '#lib/components/Alert.svelte';
 	import Modal from '#lib/components/Modal.svelte';
-	import {
-		createCollection,
-		documentCountLabel,
-		importCollection,
-	} from '#lib/api/collection.js';
+	import PageToolbar from '#lib/components/PageToolbar.svelte';
+	import CardGrid from '#lib/components/CardGrid.svelte';
+	import CollectionCard from '#lib/components/CollectionCard.svelte';
+	import { createCollection, importCollection } from '#lib/api/collection.js';
 	import { describeError } from '#lib/api/provider.js';
 	import type { PageProps } from './$types';
 
@@ -93,20 +91,16 @@
 
 	<!-- Content -->
 	<PageContent>
-		<!-- Actions row -->
-		<div class="flex flex-wrap items-center gap-4">
-			<div class="flex gap-2">
-				<Input
-					placeholder="New collection..."
-					bind:value={newCollectionName}
-					onkeydown={(e) => e.key === 'Enter' && handleCreateCollection()}
-					class="w-48"
-				/>
-				<Button onclick={handleCreateCollection}>Create</Button>
-			</div>
-
-			<Button variant="secondary" onclick={openImportModal}>Import…</Button>
-		</div>
+		<PageToolbar>
+			<Input
+				placeholder="New collection..."
+				bind:value={newCollectionName}
+				onkeydown={(e) => e.key === 'Enter' && handleCreateCollection()}
+				class="w-48"
+			/>
+			<Button onclick={handleCreateCollection}>Create</Button>
+			<Button variant="secondary" onclick={openImportModal}>Import</Button>
+		</PageToolbar>
 
 		<!-- Collections grid -->
 		{#if collectionList.length === 0}
@@ -115,21 +109,14 @@
 				description="Create one above to start organizing your documents."
 			/>
 		{:else}
-			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+			<CardGrid>
 				{#each collectionList as collection (collection.id)}
-					<Card href={resolve(`collections/${collection.id}`)} padding="sm">
-						<h3 class="text-sm font-semibold text-neutral-800">
-							{collection.name}
-						</h3>
-						<p class="mt-1 text-sm text-neutral-500">
-							{documentCountLabel(collection.document_count)}
-						</p>
-						<p class="mt-3 text-sm font-medium text-blue-600">
-							Open research workspace
-						</p>
-					</Card>
+					<CollectionCard
+						{collection}
+						href={resolve(`collections/${collection.id}`)}
+					/>
 				{/each}
-			</div>
+			</CardGrid>
 		{/if}
 	</PageContent>
 </Page>
