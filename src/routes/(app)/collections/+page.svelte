@@ -81,18 +81,20 @@
 </script>
 
 <Page>
-	<PageHeader title="Collections">
-		{#snippet actions()}
-			<ButtonLink href={resolve('settings')} variant="ghost" size="sm">
-				Settings
-			</ButtonLink>
-		{/snippet}
-	</PageHeader>
+	{#snippet header()}
+		<PageHeader title="Collections">
+			{#snippet actions()}
+				<ButtonLink href={resolve('settings')} variant="ghost" size="sm">
+					Settings
+				</ButtonLink>
+			{/snippet}
+		</PageHeader>
+	{/snippet}
 
 	<!-- Content -->
 	<PageContent>
 		<!-- Actions row -->
-		<div class="mb-6 flex flex-wrap items-center gap-4">
+		<div class="flex flex-wrap items-center gap-4">
 			<div class="flex gap-2">
 				<Input
 					placeholder="New collection..."
@@ -122,7 +124,7 @@
 						<p class="mt-1 text-sm text-muted">
 							{documentCountLabel(collection.document_count)}
 						</p>
-						<p class="mt-3 text-sm font-medium text-primary-600">
+						<p class="mt-3 text-sm font-medium text-blue-600">
 							Open research workspace
 						</p>
 					</Card>
@@ -135,16 +137,14 @@
 <!-- Import shared collection modal -->
 {#if showImportModal}
 	<Modal title="Import shared collection" onClose={closeImportModal}>
-		<div class="space-y-3">
-			<Textarea
-				placeholder="Paste ticket here..."
-				bind:value={importTicket}
-				rows={3}
-			/>
-			{#if importError}
-				<Alert>{importError}</Alert>
-			{/if}
-		</div>
+		<Textarea
+			placeholder="Paste ticket here..."
+			bind:value={importTicket}
+			rows={3}
+		/>
+		{#if importError}
+			<Alert>{importError}</Alert>
+		{/if}
 		{#snippet footer()}
 			<Button variant="ghost" onclick={closeImportModal}>Cancel</Button>
 			<Button

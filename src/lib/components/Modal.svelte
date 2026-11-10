@@ -127,7 +127,9 @@
 				</IconButton>
 			</div>
 		{/if}
-		{@render children()}
+		<div class="space-y-3">
+			{@render children()}
+		</div>
 		{#if footer}
 			<div class="mt-6 flex justify-end gap-2">
 				{@render footer()}

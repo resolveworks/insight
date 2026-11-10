@@ -2,12 +2,16 @@
 	import type { Snippet } from 'svelte';
 
 	interface Props {
+		header: Snippet;
 		children: Snippet;
 	}
 
-	let { children }: Props = $props();
+	let { header, children }: Props = $props();
 </script>
 
 <div class="flex h-full flex-col bg-surface">
-	{@render children()}
+	{@render header()}
+	<div class="min-h-0 flex-1">
+		{@render children()}
+	</div>
 </div>

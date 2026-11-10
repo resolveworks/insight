@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { startInvalidationListeners } from '#lib/invalidation.js';
+	import AppShell from '#lib/components/AppShell.svelte';
 
 	let { children } = $props();
 
@@ -9,6 +10,6 @@
 	});
 </script>
 
-<main class="h-screen overflow-hidden bg-surface-dim">
+<AppShell>
 	{@render children()}
-</main>
+</AppShell>

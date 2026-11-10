@@ -1,8 +1,11 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
 	import Chat from '#lib/components/Chat.svelte';
+	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
 	import LoadingScreen from '#lib/components/LoadingScreen.svelte';
+	import Page from '#lib/components/Page.svelte';
+	import SplitPane from '#lib/components/SplitPane.svelte';
 	import { isProviderReady } from '#lib/api/provider.js';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
@@ -29,30 +32,32 @@
 	}
 </script>
 
-<div class="flex h-full overflow-hidden">
-	<!-- Left sidebar: this collection's conversation history, always local -->
-	<aside
-		class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface-dim"
-	>
-		{#if activeCollectionId === collectionId}
-			<ConversationSidebar
-				{conversations}
-				{activeId}
-				onSelect={(id) => chat.selectConversation(id)}
-				onNew={() => chat.newConversation()}
-				onDelete={handleDelete}
-			/>
-		{:else}
-			<LoadingScreen label="Loading conversations" />
-		{/if}
-	</aside>
+<Page>
+	{#snippet header()}
+		<CollectionHeader {collection} active="research" />
+	{/snippet}
 
-	<!-- Main pane: chat, which points at Settings when no model is configured -->
-	<div class="min-w-0 flex-1 overflow-hidden bg-surface">
+	<SplitPane>
+		{#snippet sidebar()}
+			<!-- This collection's conversation history, always local -->
+			{#if activeCollectionId === collectionId}
+				<ConversationSidebar
+					{conversations}
+					{activeId}
+					onSelect={(id) => chat.selectConversation(id)}
+					onNew={() => chat.newConversation()}
+					onDelete={handleDelete}
+				/>
+			{:else}
+				<LoadingScreen label="Loading conversations" />
+			{/if}
+		{/snippet}
+
+		<!-- Chat points at Settings when no model is configured -->
 		{#if activeCollectionId !== collectionId || !collection}
 			<LoadingScreen label="Loading collection" />
 		{:else}
 			<Chat {collection} {providerReady} />
 		{/if}
-	</div>
-</div>
+	</SplitPane>
+</Page>

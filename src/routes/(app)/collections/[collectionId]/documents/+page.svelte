@@ -6,6 +6,7 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import IconButton from '#lib/components/IconButton.svelte';
@@ -136,29 +137,29 @@
 </script>
 
 <Page>
+	{#snippet header()}
+		<CollectionHeader collection={data.collection} active="documents" />
+	{/snippet}
+
 	<!-- Content -->
 	<PageContent>
 		{#if importFailures.length > 0}
-			<div class="mb-6">
-				<Alert variant="warning">
-					<p class="font-medium">Some files could not be imported.</p>
-					<ul class="mt-1 list-disc pl-5">
-						{#each importFailures as failure, index (index)}
-							<li>{failure.path}: {failure.message}</li>
-						{/each}
-					</ul>
-				</Alert>
-			</div>
+			<Alert variant="warning">
+				<p class="font-medium">Some files could not be imported.</p>
+				<ul class="mt-1 list-disc pl-5">
+					{#each importFailures as failure, index (index)}
+						<li>{failure.path}: {failure.message}</li>
+					{/each}
+				</ul>
+			</Alert>
 		{/if}
 
 		{#if importError}
-			<div class="mb-6">
-				<Alert>{importError}</Alert>
-			</div>
+			<Alert>{importError}</Alert>
 		{/if}
 
 		{#if processing && stages.length > 0}
-			<div class="mb-6 grid grid-cols-3 gap-4">
+			<div class="grid grid-cols-3 gap-4">
 				{#each stages as stage (stage.name)}
 					{@const total =
 						stage.data.pending +
@@ -196,7 +197,7 @@
 				{/snippet}
 			</EmptyState>
 		{:else}
-			<div class="mb-4 flex items-center">
+			<div class="flex items-center">
 				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
 			</div>
 
@@ -229,7 +230,7 @@
 		{/if}
 
 		{#if deletedDocuments.length > 0}
-			<section class="mt-8 border-t border-line pt-6">
+			<section class="border-t border-line pt-6">
 				<div class="mb-3">
 					<SectionHeading id="deleted-items-heading" title="Deleted items" />
 				</div>
