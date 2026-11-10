@@ -48,7 +48,7 @@ pub enum UnitKind {
 
 /// Text produced from a document's source by one parser, with the source's
 /// addressable units mapped onto it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Extraction {
     /// The parser that produced this extraction.
     pub parser: ParserId,
