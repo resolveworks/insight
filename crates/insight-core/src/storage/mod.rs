@@ -213,19 +213,9 @@ fn load_or_create_endpoint_key(path: &Path) -> Result<SecretKey> {
         Ok(bytes) => parse_endpoint_key(&bytes, &key_path),
         Err(err) if err.kind() == ErrorKind::NotFound => {
             let key = SecretKey::generate();
-            match write_endpoint_key(&key_path, &key) {
-                Ok(()) => Ok(key),
-                // Another open created the key first; use its identity instead.
-                Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                    let bytes = std::fs::read(&key_path).with_context(|| {
-                        format!("Failed to read endpoint key {}", key_path.display())
-                    })?;
-                    parse_endpoint_key(&bytes, &key_path)
-                }
-                Err(err) => Err(err).with_context(|| {
-                    format!("Failed to write endpoint key {}", key_path.display())
-                }),
-            }
+            write_endpoint_key(&key_path, &key)
+                .with_context(|| format!("Failed to write endpoint key {}", key_path.display()))?;
+            Ok(key)
         }
         Err(err) => {
             Err(err).with_context(|| format!("Failed to read endpoint key {}", key_path.display()))
