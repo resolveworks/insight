@@ -46,7 +46,7 @@
 }
 
 @utility field {
-	@apply rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-neutral-800 placeholder-subtle focus:focus-ring disabled:opacity-50;
+	@apply rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm text-neutral-800 placeholder-subtle focus:focus-ring disabled:opacity-50;
 }
 
 @utility focus-ring {
