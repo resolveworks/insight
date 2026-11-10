@@ -150,9 +150,7 @@
 	/>
 
 	<div class="flex gap-2">
-		<Button fullWidth onclick={save} disabled={!canSave} loading={busy}>
-			Save
-		</Button>
+		<Button onclick={save} disabled={!canSave} loading={busy}>Save</Button>
 		{#if current}
 			<Button variant="secondary" onclick={disable} disabled={busy}
 				>Disable</Button

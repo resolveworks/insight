@@ -83,7 +83,7 @@
 						{#snippet action()}
 							<ButtonLink
 								href={resolve(`collections/${collectionId}/documents`)}
-								variant="secondary"
+								variant="primary"
 							>
 								Go to Documents
 							</ButtonLink>
@@ -181,7 +181,7 @@
 				<p class="text-sm text-muted">
 					No language model configured. Research needs one.
 				</p>
-				<ButtonLink href={resolve('settings')} variant="secondary">
+				<ButtonLink href={resolve('settings')} variant="primary">
 					Open Settings
 				</ButtonLink>
 			</div>

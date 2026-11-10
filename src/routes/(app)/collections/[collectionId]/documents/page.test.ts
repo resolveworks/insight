@@ -144,7 +144,7 @@ describe('Collection documents page', () => {
 		expect(link).toHaveAttribute('href', '/collections/col1/documents/doc1');
 		expect(screen.getByText('12 pages')).toBeInTheDocument();
 
-		const del = screen.getByRole('button', { name: 'Delete' });
+		const del = screen.getByRole('button', { name: 'Delete document' });
 		expect(del.closest('a')).toBeNull();
 		expect(screen.getAllByRole('button', { name: 'Import PDF' })).toHaveLength(
 			1,
@@ -173,7 +173,7 @@ describe('Collection documents page', () => {
 			}).format(new Date(deletedDocument.deleted_at)),
 		);
 		expect(
-			within(section).getByRole('button', { name: 'Undelete' }),
+			within(section).getByRole('button', { name: 'Restore' }),
 		).toBeInTheDocument();
 	});
 
@@ -203,7 +203,7 @@ describe('Collection documents page', () => {
 		});
 
 		renderPage([], [deletedDocument]);
-		await fireEvent.click(screen.getByRole('button', { name: 'Undelete' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
 
 		await waitFor(() =>
 			expect(invalidate).toHaveBeenCalledWith('app:collection:col1'),
@@ -214,7 +214,9 @@ describe('Collection documents page', () => {
 
 	it('explains that deletion is reversible and visible to peers', async () => {
 		renderPage();
-		await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Delete document' }),
+		);
 
 		const dialog = screen.getByRole('dialog', { name: 'Delete document' });
 		expect(dialog).toHaveTextContent(

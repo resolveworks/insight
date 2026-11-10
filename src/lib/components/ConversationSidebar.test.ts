@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { render, screen, waitFor, within } from '@testing-library/svelte';
 import ConversationSidebar from './ConversationSidebar.svelte';
 
 const summary = (id: string, title: string) => ({ id, title });
@@ -34,7 +34,9 @@ describe('ConversationSidebar', () => {
 		expect(
 			screen.getByRole('button', { name: 'Budget analysis' }),
 		).not.toHaveAttribute('aria-current');
-		expect(screen.getAllByLabelText('Delete chat')[0].tagName).toBe('BUTTON');
+		expect(screen.getAllByLabelText('Delete conversation')[0].tagName).toBe(
+			'BUTTON',
+		);
 	});
 
 	it('shows empty state when the list is empty', () => {
@@ -51,16 +53,20 @@ describe('ConversationSidebar', () => {
 			props: { conversations, activeId: 'c1', onDelete },
 		});
 
-		screen.getAllByLabelText('Delete chat')[0].click();
+		screen.getAllByLabelText('Delete conversation')[0].click();
 		await waitFor(() => {
-			expect(screen.getByText('Delete chat')).toBeInTheDocument();
+			expect(
+				screen.getByRole('dialog', { name: 'Delete conversation' }),
+			).toBeInTheDocument();
 		});
 		expect(
 			screen.getByText(/This conversation's history will be removed\./),
 		).toBeInTheDocument();
 		expect(onDelete).not.toHaveBeenCalled();
 
-		screen.getByRole('button', { name: 'Delete' }).click();
+		within(screen.getByRole('dialog'))
+			.getByRole('button', { name: 'Delete conversation' })
+			.click();
 
 		expect(onDelete).toHaveBeenCalledWith('c1');
 	});
@@ -71,7 +77,7 @@ describe('ConversationSidebar', () => {
 			props: { conversations, activeId: 'c1', onDelete },
 		});
 
-		screen.getAllByLabelText('Delete chat')[0].click();
+		screen.getAllByLabelText('Delete conversation')[0].click();
 		await waitFor(() => {
 			expect(
 				screen.getByRole('button', { name: 'Cancel' }),

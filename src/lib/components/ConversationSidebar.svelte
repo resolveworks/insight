@@ -55,21 +55,21 @@
 						>
 							{conv.title}
 						</button>
-						<IconButton
-							label="Delete chat"
-							variant="danger"
-							size="sm"
-							class="mr-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100"
-							onclick={(e) => {
-								e.stopPropagation();
-								pendingDelete = {
-									id: conv.id,
-									title: conv.title,
-								};
-							}}
-						>
-							<Icon name="trash" size="sm" />
-						</IconButton>
+						<span class="mr-1 shrink-0">
+							<IconButton
+								label="Delete conversation"
+								variant="danger"
+								onclick={(e) => {
+									e.stopPropagation();
+									pendingDelete = {
+										id: conv.id,
+										title: conv.title,
+									};
+								}}
+							>
+								<Icon name="trash" size="sm" />
+							</IconButton>
+						</span>
 					</li>
 				{/each}
 			</ul>
@@ -79,7 +79,8 @@
 
 {#if pendingDelete}
 	<ConfirmDialog
-		title="Delete chat"
+		title="Delete conversation"
+		confirmLabel="Delete conversation"
 		message={`Delete "${pendingDelete.title}"? This conversation's history will be removed.`}
 		onConfirm={confirmDelete}
 		onCancel={() => (pendingDelete = null)}

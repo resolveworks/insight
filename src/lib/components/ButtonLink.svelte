@@ -11,7 +11,6 @@
 		href: string;
 		variant?: ButtonVariant;
 		size?: ButtonSize;
-		fullWidth?: boolean;
 		children: Snippet;
 	}
 
@@ -19,8 +18,6 @@
 		href,
 		variant = 'primary',
 		size = 'md',
-		fullWidth = false,
-		class: className = '',
 		children,
 		...rest
 	}: Props = $props();
@@ -28,11 +25,7 @@
 
 <!-- Callers pass already-resolved paths. -->
 <!-- eslint-disable svelte/no-navigation-without-resolve -->
-<a
-	{href}
-	class="{buttonClasses(variant, size)} {fullWidth ? 'w-full' : ''} {className}"
-	{...rest}
->
+<a {href} class={buttonClasses(variant, size)} {...rest}>
 	{@render children()}
 </a>
 <!-- eslint-enable svelte/no-navigation-without-resolve -->

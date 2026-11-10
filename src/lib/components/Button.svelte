@@ -23,7 +23,6 @@
 		fullWidth = false,
 		type = 'button',
 		disabled,
-		class: className = '',
 		children,
 		...rest
 	}: Props = $props();
@@ -31,8 +30,9 @@
 
 <button
 	{type}
-	class="{buttonClasses(variant, size)} {fullWidth ? 'w-full' : ''} {className}"
+	class="{buttonClasses(variant, size)} {fullWidth ? 'w-full' : ''}"
 	disabled={disabled || loading}
+	aria-busy={loading}
 	{...rest}
 >
 	{#if loading}
