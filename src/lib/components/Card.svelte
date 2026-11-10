@@ -29,7 +29,7 @@
 	};
 
 	const interactionClasses =
-		'transition-colors hover:border-primary-300 hover:shadow-sm';
+		'transition-colors hover:border-blue-300 hover:shadow-sm';
 </script>
 
 {#if href}

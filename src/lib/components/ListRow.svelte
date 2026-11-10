@@ -33,7 +33,7 @@
 	class="{variantClasses[variant]} {variant === 'nav'
 		? navStateClasses
 		: interactive
-			? 'transition-colors hover:border-primary-300 hover:shadow-sm'
+			? 'transition-colors hover:border-blue-300 hover:shadow-sm'
 			: ''}"
 >
 	<div class="min-w-0 flex-1">
