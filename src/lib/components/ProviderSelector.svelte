@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
+	import Select from './Select.svelte';
 	import Alert from './Alert.svelte';
 	import {
 		configureProvider,
@@ -27,7 +28,17 @@
 	let error = $state<string | null>(null);
 
 	const canSave = $derived(!busy && !!family && !!model.trim());
-	const selectClasses = 'field w-full cursor-pointer';
+	const providerOptions = $derived(
+		selections.map((id) => ({ value: id, label: id })),
+	);
+	const modelOptions = $derived(
+		model && !models.some((m) => m.id === model)
+			? [
+					{ value: model, label: model },
+					...models.map((m) => ({ value: m.id, label: m.name })),
+				]
+			: models.map((m) => ({ value: m.id, label: m.name })),
+	);
 
 	async function selectFamily(id: string) {
 		family = id;
@@ -103,25 +114,14 @@
 		<Alert>{provider.status.error}</Alert>
 	{/if}
 
-	<div class="flex flex-col gap-2">
-		<label
-			for="provider-family-select"
-			class="block text-sm font-medium text-neutral-700"
-		>
-			Provider
-		</label>
-		<select
-			id="provider-family-select"
-			class={selectClasses}
-			bind:value={family}
-			onchange={(e) => selectFamily(e.currentTarget.value)}
-			disabled={busy}
-		>
-			{#each selections as id (id)}
-				<option value={id}>{id}</option>
-			{/each}
-		</select>
-	</div>
+	<Select
+		label="Provider"
+		bind:value={family}
+		options={providerOptions}
+		onchange={(e) => selectFamily(e.currentTarget.value)}
+		disabled={busy}
+		id="provider-family-select"
+	/>
 
 	<Input
 		id="base-url-input"
@@ -143,24 +143,13 @@
 		class="w-full"
 	/>
 
-	<div class="flex flex-col gap-2">
-		<label for="model-input" class="block text-sm font-medium text-neutral-700">
-			Model
-		</label>
-		<select
-			id="model-input"
-			class={selectClasses}
-			bind:value={model}
-			disabled={busy}
-		>
-			{#if model && !models.some((m) => m.id === model)}
-				<option value={model}>{model}</option>
-			{/if}
-			{#each models as m (m.id)}
-				<option value={m.id}>{m.name}</option>
-			{/each}
-		</select>
-	</div>
+	<Select
+		label="Model"
+		bind:value={model}
+		options={modelOptions}
+		disabled={busy}
+		id="model-input"
+	/>
 
 	<div class="flex gap-2">
 		<Button fullWidth onclick={save} disabled={!canSave} loading={busy}>
