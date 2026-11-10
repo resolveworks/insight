@@ -1,8 +1,19 @@
+use serde::Serialize;
 use tauri::State;
 
 use super::CollectionId;
+use crate::core::storage::CollectionSharingStatus;
 use crate::core::{sum_page_counts, AppState, CollectionInfo};
 use crate::error::{CommandError, CommandResult, ResultExt};
+
+/// Event payload for a collection's sharing status or the device network.
+///
+/// Carries only the namespace whose sharing state changed; `None` means the
+/// device's network reachability changed. Listeners re-read the status.
+#[derive(Debug, Clone, Serialize)]
+pub struct SharingStatusChanged {
+    pub namespace: Option<String>,
+}
 
 /// Get all collections
 #[tauri::command]
@@ -131,6 +142,21 @@ pub async fn delete_collection(
         .storage_err()?;
 
     Ok(())
+}
+
+/// Read a collection's current sharing status.
+#[tauri::command]
+pub async fn get_collection_sharing_status(
+    collection_id: CollectionId,
+    state: State<'_, AppState>,
+) -> CommandResult<CollectionSharingStatus> {
+    let namespace_id = collection_id.namespace();
+    let storage = state.storage.read().await;
+
+    storage
+        .collection_sharing_status(namespace_id)
+        .await
+        .storage_err()
 }
 
 /// Share a collection with others

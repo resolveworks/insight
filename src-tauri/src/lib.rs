@@ -4,6 +4,7 @@ pub mod error;
 
 use tauri::Manager;
 
+use crate::commands::collections::SharingStatusChanged;
 use crate::commands::documents::CollectionInvalidated;
 use crate::core::{AppEvent, AppState, Config};
 
@@ -51,6 +52,14 @@ pub fn run() {
                                 },
                             );
                         }
+                        AppEvent::SharingStatusChanged { namespace } => {
+                            let _ = pipeline_handle.emit(
+                                "sharing-status-changed",
+                                SharingStatusChanged {
+                                    namespace: namespace.map(|namespace| namespace.to_string()),
+                                },
+                            );
+                        }
                     }
                 }
             });
@@ -75,6 +84,7 @@ pub fn run() {
             commands::collections::create_collection,
             commands::collections::delete_collection,
             commands::collections::share_collection,
+            commands::collections::get_collection_sharing_status,
             commands::collections::import_collection,
             commands::documents::get_documents,
             commands::documents::get_document,
