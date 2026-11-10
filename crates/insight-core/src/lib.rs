@@ -65,6 +65,9 @@ pub use runtime::{send_message, BASE_SYSTEM_PROMPT};
 pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::Storage;
 
+/// How long an import waits for the shared collection's metadata to arrive.
+const COLLECTION_IMPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Application state shared across Tauri commands
 #[derive(Clone)]
 pub struct AppState {
@@ -221,14 +224,321 @@ impl AppState {
     }
 
     /// Start watching a namespace for pipeline events.
-    pub async fn watch_namespace(&self, namespace_id: iroh_docs::NamespaceId) {
-        if let Err(e) = self.pipeline.watch(namespace_id).await {
-            tracing::error!(namespace = %namespace_id, error = %e, "Failed to watch collection");
-        }
+    pub async fn watch_namespace(
+        &self,
+        namespace_id: iroh_docs::NamespaceId,
+    ) -> anyhow::Result<()> {
+        self.pipeline.watch(namespace_id).await?;
+        Ok(())
     }
 
     /// Stop watching a namespace.
     pub async fn unwatch_namespace(&self, namespace_id: &iroh_docs::NamespaceId) {
         self.pipeline.unwatch(namespace_id).await;
+    }
+
+    /// Import a collection from a share ticket and wait for its metadata.
+    ///
+    /// The watcher is attached before sync starts so the initial neighbor and
+    /// sync events are observed. A failed first import is rolled back; a failed
+    /// re-import leaves the existing collection in place.
+    pub async fn import_collection(
+        &self,
+        ticket_str: &str,
+    ) -> anyhow::Result<(iroh_docs::NamespaceId, storage::CollectionMetadata)> {
+        self.import_collection_with_timeout(ticket_str, COLLECTION_IMPORT_TIMEOUT)
+            .await
+    }
+
+    pub(crate) async fn import_collection_with_timeout(
+        &self,
+        ticket_str: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<(iroh_docs::NamespaceId, storage::CollectionMetadata)> {
+        let ticket: iroh_docs::DocTicket = ticket_str.parse().context("Invalid share ticket")?;
+        let namespace_id = ticket.capability.id();
+
+        let existed = {
+            let storage = self.storage.read().await;
+            storage.collection_exists(namespace_id).await?
+        };
+        {
+            let storage = self.storage.read().await;
+            storage.register_collection_import(&ticket).await?;
+        }
+
+        let (watching, result) = match self.pipeline.watch(namespace_id).await {
+            Ok(watching) => {
+                let result = async {
+                    {
+                        let storage = self.storage.read().await;
+                        storage.start_collection_sync(&ticket).await?;
+                    }
+                    let storage = self.storage.read().await;
+                    storage
+                        .wait_for_collection_metadata(namespace_id, timeout)
+                        .await
+                }
+                .await;
+                (watching, result)
+            }
+            Err(e) => (false, Err(e)),
+        };
+
+        match result {
+            Ok(metadata) => {
+                tracing::info!("Imported collection {} ('{}')", namespace_id, metadata.name);
+                Ok((namespace_id, metadata))
+            }
+            Err(err) => {
+                if watching {
+                    self.pipeline.unwatch(&namespace_id).await;
+                }
+                if !existed {
+                    let storage = self.storage.read().await;
+                    if let Err(cleanup) = storage.delete_collection(namespace_id).await {
+                        tracing::error!(
+                            namespace = %namespace_id,
+                            error = %cleanup,
+                            "Failed to remove collection after failed import"
+                        );
+                    }
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Delete a collection, its conversations and its search index entries.
+    ///
+    /// Cancels in-flight generations first, then removes storage state and the
+    /// watcher so a later import attaches a fresh one.
+    pub async fn delete_collection(
+        &self,
+        namespace_id: iroh_docs::NamespaceId,
+    ) -> anyhow::Result<()> {
+        let collection_id = namespace_id.to_string();
+        tracing::info!("Deleting collection {}", collection_id);
+
+        let summaries = self.memory.list_summaries(&collection_id).await?;
+        for summary in summaries {
+            if let Some(token) = self.active_generations.write().await.remove(&summary.id) {
+                token.cancel();
+            }
+        }
+
+        {
+            let storage = self.storage.read().await;
+            storage.delete_collection(namespace_id).await?;
+        }
+        self.pipeline.unwatch(&namespace_id).await;
+
+        let index_worker = self.index_worker.clone();
+        let index_collection_id = collection_id.clone();
+        tokio::spawn(async move {
+            match index_worker
+                .delete_collection_chunks(index_collection_id.clone())
+                .await
+            {
+                Ok(deleted_count) => {
+                    tracing::info!(
+                        "Removed {} chunks from search index for collection {}",
+                        deleted_count,
+                        index_collection_id
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to remove chunks from search index for collection {}: {}",
+                        index_collection_id,
+                        e
+                    );
+                }
+            }
+        });
+
+        self.memory.delete_collection(&collection_id).await?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// An AppState over a temporary data directory.
+    async fn test_state() -> (tempfile::TempDir, AppState) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            data_dir: temp_dir.path().to_path_buf(),
+            iroh_dir: temp_dir.path().join("iroh"),
+            search_dir: temp_dir.path().join("search"),
+            conversations_dir: temp_dir.path().join("conversations"),
+            settings_file: temp_dir.path().join("settings.json"),
+        };
+        std::fs::create_dir_all(&config.iroh_dir).unwrap();
+        std::fs::create_dir_all(&config.search_dir).unwrap();
+        let (state, _events) = AppState::new(config).await.unwrap();
+        (temp_dir, state)
+    }
+
+    async fn share(state: &AppState, collection: iroh_docs::NamespaceId) -> String {
+        state
+            .storage
+            .read()
+            .await
+            .share_collection(collection)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn failed_first_import_leaves_no_collection() {
+        let (_source_dir, source) = test_state().await;
+        let (collection, _) = source
+            .storage
+            .write()
+            .await
+            .create_collection("Gone before import")
+            .await
+            .unwrap();
+        let ticket = share(&source, collection).await;
+
+        // The source no longer has the collection, so its metadata never syncs.
+        source
+            .storage
+            .read()
+            .await
+            .delete_collection(collection)
+            .await
+            .unwrap();
+
+        let (_target_dir, target) = test_state().await;
+        target
+            .import_collection_with_timeout(&ticket, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+
+        let storage = target.storage.read().await;
+        assert!(!storage.collection_exists(collection).await.unwrap());
+        assert!(storage.list_collections().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_reimport_leaves_existing_collection() {
+        let (_source_dir, source) = test_state().await;
+        let (collection, _) = source
+            .storage
+            .write()
+            .await
+            .create_collection("Existing")
+            .await
+            .unwrap();
+        let ticket = share(&source, collection).await;
+
+        let (_target_dir, target) = test_state().await;
+        let parsed: iroh_docs::DocTicket = ticket.parse().unwrap();
+        target
+            .storage
+            .read()
+            .await
+            .register_collection_import(&parsed)
+            .await
+            .unwrap();
+        assert!(target
+            .storage
+            .read()
+            .await
+            .collection_exists(collection)
+            .await
+            .unwrap());
+
+        // Make the shared metadata unreachable while keeping the namespace local.
+        source
+            .storage
+            .read()
+            .await
+            .delete_collection(collection)
+            .await
+            .unwrap();
+
+        target
+            .import_collection_with_timeout(&ticket, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+
+        assert!(target
+            .storage
+            .read()
+            .await
+            .collection_exists(collection)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_then_reimport_attaches_a_fresh_watcher() {
+        let (_source_dir, source) = test_state().await;
+        let (_target_dir, target) = test_state().await;
+        let (collection, _) = source
+            .storage
+            .write()
+            .await
+            .create_collection("Reimported")
+            .await
+            .unwrap();
+        let ticket = share(&source, collection).await;
+
+        let (imported, metadata) = target.import_collection(&ticket).await.unwrap();
+        assert_eq!(imported, collection);
+        assert_eq!(metadata.name, "Reimported");
+
+        target.delete_collection(collection).await.unwrap();
+        assert!(!target
+            .storage
+            .read()
+            .await
+            .collection_exists(collection)
+            .await
+            .unwrap());
+
+        let (reimported, _) = target.import_collection(&ticket).await.unwrap();
+        assert_eq!(reimported, collection);
+
+        let doc_id = source
+            .storage
+            .read()
+            .await
+            .add_document(
+                collection,
+                "after-delete.pdf",
+                "application/pdf",
+                b"written after the re-import",
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let synced = tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let documents = target
+                    .storage
+                    .read()
+                    .await
+                    .list_documents(collection)
+                    .await
+                    .unwrap();
+                if let Some(document) = documents.iter().find(|document| document.id == doc_id) {
+                    break document.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the re-imported collection should receive the new document");
+
+        assert_eq!(synced.name, "after-delete.pdf");
     }
 }
