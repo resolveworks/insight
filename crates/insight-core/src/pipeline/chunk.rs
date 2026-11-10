@@ -231,12 +231,14 @@ mod tests {
         }
 
         fn search(&self, query: &str) -> Vec<IndexedChunk> {
+            let collection_id = self.namespace_id.to_string();
             let results = search_index(
                 &self.index,
                 SearchParams {
                     query,
                     limit: 100,
-                    ..Default::default()
+                    offset: 0,
+                    collection_id: &collection_id,
                 },
             )
             .unwrap();

@@ -472,7 +472,8 @@ mod tests {
             SearchParams {
                 query: "digital",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: &collection_id,
             },
         )
         .unwrap();
@@ -549,7 +550,8 @@ mod tests {
             SearchParams {
                 query: "digital",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: &collection_id,
             },
         )
         .unwrap();
@@ -738,14 +740,13 @@ mod tests {
             "the other collection's chunks were changed"
         );
 
-        let collection_ids = [collection_id];
         let results = search_index(
             &test.index,
             SearchParams {
                 query: "marker",
                 limit: 10,
-                collection_ids: Some(&collection_ids),
-                ..Default::default()
+                offset: 0,
+                collection_id: &collection_id,
             },
         )
         .unwrap();

@@ -19,10 +19,9 @@ use milli::update::new::indexer::{self, IndexOperations};
 use milli::update::{IndexerConfig, MissingDocumentPolicy};
 use milli::vector::RuntimeEmbedders;
 use milli::{
-    CreateOrOpen, Filter, FilterCondition, FilterableAttributesRule, Index, IndexFilter,
-    IndexFilterCondition, MustStopProcessing, TermsMatchingStrategy,
+    Condition, CreateOrOpen, FilterableAttributesRule, Index, IndexFilter, IndexFilterCondition,
+    MustStopProcessing, TermsMatchingStrategy, Token,
 };
-use roaring::RoaringBitmap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
@@ -31,71 +30,17 @@ use time::OffsetDateTime;
 /// This is the maximum size the database can grow to
 const DEFAULT_MAP_SIZE: usize = 10 * 1024 * 1024 * 1024;
 
-/// Parse a filter string directly into an `IndexFilter`.
-///
-/// milli's `Filter::from_str` produces a `Filter`, but `Search::filter` now wants
-/// an `IndexFilter` (the variant without `Foreign` conditions). We only ever build
-/// simple field/IN filters, so conversion is mechanical.
-fn parse_index_filter(expr: &str) -> Result<Option<IndexFilter>> {
-    let Some(filter) =
-        Filter::from_str(expr).map_err(|e| anyhow::anyhow!("Filter error: {e:?}"))?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(IndexFilter::from(condition_to_index_condition(
-        filter.condition,
-    ))))
+/// An equality condition on an indexed field.
+fn indexed_field_equals(field: &str, value: &str) -> IndexFilterCondition {
+    IndexFilterCondition::Condition {
+        fid: Token::from_raw_text(field.to_string()),
+        op: Condition::Equal(Token::from_raw_text(value.to_string())),
+    }
 }
 
-fn condition_to_index_condition(cond: FilterCondition) -> IndexFilterCondition {
-    match cond {
-        FilterCondition::Not(inner) => {
-            IndexFilterCondition::Not(Box::new(condition_to_index_condition(*inner)))
-        }
-        FilterCondition::Condition { fid, op } => IndexFilterCondition::Condition { fid, op },
-        FilterCondition::In { fid, els } => IndexFilterCondition::In { fid, els },
-        FilterCondition::Or(children) => IndexFilterCondition::Or(
-            children
-                .into_iter()
-                .map(condition_to_index_condition)
-                .collect(),
-        ),
-        FilterCondition::And(children) => IndexFilterCondition::And(
-            children
-                .into_iter()
-                .map(condition_to_index_condition)
-                .collect(),
-        ),
-        FilterCondition::VectorExists {
-            fid,
-            embedder,
-            filter,
-        } => IndexFilterCondition::VectorExists {
-            fid,
-            embedder,
-            filter,
-        },
-        FilterCondition::GeoLowerThan {
-            point,
-            radius,
-            resolution,
-        } => IndexFilterCondition::GeoLowerThan {
-            point,
-            radius,
-            resolution,
-        },
-        FilterCondition::GeoBoundingBox {
-            top_right_point,
-            bottom_left_point,
-        } => IndexFilterCondition::GeoBoundingBox {
-            top_right_point,
-            bottom_left_point,
-        },
-        FilterCondition::GeoPolygon { points } => IndexFilterCondition::GeoPolygon { points },
-        FilterCondition::Foreign { .. } => {
-            unreachable!("foreign filters are never constructed by insight-core")
-        }
-    }
+/// Restrict a search to one collection.
+fn collection_filter(collection_id: &str) -> IndexFilter {
+    IndexFilter::from(indexed_field_equals("collection_id", collection_id))
 }
 
 /// Open or create a milli search index
@@ -373,23 +318,13 @@ pub fn compute_hit_score(scores: &[milli::score_details::ScoreDetails]) -> f64 {
     milli::score_details::ScoreDetails::global_score(scores.iter())
 }
 
-/// Parameters for searching the index
+/// Parameters for searching the index.
 pub struct SearchParams<'a> {
     pub query: &'a str,
     pub limit: usize,
     pub offset: usize,
-    pub collection_ids: Option<&'a [String]>,
-}
-
-impl Default for SearchParams<'_> {
-    fn default() -> Self {
-        Self {
-            query: "",
-            limit: 20,
-            offset: 0,
-            collection_ids: None,
-        }
-    }
+    /// The collection whose chunks are searched.
+    pub collection_id: &'a str,
 }
 
 /// Execute a keyword (BM25) search against the milli index.
@@ -398,7 +333,7 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
         query,
         limit,
         offset,
-        collection_ids,
+        collection_id,
     } = params;
 
     let rtxn = index.read_txn()?;
@@ -419,16 +354,7 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
     search.exhaustive_number_hits(true);
     search.terms_matching_strategy(TermsMatchingStrategy::Last);
 
-    // Apply collection filter
-    let filter_str = collection_ids.filter(|ids| !ids.is_empty()).map(|ids| {
-        let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
-        format!("collection_id IN [{}]", quoted.join(", "))
-    });
-    if let Some(ref fs) = filter_str {
-        if let Some(f) = parse_index_filter(fs)? {
-            search.filter(Some(f));
-        }
-    }
+    search.filter(Some(collection_filter(collection_id)));
 
     // Execute keyword (BM25) search
     let result = search.execute()?;
@@ -495,7 +421,6 @@ pub fn get_indexed_chunk_by_external_id(
 /// the lookup.
 pub fn indexed_parent_ids(index: &Index, collection_id: &str) -> Result<HashSet<String>> {
     let rtxn = index.read_txn()?;
-    let filter_str = format!("collection_id = \"{collection_id}\"");
     let progress = Progress::quiet();
     let fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut search = milli::Search::new(
@@ -508,9 +433,7 @@ pub fn indexed_parent_ids(index: &Index, collection_id: &str) -> Result<HashSet<
     );
     search.query("");
     search.limit(usize::MAX);
-    if let Some(f) = parse_index_filter(&filter_str)? {
-        search.filter(Some(f));
-    }
+    search.filter(Some(collection_filter(collection_id)));
 
     let result = search.execute()?;
     let mut parents = HashSet::new();
@@ -537,10 +460,6 @@ pub fn delete_document_chunks(
     // Find all chunks with this collection and parent
     let rtxn = index.read_txn()?;
 
-    let filter_str = format!(
-        "collection_id = \"{}\" AND parent_id = \"{}\"",
-        collection_id, parent_id
-    );
     let progress = Progress::quiet();
     let fields_ids_map = index.fields_ids_map(&rtxn)?;
     let mut search = milli::Search::new(
@@ -553,9 +472,10 @@ pub fn delete_document_chunks(
     );
     search.query("");
     search.limit(usize::MAX);
-    if let Some(f) = parse_index_filter(&filter_str)? {
-        search.filter(Some(f));
-    }
+    search.filter(Some(IndexFilter::from(IndexFilterCondition::And(vec![
+        indexed_field_equals("collection_id", collection_id),
+        indexed_field_equals("parent_id", parent_id),
+    ]))));
 
     let result = search.execute()?;
     if result.documents_ids.is_empty() {
@@ -598,7 +518,6 @@ pub struct TermFrequency {
 
 /// Get the most common terms in a collection (by document frequency)
 ///
-/// If `collection_ids` is None, returns terms across all collections.
 /// Terms are sorted by frequency (descending) and limited to `limit` results.
 ///
 /// This is useful for:
@@ -607,42 +526,13 @@ pub struct TermFrequency {
 /// - Showing users what they can search for
 pub fn get_collection_terms(
     index: &Index,
-    collection_ids: Option<&[String]>,
+    collection_id: &str,
     limit: usize,
 ) -> Result<Vec<TermFrequency>> {
     let rtxn = index.read_txn()?;
 
-    // Get document IDs in the target collections (if filtered)
-    let target_docs: Option<RoaringBitmap> = if let Some(ids) = collection_ids {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Build filter for collection_id
-        let quoted: Vec<String> = ids.iter().map(|id| format!("\"{}\"", id)).collect();
-        let filter_str = format!("collection_id IN [{}]", quoted.join(", "));
-
-        let progress = Progress::quiet();
-        let fields_ids_map = index.fields_ids_map(&rtxn)?;
-        let mut search = milli::Search::new(
-            &rtxn,
-            index,
-            &fields_ids_map,
-            "insight",
-            OffsetDateTime::now_utc(),
-            &progress,
-        );
-        search.query("");
-        search.limit(usize::MAX);
-        if let Some(f) = parse_index_filter(&filter_str)? {
-            search.filter(Some(f));
-        }
-
-        let result = search.execute()?;
-        Some(RoaringBitmap::from_iter(result.documents_ids))
-    } else {
-        None
-    };
+    let fields_ids_map = index.fields_ids_map(&rtxn)?;
+    let target_docs = collection_filter(collection_id).evaluate(&rtxn, index, &fields_ids_map)?;
 
     // Get the words FST (contains all indexed words)
     let fst = index.words_fst(&rtxn)?;
@@ -664,13 +554,7 @@ pub fn get_collection_terms(
 
         // Look up document frequency in word_docids
         if let Some(word_bitmap) = index.word_docids.get(&rtxn, &term)? {
-            let doc_count = match &target_docs {
-                Some(target) => {
-                    // Count intersection with target collection docs
-                    word_bitmap.intersection_len(target)
-                }
-                None => word_bitmap.len(),
-            };
+            let doc_count = word_bitmap.intersection_len(&target_docs);
 
             if doc_count > 0 {
                 term_counts.push(TermFrequency { term, doc_count });
@@ -759,14 +643,13 @@ pub fn delete_chunks_by_collection(
     collection_id: &str,
 ) -> Result<usize> {
     // Find all chunks in this collection
-    let collection_ids = [collection_id.to_string()];
     let results = search_index(
         index,
         SearchParams {
             query: "",
             limit: usize::MAX,
-            collection_ids: Some(&collection_ids),
-            ..Default::default()
+            offset: 0,
+            collection_id,
         },
     )?;
 
@@ -857,7 +740,8 @@ mod tests {
             SearchParams {
                 query: "climate",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "collection1",
             },
         )
         .unwrap();
@@ -887,7 +771,8 @@ mod tests {
             SearchParams {
                 query: "climate",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "collection1",
             },
         )
         .unwrap();
@@ -912,7 +797,8 @@ mod tests {
             SearchParams {
                 query: "nonexistent",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col1",
             },
         )
         .unwrap();
@@ -920,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_by_collection() {
+    fn test_search_is_scoped_to_one_collection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
@@ -932,26 +818,13 @@ mod tests {
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
-        // Search all collections
-        let all = search_index(
-            &index,
-            SearchParams {
-                query: "climate",
-                limit: 10,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(all.hits.len(), 3);
-
-        // Filter to single collection
         let climate_only = search_index(
             &index,
             SearchParams {
                 query: "climate",
                 limit: 10,
-                collection_ids: Some(&["climate".to_string()]),
-                ..Default::default()
+                offset: 0,
+                collection_id: "climate",
             },
         )
         .unwrap();
@@ -959,44 +832,19 @@ mod tests {
         let name = get_field(&index, climate_only.hits[0].doc_id, "parent_name");
         assert_eq!(name, Some("a.pdf".to_string()));
 
-        // Filter to multiple collections
-        let two = search_index(
+        let news_only = search_index(
             &index,
             SearchParams {
                 query: "climate",
                 limit: 10,
-                collection_ids: Some(&["climate".to_string(), "news".to_string()]),
-                ..Default::default()
+                offset: 0,
+                collection_id: "news",
             },
         )
         .unwrap();
-        assert_eq!(two.hits.len(), 2);
-    }
-
-    #[test]
-    fn test_empty_filter_returns_all() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let index = open_index(temp_dir.path()).unwrap();
-        let config = test_indexer_config();
-
-        let chunks = vec![
-            make_chunk("doc1", "a.pdf", "Test content", "col1"),
-            make_chunk("doc2", "b.pdf", "Test content", "col2"),
-        ];
-        index_chunks_batch(&index, &config, chunks).unwrap();
-
-        // Empty filter should return all
-        let results = search_index(
-            &index,
-            SearchParams {
-                query: "test",
-                limit: 10,
-                collection_ids: Some(&[]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(results.hits.len(), 2);
+        assert_eq!(news_only.hits.len(), 1);
+        let name = get_field(&index, news_only.hits[0].doc_id, "parent_name");
+        assert_eq!(name, Some("b.pdf".to_string()));
     }
 
     #[test]
@@ -1029,7 +877,8 @@ mod tests {
             SearchParams {
                 query: "document",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col1",
             },
         )
         .unwrap();
@@ -1062,7 +911,8 @@ mod tests {
             SearchParams {
                 query: "alpha",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col1",
             },
         )
         .unwrap()
@@ -1074,7 +924,8 @@ mod tests {
             SearchParams {
                 query: "beta",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col2",
             },
         )
         .unwrap();
@@ -1113,7 +964,8 @@ mod tests {
             SearchParams {
                 query: "alpha",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col1",
             },
         )
         .unwrap()
@@ -1125,7 +977,8 @@ mod tests {
             SearchParams {
                 query: "gamma",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col1",
             },
         )
         .unwrap();
@@ -1140,7 +993,8 @@ mod tests {
             SearchParams {
                 query: "beta",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col2",
             },
         )
         .unwrap();
@@ -1182,7 +1036,8 @@ mod tests {
             SearchParams {
                 query: "document",
                 limit: 10,
-                ..Default::default()
+                offset: 0,
+                collection_id: "col2",
             },
         )
         .unwrap();
@@ -1196,7 +1051,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
 
-        let terms = get_collection_terms(&index, None, 50).unwrap();
+        let terms = get_collection_terms(&index, "col1", 50).unwrap();
         assert!(terms.is_empty());
     }
 
@@ -1224,13 +1079,12 @@ mod tests {
                 "doc3",
                 "finance.pdf",
                 "Financial markets respond to climate policy changes.",
-                "finance",
+                "research",
             ),
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
-        // Get top terms across all collections
-        let terms = get_collection_terms(&index, None, 10).unwrap();
+        let terms = get_collection_terms(&index, "research", 10).unwrap();
 
         // Should have terms (climate appears in all 3)
         assert!(!terms.is_empty());
@@ -1245,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_collection_terms_filtered_by_collection() {
+    fn test_get_collection_terms_only_covers_the_collection() {
         let temp_dir = tempfile::tempdir().unwrap();
         let index = open_index(temp_dir.path()).unwrap();
         let config = test_indexer_config();
@@ -1267,9 +1121,7 @@ mod tests {
         ];
         index_chunks_batch(&index, &config, chunks).unwrap();
 
-        // Get terms only from "research" collection
-        let collection_ids = vec!["research".to_string()];
-        let terms = get_collection_terms(&index, Some(&collection_ids), 10).unwrap();
+        let terms = get_collection_terms(&index, "research", 10).unwrap();
 
         // Should have terms from research collection
         assert!(!terms.is_empty());
@@ -1302,7 +1154,7 @@ mod tests {
         index_chunks_batch(&index, &config, vec![chunk]).unwrap();
 
         // Request only 3 terms
-        let terms = get_collection_terms(&index, None, 3).unwrap();
+        let terms = get_collection_terms(&index, "col1", 3).unwrap();
         assert!(terms.len() <= 3, "Should return at most 3 terms");
     }
 }

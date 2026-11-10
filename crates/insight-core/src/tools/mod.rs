@@ -127,12 +127,11 @@ impl Tool for Search {
         tracing::info!(query = %query, "Executing keyword search");
 
         let index = &*state.search;
-        let collection_ids = [state.collection_id.clone()];
         let params = search::SearchParams {
             query: &query,
             limit: SEARCH_LIMIT,
-            collection_ids: Some(&collection_ids),
-            ..Default::default()
+            offset: 0,
+            collection_id: &state.collection_id,
         };
 
         let results = search::search_index(index, params).map_err(infrastructure_error)?;
@@ -429,8 +428,7 @@ impl Tool for GetCollectionTerms {
 
         tracing::info!(limit, "Getting collection terms");
 
-        let collection_ids = [state.collection_id.clone()];
-        let terms = search::get_collection_terms(&state.search, Some(&collection_ids), limit)
+        let terms = search::get_collection_terms(&state.search, &state.collection_id, limit)
             .map_err(infrastructure_error)?;
 
         tracing::info!(term_count = terms.len(), "Retrieved collection terms");
