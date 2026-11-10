@@ -88,7 +88,24 @@
 
 		const files = await open({
 			multiple: true,
-			filters: [{ name: 'PDF', extensions: ['pdf'] }],
+			filters: [
+				{
+					name: 'Documents',
+					extensions: [
+						'pdf',
+						'docx',
+						'xlsx',
+						'pptx',
+						'epub',
+						'html',
+						'htm',
+						'xhtml',
+						'txt',
+						'md',
+						'rst',
+					],
+				},
+			],
 		});
 
 		if (!files) return;
