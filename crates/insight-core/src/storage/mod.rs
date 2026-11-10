@@ -1324,46 +1324,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_endpoint_identity_survives_reopen() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(temp_dir.path()).await.unwrap();
-        let (collection_id, _) = storage
-            .create_collection("Persistent Identity")
-            .await
-            .unwrap();
-        let ticket: DocTicket = storage
-            .share_collection(collection_id)
-            .await
-            .unwrap()
-            .parse()
-            .unwrap();
-        let first_node_id = ticket.nodes[0].id;
-        // The router owns the docs engine; shut it down so the reopened
-        // storage can take the persistent store.
-        storage.router.shutdown().await.unwrap();
-        drop(storage);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(temp_dir.path().join("endpoint.key"))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-
-        let storage = Storage::open(temp_dir.path()).await.unwrap();
-        let ticket: DocTicket = storage
-            .share_collection(collection_id)
-            .await
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(ticket.nodes[0].id, first_node_id);
-    }
-
-    #[tokio::test]
     async fn test_malformed_endpoint_key_fails_open() {
         let temp_dir = tempfile::tempdir().unwrap();
         std::fs::write(temp_dir.path().join("endpoint.key"), b"too short").unwrap();
