@@ -1,16 +1,14 @@
 <script lang="ts">
 	type IconName =
 		| 'arrow-left'
-		| 'arrow-right'
 		| 'chevron-right'
 		| 'plus'
 		| 'trash'
 		| 'close'
-		| 'settings'
 		| 'warning'
 		| 'check';
 
-	type Size = 'xs' | 'sm' | 'md';
+	type Size = 'xs' | 'sm';
 
 	type Shape =
 		| { tag: 'path'; d: string }
@@ -29,16 +27,12 @@
 		label?: string;
 	}
 
-	let { name, size = 'md', class: className = '', label }: Props = $props();
+	let { name, size = 'sm', class: className = '', label }: Props = $props();
 
 	const icons: Record<IconName, IconDef> = {
 		'arrow-left': {
 			viewBox: '0 0 24 24',
 			shapes: [{ tag: 'path', d: 'M19 12H5M12 19l-7-7 7-7' }],
-		},
-		'arrow-right': {
-			viewBox: '0 0 24 24',
-			shapes: [{ tag: 'path', d: 'M5 12h14M12 5l7 7-7 7' }],
 		},
 		'chevron-right': {
 			viewBox: '0 0 24 24',
@@ -60,16 +54,6 @@
 		close: {
 			viewBox: '0 0 24 24',
 			shapes: [{ tag: 'path', d: 'M6 18L18 6M6 6l12 12' }],
-		},
-		settings: {
-			viewBox: '0 0 24 24',
-			shapes: [
-				{ tag: 'circle', cx: 12, cy: 12, r: 3 },
-				{
-					tag: 'path',
-					d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z',
-				},
-			],
 		},
 		warning: {
 			viewBox: '0 0 20 20',
@@ -96,7 +80,6 @@
 	const sizeClasses: Record<Size, string> = {
 		xs: 'h-3.5 w-3.5',
 		sm: 'h-4 w-4',
-		md: 'h-5 w-5',
 	};
 
 	const icon = $derived(icons[name]);

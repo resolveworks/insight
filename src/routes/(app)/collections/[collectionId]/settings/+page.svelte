@@ -202,6 +202,7 @@
 {#if confirmingDelete}
 	<ConfirmDialog
 		title="Delete collection"
+		confirmLabel="Delete collection"
 		message="Delete &quot;{collection.name}&quot;? This deletes the collection, its documents, and its local conversations. This cannot be undone."
 		onConfirm={handleDelete}
 		onCancel={() => (confirmingDelete = false)}

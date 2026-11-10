@@ -240,7 +240,7 @@ describe('Collection settings actions', () => {
 		);
 
 		await fireEvent.click(
-			within(dialog).getByRole('button', { name: 'Delete' }),
+			within(dialog).getByRole('button', { name: 'Delete collection' }),
 		);
 
 		await waitFor(() => expect(goto).toHaveBeenCalledWith('/collections'));

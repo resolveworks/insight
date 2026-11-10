@@ -6,7 +6,6 @@
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
-	import Icon from '#lib/components/Icon.svelte';
 	import Input from '#lib/components/Input.svelte';
 	import Textarea from '#lib/components/Textarea.svelte';
 	import Alert from '#lib/components/Alert.svelte';
@@ -82,14 +81,8 @@
 <div class="flex h-full flex-col">
 	<PageHeader title="Collections">
 		{#snippet actions()}
-			<ButtonLink
-				href={resolve('settings')}
-				variant="ghost"
-				size="sm"
-				aria-label="Settings"
-				class="px-2"
-			>
-				<Icon name="settings" />
+			<ButtonLink href={resolve('settings')} variant="ghost" size="sm">
+				Settings
 			</ButtonLink>
 		{/snippet}
 	</PageHeader>
@@ -100,7 +93,6 @@
 		<div class="mb-6 flex flex-wrap items-center gap-4">
 			<div class="flex gap-2">
 				<Input
-					type="text"
 					placeholder="New collection..."
 					bind:value={newCollectionName}
 					onkeydown={(e) => e.key === 'Enter' && handleCreateCollection()}
@@ -129,11 +121,8 @@
 							<p class="mt-1 text-sm text-muted">
 								{documentCountLabel(collection.document_count)}
 							</p>
-							<p
-								class="mt-3 flex items-center gap-1 text-sm font-medium text-primary-600"
-							>
+							<p class="mt-3 text-sm font-medium text-primary-600">
 								Open research workspace
-								<Icon name="arrow-right" size="sm" />
 							</p>
 						</a>
 					</article>
@@ -152,16 +141,18 @@
 				bind:value={importTicket}
 				rows={3}
 			/>
+			{#if importError}
+				<Alert>{importError}</Alert>
+			{/if}
+		</div>
+		{#snippet footer()}
+			<Button variant="ghost" onclick={closeImportModal}>Cancel</Button>
 			<Button
-				fullWidth
 				onclick={handleImportCollection}
 				disabled={importingCollection || !importTicket.trim()}
 			>
 				{importingCollection ? 'Importing...' : 'Import'}
 			</Button>
-			{#if importError}
-				<Alert>{importError}</Alert>
-			{/if}
-		</div>
+		{/snippet}
 	</Modal>
 {/if}

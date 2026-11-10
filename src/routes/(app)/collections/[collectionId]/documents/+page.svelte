@@ -7,6 +7,8 @@
 	import Button from '#lib/components/Button.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
+	import Icon from '#lib/components/Icon.svelte';
+	import IconButton from '#lib/components/IconButton.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
 	import ProgressBar from '#lib/components/ProgressBar.svelte';
 	import SectionHeading from '#lib/components/SectionHeading.svelte';
@@ -174,7 +176,7 @@
 				{/snippet}
 			</EmptyState>
 		{:else}
-			<div class="mb-4 flex items-center justify-end">
+			<div class="mb-4 flex items-center">
 				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
 			</div>
 
@@ -197,13 +199,13 @@
 								>
 							{/if}
 						</a>
-						<Button
+						<IconButton
 							variant="danger"
-							size="sm"
+							label="Delete document"
 							onclick={() => (deletingDocument = doc)}
 						>
-							Delete
-						</Button>
+							<Icon name="trash" size="sm" />
+						</IconButton>
 					</li>
 				{/each}
 			</ul>
@@ -230,7 +232,7 @@
 								size="sm"
 								onclick={() => undeleteDeletedDocument(doc.id)}
 							>
-								Undelete
+								Restore
 							</Button>
 						</li>
 					{/each}
@@ -243,6 +245,7 @@
 {#if deletingDocument}
 	<ConfirmDialog
 		title="Delete document"
+		confirmLabel="Delete document"
 		message={`Delete "${deletingDocument.name}"? Everyone syncing this collection will stop seeing it in the active list and search. You can restore it from Deleted items.`}
 		onConfirm={confirmDeleteDocument}
 		onCancel={() => (deletingDocument = null)}

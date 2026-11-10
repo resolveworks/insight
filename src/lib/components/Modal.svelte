@@ -122,7 +122,7 @@
 				<h2 id={titleId} class="text-base font-semibold text-neutral-800">
 					{title}
 				</h2>
-				<IconButton label="Close dialog" size="sm" onclick={onClose}>
+				<IconButton label="Close dialog" onclick={onClose}>
 					<Icon name="close" size="sm" />
 				</IconButton>
 			</div>

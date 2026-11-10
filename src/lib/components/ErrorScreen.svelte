@@ -27,7 +27,7 @@
 			<Alert>
 				{message}
 				{#snippet action()}
-					<Button variant="secondary" onclick={onRetry}>Retry</Button>
+					<Button variant="primary" onclick={onRetry}>Retry</Button>
 				{/snippet}
 			</Alert>
 		</div>
