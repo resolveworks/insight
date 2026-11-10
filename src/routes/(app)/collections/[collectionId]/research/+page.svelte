@@ -50,7 +50,7 @@
 	</aside>
 
 	<!-- Main pane: chat, with provider setup in its lower region if needed -->
-	<main class="min-w-0 flex-1 overflow-hidden">
+	<main class="min-w-0 flex-1 overflow-hidden bg-surface">
 		{#if activeCollectionId !== collectionId || !collection}
 			<div class="flex h-full items-center justify-center bg-surface">
 				<LoadingSpinner size="lg" ariaLabel="Loading collection" />
