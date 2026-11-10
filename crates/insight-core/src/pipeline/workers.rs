@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
+use crate::parsers::Registry;
 use crate::search::{chunk_external_id, ChunkToIndex, IndexWorkerHandle};
 use crate::storage::{CommitOutcome, DocumentMetadata, Storage};
 
@@ -40,18 +41,21 @@ impl<T> Clone for SharedReceiver<T> {
 
 /// Spawn extract workers.
 ///
-/// Workers extract text from stored PDFs and write an extraction to iroh.
-/// A written extraction is queued for index reconciliation; terminal
-/// outcomes with no extraction to index are not.
+/// Workers extract text from stored sources and write an extraction to iroh.
+/// The parser is chosen from the stored metadata's MIME type, never from a
+/// local file name. A written extraction is queued for index reconciliation;
+/// terminal outcomes with no extraction to index are not.
 pub fn spawn_extract_workers(
     count: usize,
     rx: SharedReceiver<ExtractJob>,
+    registry: Arc<Registry>,
     storage: Arc<RwLock<Storage>>,
     index_queue: IndexQueue,
     progress: ProgressTracker,
 ) {
     for i in 0..count {
         let rx = rx.clone();
+        let registry = registry.clone();
         let storage = storage.clone();
         let index_queue = index_queue.clone();
         let progress = progress.clone();
@@ -64,7 +68,7 @@ pub fn spawn_extract_workers(
 
                 progress.start(&collection_id, Stage::Extract).await;
 
-                match extract_document(&storage, &job).await {
+                match extract_document(&registry, &storage, &job).await {
                     Ok(Some(metadata)) => {
                         tracing::debug!(
                             doc_id = %job.doc_id,
@@ -145,6 +149,7 @@ pub fn spawn_index_worker(
 /// `Ok(None)` is a terminal no-op: the document is gone or already has a
 /// canonical extraction. The caller owns progress accounting.
 async fn extract_document(
+    registry: &Arc<Registry>,
     storage: &RwLock<Storage>,
     job: &ExtractJob,
 ) -> anyhow::Result<Option<DocumentMetadata>> {
@@ -154,7 +159,7 @@ async fn extract_document(
             .extraction_input(job.namespace_id, &job.doc_id)
             .await?
     };
-    let Some((_, source)) = input else {
+    let Some((metadata, source)) = input else {
         tracing::debug!(
             doc_id = %job.doc_id,
             "Extract has no work: document gone or already canonical"
@@ -163,11 +168,15 @@ async fn extract_document(
     };
 
     // The storage guard is held only for the short input read and commit,
-    // never across MuPDF.
-    let extraction =
-        tokio::task::spawn_blocking(move || crate::pdf::extract_text_from_bytes(source))
-            .await
-            .context("Extract task panicked")??;
+    // never across MuPDF. The registry moves into the blocking task so the
+    // parser is resolved there, alongside the extraction it belongs to.
+    let registry = registry.clone();
+    let extraction = tokio::task::spawn_blocking(move || {
+        let (parser, format) = registry.parser_for(&metadata.file_type)?;
+        parser.extract(format, &source)
+    })
+    .await
+    .context("Extract task panicked")??;
 
     let storage = storage.read().await;
     match storage
@@ -286,6 +295,7 @@ mod tests {
         spawn_extract_workers(
             1,
             SharedReceiver::new_unbounded(extract_rx),
+            Arc::new(crate::parsers::default_registry()),
             storage.clone(),
             index_queue.clone(),
             progress.clone(),

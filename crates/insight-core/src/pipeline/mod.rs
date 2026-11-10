@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! import_files()
-//!       │ store_pdf_source()
+//!       │ store source bytes (format from the path's extension)
 //!       ▼
 //!   Extract worker ──commit extraction──► Index worker
 //!                                           │
@@ -72,6 +72,9 @@ pub enum AppEvent {
 pub struct Pipeline {
     storage: Arc<RwLock<Storage>>,
 
+    // Parser backends extraction dispatches to by stored MIME type
+    registry: Arc<crate::parsers::Registry>,
+
     // Worker pool channels (unbounded to avoid blocking the event watcher)
     extract_tx: mpsc::UnboundedSender<ExtractJob>,
 
@@ -111,6 +114,8 @@ impl Pipeline {
         // Shared receiver for multi-worker stage
         let extract_rx = SharedReceiver::new_unbounded(extract_rx);
 
+        let registry = Arc::new(crate::parsers::default_registry());
+
         // Relay reachability is display state mirrored by the sharing read
         // model; this task only signals that it changed.
         spawn_relay_watcher(storage.clone(), events.clone(), cancel.child_token());
@@ -119,6 +124,7 @@ impl Pipeline {
         spawn_extract_workers(
             EXTRACT_WORKERS,
             extract_rx,
+            registry.clone(),
             storage.clone(),
             index_queue.clone(),
             progress.clone(),
@@ -136,6 +142,7 @@ impl Pipeline {
         (
             Self {
                 storage,
+                registry,
                 extract_tx,
                 index_queue,
                 watchers: Arc::new(RwLock::new(HashMap::new())),
@@ -210,14 +217,21 @@ impl Pipeline {
             self.progress.enqueue(&collection_id, Stage::Store).await;
             self.progress.start(&collection_id, Stage::Store).await;
 
-            // Store PDF source
-            let storage = self.storage.read().await;
-            let result = storage.store_pdf_source(&path, namespace_id).await;
-            drop(storage);
+            // An unsupported path fails the store stage like any other
+            // store error; the UI reports it per file.
+            let result = match self.registry.format_for_path(&path) {
+                Ok(format) => {
+                    let storage = self.storage.read().await;
+                    storage
+                        .store_pdf_source(&path, namespace_id, format.mime)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
 
             match result {
                 Ok(metadata) => {
-                    tracing::info!(doc_id = %metadata.id, path = %path.display(), "Stored PDF source");
+                    tracing::info!(doc_id = %metadata.id, path = %path.display(), "Stored source");
                     // Queue the next stage before settling this one so progress
                     // never reports every stage idle between the handoff.
                     self.enqueue_extract(namespace_id, metadata.id.clone())
@@ -226,7 +240,7 @@ impl Pipeline {
                     documents.push(metadata);
                 }
                 Err(e) => {
-                    tracing::error!(path = %path.display(), error = %e, "Failed to store PDF");
+                    tracing::error!(path = %path.display(), error = %e, "Failed to store source");
                     self.progress.finish_err(&collection_id, Stage::Store).await;
                     errors.push((path, e.to_string()));
                 }
