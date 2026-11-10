@@ -37,7 +37,7 @@
 	{type}
 	aria-label={label}
 	title={label}
-	class="inline-flex items-center justify-center rounded-md text-subtle transition-colors focus-visible:focus-ring {variantClasses[
+	class="inline-flex items-center justify-center rounded-md text-subtle transition-colors focus-visible:focus-ring disabled:opacity-50 disabled:cursor-not-allowed {variantClasses[
 		variant
 	]} {sizeClasses[size]} {className}"
 	{...rest}

@@ -18,6 +18,14 @@
 	}: Props = $props();
 </script>
 
-<Field {id} {label} {hint}>
+{#snippet control()}
 	<input {id} bind:value class="field {className}" {...rest} />
-</Field>
+{/snippet}
+
+{#if label || hint}
+	<Field {id} {label} {hint}>
+		{@render control()}
+	</Field>
+{:else}
+	{@render control()}
+{/if}

@@ -20,11 +20,19 @@
 	}: Props = $props();
 </script>
 
-<Field {id} {label} {hint}>
+{#snippet control()}
 	<textarea
 		{id}
 		{rows}
 		bind:value
 		class="field w-full resize-none {className}"
 		{...rest}></textarea>
-</Field>
+{/snippet}
+
+{#if label || hint}
+	<Field {id} {label} {hint}>
+		{@render control()}
+	</Field>
+{:else}
+	{@render control()}
+{/if}

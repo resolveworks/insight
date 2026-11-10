@@ -20,7 +20,7 @@
 	}: Props = $props();
 </script>
 
-<Field {id} {label} {hint}>
+{#snippet control()}
 	<select
 		{id}
 		bind:value
@@ -31,4 +31,12 @@
 			<option value={option.value}>{option.label}</option>
 		{/each}
 	</select>
-</Field>
+{/snippet}
+
+{#if label || hint}
+	<Field {id} {label} {hint}>
+		{@render control()}
+	</Field>
+{:else}
+	{@render control()}
+{/if}
