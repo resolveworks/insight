@@ -7,7 +7,6 @@ import {
 	cleanup,
 } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
-import { page } from '$app/state';
 import { invalidate } from '$app/navigation';
 import ProviderSelector from './ProviderSelector.svelte';
 import type { CurrentProvider, ProviderStatus } from '#lib/api/provider.js';
@@ -27,9 +26,11 @@ const idleStatus: ProviderStatus = { family: null, model: null, error: null };
 function renderSelector(
 	current: CurrentProvider | null,
 	status: ProviderStatus = idleStatus,
+	providerError: string | null = null,
 ) {
-	page.data = { provider: { current, status }, providerError: null };
-	render(ProviderSelector);
+	render(ProviderSelector, {
+		props: { provider: { current, status }, providerError },
+	});
 }
 
 afterEach(() => {
@@ -81,11 +82,12 @@ describe('ProviderSelector', () => {
 			if (cmd === 'list_providers') return SELECTIONS;
 			if (cmd === 'list_provider_models') return [];
 		});
-		page.data = {
-			provider: null,
-			providerError: 'malformed settings file',
-		};
-		render(ProviderSelector);
+		render(ProviderSelector, {
+			props: {
+				provider: null,
+				providerError: 'malformed settings file',
+			},
+		});
 
 		expect(
 			await screen.findByText('malformed settings file'),

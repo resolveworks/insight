@@ -9,7 +9,7 @@
 		action?: Snippet;
 		footer?: Snippet;
 		tone?: 'default' | 'danger';
-		children: Snippet;
+		children?: Snippet;
 	}
 
 	let {
@@ -34,9 +34,11 @@
 	{#if description}
 		<p class="mt-1 text-sm text-muted">{description}</p>
 	{/if}
-	<div class="mt-4">
-		{@render children()}
-	</div>
+	{#if children}
+		<div class="mt-4">
+			{@render children()}
+		</div>
+	{/if}
 	{#if footer}
 		<div class="mt-4">
 			{@render footer()}
