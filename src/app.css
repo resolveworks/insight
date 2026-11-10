@@ -1,7 +1,9 @@
 @import '@fontsource-variable/inter';
 @import 'tailwindcss';
 
-/* One accent (primary) + Tailwind default neutrals; colours outside this set are errors. */
+/* One accent (primary) + Tailwind default neutrals; colours outside this set are errors.
+   Text roles: neutral-800 primary, muted secondary, subtle tertiary; mono blocks use
+   neutral-700. */
 @theme {
 	/* Primary - Rust/Coral */
 	--color-primary-50: #fdf5f4;

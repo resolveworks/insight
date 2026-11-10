@@ -218,9 +218,7 @@
 				/>
 				<ul class="space-y-2" aria-labelledby="deleted-items-heading">
 					{#each deletedDocuments as doc (doc.id)}
-						<li
-							class="card-interactive flex items-center justify-between gap-4 px-4 py-3"
-						>
+						<li class="card flex items-center justify-between gap-4 px-4 py-3">
 							<div class="min-w-0 flex-1">
 								<p class="text-neutral-800">{doc.name}</p>
 								<p class="mt-1 text-xs text-muted">

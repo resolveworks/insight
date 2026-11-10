@@ -29,8 +29,10 @@
 				<span class="min-w-0 truncate text-subtle">{step.preview}</span>
 			{/if}
 		{/snippet}
-		<pre
-			class="whitespace-pre-wrap break-words text-xs text-neutral-600">{step.text}</pre>
+		<div class="pb-2 pr-2 pl-5">
+			<pre
+				class="whitespace-pre-wrap break-words text-xs text-neutral-600">{step.text}</pre>
+		</div>
 	</Disclosure>
 {:else}
 	<Disclosure

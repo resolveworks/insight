@@ -138,7 +138,7 @@
 									{row.label}
 								</td>
 								<td
-									class="px-4 py-3 text-sm text-neutral-700"
+									class="px-4 py-3 text-sm text-neutral-800"
 									class:font-mono={row.mono}
 								>
 									{row.value}
@@ -147,7 +147,7 @@
 						{/each}
 						<tr>
 							<td class="px-4 py-3 text-sm font-medium text-muted">Tags</td>
-							<td class="px-4 py-3 text-sm text-neutral-700">
+							<td class="px-4 py-3 text-sm text-neutral-800">
 								{#if document.tags.length > 0}
 									<div class="flex flex-wrap gap-1">
 										{#each document.tags as tag (tag)}
