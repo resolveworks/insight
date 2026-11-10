@@ -12,11 +12,13 @@
 </script>
 
 <Page>
-	<PageHeader title="Settings">
-		{#snippet eyebrow()}
-			<BackLink href={resolve('collections')}>Back to collections</BackLink>
-		{/snippet}
-	</PageHeader>
+	{#snippet header()}
+		<PageHeader title="Settings">
+			{#snippet eyebrow()}
+				<BackLink href={resolve('collections')}>Back to collections</BackLink>
+			{/snippet}
+		</PageHeader>
+	{/snippet}
 	<PageContent width="prose">
 		<CardSection
 			title="Language Model"

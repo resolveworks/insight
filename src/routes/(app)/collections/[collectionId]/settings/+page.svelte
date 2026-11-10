@@ -4,6 +4,7 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import CardSection from '#lib/components/CardSection.svelte';
+	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import DescriptionList from '#lib/components/DescriptionList.svelte';
 	import DescriptionRow from '#lib/components/DescriptionRow.svelte';
@@ -90,61 +91,61 @@
 </script>
 
 <Page>
-	<PageContent width="prose">
-		<div class="space-y-6">
-			<CardSection
-				title="Share"
-				description="Anyone with a collaboration ticket can add, change, and delete documents in this collection. They sync with this collection, documents included, while this peer is available. Access cannot be revoked."
-			>
-				<DescriptionList>
-					<DescriptionRow label="Sync">{syncLabel}</DescriptionRow>
-					<DescriptionRow label="Relays">{relayLabel}</DescriptionRow>
-					<DescriptionRow label="Peers">
-						{sharing.connected_peers} connected · {sharing.known_peers}
-						previously synced
-					</DescriptionRow>
-					<DescriptionRow label="Last sync">
-						{#if sharing.last_sync}
-							<div>
-								{formatTimestamp(sharing.last_sync.finished_at)} ·
-								<span class="font-mono"
-									>{shortenId(sharing.last_sync.peer)}</span
-								>
-							</div>
-							{#if sharing.last_sync.error}
-								<div class="text-error">
-									Sync failed: {sharing.last_sync.error}
-								</div>
-							{:else}
-								<div>
-									{sharing.last_sync.entries_received} received · {sharing
-										.last_sync.entries_sent} sent
-								</div>
-							{/if}
-						{:else}
-							No sync completed since startup
-						{/if}
-					</DescriptionRow>
-				</DescriptionList>
-				{#snippet footer()}
-					<Button variant="secondary" onclick={openShareModal}
-						>Create collaboration ticket</Button
-					>
-				{/snippet}
-			</CardSection>
+	{#snippet header()}
+		<CollectionHeader {collection} active="settings" />
+	{/snippet}
 
-			<CardSection
-				title="Delete collection"
-				description="This deletes the collection, its documents, and its local conversations. This cannot be undone."
-				tone="danger"
-			>
-				{#snippet footer()}
-					<Button variant="danger" onclick={() => (confirmingDelete = true)}
-						>Delete collection</Button
-					>
-				{/snippet}
-			</CardSection>
-		</div>
+	<PageContent width="prose">
+		<CardSection
+			title="Share"
+			description="Anyone with a collaboration ticket can add, change, and delete documents in this collection. They sync with this collection, documents included, while this peer is available. Access cannot be revoked."
+		>
+			<DescriptionList>
+				<DescriptionRow label="Sync">{syncLabel}</DescriptionRow>
+				<DescriptionRow label="Relays">{relayLabel}</DescriptionRow>
+				<DescriptionRow label="Peers">
+					{sharing.connected_peers} connected · {sharing.known_peers}
+					previously synced
+				</DescriptionRow>
+				<DescriptionRow label="Last sync">
+					{#if sharing.last_sync}
+						<div>
+							{formatTimestamp(sharing.last_sync.finished_at)} ·
+							<span class="font-mono">{shortenId(sharing.last_sync.peer)}</span>
+						</div>
+						{#if sharing.last_sync.error}
+							<div class="text-error">
+								Sync failed: {sharing.last_sync.error}
+							</div>
+						{:else}
+							<div>
+								{sharing.last_sync.entries_received} received · {sharing
+									.last_sync.entries_sent} sent
+							</div>
+						{/if}
+					{:else}
+						No sync completed since startup
+					{/if}
+				</DescriptionRow>
+			</DescriptionList>
+			{#snippet footer()}
+				<Button variant="secondary" onclick={openShareModal}
+					>Create collaboration ticket</Button
+				>
+			{/snippet}
+		</CardSection>
+
+		<CardSection
+			title="Delete collection"
+			description="This deletes the collection, its documents, and its local conversations. This cannot be undone."
+			tone="danger"
+		>
+			{#snippet footer()}
+				<Button variant="danger" onclick={() => (confirmingDelete = true)}
+					>Delete collection</Button
+				>
+			{/snippet}
+		</CardSection>
 	</PageContent>
 </Page>
 

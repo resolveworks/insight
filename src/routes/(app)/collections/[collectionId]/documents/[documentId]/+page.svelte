@@ -72,11 +72,13 @@
 {/snippet}
 
 <Page>
-	<PageHeader title={data.document.name}>
-		{#snippet eyebrow()}
-			{@render backLink()}
-		{/snippet}
-	</PageHeader>
+	{#snippet header()}
+		<PageHeader title={data.document.name}>
+			{#snippet eyebrow()}
+				{@render backLink()}
+			{/snippet}
+		</PageHeader>
+	{/snippet}
 
 	<PageContent width="prose">
 		<Card>
@@ -109,7 +111,7 @@
 		</Card>
 
 		<!-- Document Content -->
-		<div class="mt-6">
+		<div>
 			<div class="mb-3">
 				<SectionHeading title="Content" />
 			</div>
@@ -130,7 +132,7 @@
 		</div>
 
 		<!-- Text Chunks -->
-		<div class="mt-6">
+		<div>
 			<Disclosure bind:open={chunksOpen}>
 				{#snippet summary()}
 					<SectionHeading title="Text Chunks" />
