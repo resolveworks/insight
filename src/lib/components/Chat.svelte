@@ -3,8 +3,10 @@
 	import { resolve } from '$app/paths';
 	import Markdown from './Markdown.svelte';
 	import Button from './Button.svelte';
+	import ButtonLink from './ButtonLink.svelte';
 	import Input from './Input.svelte';
 	import Alert from './Alert.svelte';
+	import EmptyState from './EmptyState.svelte';
 	import ActivityStepView from './ActivityStep.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 	import { documentCountLabel } from '#lib/api/collection.js';
@@ -74,34 +76,24 @@
 		<div class="mx-auto w-full max-w-3xl px-6 py-6">
 			{#if transcript.length === 0}
 				{#if !hasDocuments}
-					<div class="flex min-h-64 items-center justify-center">
-						<div class="max-w-sm text-center">
-							<div class="text-base text-neutral-700">
-								No documents in {collectionName}
-							</div>
-							<p class="mt-1 text-sm text-muted">
-								Research answers need sources. Add documents to this collection
-								before asking questions.
-							</p>
-							<a
+					<EmptyState
+						title={`No documents in ${collectionName}`}
+						description="Research answers need sources. Add documents to this collection before asking questions."
+					>
+						{#snippet action()}
+							<ButtonLink
 								href={resolve(`collections/${collectionId}/documents`)}
-								class="mt-4 inline-flex rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
+								variant="secondary"
 							>
 								Go to Documents
-							</a>
-						</div>
-					</div>
+							</ButtonLink>
+						{/snippet}
+					</EmptyState>
 				{:else}
-					<div class="flex min-h-64 items-center justify-center">
-						<div class="max-w-sm text-center">
-							<div class="text-base text-neutral-700">
-								Ask questions about {collectionName}
-							</div>
-							<div class="mt-1 text-sm text-muted">
-								{documentCountLabel(documentCount)} ready to search and read
-							</div>
-						</div>
-					</div>
+					<EmptyState
+						title={`Ask questions about ${collectionName}`}
+						description={`${documentCountLabel(documentCount)} ready to search and read`}
+					/>
 				{/if}
 			{:else}
 				<div class="space-y-5">
@@ -118,13 +110,13 @@
 						{:else if block.item.kind === 'user_text'}
 							<div class="flex justify-end">
 								<div
-									class="ml-auto max-w-[85%] min-w-0 break-words rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 text-neutral-900"
+									class="ml-auto max-w-prose min-w-0 break-words rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 text-neutral-900"
 								>
 									<Markdown content={block.item.text} />
 								</div>
 							</div>
 						{:else if block.item.kind === 'assistant_text'}
-							<div class="max-w-[72ch] text-[15px] leading-7 text-neutral-800">
+							<div class="max-w-prose text-base leading-7 text-neutral-800">
 								<Markdown
 									content={block.item.text}
 								/>{#if block.item.streaming}<span
@@ -154,13 +146,11 @@
 		<!-- Composer -->
 		<div class="shrink-0 border-t border-line bg-surface-bright">
 			<div class="mx-auto w-full max-w-3xl px-6 py-3">
-				<div
-					class="flex items-center gap-2 rounded-lg border border-line-strong bg-surface-bright px-2 py-1.5 transition-colors focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-100"
-				>
+				<div class="flex items-center gap-2">
 					<Input
 						type="text"
 						bind:value={inputValue}
-						class="flex-1 border-0 bg-transparent px-2 py-1.5 focus:outline-none"
+						class="flex-1"
 						onkeydown={handleKeydown}
 						placeholder={hasDocuments
 							? 'Ask about your documents...'
@@ -191,12 +181,9 @@
 				<p class="text-sm text-muted">
 					No language model configured. Research needs one.
 				</p>
-				<a
-					href={resolve('settings')}
-					class="inline-flex rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
-				>
+				<ButtonLink href={resolve('settings')} variant="secondary">
 					Open Settings
-				</a>
+				</ButtonLink>
 			</div>
 		</div>
 	{/if}
