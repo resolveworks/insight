@@ -48,7 +48,7 @@
 			const collection = await importCollection(importTicket);
 			importTicket = '';
 			showImportModal = false;
-			goto(resolve(`collections/${collection.id}`));
+			goto(resolve(`collections/${collection.id}/documents`));
 		} catch (e) {
 			console.error('Failed to import collection:', e);
 			importError = 'Failed to import collection';
