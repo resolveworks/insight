@@ -21,9 +21,8 @@
 
 <Modal {title} onClose={onCancel}>
 	<p class="text-sm text-muted">{message}</p>
-	<div class="mt-6 flex justify-end gap-2">
-		<Button variant="secondary" onclick={onCancel} data-autofocus>Cancel</Button
-		>
+	{#snippet footer()}
+		<Button variant="ghost" onclick={onCancel} data-autofocus>Cancel</Button>
 		<Button variant="danger" onclick={onConfirm}>{confirmLabel}</Button>
-	</div>
+	{/snippet}
 </Modal>

@@ -1,27 +1,25 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import Icon from './Icon.svelte';
 
 	interface Props {
 		open?: boolean;
 		summary: Snippet;
 		children: Snippet;
-		class?: string;
-		summaryClass?: string;
 	}
 
-	let {
-		open = $bindable(false),
-		summary,
-		children,
-		class: className = '',
-		summaryClass = '',
-	}: Props = $props();
+	let { open = $bindable(false), summary, children }: Props = $props();
 </script>
 
-<details bind:open class="group {className}">
+<details bind:open class="group">
 	<summary
-		class="cursor-pointer list-none [&::-webkit-details-marker]:hidden {summaryClass}"
+		class="flex cursor-pointer list-none items-center gap-2 py-2 text-sm [&::-webkit-details-marker]:hidden"
 	>
+		<Icon
+			name="chevron-right"
+			size="sm"
+			class="shrink-0 transition-transform group-open:rotate-90"
+		/>
 		{@render summary()}
 	</summary>
 	{@render children()}

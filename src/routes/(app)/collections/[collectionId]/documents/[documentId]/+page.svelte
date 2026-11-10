@@ -5,7 +5,6 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import BackLink from '#lib/components/BackLink.svelte';
 	import Disclosure from '#lib/components/Disclosure.svelte';
-	import Icon from '#lib/components/Icon.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
@@ -168,7 +167,9 @@
 
 			<!-- Document Content -->
 			<div class="mt-6">
-				<SectionHeading title="Content" class="mb-3" />
+				<div class="mb-3">
+					<SectionHeading title="Content" />
+				</div>
 				{#if loadingContent}
 					<LoadingSpinner size="sm" ariaLabel="Loading content" />
 				{:else if contentError}
@@ -183,47 +184,42 @@
 			</div>
 
 			<!-- Text Chunks -->
-			<Disclosure bind:open={chunksOpen} class="mt-6">
-				{#snippet summary()}
-					<div class="flex items-center gap-2">
-						<Icon
-							name="chevron-right"
-							size="sm"
-							class="transition-transform group-open:rotate-90"
-						/>
+			<div class="mt-6">
+				<Disclosure bind:open={chunksOpen}>
+					{#snippet summary()}
 						<SectionHeading title="Text Chunks" />
 						{#if chunks}
 							<span class="text-xs font-normal text-subtle"
 								>({chunks.length} chunks)</span
 							>
 						{/if}
-					</div>
-				{/snippet}
+					{/snippet}
 
-				<div class="mt-3">
-					{#if loadingChunks}
-						<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
-					{:else if chunksError}
-						<Alert variant="warning">{chunksError}</Alert>
-					{:else if chunks && chunks.length > 0}
-						<div class="space-y-3">
-							{#each chunks as chunk, i (i)}
-								<div class="card p-4">
-									<div
-										class="mb-2 flex items-center justify-between text-xs text-subtle"
-									>
-										<span>Chunk {i + 1}</span>
-										<span>{chunk.length} chars</span>
+					<div class="mt-3">
+						{#if loadingChunks}
+							<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
+						{:else if chunksError}
+							<Alert variant="warning">{chunksError}</Alert>
+						{:else if chunks && chunks.length > 0}
+							<div class="space-y-3">
+								{#each chunks as chunk, i (i)}
+									<div class="card p-4">
+										<div
+											class="mb-2 flex items-center justify-between text-xs text-subtle"
+										>
+											<span>Chunk {i + 1}</span>
+											<span>{chunk.length} chars</span>
+										</div>
+										{@render preBlock(chunk)}
 									</div>
-									{@render preBlock(chunk)}
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<p class="text-sm italic text-subtle">No chunks generated</p>
-					{/if}
-				</div>
-			</Disclosure>
+								{/each}
+							</div>
+						{:else}
+							<p class="text-sm italic text-subtle">No chunks generated</p>
+						{/if}
+					</div>
+				</Disclosure>
+			</div>
 		</PageContent>
 	{/if}
 </div>

@@ -38,7 +38,7 @@
 
 	<div class="flex-1 overflow-y-auto px-4 pb-4">
 		{#if conversations.length === 0}
-			<EmptyState title="No conversations yet" />
+			<EmptyState title="No conversations yet" density="inline" />
 		{:else}
 			<ul class="space-y-0.5">
 				{#each conversations as conv (conv.id)}

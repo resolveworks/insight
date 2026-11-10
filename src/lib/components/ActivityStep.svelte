@@ -19,7 +19,7 @@
 {/snippet}
 
 {#if step.kind === 'reasoning'}
-	<Disclosure summaryClass="flex items-center gap-2 py-1 text-xs">
+	<Disclosure>
 		{#snippet summary()}
 			{#if step.streaming || step.text.trim() === ''}
 				<LoadingSpinner size="xs" ariaLabel="Thinking" />
@@ -35,10 +35,7 @@
 		</div>
 	</Disclosure>
 {:else}
-	<Disclosure
-		open={step.isError}
-		summaryClass="flex items-center gap-2 py-1 text-xs"
-	>
+	<Disclosure open={step.isError}>
 		{#snippet summary()}
 			{#if step.executing}
 				<LoadingSpinner size="xs" ariaLabel="Running" />
