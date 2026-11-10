@@ -9,11 +9,24 @@ const conversations = [
 	summary('c2', 'Budget analysis'),
 ];
 
+function renderSidebar(props: {
+	conversations: typeof conversations;
+	activeId: string | null;
+	onDelete?: (id: string) => void;
+}) {
+	return render(ConversationSidebar, {
+		props: {
+			onSelect: vi.fn(),
+			onNew: vi.fn(),
+			onDelete: vi.fn(),
+			...props,
+		},
+	});
+}
+
 describe('ConversationSidebar', () => {
 	it('shows the conversations it is given', () => {
-		render(ConversationSidebar, {
-			props: { conversations, activeId: 'c1' },
-		});
+		renderSidebar({ conversations, activeId: 'c1' });
 
 		expect(screen.getByText('Climate research')).toBeInTheDocument();
 		expect(screen.getByText('Budget analysis')).toBeInTheDocument();
@@ -23,9 +36,7 @@ describe('ConversationSidebar', () => {
 	});
 
 	it('marks the active conversation and keeps delete keyboard accessible', () => {
-		render(ConversationSidebar, {
-			props: { conversations, activeId: 'c1' },
-		});
+		renderSidebar({ conversations, activeId: 'c1' });
 
 		const active = screen.getByRole('button', {
 			name: 'Climate research',
@@ -40,18 +51,14 @@ describe('ConversationSidebar', () => {
 	});
 
 	it('shows empty state when the list is empty', () => {
-		render(ConversationSidebar, {
-			props: { conversations: [], activeId: null },
-		});
+		renderSidebar({ conversations: [], activeId: null });
 
 		expect(screen.getByText('No conversations yet')).toBeInTheDocument();
 	});
 
 	it('asks for confirmation before deleting a conversation', async () => {
 		const onDelete = vi.fn();
-		render(ConversationSidebar, {
-			props: { conversations, activeId: 'c1', onDelete },
-		});
+		renderSidebar({ conversations, activeId: 'c1', onDelete });
 
 		screen.getAllByLabelText('Delete conversation')[0].click();
 		await waitFor(() => {
@@ -73,9 +80,7 @@ describe('ConversationSidebar', () => {
 
 	it('cancels deletion without asking the parent to delete', async () => {
 		const onDelete = vi.fn();
-		render(ConversationSidebar, {
-			props: { conversations, activeId: 'c1', onDelete },
-		});
+		renderSidebar({ conversations, activeId: 'c1', onDelete });
 
 		screen.getAllByLabelText('Delete conversation')[0].click();
 		await waitFor(() => {

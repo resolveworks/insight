@@ -10,10 +10,15 @@ import type {
 	TranscriptKind,
 } from '#lib/types/chat.js';
 
+const collection = {
+	id: 'col1',
+	name: 'Climate Research',
+	document_count: 2,
+	total_pages: null,
+};
+
 const props = {
-	collectionId: 'col1',
-	collectionName: 'Climate Research',
-	documentCount: 2,
+	collection,
 	providerReady: true,
 };
 
@@ -109,7 +114,9 @@ describe('Chat', () => {
 	});
 
 	it('directs an empty collection to Documents instead of inviting questions', async () => {
-		await renderChat('no-docs', { documentCount: 0 });
+		await renderChat('no-docs', {
+			collection: { ...collection, document_count: 0 },
+		});
 
 		expect(
 			screen.getByText('No documents in Climate Research'),
@@ -128,7 +135,7 @@ describe('Chat', () => {
 	it('keeps a stored transcript and disables the composer in an empty collection', async () => {
 		await renderChat(
 			'no-docs-with-history',
-			{ documentCount: 0 },
+			{ collection: { ...collection, document_count: 0 } },
 			{
 				conversations: [{ id: 'c1', title: 'Existing chat' }],
 				transcript: [userItem('Earlier question')],

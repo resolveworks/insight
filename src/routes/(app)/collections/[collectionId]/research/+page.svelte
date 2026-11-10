@@ -52,12 +52,7 @@
 		{#if activeCollectionId !== collectionId || !collection}
 			<LoadingScreen label="Loading collection" />
 		{:else}
-			<Chat
-				{collectionId}
-				collectionName={collection.name}
-				documentCount={collection.document_count}
-				{providerReady}
-			/>
+			<Chat {collection} {providerReady} />
 		{/if}
 	</main>
 </div>

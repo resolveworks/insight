@@ -5,13 +5,15 @@
 	import EmptyState from './EmptyState.svelte';
 	import Icon from './Icon.svelte';
 	import IconButton from './IconButton.svelte';
+	import List from './List.svelte';
+	import ListRow from './ListRow.svelte';
 
 	type Props = {
 		conversations: ConversationSummary[];
 		activeId: string | null;
-		onSelect?: (id: string) => void;
-		onNew?: () => void;
-		onDelete?: (id: string) => void;
+		onSelect: (id: string) => void;
+		onNew: () => void;
+		onDelete: (id: string) => void;
 	};
 
 	let { conversations, activeId, onSelect, onNew, onDelete }: Props = $props();
@@ -23,14 +25,14 @@
 	} | null>(null);
 
 	function confirmDelete() {
-		if (pendingDelete) onDelete?.(pendingDelete.id);
+		if (pendingDelete) onDelete(pendingDelete.id);
 		pendingDelete = null;
 	}
 </script>
 
 <div class="flex h-full flex-col">
 	<div class="px-4 pt-4 pb-2">
-		<Button variant="ghost" fullWidth onclick={() => onNew?.()}>
+		<Button variant="ghost" fullWidth onclick={() => onNew()}>
 			<Icon name="plus" size="sm" />
 			New Chat
 		</Button>
@@ -40,39 +42,36 @@
 		{#if conversations.length === 0}
 			<EmptyState title="No conversations yet" density="inline" />
 		{:else}
-			<ul class="space-y-0.5">
+			<List>
 				{#each conversations as conv (conv.id)}
-					<li
-						class="group flex items-center rounded-md transition-colors
-							{activeId === conv.id
-							? 'bg-surface-bright text-neutral-900'
-							: 'text-neutral-600 hover:bg-neutral-100'}"
-					>
+					<ListRow variant="nav" active={activeId === conv.id}>
 						<button
-							onclick={() => onSelect?.(conv.id)}
+							onclick={() => onSelect(conv.id)}
 							aria-current={activeId === conv.id ? 'true' : undefined}
-							class="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-sm focus-visible:focus-ring"
+							class="min-w-0 w-full truncate rounded-md px-2 py-1.5 text-left text-sm focus-visible:focus-ring"
 						>
 							{conv.title}
 						</button>
-						<span class="mr-1 shrink-0">
-							<IconButton
-								label="Delete conversation"
-								variant="danger"
-								onclick={(e) => {
-									e.stopPropagation();
-									pendingDelete = {
-										id: conv.id,
-										title: conv.title,
-									};
-								}}
-							>
-								<Icon name="trash" size="sm" />
-							</IconButton>
-						</span>
-					</li>
+						{#snippet actions()}
+							<span class="mr-1 shrink-0">
+								<IconButton
+									label="Delete conversation"
+									variant="danger"
+									onclick={(e) => {
+										e.stopPropagation();
+										pendingDelete = {
+											id: conv.id,
+											title: conv.title,
+										};
+									}}
+								>
+									<Icon name="trash" size="sm" />
+								</IconButton>
+							</span>
+						{/snippet}
+					</ListRow>
 				{/each}
-			</ul>
+			</List>
 		{/if}
 	</div>
 </div>

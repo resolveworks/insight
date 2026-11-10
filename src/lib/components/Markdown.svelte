@@ -24,7 +24,6 @@
 <style>
 	.markdown {
 		overflow-wrap: anywhere;
-		line-height: 1.6;
 	}
 
 	.markdown > :global(:first-child) {
@@ -57,14 +56,10 @@
 		line-height: 1.3;
 		margin: 1.25em 0 0.5em;
 	}
-	.markdown :global(h1) {
-		font-size: 1.125rem;
-	}
-	.markdown :global(h2) {
-		font-size: 1rem;
-	}
+	.markdown :global(h1),
+	.markdown :global(h2),
 	.markdown :global(h3) {
-		font-size: 0.9375rem;
+		font-size: 1rem;
 	}
 	.markdown :global(h4),
 	.markdown :global(h5),
@@ -99,26 +94,26 @@
 	}
 
 	.markdown :global(code) {
-		background: var(--color-neutral-100);
+		background: var(--color-surface-dim);
 		border: 1px solid var(--color-line);
 		border-radius: var(--radius-sm);
-		color: var(--color-neutral-800);
+		color: var(--color-neutral-700);
 		font-family:
 			ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
 			'Liberation Mono', monospace;
-		font-size: 0.8125rem;
+		font-size: 0.75rem;
 		padding: 0.1em 0.35em;
 	}
 	.markdown :global(pre) {
-		background: var(--color-neutral-100);
+		background: var(--color-surface-dim);
 		border: 1px solid var(--color-line);
 		border-radius: var(--radius-md);
-		color: var(--color-neutral-800);
-		font-size: 0.8125rem;
-		line-height: 1.5;
+		color: var(--color-neutral-700);
+		font-size: 0.75rem;
+		line-height: 1.625;
 		margin: 0.75em 0;
 		overflow-x: auto;
-		padding: 0.75rem 1rem;
+		padding: 0.75rem;
 	}
 	.markdown :global(pre code) {
 		background: none;
@@ -135,7 +130,7 @@
 	}
 
 	.markdown :global(a) {
-		color: var(--color-primary-700);
+		color: var(--color-primary-600);
 		text-decoration: underline;
 		text-underline-offset: 2px;
 	}
@@ -160,7 +155,7 @@
 		vertical-align: top;
 	}
 	.markdown :global(th) {
-		background: var(--color-neutral-100);
+		background: var(--color-surface-dim);
 		font-weight: 600;
 	}
 

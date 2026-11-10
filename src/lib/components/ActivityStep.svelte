@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CodeBlock from './CodeBlock.svelte';
 	import Disclosure from './Disclosure.svelte';
 	import Icon from './Icon.svelte';
 	import LoadingSpinner from './LoadingSpinner.svelte';
@@ -11,27 +12,19 @@
 	const isError = $derived(step.kind === 'tool' && step.isError);
 </script>
 
-{#snippet preBlock(text: string)}
-	<pre
-		class="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-dim p-2 font-mono text-xs leading-relaxed {isError
-			? 'text-error'
-			: 'text-neutral-700'}">{text}</pre>
-{/snippet}
-
 {#if step.kind === 'reasoning'}
 	<Disclosure>
 		{#snippet summary()}
 			{#if step.streaming || step.text.trim() === ''}
 				<LoadingSpinner size="xs" ariaLabel="Thinking" />
 			{/if}
-			<span class="shrink-0 font-medium text-neutral-600">Thought</span>
+			<span class="shrink-0 font-medium text-neutral-800">Thought</span>
 			{#if !step.streaming && step.text.trim() !== ''}
 				<span class="min-w-0 truncate text-subtle">{step.preview}</span>
 			{/if}
 		{/snippet}
-		<div class="pb-2 pr-2 pl-5">
-			<pre
-				class="whitespace-pre-wrap break-words text-xs text-neutral-600">{step.text}</pre>
+		<div class="pb-2 pl-6 text-sm leading-relaxed text-neutral-700">
+			<pre class="whitespace-pre-wrap break-words">{step.text}</pre>
 		</div>
 	</Disclosure>
 {:else}
@@ -50,14 +43,14 @@
 			{/if}
 		{/snippet}
 
-		<div class="space-y-2 pb-2 pr-2 pl-5 pt-1">
+		<div class="space-y-2 pb-2 pl-6 pt-1">
 			{#if step.argsLines.length > 0}
 				<dl class="space-y-1 font-mono text-xs leading-relaxed">
 					{#each step.argsLines as line (line.key)}
 						<div class="flex gap-2">
 							<dt class="shrink-0 text-subtle">{line.key}:</dt>
 							<dd
-								class="min-w-0 whitespace-pre-wrap break-words text-neutral-600"
+								class="min-w-0 whitespace-pre-wrap break-words text-neutral-700"
 							>
 								{line.value}
 							</dd>
@@ -65,14 +58,20 @@
 					{/each}
 				</dl>
 				{#if step.argsTruncated}
-					{@render preBlock(step.argsText)}
+					<CodeBlock
+						text={step.argsText}
+						tone={isError ? 'error' : 'default'}
+					/>
 				{/if}
 			{:else if !step.argsParseable && step.argsText.trim()}
-				{@render preBlock(step.argsText)}
+				<CodeBlock text={step.argsText} tone={isError ? 'error' : 'default'} />
 			{/if}
 
 			{#if step.resultText !== null}
-				{@render preBlock(formatResult(step.resultText))}
+				<CodeBlock
+					text={formatResult(step.resultText)}
+					tone={isError ? 'error' : 'default'}
+				/>
 			{/if}
 		</div>
 	</Disclosure>
