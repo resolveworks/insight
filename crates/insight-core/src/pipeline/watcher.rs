@@ -6,13 +6,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use iroh_blobs::Hash;
 use iroh_docs::{ContentStatus, NamespaceId};
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::storage::{LiveEvent, Storage};
+use crate::storage::{LastSyncSummary, LiveEvent, SharingTracker, Storage};
 
 use super::index_queue::IndexQueue;
 use super::AppEvent;
@@ -21,6 +21,7 @@ use super::AppEvent;
 pub struct JobSenders {
     pub index: IndexQueue,
     pub events: mpsc::UnboundedSender<AppEvent>,
+    pub sharing: SharingTracker,
 }
 
 /// Extract doc_id from a files/{doc_id}/... key
@@ -37,19 +38,24 @@ pub struct CollectionWatcher {
 impl CollectionWatcher {
     /// Spawn a watcher for a collection.
     ///
-    /// The watcher subscribes to iroh-docs events. Local inserts are ignored;
-    /// remote `files/` entries queue index reconciliation for their document.
-    pub fn spawn(
+    /// Subscribes to iroh-docs events before returning, so a caller that
+    /// starts sync afterwards cannot miss the first neighbor or sync events.
+    /// Local inserts are ignored; remote `files/` entries queue index
+    /// reconciliation for their document.
+    pub async fn spawn(
         namespace_id: NamespaceId,
         storage: Arc<RwLock<Storage>>,
         senders: JobSenders,
         cancel: CancellationToken,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        let stream = {
+            let storage_guard = storage.read().await;
+            storage_guard.subscribe(namespace_id).await?
+        };
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = run_watcher(namespace_id, storage, senders, cancel_clone.clone()).await
-            {
+            if let Err(e) = run_watcher(namespace_id, stream, senders, cancel_clone.clone()).await {
                 if !cancel_clone.is_cancelled() {
                     tracing::error!(
                         namespace = %namespace_id,
@@ -60,7 +66,7 @@ impl CollectionWatcher {
             }
         });
 
-        Self { cancel }
+        Ok(Self { cancel })
     }
 
     /// Stop the watcher.
@@ -71,18 +77,10 @@ impl CollectionWatcher {
 
 async fn run_watcher(
     namespace_id: NamespaceId,
-    storage: Arc<RwLock<Storage>>,
+    stream: impl Stream<Item = anyhow::Result<LiveEvent>> + Send + Unpin + 'static,
     senders: JobSenders,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
-    // Subscribe to namespace events (need storage just for subscription)
-    let stream = {
-        let storage_guard = storage.read().await;
-        storage_guard.subscribe(namespace_id).await?
-    };
-    // Drop storage reference - we don't need it after subscribing
-    drop(storage);
-
     tokio::pin!(stream);
 
     let mut pending_content: HashMap<Hash, HashSet<String>> = HashMap::new();
@@ -134,6 +132,42 @@ async fn handle_event(
     senders: &JobSenders,
     pending_content: &mut HashMap<Hash, HashSet<String>>,
 ) {
+    match event {
+        LiveEvent::NeighborUp(peer) => {
+            senders.sharing.peer_connected(namespace_id, *peer).await;
+            sharing_changed(namespace_id, senders);
+            return;
+        }
+        LiveEvent::NeighborDown(peer) => {
+            senders.sharing.peer_disconnected(namespace_id, *peer).await;
+            sharing_changed(namespace_id, senders);
+            return;
+        }
+        LiveEvent::SyncFinished(event) => {
+            let summary = match &event.result {
+                Ok(details) => LastSyncSummary {
+                    peer: event.peer.fmt_short().to_string(),
+                    finished_at: chrono::DateTime::<chrono::Utc>::from(event.finished),
+                    entries_received: details.entries_received,
+                    entries_sent: details.entries_sent,
+                    error: None,
+                },
+                Err(message) => LastSyncSummary {
+                    peer: event.peer.fmt_short().to_string(),
+                    finished_at: chrono::DateTime::<chrono::Utc>::from(event.finished),
+                    entries_received: 0,
+                    entries_sent: 0,
+                    error: Some(message.clone()),
+                },
+            };
+            senders.sharing.sync_finished(namespace_id, summary).await;
+            sharing_changed(namespace_id, senders);
+            invalidate(namespace_id, senders);
+            return;
+        }
+        _ => {}
+    }
+
     let (key_bytes, content_status, content_hash) = match event {
         // A local import hands its work off explicitly; local entries never
         // drive the pipeline through the watcher.
@@ -149,11 +183,6 @@ async fn handle_event(
                     queue_index(namespace_id, &doc_id, senders).await;
                 }
             }
-            return;
-        }
-        // A peer sync can add, change or delete entries with no local command.
-        LiveEvent::SyncFinished(_) => {
-            invalidate(namespace_id, senders);
             return;
         }
         _ => return,
@@ -196,6 +225,13 @@ async fn queue_index(namespace_id: NamespaceId, doc_id: &str, senders: &JobSende
 fn invalidate(namespace_id: NamespaceId, senders: &JobSenders) {
     let _ = senders.events.send(AppEvent::CollectionInvalidated {
         namespace: namespace_id,
+    });
+}
+
+/// Tell the application layer that a collection's live sharing state changed.
+fn sharing_changed(namespace_id: NamespaceId, senders: &JobSenders) {
+    let _ = senders.events.send(AppEvent::SharingStatusChanged {
+        namespace: Some(namespace_id),
     });
 }
 
@@ -278,6 +314,7 @@ mod tests {
         let senders = JobSenders {
             index: queue.clone(),
             events: events_tx,
+            sharing: SharingTracker::new(),
         };
         (senders, queue, progress, events_rx)
     }

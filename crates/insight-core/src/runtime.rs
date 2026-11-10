@@ -383,6 +383,45 @@ mod tests {
             .expect("scope document injected as run context")
     }
 
+    /// Collections that existed before startup are watched and their live
+    /// sync is resumed, so a previously shared or imported collection syncs
+    /// again after a restart.
+    #[tokio::test]
+    async fn startup_resumes_live_sync_for_existing_collections() {
+        let (_tmp, state) = test_state().await;
+        let (collection_id, _) = state
+            .storage
+            .write()
+            .await
+            .create_collection("Shared Before Restart")
+            .await
+            .unwrap();
+
+        assert!(
+            !state
+                .storage
+                .read()
+                .await
+                .collection_sharing_status(collection_id)
+                .await
+                .unwrap()
+                .sync_running
+        );
+
+        state.restore_configs_from_settings().await.unwrap();
+
+        assert!(
+            state
+                .storage
+                .read()
+                .await
+                .collection_sharing_status(collection_id)
+                .await
+                .unwrap()
+                .sync_running
+        );
+    }
+
     #[tokio::test]
     async fn send_message_happy_path_persists_and_emits() {
         let (_tmp, state) = test_state().await;

@@ -178,8 +178,27 @@ impl AppState {
         };
 
         for (namespace_id, metadata) in &collections {
-            self.pipeline.watch(*namespace_id).await;
+            // Subscribe before sync starts so startup neighbor and sync events
+            // reach the watcher rather than landing before it listens.
+            if let Err(e) = self.pipeline.watch(*namespace_id).await {
+                tracing::error!(
+                    namespace = %namespace_id,
+                    collection = %metadata.name,
+                    error = %e,
+                    "Failed to watch collection at startup"
+                );
+                continue;
+            }
             tracing::debug!("Watching collection '{}' ({})", metadata.name, namespace_id);
+
+            if let Err(e) = self.storage.read().await.resume_sync(*namespace_id).await {
+                tracing::warn!(
+                    namespace = %namespace_id,
+                    collection = %metadata.name,
+                    error = %e,
+                    "Failed to resume collection sync at startup"
+                );
+            }
 
             if let Err(e) = self
                 .pipeline
@@ -203,7 +222,9 @@ impl AppState {
 
     /// Start watching a namespace for pipeline events.
     pub async fn watch_namespace(&self, namespace_id: iroh_docs::NamespaceId) {
-        self.pipeline.watch(namespace_id).await;
+        if let Err(e) = self.pipeline.watch(namespace_id).await {
+            tracing::error!(namespace = %namespace_id, error = %e, "Failed to watch collection");
+        }
     }
 
     /// Stop watching a namespace.

@@ -309,6 +309,13 @@ impl Storage {
         Err(SharingStatusError::CollectionNotFound(namespace_id).into())
     }
 
+    /// Watch this endpoint's home relay connection state.
+    pub(crate) fn home_relay_status(
+        &self,
+    ) -> impl iroh::Watcher<Value = Vec<iroh::endpoint::RelayStatus>> + use<> {
+        self.router.endpoint().home_relay_status()
+    }
+
     /// Classify home relay reachability.
     fn sharing_network(&self) -> SharingNetwork {
         use iroh::Watcher;
@@ -959,8 +966,29 @@ impl Storage {
     /// Delete a collection and all its documents
     pub async fn delete_collection(&self, namespace_id: NamespaceId) -> Result<()> {
         self.docs.api().drop_doc(namespace_id).await?;
+        self.sharing.clear(namespace_id).await;
 
         tracing::info!("Deleted collection {}", namespace_id);
+
+        Ok(())
+    }
+
+    /// Resume live sync for an existing collection with no initial peers.
+    ///
+    /// The collection must exist locally. Its stored sync peers are dialed
+    /// again by iroh-docs; an imported collection starts accepting incoming
+    /// sync requests as well.
+    pub async fn resume_sync(&self, namespace_id: NamespaceId) -> Result<()> {
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+        doc.start_sync(Vec::new()).await?;
+        doc.close().await?;
+
+        tracing::info!("Resumed sync for collection {}", namespace_id);
 
         Ok(())
     }
@@ -1913,6 +1941,95 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.access, CollectionAccess::ReadOnly);
+    }
+
+    #[tokio::test]
+    async fn test_resume_sync_starts_for_existing_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Resumed").await.unwrap();
+
+        assert!(
+            !storage
+                .collection_sharing_status(collection_id)
+                .await
+                .unwrap()
+                .sync_running
+        );
+        storage.resume_sync(collection_id).await.unwrap();
+        assert!(
+            storage
+                .collection_sharing_status(collection_id)
+                .await
+                .unwrap()
+                .sync_running
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resume_sync_rejects_unknown_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+
+        assert!(storage.resume_sync(NamespaceId::default()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_collection_clears_live_sharing_state() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = Storage::open(source_dir.path()).await.unwrap();
+        let (collection_id, _) = source.create_collection("Reimported").await.unwrap();
+        let ticket: DocTicket = source
+            .share_collection(collection_id, false)
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = Storage::open(target_dir.path()).await.unwrap();
+        target
+            .docs()
+            .import_namespace(ticket.capability.clone())
+            .await
+            .unwrap();
+
+        let peer = iroh::SecretKey::generate().public();
+        target.sharing().peer_connected(collection_id, peer).await;
+        target
+            .sharing()
+            .sync_finished(
+                collection_id,
+                LastSyncSummary {
+                    peer: "peer".to_string(),
+                    finished_at: chrono::Utc::now(),
+                    entries_received: 1,
+                    entries_sent: 2,
+                    error: None,
+                },
+            )
+            .await;
+
+        let status = target
+            .collection_sharing_status(collection_id)
+            .await
+            .unwrap();
+        assert_eq!(status.connected_peers, 1);
+        assert!(status.last_sync.is_some());
+
+        target.delete_collection(collection_id).await.unwrap();
+        target
+            .docs()
+            .import_namespace(ticket.capability)
+            .await
+            .unwrap();
+
+        let status = target
+            .collection_sharing_status(collection_id)
+            .await
+            .unwrap();
+        assert_eq!(status.connected_peers, 0);
+        assert_eq!(status.last_sync, None);
     }
 
     #[tokio::test]
