@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
-import { invalidate } from '$app/navigation';
+import { goto, invalidate } from '$app/navigation';
 import { page } from '$app/state';
 import Page from './+page.svelte';
 import AppError from '../+error.svelte';
@@ -57,6 +57,77 @@ describe('Collections loading', () => {
 
 		expect(depends).toHaveBeenCalledWith('app:collections');
 		expect(data.collections).toEqual([collection]);
+	});
+});
+
+describe('Collection import', () => {
+	async function openImportDialog(ticket: string) {
+		await fireEvent.click(screen.getByRole('button', { name: 'Import…' }));
+		await fireEvent.input(screen.getByPlaceholderText('Paste ticket here...'), {
+			target: { value: ticket },
+		});
+	}
+
+	it('navigates to the imported collection’s documents', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'import_collection') return collection;
+		});
+
+		renderPage();
+		await openImportDialog('ticket-123');
+		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+
+		await waitFor(() =>
+			expect(goto).toHaveBeenCalledWith('/collections/col1/documents'),
+		);
+		expect(invalidate).toHaveBeenCalledWith('app:collections');
+	});
+
+	it('does not navigate or clear the reopened modal when a pending import completes after close', async () => {
+		let resolveImport: ((value: unknown) => void) | undefined;
+		mockIPC((cmd) => {
+			if (cmd === 'import_collection')
+				return new Promise((resolve) => {
+					resolveImport = resolve;
+				});
+		});
+
+		renderPage();
+		await openImportDialog('ticket-123');
+		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+		expect(
+			screen.getByRole('button', { name: 'Importing...' }),
+		).toBeInTheDocument();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Import…' }));
+
+		resolveImport!(collection);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(goto).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole('dialog', { name: 'Import shared collection' }),
+		).toBeInTheDocument();
+		expect(screen.getByDisplayValue('ticket-123')).toBeInTheDocument();
+	});
+
+	it('shows why a ticket could not be imported', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'import_collection')
+				throw { code: 'sharing', message: 'bad ticket signature' };
+		});
+
+		renderPage();
+		await openImportDialog('ticket-123');
+		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+
+		expect(await screen.findByRole('alert')).toHaveTextContent(
+			'Failed to import collection: bad ticket signature',
+		);
+		expect(
+			screen.getByRole('dialog', { name: 'Import shared collection' }),
+		).toBeInTheDocument();
 	});
 });
 

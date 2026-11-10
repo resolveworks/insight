@@ -6,6 +6,7 @@
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import { deleteCollection, shareCollection } from '#lib/api/collection.js';
+	import { describeError } from '#lib/api/provider.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -14,11 +15,11 @@
 	const sharing = $derived(data.sharing);
 
 	const syncLabel = $derived(sharing.sync_running ? 'Running' : 'Not running');
-	const networkLabel = $derived(
+	const relayLabel = $derived(
 		{
-			online: 'Online',
+			online: 'Connected',
 			connecting: 'Connecting',
-			offline: 'Offline',
+			offline: 'Disconnected',
 		}[sharing.network],
 	);
 
@@ -38,6 +39,7 @@
 	let shareTicket = $state<string | null>(null);
 	let shareError = $state<string | null>(null);
 	let ticketCopied = $state(false);
+	let copyError = $state<string | null>(null);
 
 	// Delete confirmation state
 	let confirmingDelete = $state(false);
@@ -47,6 +49,7 @@
 		shareTicket = null;
 		shareError = null;
 		ticketCopied = false;
+		copyError = null;
 
 		try {
 			const ticket = await shareCollection(collection.id);
@@ -55,7 +58,7 @@
 		} catch (e) {
 			if (!showShareModal) return;
 			console.error('Failed to share collection:', e);
-			shareError = 'Failed to generate share ticket';
+			shareError = `Failed to generate share ticket: ${describeError(e)}`;
 		}
 	}
 
@@ -63,16 +66,19 @@
 		showShareModal = false;
 		shareTicket = null;
 		shareError = null;
+		copyError = null;
 	}
 
 	async function copyTicket() {
 		if (!shareTicket) return;
 		try {
 			await navigator.clipboard.writeText(shareTicket);
+			copyError = null;
 			ticketCopied = true;
 			setTimeout(() => (ticketCopied = false), 2000);
 		} catch (e) {
 			console.error('Failed to copy ticket:', e);
+			copyError = "Couldn't copy the ticket. Select it and copy it manually.";
 		}
 	}
 
@@ -104,8 +110,8 @@
 						<dd class="text-sm text-neutral-800">{syncLabel}</dd>
 					</div>
 					<div class="flex items-baseline justify-between gap-4 py-2">
-						<dt class="text-sm text-muted">Network</dt>
-						<dd class="text-sm text-neutral-800">{networkLabel}</dd>
+						<dt class="text-sm text-muted">Relays</dt>
+						<dd class="text-sm text-neutral-800">{relayLabel}</dd>
 					</div>
 					<div class="flex items-baseline justify-between gap-4 py-2">
 						<dt class="text-sm text-muted">Peers</dt>
@@ -182,6 +188,9 @@
 					Share this ticket with others so they can add, change, and delete
 					documents in this collection.
 				</p>
+				{#if copyError}
+					<Alert>{copyError}</Alert>
+				{/if}
 				<p class="text-xs text-muted">
 					Access cannot be revoked once shared. Syncing requires this peer to be
 					available.
