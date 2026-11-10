@@ -1,42 +1,31 @@
 <script lang="ts">
 	import type { HTMLInputAttributes } from 'svelte/elements';
+	import Field from './Field.svelte';
 
 	interface Props extends Omit<HTMLInputAttributes, 'value'> {
 		label?: string;
+		hint?: string;
 		value?: string;
 	}
 
 	let {
 		label,
+		hint,
 		id,
 		value = $bindable(''),
 		class: className = '',
-		placeholder,
 		...rest
 	}: Props = $props();
-
-	const inputClasses = 'field';
 </script>
 
-{#if label}
-	<div class="flex flex-col gap-2">
-		<label for={id} class="block text-sm font-medium text-neutral-700">
-			{label}
-		</label>
-		<input
-			{id}
-			bind:value
-			{placeholder}
-			class="{inputClasses} {className}"
-			{...rest}
-		/>
-	</div>
+{#snippet control()}
+	<input {id} bind:value class="field {className}" {...rest} />
+{/snippet}
+
+{#if label || hint}
+	<Field {id} {label} {hint}>
+		{@render control()}
+	</Field>
 {:else}
-	<input
-		{id}
-		bind:value
-		{placeholder}
-		class="{inputClasses} {className}"
-		{...rest}
-	/>
+	{@render control()}
 {/if}

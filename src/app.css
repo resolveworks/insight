@@ -1,6 +1,7 @@
 @import '@fontsource-variable/inter';
 @import 'tailwindcss';
 
+/* One accent (primary) + Tailwind default neutrals; colours outside this set are errors. */
 @theme {
 	/* Primary - Rust/Coral */
 	--color-primary-50: #fdf5f4;
@@ -15,44 +16,6 @@
 	--color-primary-900: #6c352e;
 	--color-primary-950: #3a1814;
 
-	/* Secondary - Gold */
-	--color-secondary-50: #fffbeb;
-	--color-secondary-100: #fef3c7;
-	--color-secondary-200: #feedb9;
-	--color-secondary-300: #fde68a;
-	--color-secondary-400: #fecf49;
-	--color-secondary-500: #e3b740;
-	--color-secondary-600: #c89f38;
-	--color-secondary-700: #a37d24;
-	--color-secondary-800: #86641f;
-	--color-secondary-900: #72531e;
-	--color-secondary-950: #422c0d;
-
-	/* Tertiary - Blue */
-	--color-tertiary-50: #f0f9ff;
-	--color-tertiary-100: #e0f2fe;
-	--color-tertiary-200: #bae6fd;
-	--color-tertiary-300: #84c5e6;
-	--color-tertiary-400: #53afdc;
-	--color-tertiary-500: #1993d0;
-	--color-tertiary-600: #0c7ab8;
-	--color-tertiary-700: #0c6195;
-	--color-tertiary-800: #0e527b;
-	--color-tertiary-900: #114566;
-	--color-tertiary-950: #0b2c44;
-
-	/* Neutral - Charcoal/Gray (for navigation, text) */
-	--color-neutral-50: #f9fafb;
-	--color-neutral-100: #f3f4f6;
-	--color-neutral-200: #eceef1;
-	--color-neutral-300: #d0d5dc;
-	--color-neutral-400: #a5a5a5;
-	--color-neutral-500: #6b7280;
-	--color-neutral-600: #5f5f5f;
-	--color-neutral-700: #4c4c4c;
-	--color-neutral-800: #383838;
-	--color-neutral-900: #1f2937;
-
 	/* Semantic colors */
 	--color-error: #cc0202;
 	--color-error-hover: #a30202;
@@ -64,23 +27,12 @@
 	--color-subtle: var(--color-neutral-400);
 	--color-line: var(--color-neutral-200);
 	--color-line-strong: var(--color-neutral-300);
-
-	/* Surface colors */
-	--color-surface: #f9fafb;
-	--color-surface-dim: #eceef1;
+	--color-surface: var(--color-neutral-50);
+	--color-surface-dim: var(--color-neutral-100);
 	--color-surface-bright: #ffffff;
 
 	/* Typography */
 	--font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
-
-	/* Border radius */
-	--radius-sm: 0.25rem;
-	--radius-md: 0.4rem;
-	--radius-lg: 0.5rem;
-
-	/* Shadows */
-	--shadow-soft: 0 0 1rem 0 rgba(0, 0, 0, 0.15);
-	--shadow-medium: 0 0 1rem 0 rgba(0, 0, 0, 0.25);
 }
 
 /* Base styles */
@@ -107,14 +59,14 @@
 	@apply rounded-lg border border-line bg-surface-bright;
 }
 
-@utility panel {
-	@apply rounded-lg bg-surface-bright shadow-medium;
-}
-
-@utility focus-ring {
-	@apply outline-2 outline-offset-2 outline-primary-500;
+@utility card-interactive {
+	@apply card transition-colors hover:border-primary-300 hover:shadow-sm;
 }
 
 @utility field {
 	@apply rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-neutral-800 placeholder-subtle focus:focus-ring disabled:opacity-50;
+}
+
+@utility focus-ring {
+	@apply outline-2 outline-offset-2 outline-primary-500;
 }
