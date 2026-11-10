@@ -250,7 +250,7 @@ impl AppState {
             .await
     }
 
-    pub(crate) async fn import_collection_with_timeout(
+    async fn import_collection_with_timeout(
         &self,
         ticket_str: &str,
         timeout: std::time::Duration,
