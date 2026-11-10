@@ -126,7 +126,7 @@ describe('Collection documents load', () => {
 });
 
 describe('Collection documents page', () => {
-	it('explains the empty collection and offers importing a PDF', () => {
+	it('explains the empty collection and offers importing documents', () => {
 		renderPage([]);
 
 		expect(screen.getByText('No documents yet')).toBeInTheDocument();
@@ -136,7 +136,7 @@ describe('Collection documents page', () => {
 			),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole('button', { name: 'Import PDF' }),
+			screen.getByRole('button', { name: 'Import documents' }),
 		).toBeInTheDocument();
 	});
 
@@ -149,9 +149,9 @@ describe('Collection documents page', () => {
 
 		const del = screen.getByRole('button', { name: 'Delete document' });
 		expect(del.closest('a')).toBeNull();
-		expect(screen.getAllByRole('button', { name: 'Import PDF' })).toHaveLength(
-			1,
-		);
+		expect(
+			screen.getAllByRole('button', { name: 'Import documents' }),
+		).toHaveLength(1);
 
 		await fireEvent.click(del);
 		expect(
@@ -241,7 +241,9 @@ describe('Collection documents page', () => {
 		});
 
 		renderPage();
-		await fireEvent.click(screen.getByRole('button', { name: 'Import PDF' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Import documents' }),
+		);
 
 		expect(
 			await screen.findByText('Some files could not be imported.'),
@@ -259,7 +261,9 @@ describe('Collection documents page', () => {
 		});
 
 		renderPage();
-		await fireEvent.click(screen.getByRole('button', { name: 'Import PDF' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Import documents' }),
+		);
 
 		expect(await screen.findByText('disk full')).toBeInTheDocument();
 	});
