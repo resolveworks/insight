@@ -7,9 +7,9 @@ const baseClasses =
 const variantClasses: Record<ButtonVariant, string> = {
 	primary: 'bg-blue-600 text-white hover:bg-blue-700',
 	secondary:
-		'border-line-strong bg-surface-bright text-neutral-800 hover:bg-surface-dim',
-	ghost: 'text-neutral-700 hover:bg-surface-dim',
-	danger: 'bg-error text-white hover:bg-error-hover',
+		'border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-100',
+	ghost: 'text-neutral-700 hover:bg-neutral-100',
+	danger: 'bg-red-600 text-white hover:bg-red-700',
 };
 
 const sizeClasses: Record<ButtonSize, string> = {

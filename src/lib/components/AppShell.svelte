@@ -8,6 +8,6 @@
 	let { children }: Props = $props();
 </script>
 
-<main class="h-screen overflow-hidden bg-surface-dim">
+<main class="h-screen overflow-hidden bg-neutral-100">
 	{@render children()}
 </main>

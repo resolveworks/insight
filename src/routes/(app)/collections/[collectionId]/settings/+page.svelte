@@ -114,7 +114,7 @@
 							<span class="font-mono">{shortenId(sharing.last_sync.peer)}</span>
 						</div>
 						{#if sharing.last_sync.error}
-							<div class="text-error">
+							<div class="text-red-600">
 								Sync failed: {sharing.last_sync.error}
 							</div>
 						{:else}
@@ -155,21 +155,21 @@
 		{#if shareTicket}
 			<div class="space-y-3">
 				<div class="flex items-start gap-2">
-					<code class="flex-1 break-all font-mono text-xs text-muted">
+					<code class="flex-1 break-all font-mono text-xs text-neutral-500">
 						{shareTicket}
 					</code>
 					<Button size="sm" variant="secondary" onclick={copyTicket}>
 						{ticketCopied ? 'Copied!' : 'Copy'}
 					</Button>
 				</div>
-				<p class="text-xs text-subtle">
+				<p class="text-xs text-neutral-400">
 					Share this ticket with others so they can add, change, and delete
 					documents in this collection.
 				</p>
 				{#if copyError}
 					<Alert>{copyError}</Alert>
 				{/if}
-				<p class="text-xs text-muted">
+				<p class="text-xs text-neutral-500">
 					Access cannot be revoked once shared. Syncing requires this peer to be
 					available.
 				</p>
@@ -177,7 +177,7 @@
 		{:else if shareError}
 			<Alert>{shareError}</Alert>
 		{:else}
-			<div class="flex items-center gap-2 text-sm text-subtle">
+			<div class="flex items-center gap-2 text-sm text-neutral-400">
 				<LoadingSpinner size="sm" />
 				<span>Generating ticket...</span>
 			</div>

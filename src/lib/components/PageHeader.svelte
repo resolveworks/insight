@@ -11,7 +11,7 @@
 	let { eyebrow, title, actions, tabs }: Props = $props();
 </script>
 
-<header class="border-b border-line bg-surface-bright px-6 py-4">
+<header class="border-b border-neutral-200 bg-white px-6 py-4">
 	<div class="flex items-center justify-between gap-4">
 		<div class="min-w-0">
 			{#if eyebrow}

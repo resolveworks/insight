@@ -210,7 +210,7 @@
 						>
 							<span class="text-sm text-neutral-800">{doc.name}</span>
 							{#if doc.page_count !== null}
-								<p class="mt-1 text-xs text-muted">
+								<p class="mt-1 text-xs text-neutral-500">
 									{doc.page_count} pages
 								</p>
 							{/if}
@@ -230,7 +230,7 @@
 		{/if}
 
 		{#if deletedDocuments.length > 0}
-			<section class="border-t border-line pt-6">
+			<section class="border-t border-neutral-200 pt-6">
 				<div class="mb-3">
 					<SectionHeading id="deleted-items-heading" title="Deleted items" />
 				</div>
@@ -238,7 +238,7 @@
 					{#each deletedDocuments as doc (doc.id)}
 						<ListRow>
 							<p class="text-sm text-neutral-800">{doc.name}</p>
-							<p class="mt-1 text-xs text-muted">
+							<p class="mt-1 text-xs text-neutral-500">
 								Deleted by {shortenId(doc.deleted_by)} · {formatTimestamp(
 									doc.deleted_at,
 								)}

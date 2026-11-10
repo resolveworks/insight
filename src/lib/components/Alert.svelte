@@ -12,8 +12,8 @@
 	let { variant = 'error', action, children }: Props = $props();
 
 	const variantClasses: Record<Variant, string> = {
-		error: 'border-error/50 bg-error/10 text-error',
-		warning: 'border-warning/50 bg-warning/10 text-warning',
+		error: 'border-red-600/50 bg-red-600/10 text-red-600',
+		warning: 'border-amber-600/50 bg-amber-600/10 text-amber-600',
 	};
 </script>
 

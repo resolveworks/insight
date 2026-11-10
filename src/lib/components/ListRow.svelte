@@ -18,14 +18,14 @@
 	}: Props = $props();
 
 	const variantClasses: Record<NonNullable<Props['variant']>, string> = {
-		card: 'flex items-center justify-between gap-4 rounded-lg border border-line bg-surface-bright px-4 py-3',
+		card: 'flex items-center justify-between gap-4 rounded-lg border border-neutral-200 bg-white px-4 py-3',
 		nav: 'flex items-center rounded-md transition-colors',
 	};
 
 	const navStateClasses = $derived(
 		active
-			? 'bg-surface-bright text-neutral-800'
-			: 'text-muted hover:bg-surface-dim',
+			? 'bg-white text-neutral-800'
+			: 'text-neutral-500 hover:bg-neutral-100',
 	);
 </script>
 

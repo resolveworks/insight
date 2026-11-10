@@ -1,26 +1,8 @@
 @import '@fontsource-variable/inter';
 @import 'tailwindcss';
 
-/* Tailwind default palette only: blue as the accent, default neutrals otherwise.
-   This theme adds role aliases over those defaults; colours outside this set are errors.
-   Text roles: neutral-800 primary, muted secondary, subtle tertiary; mono blocks use
-   neutral-700. */
+/* Tailwind defaults everywhere; no bespoke palette. */
 @theme {
-	/* Semantic colors */
-	--color-error: var(--color-red-600);
-	--color-error-hover: var(--color-red-700);
-	--color-warning: var(--color-amber-600);
-	--color-success: var(--color-green-600);
-
-	/* Role colors */
-	--color-muted: var(--color-neutral-500);
-	--color-subtle: var(--color-neutral-400);
-	--color-line: var(--color-neutral-200);
-	--color-line-strong: var(--color-neutral-300);
-	--color-surface: var(--color-neutral-50);
-	--color-surface-dim: var(--color-neutral-100);
-	--color-surface-bright: var(--color-white);
-
 	/* Typography */
 	--font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
 }
@@ -28,7 +10,7 @@
 /* Base styles */
 @layer base {
 	body {
-		@apply bg-surface-dim text-neutral-800 font-sans antialiased;
+		@apply bg-neutral-100 text-neutral-800 font-sans antialiased;
 	}
 
 	h1,
@@ -46,7 +28,7 @@
 }
 
 @utility field {
-	@apply rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm text-neutral-800 placeholder-subtle focus:focus-ring disabled:opacity-50;
+	@apply rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 placeholder-neutral-400 focus:focus-ring disabled:opacity-50;
 }
 
 @utility focus-ring {

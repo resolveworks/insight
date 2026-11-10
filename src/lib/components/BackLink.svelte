@@ -14,7 +14,7 @@
 <!-- eslint-disable svelte/no-navigation-without-resolve -->
 <a
 	{href}
-	class="inline-flex items-center gap-1 text-sm text-muted transition-colors hover:text-blue-600 focus-visible:focus-ring"
+	class="inline-flex items-center gap-1 text-sm text-neutral-500 transition-colors hover:text-blue-600 focus-visible:focus-ring"
 >
 	<Icon name="arrow-left" size="sm" />
 	{@render children()}
