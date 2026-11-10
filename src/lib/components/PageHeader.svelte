@@ -19,7 +19,7 @@
 					{@render eyebrow()}
 				</div>
 			{/if}
-			<h1 class="truncate text-xl font-medium text-neutral-800">{title}</h1>
+			<h1 class="truncate text-xl font-semibold text-neutral-800">{title}</h1>
 		</div>
 		{#if actions}
 			<div class="shrink-0">
