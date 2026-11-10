@@ -1,11 +1,13 @@
 mod sharing;
 
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use futures::{Stream, StreamExt};
 use iroh::protocol::Router;
-use iroh::{Endpoint, RelayMode};
+use iroh::{Endpoint, RelayMode, SecretKey};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::Hash;
 use iroh_blobs::{BlobsProtocol, ALPN as BLOBS_ALPN};
@@ -155,6 +157,59 @@ pub struct Storage {
     sharing: SharingTracker,
 }
 
+/// Load the endpoint identity from `<path>/endpoint.key`, creating it on
+/// first open.
+fn load_or_create_endpoint_key(path: &Path) -> Result<SecretKey> {
+    let key_path = path.join("endpoint.key");
+    match std::fs::read(&key_path) {
+        Ok(bytes) => parse_endpoint_key(&bytes, &key_path),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            let key = SecretKey::generate();
+            match write_endpoint_key(&key_path, &key) {
+                Ok(()) => Ok(key),
+                // Another open created the key first; use its identity instead.
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                    let bytes = std::fs::read(&key_path).with_context(|| {
+                        format!("Failed to read endpoint key {}", key_path.display())
+                    })?;
+                    parse_endpoint_key(&bytes, &key_path)
+                }
+                Err(err) => Err(err).with_context(|| {
+                    format!("Failed to write endpoint key {}", key_path.display())
+                }),
+            }
+        }
+        Err(err) => {
+            Err(err).with_context(|| format!("Failed to read endpoint key {}", key_path.display()))
+        }
+    }
+}
+
+/// Write a new endpoint identity, refusing to overwrite an existing one.
+fn write_endpoint_key(key_path: &Path, key: &SecretKey) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(key_path)?;
+    file.write_all(&key.to_bytes())?;
+    file.sync_all()
+}
+
+fn parse_endpoint_key(bytes: &[u8], key_path: &Path) -> Result<SecretKey> {
+    let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "Endpoint key {} is {} bytes, expected 32",
+            key_path.display(),
+            bytes.len()
+        )
+    })?;
+    Ok(SecretKey::from_bytes(&bytes))
+}
+
 impl Storage {
     /// Initialize storage at the given path
     ///
@@ -173,8 +228,11 @@ impl Storage {
             .await
             .context("Failed to open blob store")?;
 
-        // Create endpoint with relay servers for P2P connectivity
+        // Create endpoint with relay servers for P2P connectivity, using the
+        // node's persisted identity so peers see the same node across restarts.
+        let secret_key = load_or_create_endpoint_key(path)?;
         let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(secret_key)
             .relay_mode(RelayMode::Default)
             .bind()
             .await
@@ -1263,6 +1321,60 @@ mod tests {
         let fake_hash = Hash::from_bytes([0u8; 32]);
         let result = storage.get_blob(&fake_hash).await.unwrap();
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_endpoint_identity_survives_reopen() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage
+            .create_collection("Persistent Identity")
+            .await
+            .unwrap();
+        let ticket: DocTicket = storage
+            .share_collection(collection_id)
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        let first_node_id = ticket.nodes[0].id;
+        // The router owns the docs engine; shut it down so the reopened
+        // storage can take the persistent store.
+        storage.router.shutdown().await.unwrap();
+        drop(storage);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(temp_dir.path().join("endpoint.key"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let ticket: DocTicket = storage
+            .share_collection(collection_id)
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(ticket.nodes[0].id, first_node_id);
+    }
+
+    #[tokio::test]
+    async fn test_malformed_endpoint_key_fails_open() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("endpoint.key"), b"too short").unwrap();
+
+        let Err(err) = Storage::open(temp_dir.path()).await else {
+            panic!("malformed endpoint key must fail storage open");
+        };
+        assert!(
+            err.to_string().contains("expected 32"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
