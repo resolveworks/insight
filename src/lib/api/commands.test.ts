@@ -4,6 +4,7 @@ import { invalidate } from '$app/navigation';
 import {
 	createCollection,
 	deleteCollection,
+	getCollectionSharingStatus,
 	importCollection,
 	listCollections,
 	shareCollection,
@@ -26,6 +27,21 @@ const collection = {
 	name: 'Climate Research',
 	document_count: 2,
 	total_pages: 10,
+};
+
+const sharingStatus = {
+	access: 'write',
+	sync_running: true,
+	network: 'online',
+	connected_peers: 1,
+	known_peers: 3,
+	last_sync: {
+		peer: 'a1b2c3d4',
+		finished_at: '2024-01-15T10:30:00Z',
+		entries_received: 4,
+		entries_sent: 2,
+		error: null,
+	},
 };
 
 const document = {
@@ -89,6 +105,20 @@ describe('Collection commands', () => {
 
 		expect(await shareCollection('col1')).toBe('ticket-123');
 		expect(invalidate).toHaveBeenCalledWith('app:collections');
+		expect(invalidate).toHaveBeenCalledWith('app:sharing');
+	});
+
+	it('reads sharing status without re-reading anything', async () => {
+		mockIPC((cmd, args) => {
+			if (
+				cmd === 'get_collection_sharing_status' &&
+				commandArgs(args).collectionId === 'col1'
+			)
+				return sharingStatus;
+		});
+
+		expect(await getCollectionSharingStatus('col1')).toEqual(sharingStatus);
+		expect(invalidate).not.toHaveBeenCalled();
 	});
 
 	it('imports a trimmed ticket and re-reads the collection list', async () => {

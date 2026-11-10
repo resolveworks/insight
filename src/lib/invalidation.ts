@@ -6,9 +6,14 @@ interface CollectionInvalidated {
 	collection_id: string;
 }
 
+interface SharingStatusChanged {
+	namespace: string | null;
+}
+
 /** The data dependencies loads declare and mutations refresh. */
 export const dataKeys = {
 	collections: 'app:collections',
+	sharing: 'app:sharing',
 	provider: 'app:provider',
 	collection: (collectionId: string): `app:collection:${string}` =>
 		`app:collection:${collectionId}`,
@@ -29,6 +34,11 @@ export async function refreshDocuments(collectionId: string): Promise<void> {
 /** Re-read a collection and the collection list. */
 export async function refreshCollection(collectionId: string): Promise<void> {
 	await Promise.all([refreshCollections(), refreshDocuments(collectionId)]);
+}
+
+/** Re-read sharing status for every collection. */
+export async function refreshSharing(): Promise<void> {
+	await invalidate(dataKeys.sharing);
 }
 
 /** Re-read a collection's conversation list. */
@@ -68,5 +78,8 @@ export async function startInvalidationListeners(): Promise<void> {
 		if (!pipelineIsActive(event.payload)) {
 			void refreshCollection(event.payload.collection_id);
 		}
+	});
+	await listen<SharingStatusChanged>('sharing-status-changed', () => {
+		void refreshSharing();
 	});
 }

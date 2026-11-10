@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
-import { refreshCollections } from '#lib/invalidation.js';
+import { refreshCollections, refreshSharing } from '#lib/invalidation.js';
 import type { Collection } from '#lib/types/documents.js';
+import type { CollectionSharingStatus } from '#lib/types/sharing.js';
 
 /** List every collection. */
 export async function listCollections(): Promise<Collection[]> {
@@ -27,7 +28,17 @@ export async function shareCollection(collectionId: string): Promise<string> {
 		writable: false,
 	});
 	await refreshCollections();
+	await refreshSharing();
 	return ticket;
+}
+
+/** Read a collection's current sharing status. */
+export async function getCollectionSharingStatus(
+	collectionId: string,
+): Promise<CollectionSharingStatus> {
+	return invoke<CollectionSharingStatus>('get_collection_sharing_status', {
+		collectionId,
+	});
 }
 
 /** Import a shared collection and re-read the collection list. */

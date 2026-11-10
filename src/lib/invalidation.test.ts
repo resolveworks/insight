@@ -60,4 +60,20 @@ describe('Backend invalidation signals', () => {
 		expect(invalidate).toHaveBeenCalledWith('app:collections');
 		expect(invalidate).toHaveBeenCalledWith('app:collection:col1');
 	});
+
+	it('re-reads sharing status when a collection’s sharing state changes', async () => {
+		await startInvalidationListeners();
+
+		emit('sharing-status-changed', { namespace: 'col1' });
+
+		expect(invalidate).toHaveBeenCalledWith('app:sharing');
+	});
+
+	it('re-reads sharing status when the device network changes', async () => {
+		await startInvalidationListeners();
+
+		emit('sharing-status-changed', { namespace: null });
+
+		expect(invalidate).toHaveBeenCalledWith('app:sharing');
+	});
 });
