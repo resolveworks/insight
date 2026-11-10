@@ -11,18 +11,20 @@
 	import * as chat from '#lib/stores/conversations.svelte.js';
 	import { documentCountLabel } from '#lib/api/collection.js';
 	import { transcriptBlocks } from '#lib/chat/activity.js';
+	import type { Collection } from '#lib/types/documents.js';
 
 	type Props = {
-		collectionId: string;
-		collectionName: string;
-		documentCount: number;
+		collection: Collection;
 		providerReady: boolean;
 	};
 
-	let { collectionId, collectionName, documentCount, providerReady }: Props =
-		$props();
+	let { collection, providerReady }: Props = $props();
 
+	const collectionId = $derived(collection.id);
+	const collectionName = $derived(collection.name);
+	const documentCount = $derived(collection.document_count);
 	const hasDocuments = $derived(documentCount > 0);
+	const column = 'mx-auto w-full max-w-2xl px-6';
 
 	// Reactive reads from the conversations store
 	const transcript = $derived(chat.getItems());
@@ -73,7 +75,7 @@
 <div class="flex h-full flex-col bg-surface">
 	<!-- Transcript -->
 	<div bind:this={messagesContainer} class="flex-1 overflow-y-auto">
-		<div class="mx-auto w-full max-w-3xl px-6 py-6">
+		<div class="{column} py-6">
 			{#if transcript.length === 0}
 				{#if !hasDocuments}
 					<EmptyState
@@ -96,27 +98,25 @@
 					/>
 				{/if}
 			{:else}
-				<div class="space-y-5">
+				<div class="space-y-4">
 					<!-- One renderer over the transcript: a run committing only flips
 					     provisional/executing flags — blocks stay in place. -->
 					{#each blocks as block (block.key)}
 						{#if block.kind === 'activity'}
 							<!-- Consecutive reasoning/tool steps read as one subordinate trail. -->
-							<div class="my-2 space-y-0.5 pl-4">
+							<div class="my-2 space-y-1 border-l border-line pl-4">
 								{#each block.steps as step (step.key)}
 									<ActivityStepView {step} />
 								{/each}
 							</div>
 						{:else if block.item.kind === 'user_text'}
-							<div class="flex justify-end">
-								<div
-									class="ml-auto max-w-prose min-w-0 break-words rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 text-neutral-900"
-								>
-									<Markdown content={block.item.text} />
-								</div>
+							<div
+								class="ml-auto w-fit max-w-full break-words rounded-lg border border-line bg-surface-dim px-4 py-3 text-base leading-relaxed text-neutral-800"
+							>
+								<Markdown content={block.item.text} />
 							</div>
 						{:else if block.item.kind === 'assistant_text'}
-							<div class="max-w-prose text-base leading-7 text-neutral-800">
+							<div class="text-base leading-relaxed text-neutral-800">
 								<Markdown
 									content={block.item.text}
 								/>{#if block.item.streaming}<span
@@ -137,7 +137,7 @@
 
 	<!-- Error display -->
 	{#if error}
-		<div class="mx-auto w-full max-w-3xl px-6 pb-2">
+		<div class="{column} pb-4">
 			<Alert>{error}</Alert>
 		</div>
 	{/if}
@@ -145,7 +145,7 @@
 	{#if providerReady}
 		<!-- Composer -->
 		<div class="shrink-0 border-t border-line bg-surface-bright">
-			<div class="mx-auto w-full max-w-3xl px-6 py-3">
+			<div class="{column} py-4">
 				<div class="flex items-center gap-2">
 					<Input
 						type="text"
@@ -175,9 +175,7 @@
 	{:else}
 		<!-- The provider form lives in Settings; research only points at it. -->
 		<div class="shrink-0 border-t border-line bg-surface-bright">
-			<div
-				class="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-6 py-3"
-			>
+			<div class="{column} flex items-center justify-between gap-4 py-4">
 				<p class="text-sm text-muted">
 					No language model configured. Research needs one.
 				</p>
