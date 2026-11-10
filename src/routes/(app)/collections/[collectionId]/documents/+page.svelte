@@ -7,15 +7,15 @@
 	import Button from '#lib/components/Button.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
+	import DeletedDocumentRow from '#lib/components/DeletedDocumentRow.svelte';
+	import DocumentRow from '#lib/components/DocumentRow.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
-	import Icon from '#lib/components/Icon.svelte';
-	import IconButton from '#lib/components/IconButton.svelte';
 	import List from '#lib/components/List.svelte';
-	import ListRow from '#lib/components/ListRow.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
-	import ProgressBar from '#lib/components/ProgressBar.svelte';
-	import SectionHeading from '#lib/components/SectionHeading.svelte';
+	import PageSection from '#lib/components/PageSection.svelte';
+	import PageToolbar from '#lib/components/PageToolbar.svelte';
+	import PipelineProgress from '#lib/components/PipelineProgress.svelte';
 	import {
 		deleteDocument,
 		getPipelineProgress,
@@ -23,19 +23,18 @@
 		undeleteDocument,
 	} from '#lib/api/document.js';
 	import { describeError } from '#lib/api/provider.js';
-	import { formatTimestamp, shortenId } from '#lib/format.js';
 	import { pipelineIsActive } from '#lib/pipeline.js';
 	import type {
 		Document,
 		ImportOutcome,
-		PipelineProgress,
+		PipelineProgress as PipelineProgressState,
 	} from '#lib/types/documents.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
 	let deletingDocument = $state<Document | null>(null);
-	let pipelineProgress = $state<PipelineProgress>();
+	let pipelineProgress = $state<PipelineProgressState>();
 	let importFailures = $state<ImportOutcome['failures']>([]);
 	let importError = $state<string | null>(null);
 
@@ -43,16 +42,6 @@
 	const documents = $derived(data.documents);
 	const deletedDocuments = $derived(data.deletedDocuments);
 	const processing = $derived(pipelineProgress !== undefined);
-
-	const stages = $derived(
-		pipelineProgress
-			? [
-					{ name: 'Store', data: pipelineProgress.store },
-					{ name: 'Extract', data: pipelineProgress.extract },
-					{ name: 'Index', data: pipelineProgress.index },
-				]
-			: [],
-	);
 
 	onMount(() => {
 		void getPipelineProgress().then((active) => {
@@ -67,7 +56,7 @@
 		let unlisten: (() => void) | undefined;
 		let disposed = false;
 
-		void listen<PipelineProgress>('pipeline-progress', (event) => {
+		void listen<PipelineProgressState>('pipeline-progress', (event) => {
 			if (event.payload.collection_id !== id) return;
 			pipelineProgress = pipelineIsActive(event.payload)
 				? event.payload
@@ -146,11 +135,9 @@
 		{#if importFailures.length > 0}
 			<Alert variant="warning">
 				<p class="font-medium">Some files could not be imported.</p>
-				<ul class="mt-1 list-disc pl-5">
-					{#each importFailures as failure, index (index)}
-						<li>{failure.path}: {failure.message}</li>
-					{/each}
-				</ul>
+				{#each importFailures as failure, index (index)}
+					<p class="mt-1">{failure.path}: {failure.message}</p>
+				{/each}
 			</Alert>
 		{/if}
 
@@ -158,23 +145,8 @@
 			<Alert>{importError}</Alert>
 		{/if}
 
-		{#if processing && stages.length > 0}
-			<div class="grid grid-cols-3 gap-4">
-				{#each stages as stage (stage.name)}
-					{@const total =
-						stage.data.pending +
-						stage.data.active +
-						stage.data.completed +
-						stage.data.failed}
-					{@const done = stage.data.completed + stage.data.failed}
-					<ProgressBar
-						label={stage.name}
-						detail={`${done}/${total}`}
-						value={done}
-						max={total}
-					/>
-				{/each}
-			</div>
+		{#if pipelineProgress}
+			<PipelineProgress progress={pipelineProgress} />
 		{/if}
 
 		{#if documents.length === 0 && processing}
@@ -193,69 +165,38 @@
 				description="Documents you import or that arrive from colleagues syncing this collection will appear here as they become available."
 			>
 				{#snippet action()}
-					<Button onclick={importPdf}>Import PDF</Button>
+					<Button onclick={importPdf}>Import documents</Button>
 				{/snippet}
 			</EmptyState>
 		{:else}
-			<div class="flex items-center">
-				<Button onclick={importPdf} disabled={processing}>Import PDF</Button>
-			</div>
+			<PageToolbar>
+				<Button onclick={importPdf} disabled={processing}
+					>Import documents</Button
+				>
+			</PageToolbar>
 
 			<List>
 				{#each documents as doc (doc.id)}
-					<ListRow interactive>
-						<a
-							href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
-							class="block min-w-0 focus-visible:focus-ring"
-						>
-							<span class="text-sm text-neutral-800">{doc.name}</span>
-							{#if doc.page_count !== null}
-								<p class="mt-1 text-xs text-neutral-500">
-									{doc.page_count} pages
-								</p>
-							{/if}
-						</a>
-						{#snippet actions()}
-							<IconButton
-								variant="danger"
-								label="Delete document"
-								onclick={() => (deletingDocument = doc)}
-							>
-								<Icon name="trash" size="sm" />
-							</IconButton>
-						{/snippet}
-					</ListRow>
+					<DocumentRow
+						document={doc}
+						href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
+						onDelete={(d) => (deletingDocument = d)}
+					/>
 				{/each}
 			</List>
 		{/if}
 
 		{#if deletedDocuments.length > 0}
-			<section class="border-t border-neutral-200 pt-6">
-				<div class="mb-3">
-					<SectionHeading id="deleted-items-heading" title="Deleted items" />
-				</div>
+			<PageSection title="Deleted items" id="deleted-items-heading" divider>
 				<List labelledBy="deleted-items-heading">
 					{#each deletedDocuments as doc (doc.id)}
-						<ListRow>
-							<p class="text-sm text-neutral-800">{doc.name}</p>
-							<p class="mt-1 text-xs text-neutral-500">
-								Deleted by {shortenId(doc.deleted_by)} · {formatTimestamp(
-									doc.deleted_at,
-								)}
-							</p>
-							{#snippet actions()}
-								<Button
-									variant="secondary"
-									size="sm"
-									onclick={() => undeleteDeletedDocument(doc.id)}
-								>
-									Restore
-								</Button>
-							{/snippet}
-						</ListRow>
+						<DeletedDocumentRow
+							document={doc}
+							onRestore={undeleteDeletedDocument}
+						/>
 					{/each}
 				</List>
-			</section>
+			</PageSection>
 		{/if}
 	</PageContent>
 </Page>
