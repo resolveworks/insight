@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+import {
+	render,
+	screen,
+	fireEvent,
+	waitFor,
+	within,
+} from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { goto, invalidate } from '$app/navigation';
 import { page } from '$app/state';
@@ -62,10 +68,18 @@ describe('Collections loading', () => {
 
 describe('Collection import', () => {
 	async function openImportDialog(ticket: string) {
-		await fireEvent.click(screen.getByRole('button', { name: 'Import…' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 		await fireEvent.input(screen.getByPlaceholderText('Paste ticket here...'), {
 			target: { value: ticket },
 		});
+	}
+
+	function clickConfirmImport() {
+		return fireEvent.click(
+			within(screen.getByRole('dialog')).getByRole('button', {
+				name: 'Import',
+			}),
+		);
 	}
 
 	it('navigates to the imported collection’s documents', async () => {
@@ -75,7 +89,7 @@ describe('Collection import', () => {
 
 		renderPage();
 		await openImportDialog('ticket-123');
-		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+		await clickConfirmImport();
 
 		await waitFor(() =>
 			expect(goto).toHaveBeenCalledWith('/collections/col1/documents'),
@@ -94,13 +108,13 @@ describe('Collection import', () => {
 
 		renderPage();
 		await openImportDialog('ticket-123');
-		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+		await clickConfirmImport();
 		expect(
 			screen.getByRole('button', { name: 'Importing...' }),
 		).toBeInTheDocument();
 
 		await fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
-		await fireEvent.click(screen.getByRole('button', { name: 'Import…' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 
 		resolveImport!(collection);
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -120,7 +134,7 @@ describe('Collection import', () => {
 
 		renderPage();
 		await openImportDialog('ticket-123');
-		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+		await clickConfirmImport();
 
 		expect(await screen.findByRole('alert')).toHaveTextContent(
 			'Failed to import collection: bad ticket signature',
