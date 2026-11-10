@@ -17,7 +17,7 @@ pub use iroh_docs::engine::LiveEvent;
 use iroh_docs::net::ALPN as DOCS_ALPN;
 use iroh_docs::protocol::Docs;
 use iroh_docs::store::Query;
-use iroh_docs::{AuthorId, ContentStatus, DocTicket, NamespaceId};
+use iroh_docs::{AuthorId, ContentStatus, DocTicket, Entry, NamespaceId};
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +46,9 @@ const FILES_PREFIX: &str = "files/";
 /// Suffix for document metadata entries
 const META_SUFFIX: &str = "/meta";
 
+/// Suffix for document lifecycle state entries
+const STATE_SUFFIX: &str = "/state";
+
 /// Suffix for document source file entries
 const SOURCE_SUFFIX: &str = "/source";
 
@@ -56,6 +59,12 @@ const EXTRACTIONS_SEGMENT: &str = "/extractions/";
 #[inline]
 pub fn doc_meta_key(doc_id: &str) -> String {
     format!("{}{}{}", FILES_PREFIX, doc_id, META_SUFFIX)
+}
+
+/// Build the key for a document's lifecycle state entry
+#[inline]
+pub fn doc_state_key(doc_id: &str) -> String {
+    format!("{}{}{}", FILES_PREFIX, doc_id, STATE_SUFFIX)
 }
 
 /// Build the key for a document's source file entry
@@ -121,6 +130,45 @@ pub struct DocumentMetadata {
 
 fn default_file_type() -> String {
     "application/pdf".to_string()
+}
+
+/// Lifecycle state stored in iroh-docs under `files/{id}/state`.
+///
+/// Lifecycle is separate from metadata so a stale metadata write cannot
+/// change whether a document is visible. A document with no state entry is
+/// not active.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DocumentState {
+    /// The document is visible to listings, extraction and chat.
+    Active,
+    /// The document is retained but hidden until it is undeleted.
+    Deleted {
+        /// Author that performed the deletion.
+        deleted_by: AuthorId,
+        /// RFC 3339 deletion timestamp.
+        deleted_at: String,
+    },
+}
+
+/// A deleted document as exposed by [`Storage::list_deleted_documents`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedDocument {
+    /// Metadata retained from before the deletion.
+    pub metadata: DocumentMetadata,
+    /// Author that performed the deletion.
+    pub deleted_by: AuthorId,
+    /// RFC 3339 deletion timestamp.
+    pub deleted_at: String,
+}
+
+/// Latest entries for one document, collected from a single snapshot scan.
+#[derive(Debug, Default)]
+struct DocumentEntries {
+    meta: Option<Entry>,
+    state: Option<Entry>,
+    source: Option<Entry>,
+    extractions: std::collections::HashMap<String, Entry>,
 }
 
 /// Outcome of committing a document's extraction.
@@ -482,45 +530,213 @@ impl Storage {
         Ok(metadata)
     }
 
-    /// Count documents in a collection.
+    /// Open a collection, treating an unknown namespace as absent.
     ///
-    /// Counts only `files/*/meta` entries (one per document).
-    pub async fn count_documents(&self, namespace_id: NamespaceId) -> Result<usize> {
-        use futures::StreamExt;
+    /// This iroh version signals an unknown namespace inconsistently —
+    /// sometimes `Ok(None)`, sometimes an error whose typed
+    /// `OpenError::NotFound` does not survive the in-process RPC boundary and
+    /// arrives as an opaque error carrying only the display string.
+    async fn open_collection(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> Result<Option<iroh_docs::api::Doc>> {
+        match self.docs.api().open(namespace_id).await {
+            Ok(doc) => Ok(doc),
+            Err(e) if e.to_string() == "Replica not found" => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(0),
-        };
-
-        // Query for all entries with prefix "files/" and count only /meta entries
-        let query = Query::key_prefix(b"files/");
+    /// Read the latest entry per key under `prefix`, grouped by document id.
+    async fn read_entries(
+        &self,
+        doc: &iroh_docs::api::Doc,
+        prefix: &str,
+    ) -> Result<std::collections::BTreeMap<String, DocumentEntries>> {
+        let query = Query::single_latest_per_key().key_prefix(prefix);
         let stream = doc.get_many(query).await?;
         tokio::pin!(stream);
 
-        let mut count = 0;
+        let mut documents = std::collections::BTreeMap::new();
         while let Some(result) = stream.next().await {
-            if let Ok(entry) = result {
-                let key = String::from_utf8_lossy(entry.key());
-                if key.ends_with("/meta") {
-                    count += 1;
+            let entry = result?;
+            let key = String::from_utf8_lossy(entry.key()).into_owned();
+            let Some((doc_id, part)) = key
+                .strip_prefix(FILES_PREFIX)
+                .and_then(|rest| rest.split_once('/'))
+            else {
+                continue;
+            };
+
+            let entries = documents
+                .entry(doc_id.to_string())
+                .or_insert_with(DocumentEntries::default);
+            match part {
+                "meta" => entries.meta = Some(entry),
+                "state" => entries.state = Some(entry),
+                "source" => entries.source = Some(entry),
+                part if part.starts_with("extractions/") => {
+                    entries.extractions.insert(key, entry);
                 }
+                _ => {}
             }
         }
 
+        Ok(documents)
+    }
+
+    /// Read a collection's latest document entries in one scan.
+    async fn collection_snapshot(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> Result<Option<std::collections::BTreeMap<String, DocumentEntries>>> {
+        let Some(doc) = self.open_collection(namespace_id).await? else {
+            return Ok(None);
+        };
+        let documents = self.read_entries(&doc, FILES_PREFIX).await?;
         doc.close().await?;
+        Ok(Some(documents))
+    }
+
+    /// Read one document's latest entries in one scan.
+    async fn document_entries(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+    ) -> Result<Option<DocumentEntries>> {
+        let Some(doc) = self.open_collection(namespace_id).await? else {
+            return Ok(None);
+        };
+        let prefix = format!("{}{}/", FILES_PREFIX, doc_id);
+        let mut documents = self.read_entries(&doc, &prefix).await?;
+        doc.close().await?;
+        Ok(Some(documents.remove(doc_id).unwrap_or_default()))
+    }
+
+    /// Read a document's latest metadata, if its blob is available.
+    async fn read_metadata(
+        &self,
+        doc_id: &str,
+        entry: Option<&Entry>,
+    ) -> Result<Option<DocumentMetadata>> {
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let Some(data) = self.get_blob(&entry.content_hash()).await? else {
+            return Ok(None);
+        };
+        match serde_json::from_slice(&data) {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(e) => {
+                tracing::warn!("Failed to parse document metadata for {}: {}", doc_id, e);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Read a document's latest lifecycle state, if its blob is available.
+    async fn read_state(
+        &self,
+        doc_id: &str,
+        entry: Option<&Entry>,
+    ) -> Result<Option<DocumentState>> {
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let Some(data) = self.get_blob(&entry.content_hash()).await? else {
+            return Ok(None);
+        };
+        let state: DocumentState = serde_json::from_slice(&data)
+            .with_context(|| format!("Invalid lifecycle state for document {doc_id}"))?;
+
+        if let DocumentState::Deleted { deleted_by, .. } = &state {
+            let author = entry.author();
+            if *deleted_by != author {
+                anyhow::bail!(
+                    "Document {doc_id} deletion state names author {deleted_by}, but the state entry was written by {author}"
+                );
+            }
+        }
+
+        Ok(Some(state))
+    }
+
+    /// Read an extraction entry's content, if its blob is available.
+    async fn read_extraction(
+        &self,
+        doc_id: &str,
+        entry: Option<&Entry>,
+    ) -> Result<Option<Extraction>> {
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let Some(bytes) = self.get_blob(&entry.content_hash()).await? else {
+            return Ok(None);
+        };
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("Invalid extraction for document {doc_id}"))
+            .map(Some)
+    }
+
+    /// Metadata of an active document: readable latest metadata plus a
+    /// readable latest `Active` state.
+    async fn active_metadata(
+        &self,
+        doc_id: &str,
+        entries: Option<&DocumentEntries>,
+    ) -> Result<Option<DocumentMetadata>> {
+        let Some(entries) = entries else {
+            return Ok(None);
+        };
+        let state = self.read_state(doc_id, entries.state.as_ref()).await?;
+        let Some(metadata) = self.read_metadata(doc_id, entries.meta.as_ref()).await? else {
+            return Ok(None);
+        };
+        Ok(matches!(state, Some(DocumentState::Active)).then_some(metadata))
+    }
+
+    /// Read one document's entries and active metadata together.
+    async fn active_document(
+        &self,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+    ) -> Result<Option<(DocumentMetadata, DocumentEntries)>> {
+        let Some(entries) = self.document_entries(namespace_id, doc_id).await? else {
+            return Ok(None);
+        };
+        let metadata = self.active_metadata(doc_id, Some(&entries)).await?;
+        Ok(metadata.map(|metadata| (metadata, entries)))
+    }
+
+    /// Count documents in a collection.
+    ///
+    /// Counts active documents only: each needs readable latest metadata and
+    /// a readable latest `Active` state.
+    pub async fn count_documents(&self, namespace_id: NamespaceId) -> Result<usize> {
+        let Some(documents) = self.collection_snapshot(namespace_id).await? else {
+            return Ok(0);
+        };
+
+        let mut count = 0;
+        for (doc_id, entries) in &documents {
+            if self.active_metadata(doc_id, Some(entries)).await?.is_some() {
+                count += 1;
+            }
+        }
         Ok(count)
     }
 
     /// Add a document's immutable source to a collection.
     ///
-    /// Stores two entries:
+    /// Stores three entries:
     /// - `files/{id}/meta` - document metadata (JSON)
     /// - `files/{id}/source` - original file bytes
+    /// - `files/{id}/state` - lifecycle state, written last as the visibility
+    ///   marker
     ///
     /// The document's id is the BLAKE3 hash iroh computes for the source, so
     /// a source already present in the collection is the same document and
-    /// adding it again throws.
+    /// adding it again throws, including while that document is deleted.
     pub async fn add_document(
         &self,
         namespace_id: NamespaceId,
@@ -547,7 +763,7 @@ impl Storage {
 
         let meta_key = doc_meta_key(&metadata.id);
         if doc
-            .get_one(Query::key_exact(meta_key.as_bytes()))
+            .get_one(Query::single_latest_per_key().key_exact(meta_key.as_bytes()))
             .await?
             .is_some()
         {
@@ -564,6 +780,9 @@ impl Storage {
         )
         .await?;
 
+        self.store_state_inner(&doc, &metadata.id, &DocumentState::Active)
+            .await?;
+
         doc.close().await?;
 
         tracing::info!(
@@ -575,157 +794,106 @@ impl Storage {
         Ok(metadata)
     }
 
-    /// List all documents in a collection
+    /// List all active documents in a collection.
     ///
-    /// Queries for all `files/*/meta` entries and returns their metadata.
+    /// Deleted documents and documents whose lifecycle state is missing or not
+    /// locally readable are omitted.
     pub async fn list_documents(&self, namespace_id: NamespaceId) -> Result<Vec<DocumentMetadata>> {
-        use futures::StreamExt;
-
-        // An unknown namespace is "no documents", not an error. This iroh
-        // version signals it inconsistently — sometimes `Ok(None)`, sometimes
-        // an error whose typed `OpenError::NotFound` does not survive the
-        // in-process RPC boundary and arrives as an opaque error carrying
-        // only the display string — so match on the message.
-        let doc = match self.docs.api().open(namespace_id).await {
-            Ok(Some(doc)) => doc,
-            Ok(None) => return Ok(Vec::new()),
-            Err(e) if e.to_string() == "Replica not found" => return Ok(Vec::new()),
-            Err(e) => return Err(e),
+        let Some(documents) = self.collection_snapshot(namespace_id).await? else {
+            return Ok(Vec::new());
         };
 
-        // Query for all entries - we'll filter for /meta suffix
-        let query = Query::key_prefix(b"files/");
-        let stream = doc.get_many(query).await?;
-        tokio::pin!(stream);
-
-        let mut documents = Vec::new();
-        while let Some(result) = stream.next().await {
-            let entry = result?;
-            let key = String::from_utf8_lossy(entry.key());
-
-            // Only process /meta entries
-            if !key.ends_with("/meta") {
-                continue;
-            }
-
-            let hash = entry.content_hash();
-
-            if let Some(data) = self.get_blob(&hash).await? {
-                match serde_json::from_slice::<DocumentMetadata>(&data) {
-                    Ok(metadata) => documents.push(metadata),
-                    Err(e) => {
-                        tracing::warn!("Failed to parse document metadata: {}", e);
-                    }
-                }
+        let mut active = Vec::new();
+        for (doc_id, entries) in &documents {
+            if let Some(metadata) = self.active_metadata(doc_id, Some(entries)).await? {
+                active.push(metadata);
             }
         }
-
-        doc.close().await?;
-        Ok(documents)
+        Ok(active)
     }
 
-    /// List all documents in a collection with their canonical page counts.
+    /// List all deleted documents in a collection.
     ///
-    /// Page counts come from one collection-level scan: the listing identifies
-    /// each document's canonical extraction key, and only those extraction
-    /// records are read.
+    /// Each item carries the retained metadata plus the full author id and
+    /// RFC 3339 timestamp of the deletion. Documents whose latest metadata or
+    /// state blob is not locally readable are omitted.
+    pub async fn list_deleted_documents(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> Result<Vec<DeletedDocument>> {
+        let Some(documents) = self.collection_snapshot(namespace_id).await? else {
+            return Ok(Vec::new());
+        };
+
+        let mut deleted = Vec::new();
+        for (doc_id, entries) in &documents {
+            let Some(DocumentState::Deleted {
+                deleted_by,
+                deleted_at,
+            }) = self.read_state(doc_id, entries.state.as_ref()).await?
+            else {
+                continue;
+            };
+            let Some(metadata) = self.read_metadata(doc_id, entries.meta.as_ref()).await? else {
+                continue;
+            };
+            deleted.push(DeletedDocument {
+                metadata,
+                deleted_by,
+                deleted_at,
+            });
+        }
+        Ok(deleted)
+    }
+
+    /// List all active documents in a collection with their canonical page counts.
+    ///
+    /// The collection is scanned once: the listing identifies each active
+    /// document's canonical extraction key, and only those extraction records
+    /// are read.
     pub async fn list_documents_with_page_counts(
         &self,
         namespace_id: NamespaceId,
     ) -> Result<Vec<(DocumentMetadata, Option<usize>)>> {
-        let documents = self.list_documents(namespace_id).await?;
+        let Some(documents) = self.collection_snapshot(namespace_id).await? else {
+            return Ok(Vec::new());
+        };
 
-        let canonical_keys: std::collections::HashMap<String, String> = documents
-            .iter()
-            .filter_map(|document| {
-                document.extraction.as_ref().map(|parser| {
-                    (
-                        doc_extraction_key(&document.id, parser),
-                        document.id.clone(),
-                    )
-                })
-            })
-            .collect();
-
-        if canonical_keys.is_empty() {
-            return Ok(documents
-                .into_iter()
-                .map(|document| (document, None))
-                .collect());
-        }
-
-        let doc = self
-            .docs
-            .api()
-            .open(namespace_id)
-            .await?
-            .context("Collection not found")?;
-
-        let query = Query::key_prefix(b"files/");
-        let stream = doc.get_many(query).await?;
-        tokio::pin!(stream);
-
-        let mut page_counts = std::collections::HashMap::new();
-        while let Some(result) = stream.next().await {
-            let entry = result?;
-            let key = String::from_utf8_lossy(entry.key());
-            let Some(doc_id) = canonical_keys.get(key.as_ref()) else {
+        let mut listed = Vec::new();
+        for (doc_id, entries) in &documents {
+            let Some(metadata) = self.active_metadata(doc_id, Some(entries)).await? else {
                 continue;
             };
-
-            let page_count = match self.get_blob(&entry.content_hash()).await? {
-                Some(bytes) => serde_json::from_slice::<Extraction>(&bytes)?.page_count(),
+            let page_count = match metadata.extraction.as_ref() {
+                Some(parser) => {
+                    let key = doc_extraction_key(doc_id, parser);
+                    match entries.extractions.get(&key) {
+                        Some(entry) => match self.get_blob(&entry.content_hash()).await? {
+                            Some(bytes) => {
+                                serde_json::from_slice::<Extraction>(&bytes)?.page_count()
+                            }
+                            None => None,
+                        },
+                        None => None,
+                    }
+                }
                 None => None,
             };
-            page_counts.insert(doc_id.clone(), page_count);
+            listed.push((metadata, page_count));
         }
-
-        doc.close().await?;
-
-        Ok(documents
-            .into_iter()
-            .map(|document| {
-                let page_count = page_counts.get(&document.id).copied().flatten();
-                (document, page_count)
-            })
-            .collect())
+        Ok(listed)
     }
 
-    /// Get a single document's metadata from a collection by ID
+    /// Get a single active document's metadata from a collection by ID.
     pub async fn get_document(
         &self,
         namespace_id: NamespaceId,
         document_id: &str,
     ) -> Result<Option<DocumentMetadata>> {
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(None),
-        };
-
-        let key = doc_meta_key(document_id);
-        let query = Query::key_exact(key.as_bytes());
-        let entry = doc.get_one(query).await?;
-
-        let metadata = if let Some(entry) = entry {
-            let hash = entry.content_hash();
-
-            if let Some(data) = self.get_blob(&hash).await? {
-                match serde_json::from_slice::<DocumentMetadata>(&data) {
-                    Ok(metadata) => Some(metadata),
-                    Err(e) => {
-                        tracing::warn!("Failed to parse document metadata: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        doc.close().await?;
-        Ok(metadata)
+        Ok(self
+            .active_document(namespace_id, document_id)
+            .await?
+            .map(|(metadata, _)| metadata))
     }
 
     /// Write an extraction for a document without changing which extraction
@@ -781,7 +949,9 @@ impl Storage {
             .context("Collection not found")?;
 
         let key = doc_extraction_key(doc_id, parser);
-        let entry = doc.get_one(Query::key_exact(key.as_bytes())).await?;
+        let entry = doc
+            .get_one(Query::single_latest_per_key().key_exact(key.as_bytes()))
+            .await?;
         if entry.is_none() {
             doc.close().await?;
             anyhow::bail!(
@@ -799,32 +969,21 @@ impl Storage {
 
     /// Read one of a document's extractions.
     ///
-    /// Returns `Ok(None)` when the extraction entry is absent or its content
-    /// is not available locally yet (sync in flight).
+    /// Returns `Ok(None)` when the document is not active, the extraction
+    /// entry is absent, or its content is not available locally yet (sync in
+    /// flight).
     pub async fn get_extraction(
         &self,
         namespace_id: NamespaceId,
         doc_id: &str,
         parser: &ParserId,
     ) -> Result<Option<Extraction>> {
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(None),
+        let Some((_, entries)) = self.active_document(namespace_id, doc_id).await? else {
+            return Ok(None);
         };
-
         let key = doc_extraction_key(doc_id, parser);
-        let entry = doc.get_one(Query::key_exact(key.as_bytes())).await?;
-        let extraction = if let Some(entry) = entry {
-            match self.get_blob(&entry.content_hash()).await? {
-                Some(bytes) => Some(serde_json::from_slice(&bytes)?),
-                None => None,
-            }
-        } else {
-            None
-        };
-
-        doc.close().await?;
-        Ok(extraction)
+        self.read_extraction(doc_id, entries.extractions.get(&key))
+            .await
     }
 
     /// Read a document's canonical extraction, if one is selected.
@@ -833,14 +992,15 @@ impl Storage {
         namespace_id: NamespaceId,
         doc_id: &str,
     ) -> Result<Option<Extraction>> {
-        let metadata = match self.get_document(namespace_id, doc_id).await? {
-            Some(metadata) => metadata,
-            None => return Ok(None),
+        let Some((metadata, entries)) = self.active_document(namespace_id, doc_id).await? else {
+            return Ok(None);
         };
         let Some(parser) = metadata.extraction else {
             return Ok(None);
         };
-        self.get_extraction(namespace_id, doc_id, &parser).await
+        let key = doc_extraction_key(doc_id, &parser);
+        self.read_extraction(doc_id, entries.extractions.get(&key))
+            .await
     }
 
     /// Number of pages in a document's canonical extraction.
@@ -849,70 +1009,51 @@ impl Storage {
         namespace_id: NamespaceId,
         doc_id: &str,
     ) -> Result<Option<usize>> {
-        let metadata = match self.get_document(namespace_id, doc_id).await? {
-            Some(metadata) => metadata,
-            None => return Ok(None),
-        };
-        let Some(parser) = metadata.extraction else {
-            return Ok(None);
-        };
         Ok(self
-            .get_extraction(namespace_id, doc_id, &parser)
+            .get_canonical_extraction(namespace_id, doc_id)
             .await?
             .and_then(|extraction| extraction.page_count()))
     }
 
-    /// Get a document's original source file
+    /// Get a document's original source file.
+    ///
+    /// Returns `Ok(None)` when the document is not active or its source is not
+    /// available locally.
     pub async fn get_document_source(
         &self,
         namespace_id: NamespaceId,
         document_id: &str,
     ) -> Result<Option<Vec<u8>>> {
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(None),
+        let Some((_, entries)) = self.active_document(namespace_id, document_id).await? else {
+            return Ok(None);
         };
-
-        let key = doc_source_key(document_id);
-        let query = Query::key_exact(key.as_bytes());
-        let entry = doc.get_one(query).await?;
-
-        let source = if let Some(entry) = entry {
-            self.get_blob(&entry.content_hash()).await?
-        } else {
-            None
+        let Some(entry) = entries.source.as_ref() else {
+            return Ok(None);
         };
-
-        doc.close().await?;
-        Ok(source)
+        self.get_blob(&entry.content_hash()).await
     }
 
     /// Return the author of a document's source entry.
     ///
-    /// Returns `Ok(None)` when the document or its source entry is absent.
+    /// Returns `Ok(None)` when the document is not active or its source entry
+    /// is absent.
     pub async fn source_author(
         &self,
         namespace_id: NamespaceId,
         document_id: &str,
     ) -> Result<Option<AuthorId>> {
-        let doc = match self.docs.api().open(namespace_id).await? {
-            Some(doc) => doc,
-            None => return Ok(None),
+        let Some((_, entries)) = self.active_document(namespace_id, document_id).await? else {
+            return Ok(None);
         };
-
-        let entry = doc
-            .get_one(Query::key_exact(doc_source_key(document_id).as_bytes()))
-            .await?;
-        let author = entry.map(|entry| entry.author());
-
-        doc.close().await?;
-        Ok(author)
+        Ok(entries.source.as_ref().map(|entry| entry.author()))
     }
 
-    /// Delete a document from a collection
+    /// Reversibly delete a document from a collection.
     ///
-    /// Deletes the whole `files/{id}/` prefix in one tombstone: meta, source,
-    /// extractions and anything added later.
+    /// Requires an active document. Writes a `Deleted` lifecycle state under
+    /// the existing mutation lock; metadata, source and extractions are kept
+    /// so the document can be undeleted. Deleting an already deleted document
+    /// or an unknown document throws.
     pub async fn delete_document(
         &self,
         namespace_id: NamespaceId,
@@ -927,13 +1068,80 @@ impl Storage {
             .await?
             .context("Collection not found")?;
 
-        let prefix = format!("{}{}/", FILES_PREFIX, document_id);
-        doc.del(self.author_id, prefix).await?;
+        let entries = {
+            let prefix = format!("{}{}/", FILES_PREFIX, document_id);
+            let mut documents = self.read_entries(&doc, &prefix).await?;
+            documents.remove(document_id).unwrap_or_default()
+        };
+        if self
+            .active_metadata(document_id, Some(&entries))
+            .await?
+            .is_none()
+        {
+            doc.close().await?;
+            anyhow::bail!("Document {document_id} is not active");
+        }
 
+        let state = DocumentState::Deleted {
+            deleted_by: self.author_id,
+            deleted_at: chrono::Utc::now().to_rfc3339(),
+        };
+        self.store_state_inner(&doc, document_id, &state).await?;
         doc.close().await?;
 
         tracing::info!(
             "Deleted document '{}' from collection {}",
+            document_id,
+            namespace_id
+        );
+
+        Ok(())
+    }
+
+    /// Restore a deleted document.
+    ///
+    /// Requires a readable `Deleted` lifecycle state and readable metadata.
+    /// Writes an `Active` state under the existing mutation lock. Undeleting
+    /// an active or unknown document throws.
+    pub async fn undelete_document(
+        &self,
+        namespace_id: NamespaceId,
+        document_id: &str,
+    ) -> Result<()> {
+        let _mutation = self.document_mutations.lock().await;
+
+        let doc = self
+            .docs
+            .api()
+            .open(namespace_id)
+            .await?
+            .context("Collection not found")?;
+
+        let entries = {
+            let prefix = format!("{}{}/", FILES_PREFIX, document_id);
+            let mut documents = self.read_entries(&doc, &prefix).await?;
+            documents.remove(document_id).unwrap_or_default()
+        };
+        let state = self.read_state(document_id, entries.state.as_ref()).await?;
+        if !matches!(state, Some(DocumentState::Deleted { .. })) {
+            doc.close().await?;
+            anyhow::bail!("Document {document_id} is not deleted");
+        }
+        if self
+            .read_metadata(document_id, entries.meta.as_ref())
+            .await?
+            .is_none()
+        {
+            doc.close().await?;
+            anyhow::bail!("Document {document_id} has no readable metadata");
+        }
+
+        self.store_state_inner(&doc, document_id, &DocumentState::Active)
+            .await?;
+        doc.close().await?;
+
+        tracing::info!(
+            "Undeleted document '{}' in collection {}",
             document_id,
             namespace_id
         );
@@ -1294,6 +1502,26 @@ impl Storage {
         .await?;
         Ok(())
     }
+
+    /// Internal helper: serialize + store a lifecycle state entry on an open
+    /// doc handle.
+    async fn store_state_inner(
+        &self,
+        doc: &iroh_docs::api::Doc,
+        doc_id: &str,
+        state: &DocumentState,
+    ) -> Result<()> {
+        let state_bytes = serde_json::to_vec(state)?;
+        let state_hash = self.store_blob(&state_bytes).await?;
+        doc.set_hash(
+            self.author_id,
+            doc_state_key(doc_id).into_bytes(),
+            state_hash,
+            state_bytes.len() as u64,
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1420,6 +1648,49 @@ mod tests {
             unit_kind: Some(UnitKind::Page),
             units,
         }
+    }
+
+    /// Write a metadata entry directly, as a peer editor would.
+    async fn write_metadata_entry(
+        storage: &Storage,
+        collection_id: NamespaceId,
+        author: AuthorId,
+        metadata: &DocumentMetadata,
+    ) {
+        let bytes = serde_json::to_vec(metadata).unwrap();
+        let hash = storage.store_blob(&bytes).await.unwrap();
+        let doc = storage.docs().open(collection_id).await.unwrap().unwrap();
+        doc.set_hash(
+            author,
+            doc_meta_key(&metadata.id).into_bytes(),
+            hash,
+            bytes.len() as u64,
+        )
+        .await
+        .unwrap();
+        doc.close().await.unwrap();
+    }
+
+    /// Write a lifecycle state entry directly, as a peer would.
+    async fn write_state_entry(
+        storage: &Storage,
+        collection_id: NamespaceId,
+        doc_id: &str,
+        author: AuthorId,
+        state: &DocumentState,
+    ) {
+        let bytes = serde_json::to_vec(state).unwrap();
+        let hash = storage.store_blob(&bytes).await.unwrap();
+        let doc = storage.docs().open(collection_id).await.unwrap().unwrap();
+        doc.set_hash(
+            author,
+            doc_state_key(doc_id).into_bytes(),
+            hash,
+            bytes.len() as u64,
+        )
+        .await
+        .unwrap();
+        doc.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1710,7 +1981,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_document_removes_all_document_entries() {
+    async fn test_delete_document_hides_but_retains_document() {
         let temp_dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(temp_dir.path()).await.unwrap();
 
@@ -1729,14 +2000,18 @@ mod tests {
             .set_canonical_extraction(collection_id, &doc_id, &worked.parser)
             .await
             .unwrap();
+        let original_metadata = storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .unwrap();
 
         storage
             .delete_document(collection_id, &doc_id)
             .await
             .unwrap();
 
-        // Every entry under the document prefix is gone: metadata, source
-        // and extractions.
+        // Deleted documents are absent from every active read surface.
         assert!(storage
             .get_document(collection_id, &doc_id)
             .await
@@ -1747,6 +2022,10 @@ mod tests {
                 .get_document_source(collection_id, &doc_id)
                 .await
                 .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.source_author(collection_id, &doc_id).await.unwrap(),
             None
         );
         assert_eq!(
@@ -1768,28 +2047,87 @@ mod tests {
             None
         );
 
-        // The document disappears from the collection's listing.
+        // The document disappears from active listings and counts.
         let docs = storage.list_documents(collection_id).await.unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].name, "second.pdf");
         assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);
+        let listed = storage
+            .list_documents_with_page_counts(collection_id)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0.name, "second.pdf");
 
-        // Its source can be imported again as a fresh document, without the
-        // deleted document's extractions.
-        let re_added = add_document(&storage, collection_id, "first.pdf", source).await;
-        assert_eq!(re_added, doc_id);
+        // The deleted listing exposes the retained metadata and the deletion
+        // author and timestamp.
+        let deleted = storage.list_deleted_documents(collection_id).await.unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].metadata.id, doc_id);
+        assert_eq!(deleted[0].metadata.name, "first.pdf");
+        assert_eq!(deleted[0].deleted_by, storage.author_id());
+        assert!(chrono::DateTime::parse_from_rfc3339(&deleted[0].deleted_at).is_ok());
+
+        // Deleting again is invalid.
+        assert!(storage
+            .delete_document(collection_id, &doc_id)
+            .await
+            .is_err());
+
+        // Undelete restores the same document with its source, canonical
+        // extraction and page count intact.
+        storage
+            .undelete_document(collection_id, &doc_id)
+            .await
+            .unwrap();
+        let restored = storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.id, original_metadata.id);
+        assert_eq!(restored.name, original_metadata.name);
+        assert_eq!(restored.file_type, original_metadata.file_type);
+        assert_eq!(restored.extraction, original_metadata.extraction);
+        assert_eq!(restored.tags, original_metadata.tags);
+        assert_eq!(restored.created_at, original_metadata.created_at);
+        assert_eq!(
+            storage
+                .get_document_source(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            Some(source.to_vec())
+        );
         assert_eq!(
             storage
                 .get_extraction(collection_id, &doc_id, &worked.parser)
                 .await
                 .unwrap(),
-            None
+            Some(worked.clone())
+        );
+        assert_eq!(
+            storage
+                .get_canonical_extraction(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            Some(worked)
         );
         assert_eq!(
             storage.page_count(collection_id, &doc_id).await.unwrap(),
-            None
+            Some(1)
         );
         assert_eq!(storage.count_documents(collection_id).await.unwrap(), 2);
+        assert!(storage
+            .list_deleted_documents(collection_id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Undeleting an already active document is invalid.
+        assert!(storage
+            .undelete_document(collection_id, &doc_id)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1819,7 +2157,8 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, CommitOutcome::DocumentGone));
 
-        // The late commit recreates none of the document's entries.
+        // The late commit wrote no extraction; a deleted document keeps its
+        // original entries but gains nothing from the racing pipeline.
         assert!(storage
             .get_document(collection_id, &doc_id)
             .await
@@ -1852,6 +2191,235 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(storage.count_documents(collection_id).await.unwrap(), 0);
+
+        // Undelete restores the document without the late extraction.
+        storage
+            .undelete_document(collection_id, &doc_id)
+            .await
+            .unwrap();
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            storage
+                .get_extraction(collection_id, &doc_id, &late.parser)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_document_without_state_is_not_active() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("No State").await.unwrap();
+
+        let doc_id = add_document(&storage, collection_id, "state-less.pdf", b"state-less").await;
+        let doc = storage.docs().open(collection_id).await.unwrap().unwrap();
+        doc.del(storage.author_id(), doc_state_key(&doc_id).into_bytes())
+            .await
+            .unwrap();
+        doc.close().await.unwrap();
+
+        // Metadata and source remain, but without a readable Active state the
+        // document is invisible everywhere.
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage
+                .get_document_source(collection_id, &doc_id)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(storage
+            .list_documents(collection_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(storage
+            .list_deleted_documents(collection_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_stale_metadata_write_does_not_change_lifecycle() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Stale Meta").await.unwrap();
+
+        let doc_id = add_document(&storage, collection_id, "original.pdf", b"stale meta").await;
+        let original = storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let peer = storage.docs().author_create().await.unwrap();
+
+        // A peer's newer metadata wins the per-key race without changing
+        // lifecycle.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let mut renamed = original.clone();
+        renamed.name = "renamed.pdf".to_string();
+        write_metadata_entry(&storage, collection_id, peer, &renamed).await;
+        assert_eq!(
+            storage
+                .get_document(collection_id, &doc_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .name,
+            "renamed.pdf"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        storage
+            .delete_document(collection_id, &doc_id)
+            .await
+            .unwrap();
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        // A metadata edit after deletion also leaves lifecycle untouched.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let mut after_delete = renamed.clone();
+        after_delete.name = "edited-after-delete.pdf".to_string();
+        write_metadata_entry(&storage, collection_id, peer, &after_delete).await;
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 0);
+        let deleted = storage.list_deleted_documents(collection_id).await.unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].metadata.name, "edited-after-delete.pdf");
+
+        storage
+            .undelete_document(collection_id, &doc_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .get_document(collection_id, &doc_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .name,
+            "edited-after-delete.pdf"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_latest_state_per_key_wins_across_authors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Multi Author").await.unwrap();
+
+        let doc_id = add_document(&storage, collection_id, "shared.pdf", b"multi author").await;
+        let peer = storage.docs().author_create().await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        write_state_entry(
+            &storage,
+            collection_id,
+            &doc_id,
+            peer,
+            &DocumentState::Deleted {
+                deleted_by: peer,
+                deleted_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_none());
+        let deleted = storage.list_deleted_documents(collection_id).await.unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].deleted_by, peer);
+
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        write_state_entry(
+            &storage,
+            collection_id,
+            &doc_id,
+            storage.author_id(),
+            &DocumentState::Active,
+        )
+        .await;
+        assert!(storage
+            .get_document(collection_id, &doc_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(storage
+            .list_deleted_documents(collection_id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_lifecycle_state_is_an_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path()).await.unwrap();
+        let (collection_id, _) = storage.create_collection("Invalid State").await.unwrap();
+
+        let malformed = add_document(&storage, collection_id, "malformed.pdf", b"malformed").await;
+        let doc = storage.docs().open(collection_id).await.unwrap().unwrap();
+        doc.set_bytes(
+            storage.author_id(),
+            doc_state_key(&malformed).into_bytes(),
+            b"not json".to_vec(),
+        )
+        .await
+        .unwrap();
+        doc.close().await.unwrap();
+        let err = storage
+            .get_document(collection_id, &malformed)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid lifecycle state"),
+            "unexpected error: {err}"
+        );
+
+        let mismatched = add_document(&storage, collection_id, "mismatch.pdf", b"mismatch").await;
+        let peer = storage.docs().author_create().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        write_state_entry(
+            &storage,
+            collection_id,
+            &mismatched,
+            peer,
+            &DocumentState::Deleted {
+                deleted_by: storage.author_id(),
+                deleted_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await;
+        let err = storage
+            .get_document(collection_id, &mismatched)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("deletion state names author"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -2080,15 +2648,29 @@ mod tests {
         add_document(&storage, collection_id, "other.pdf", b"different content").await;
         assert_eq!(storage.count_documents(collection_id).await.unwrap(), 2);
 
-        // Deleting and re-importing the source yields one document again.
+        // Deleting hides the source from active reads but keeps it: the same
+        // source cannot be imported again while the document is deleted.
         storage
             .delete_document(collection_id, &doc_id)
             .await
             .unwrap();
         assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);
-        let re_added = add_document(&storage, collection_id, "report.pdf", source_content).await;
-        assert_eq!(re_added, doc_id);
-        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 2);
+        assert!(storage
+            .add_document(
+                collection_id,
+                "report.pdf",
+                "application/pdf",
+                source_content
+            )
+            .await
+            .is_err());
+        assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);
+        assert_eq!(
+            storage.list_deleted_documents(collection_id).await.unwrap()[0]
+                .metadata
+                .id,
+            doc_id
+        );
     }
 
     #[tokio::test]

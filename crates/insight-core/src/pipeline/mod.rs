@@ -380,7 +380,7 @@ mod tests {
         chunk_external_id, get_indexed_chunk, get_indexed_chunk_by_external_id, indexed_parent_ids,
         search_index, ChunkToIndex, SearchParams,
     };
-    use crate::storage::{doc_meta_key, doc_source_key};
+    use crate::storage::{doc_meta_key, doc_source_key, doc_state_key, DocumentState};
     use crate::text::{Extraction, ParserId};
 
     /// One-page PDF with a standard Helvetica text run.
@@ -600,6 +600,16 @@ mod tests {
                 doc_source_key(&document_id).into_bytes(),
                 source_hash,
                 TEXT_PDF.len() as u64,
+            )
+            .await
+            .unwrap();
+            let state_bytes = serde_json::to_vec(&DocumentState::Active).unwrap();
+            let state_hash = storage.store_blob(&state_bytes).await.unwrap();
+            doc.set_hash(
+                peer,
+                doc_state_key(&document_id).into_bytes(),
+                state_hash,
+                state_bytes.len() as u64,
             )
             .await
             .unwrap();
