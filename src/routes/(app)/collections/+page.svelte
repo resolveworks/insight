@@ -7,10 +7,10 @@
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
-	import Input from '#lib/components/Input.svelte';
 	import Textarea from '#lib/components/Textarea.svelte';
 	import Alert from '#lib/components/Alert.svelte';
 	import Modal from '#lib/components/Modal.svelte';
+	import NewCollectionForm from '#lib/components/NewCollectionForm.svelte';
 	import PageToolbar from '#lib/components/PageToolbar.svelte';
 	import CardGrid from '#lib/components/CardGrid.svelte';
 	import CollectionCard from '#lib/components/CollectionCard.svelte';
@@ -19,9 +19,6 @@
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-
-	// Create collection state
-	let newCollectionName = $state('');
 
 	// Import modal state
 	let showImportModal = $state(false);
@@ -32,11 +29,9 @@
 
 	const collectionList = $derived(data.collections);
 
-	async function handleCreateCollection() {
-		if (!newCollectionName.trim()) return;
+	async function handleCreateCollection(name: string) {
 		try {
-			const collection = await createCollection(newCollectionName);
-			newCollectionName = '';
+			const collection = await createCollection(name);
 			goto(resolve(`collections/${collection.id}`));
 		} catch (e) {
 			console.error('Failed to create collection:', e);
@@ -92,13 +87,7 @@
 	<!-- Content -->
 	<PageContent>
 		<PageToolbar>
-			<Input
-				placeholder="New collection..."
-				bind:value={newCollectionName}
-				onkeydown={(e) => e.key === 'Enter' && handleCreateCollection()}
-				class="w-48"
-			/>
-			<Button onclick={handleCreateCollection}>Create</Button>
+			<NewCollectionForm onCreate={handleCreateCollection} />
 			<Button variant="secondary" onclick={openImportModal}>Import</Button>
 		</PageToolbar>
 

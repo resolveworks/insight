@@ -10,6 +10,7 @@
 	import DeletedDocumentRow from '#lib/components/DeletedDocumentRow.svelte';
 	import DocumentRow from '#lib/components/DocumentRow.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
+	import ImportFailures from '#lib/components/ImportFailures.svelte';
 	import List from '#lib/components/List.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
@@ -133,12 +134,7 @@
 	<!-- Content -->
 	<PageContent>
 		{#if importFailures.length > 0}
-			<Alert variant="warning">
-				<p class="font-medium">Some files could not be imported.</p>
-				{#each importFailures as failure, index (index)}
-					<p class="mt-1">{failure.path}: {failure.message}</p>
-				{/each}
-			</Alert>
+			<ImportFailures failures={importFailures} />
 		{/if}
 
 		{#if importError}
