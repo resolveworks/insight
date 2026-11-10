@@ -77,8 +77,7 @@ pub struct SearchHitResult {
 /// Output of [`search`].
 #[derive(Debug, Serialize)]
 pub struct SearchOutput {
-    /// Number of matching passages among the returned hits, after filtering
-    /// out passages whose document is no longer active.
+    /// Total number of matching passages before the limit.
     pub total_hits: usize,
     /// The returned hits.
     pub hits: Vec<SearchHitResult>,
@@ -183,7 +182,7 @@ impl Tool for Search {
         tracing::info!(query = %query, hits = hits.len(), "Search completed");
 
         Ok(SearchOutput {
-            total_hits: hits.len(),
+            total_hits: results.total_hits,
             hits,
         })
     }
@@ -888,9 +887,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(out.total_hits, 1);
         assert_eq!(out.hits.len(), 1);
         assert_eq!(out.hits[0].document_id, active_id);
+        assert!(!out.hits.iter().any(|hit| hit.document_id == deleted_id));
 
         let err = ReadChunk::new(state.clone())
             .call(
