@@ -91,7 +91,6 @@ describe('Research workspace without a chat provider', () => {
 		renderPage({
 			collections: [collection],
 			collection,
-			documents: [],
 			conversations,
 			provider,
 			providerError: null,
@@ -129,7 +128,6 @@ describe('Research workspace without a chat provider', () => {
 		renderPage({
 			...data,
 			collection,
-			documents: [],
 			conversations: [],
 		});
 

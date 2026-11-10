@@ -104,8 +104,9 @@ function deletedItemsSection(): HTMLElement {
 }
 
 describe('Collection documents load', () => {
-	it('registers its dependency and returns the deleted documents', async () => {
+	it('registers its dependency and returns the active and deleted documents', async () => {
 		mockIPC((cmd) => {
+			if (cmd === 'get_documents') return [document];
 			if (cmd === 'get_deleted_documents') return [deletedDocument];
 		});
 		const depends = vi.fn();
@@ -114,10 +115,12 @@ describe('Collection documents load', () => {
 			params: { collectionId: 'col1' },
 			depends,
 		} as unknown as Parameters<typeof load>[0])) as {
+			documents: unknown[];
 			deletedDocuments: unknown[];
 		};
 
 		expect(depends).toHaveBeenCalledWith(dataKeys.collection('col1'));
+		expect(data.documents).toEqual([document]);
 		expect(data.deletedDocuments).toEqual([deletedDocument]);
 	});
 });

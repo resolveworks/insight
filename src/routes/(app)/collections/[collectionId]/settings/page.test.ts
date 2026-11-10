@@ -42,7 +42,6 @@ function renderPage(sharing = sharingStatus) {
 			data: {
 				collections: [collection],
 				collection,
-				documents: [],
 				provider: { current: null, status: providerStatus },
 				providerError: null,
 				sharing,

@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
-import { mockIPC } from '@tauri-apps/api/mocks';
 import { createRawSnippet } from 'svelte';
 import { page } from '$app/state';
 import Layout from './+layout.svelte';
@@ -17,22 +16,7 @@ const collection = {
 	total_pages: 10,
 };
 
-const document = {
-	id: 'doc1',
-	name: 'report.pdf',
-	file_type: 'application/pdf',
-	page_count: 12,
-	tags: [],
-	created_at: '2024-01-15T10:30:00Z',
-};
-
 const providerStatus = { family: null, model: null, error: null };
-
-beforeEach(() => {
-	mockIPC((cmd) => {
-		if (cmd === 'get_documents') return [];
-	});
-});
 
 function renderWorkspace(pathname: string) {
 	page.url = new URL(`http://localhost${pathname}`);
@@ -48,7 +32,6 @@ function renderWorkspace(pathname: string) {
 			data: {
 				collections: [collection],
 				collection,
-				documents: [],
 				provider: { current: null, status: providerStatus },
 				providerError: null,
 			},
@@ -58,10 +41,7 @@ function renderWorkspace(pathname: string) {
 }
 
 describe('Collection workspace load', () => {
-	it('registers its dependency, finds the collection, and returns its documents', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'get_documents') return [document];
-		});
+	it('registers its dependency and finds the collection without loading its documents', async () => {
 		const depends = vi.fn();
 		const parent = vi.fn(async () => ({ collections: [collection] }));
 
@@ -69,14 +49,11 @@ describe('Collection workspace load', () => {
 			params: { collectionId: 'col1' },
 			depends,
 			parent,
-		} as unknown as Parameters<typeof load>[0])) as {
-			collection: unknown;
-			documents: unknown[];
-		};
+		} as unknown as Parameters<typeof load>[0])) as { collection: unknown };
 
 		expect(depends).toHaveBeenCalledWith('app:collection:col1');
 		expect(data.collection).toEqual(collection);
-		expect(data.documents).toEqual([document]);
+		expect(data).not.toHaveProperty('documents');
 	});
 });
 
