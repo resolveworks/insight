@@ -6,9 +6,10 @@
 	import Input from './Input.svelte';
 	import Alert from './Alert.svelte';
 	import SetupScreen from './SetupScreen.svelte';
-	import ToolBlock from './ToolBlock.svelte';
+	import ActivityStepView from './ActivityStep.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 	import { documentCountLabel } from '#lib/api/collection.js';
+	import { transcriptBlocks } from '#lib/chat/activity.js';
 
 	type Props = {
 		collectionId: string;
@@ -24,6 +25,7 @@
 
 	// Reactive reads from the conversations store
 	const transcript = $derived(chat.getItems());
+	const blocks = $derived(transcriptBlocks(transcript));
 	const isGenerating = $derived(chat.getIsGenerating());
 	const error = $derived(chat.getError());
 
@@ -68,103 +70,78 @@
 </script>
 
 <div class="flex h-full flex-col bg-surface">
-	<!-- Messages Area -->
-	<div
-		bind:this={messagesContainer}
-		class="flex-1 space-y-4 overflow-y-auto p-4"
-	>
-		{#if transcript.length === 0}
-			{#if !hasDocuments}
-				<div class="flex h-full items-center justify-center">
-					<div class="max-w-md text-center">
-						<div class="mb-2 text-lg text-neutral-800">
-							No documents in {collectionName}
-						</div>
-						<p class="text-sm text-muted">
-							Research answers need sources. Add documents to this collection
-							before asking questions.
-						</p>
-						<a
-							href={resolve(`collections/${collectionId}/documents`)}
-							class="mt-4 inline-flex rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
-						>
-							Go to Documents
-						</a>
-					</div>
-				</div>
-			{:else}
-				<div class="flex h-full items-center justify-center">
-					<div class="text-center text-muted">
-						<div class="mb-2 text-lg text-neutral-800">
-							Ask questions about {collectionName}
-						</div>
-						<div class="text-sm">
-							{documentCountLabel(documentCount)} ready to search and read
+	<!-- Transcript -->
+	<div bind:this={messagesContainer} class="flex-1 overflow-y-auto">
+		<div class="mx-auto w-full max-w-3xl px-6 py-6">
+			{#if transcript.length === 0}
+				{#if !hasDocuments}
+					<div class="flex min-h-64 items-center justify-center">
+						<div class="max-w-sm text-center">
+							<div class="text-base text-neutral-700">
+								No documents in {collectionName}
+							</div>
+							<p class="mt-1 text-sm text-muted">
+								Research answers need sources. Add documents to this collection
+								before asking questions.
+							</p>
+							<a
+								href={resolve(`collections/${collectionId}/documents`)}
+								class="mt-4 inline-flex rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
+							>
+								Go to Documents
+							</a>
 						</div>
 					</div>
-				</div>
-			{/if}
-		{:else}
-			<!-- One renderer over the transcript: a run committing only flips
-			     provisional/executing flags — blocks stay in place. -->
-			{#each transcript as item (item.key)}
-				{#if item.kind === 'user_text'}
-					<div class="flex justify-end">
-						<div
-							class="max-w-[80%] min-w-0 break-words rounded-lg bg-primary-600 px-4 py-2 text-white"
-						>
-							<Markdown content={item.text} />
+				{:else}
+					<div class="flex min-h-64 items-center justify-center">
+						<div class="max-w-sm text-center">
+							<div class="text-base text-neutral-700">
+								Ask questions about {collectionName}
+							</div>
+							<div class="mt-1 text-sm text-muted">
+								{documentCountLabel(documentCount)} ready to search and read
+							</div>
 						</div>
 					</div>
-				{:else if item.kind === 'assistant_text'}
-					<div class="flex justify-start">
-						<div
-							class="max-w-[80%] min-w-0 break-words rounded-lg border border-line bg-surface-bright px-4 py-2 text-neutral-800"
-						>
-							<Markdown content={item.text} />{#if item.streaming}<span
-									class="animate-pulse text-primary-500">▊</span
-								>{/if}
-						</div>
-					</div>
-				{:else if item.kind === 'reasoning'}
-					<ToolBlock title="Reasoning">
-						<pre
-							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{item.text}</pre>
-					</ToolBlock>
-				{:else if item.kind === 'tool_call'}
-					<ToolBlock title="Tool: {item.name || '…'}">
-						{#snippet summaryExtra()}
-							{#if item.executing}
-								<span class="animate-pulse text-primary-500">...</span>
-							{/if}
-						{/snippet}
-						{#if item.text}
-							<pre
-								class="max-h-24 overflow-auto whitespace-pre-wrap break-words text-xs text-neutral-600">{item.text}</pre>
-						{/if}
-					</ToolBlock>
-				{:else if item.kind === 'tool_result'}
-					<ToolBlock
-						title="Tool result: {item.name}"
-						tone={item.is_error ? 'error' : 'neutral'}
-					>
-						<pre
-							class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{item.text}</pre>
-					</ToolBlock>
 				{/if}
-			{/each}
+			{:else}
+				<div class="space-y-5">
+					<!-- One renderer over the transcript: a run committing only flips
+					     provisional/executing flags — blocks stay in place. -->
+					{#each blocks as block (block.key)}
+						{#if block.kind === 'activity'}
+							<!-- Consecutive reasoning/tool steps read as one subordinate trail. -->
+							<div class="my-2 space-y-0.5 pl-4">
+								{#each block.steps as step (step.key)}
+									<ActivityStepView {step} />
+								{/each}
+							</div>
+						{:else if block.item.kind === 'user_text'}
+							<div class="flex justify-end">
+								<div
+									class="ml-auto max-w-[85%] min-w-0 break-words rounded-lg border border-primary-200 bg-primary-50 px-4 py-2.5 text-neutral-900"
+								>
+									<Markdown content={block.item.text} />
+								</div>
+							</div>
+						{:else if block.item.kind === 'assistant_text'}
+							<div class="max-w-[72ch] text-[15px] leading-7 text-neutral-800">
+								<Markdown
+									content={block.item.text}
+								/>{#if block.item.streaming}<span
+										class="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-primary-500 align-text-bottom"
+									></span>{/if}
+							</div>
+						{/if}
+					{/each}
 
-			<!-- Placeholder for the gap between send and the first delta. -->
-			{#if isGenerating && !transcript.some((item) => item.provisional)}
-				<div class="flex justify-start">
-					<div
-						class="max-w-[80%] min-w-0 break-words rounded-lg border border-line bg-surface-bright px-4 py-2 text-muted"
-					>
-						<span class="animate-pulse">Thinking...</span>
-					</div>
+					<!-- Placeholder for the gap between send and the first delta. -->
+					{#if isGenerating && !transcript.some((item) => item.provisional)}
+						<div class="animate-pulse text-sm text-muted">Thinking...</div>
+					{/if}
 				</div>
 			{/if}
-		{/if}
+		</div>
 	</div>
 
 	<!-- Error display -->
@@ -173,29 +150,35 @@
 	{/if}
 
 	{#if providerReady}
-		<!-- Input Area -->
-		<div class="border-t border-line bg-surface-bright p-4">
-			<div class="flex gap-2">
-				<Input
-					type="text"
-					bind:value={inputValue}
-					class="flex-1"
-					onkeydown={handleKeydown}
-					placeholder={hasDocuments
-						? 'Ask about your documents...'
-						: 'Add documents to start asking questions'}
-					disabled={isGenerating || !hasDocuments}
-				/>
-				{#if isGenerating}
-					<Button variant="secondary" onclick={cancelGeneration}>Cancel</Button>
-				{:else}
-					<Button
-						onclick={sendMessage}
-						disabled={!hasDocuments || !inputValue.trim()}
-					>
-						Send
-					</Button>
-				{/if}
+		<!-- Composer -->
+		<div class="shrink-0 border-t border-line bg-surface-bright">
+			<div class="mx-auto w-full max-w-3xl px-6 py-3">
+				<div
+					class="flex items-center gap-2 rounded-lg border border-line-strong bg-surface-bright px-2 py-1.5 transition-colors focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-100"
+				>
+					<Input
+						type="text"
+						bind:value={inputValue}
+						class="flex-1 border-0 bg-transparent px-2 py-1.5 focus:outline-none"
+						onkeydown={handleKeydown}
+						placeholder={hasDocuments
+							? 'Ask about your documents...'
+							: 'Add documents to start asking questions'}
+						disabled={isGenerating || !hasDocuments}
+					/>
+					{#if isGenerating}
+						<Button variant="secondary" onclick={cancelGeneration}
+							>Cancel</Button
+						>
+					{:else}
+						<Button
+							onclick={sendMessage}
+							disabled={!hasDocuments || !inputValue.trim()}
+						>
+							Send
+						</Button>
+					{/if}
+				</div>
 			</div>
 		</div>
 	{:else}
