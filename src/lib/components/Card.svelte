@@ -39,7 +39,7 @@
 		{href}
 		class="block rounded-lg border bg-surface-bright {toneClasses[
 			tone
-		]} {paddingClasses[padding]} {interactionClasses}"
+		]} {paddingClasses[padding]} {interactionClasses} focus-visible:focus-ring"
 	>
 		{@render children()}
 	</a>
