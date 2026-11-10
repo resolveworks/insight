@@ -1,28 +1,16 @@
 @import '@fontsource-variable/inter';
 @import 'tailwindcss';
 
-/* One accent (primary) + Tailwind default neutrals; colours outside this set are errors.
+/* Tailwind default palette only: blue as the accent, default neutrals otherwise.
+   This theme adds role aliases over those defaults; colours outside this set are errors.
    Text roles: neutral-800 primary, muted secondary, subtle tertiary; mono blocks use
    neutral-700. */
 @theme {
-	/* Primary - Rust/Coral */
-	--color-primary-50: #fdf5f4;
-	--color-primary-100: #fbe8e6;
-	--color-primary-200: #f8d5d1;
-	--color-primary-300: #f1b5ad;
-	--color-primary-400: #e6877a;
-	--color-primary-500: #d6604f;
-	--color-primary-600: #b85143;
-	--color-primary-700: #9c4438;
-	--color-primary-800: #813a31;
-	--color-primary-900: #6c352e;
-	--color-primary-950: #3a1814;
-
 	/* Semantic colors */
-	--color-error: #cc0202;
-	--color-error-hover: #a30202;
-	--color-warning: #fc8f32;
-	--color-success: #16a34a;
+	--color-error: var(--color-red-600);
+	--color-error-hover: var(--color-red-700);
+	--color-warning: var(--color-amber-600);
+	--color-success: var(--color-green-600);
 
 	/* Role colors */
 	--color-muted: var(--color-neutral-500);
@@ -31,7 +19,7 @@
 	--color-line-strong: var(--color-neutral-300);
 	--color-surface: var(--color-neutral-50);
 	--color-surface-dim: var(--color-neutral-100);
-	--color-surface-bright: #ffffff;
+	--color-surface-bright: var(--color-white);
 
 	/* Typography */
 	--font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
@@ -53,7 +41,7 @@
 	}
 
 	a {
-		@apply text-primary-600 hover:underline;
+		@apply text-blue-600 hover:underline;
 	}
 }
 
@@ -62,5 +50,5 @@
 }
 
 @utility focus-ring {
-	@apply outline-2 outline-offset-2 outline-primary-500;
+	@apply outline-2 outline-offset-2 outline-blue-500;
 }

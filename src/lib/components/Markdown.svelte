@@ -130,7 +130,7 @@
 	}
 
 	.markdown :global(a) {
-		color: var(--color-primary-600);
+		color: var(--color-blue-600);
 		text-decoration: underline;
 		text-underline-offset: 2px;
 	}

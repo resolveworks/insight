@@ -22,7 +22,7 @@
 	};
 
 	const colorClasses: Record<Color, string> = {
-		primary: 'text-primary-500',
+		primary: 'text-blue-500',
 		current: 'text-current',
 	};
 </script>
