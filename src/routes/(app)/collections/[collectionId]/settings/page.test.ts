@@ -9,6 +9,8 @@ import {
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { goto } from '$app/navigation';
 import Page from './+page.svelte';
+import { load } from './+page';
+import type { CollectionSharingStatus } from '#lib/types/sharing.js';
 
 const collection = {
 	id: 'col1',
@@ -19,7 +21,22 @@ const collection = {
 
 const providerStatus = { family: null, model: null, error: null };
 
-function renderPage() {
+const sharingStatus: CollectionSharingStatus = {
+	access: 'write',
+	sync_running: true,
+	network: 'online',
+	connected_peers: 1,
+	known_peers: 3,
+	last_sync: {
+		peer: 'a1b2c3d4',
+		finished_at: '2024-01-15T10:30:00Z',
+		entries_received: 4,
+		entries_sent: 2,
+		error: null,
+	},
+};
+
+function renderPage(sharing = sharingStatus) {
 	render(Page, {
 		props: {
 			params: { collectionId: 'col1' },
@@ -29,19 +46,102 @@ function renderPage() {
 				documents: [],
 				provider: { current: null, status: providerStatus },
 				providerError: null,
+				sharing,
 			},
 		},
 	});
 }
 
-describe('Collection settings', () => {
-	it('shares the collection with a ticket that cannot be revoked', async () => {
+describe('Collection settings sharing load', () => {
+	it('registers its dependency and returns the sharing status', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_collection_sharing_status') return sharingStatus;
+		});
+		const depends = vi.fn();
+
+		const data = (await load({
+			params: { collectionId: 'col1' },
+			depends,
+		} as unknown as Parameters<typeof load>[0])) as {
+			sharing: CollectionSharingStatus;
+		};
+
+		expect(depends).toHaveBeenCalledWith('app:sharing');
+		expect(data.sharing).toEqual(sharingStatus);
+	});
+});
+
+describe('Collection settings sharing status', () => {
+	it('shows the current sharing status and last successful sync', () => {
+		renderPage();
+
+		expect(screen.getByText('Access')).toBeInTheDocument();
+		expect(screen.getByText('Can write')).toBeInTheDocument();
+		expect(screen.getByText('Sync')).toBeInTheDocument();
+		expect(screen.getByText('Running')).toBeInTheDocument();
+		expect(screen.getByText('Network')).toBeInTheDocument();
+		expect(screen.getByText('Online')).toBeInTheDocument();
+		expect(
+			screen.getByText('1 connected · 3 previously synced'),
+		).toBeInTheDocument();
+
+		const finishedAt = new Intl.DateTimeFormat(undefined, {
+			dateStyle: 'medium',
+			timeStyle: 'short',
+		}).format(new Date('2024-01-15T10:30:00Z'));
+		expect(screen.getByText(finishedAt, { exact: false })).toBeInTheDocument();
+		expect(screen.getByText('a1b2c3d4')).toBeInTheDocument();
+		expect(screen.getByText('4 received · 2 sent')).toBeInTheDocument();
+	});
+
+	it('shows read-only access and a not-running, offline, never-synced state', () => {
+		renderPage({
+			...sharingStatus,
+			access: 'read_only',
+			sync_running: false,
+			network: 'offline',
+			connected_peers: 0,
+			known_peers: 2,
+			last_sync: null,
+		});
+
+		expect(screen.getByText('Read-only')).toBeInTheDocument();
+		expect(screen.getByText('Not running')).toBeInTheDocument();
+		expect(screen.getByText('Offline')).toBeInTheDocument();
+		expect(
+			screen.getByText('0 connected · 2 previously synced'),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText('No sync completed since startup'),
+		).toBeInTheDocument();
+	});
+
+	it('shows the error when the last sync failed', () => {
+		renderPage({
+			...sharingStatus,
+			last_sync: {
+				...sharingStatus.last_sync!,
+				error: 'connection reset',
+			},
+		});
+
+		expect(
+			screen.getByText('Sync failed: connection reset'),
+		).toBeInTheDocument();
+		expect(screen.queryByText('4 received · 2 sent')).not.toBeInTheDocument();
+	});
+});
+
+describe('Collection settings actions', () => {
+	it('shares the collection with a read-only ticket that cannot be revoked', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'share_collection') return 'ticket-123';
 		});
 
 		renderPage();
-		await fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Create read-only ticket' }),
+		);
 
 		expect(await screen.findByText('ticket-123')).toBeInTheDocument();
 		expect(
@@ -60,7 +160,9 @@ describe('Collection settings', () => {
 		});
 
 		renderPage();
-		await fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Create read-only ticket' }),
+		);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Copy' }));
 
 		expect(writeText).toHaveBeenCalledWith('ticket-123');
