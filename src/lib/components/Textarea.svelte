@@ -1,0 +1,30 @@
+<script lang="ts">
+	import type { HTMLTextareaAttributes } from 'svelte/elements';
+	import Field from './Field.svelte';
+
+	interface Props extends Omit<HTMLTextareaAttributes, 'value'> {
+		label?: string;
+		hint?: string;
+		rows?: number;
+		value?: string;
+	}
+
+	let {
+		label,
+		hint,
+		id,
+		rows,
+		value = $bindable(''),
+		class: className = '',
+		...rest
+	}: Props = $props();
+</script>
+
+<Field {id} {label} {hint}>
+	<textarea
+		{id}
+		{rows}
+		bind:value
+		class="field w-full resize-none {className}"
+		{...rest}></textarea>
+</Field>
