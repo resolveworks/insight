@@ -1,5 +1,4 @@
 import { error } from '@sveltejs/kit';
-import { listDocuments } from '#lib/api/document.js';
 import { dataKeys } from '#lib/invalidation.js';
 import type { LayoutLoad } from './$types';
 
@@ -12,8 +11,5 @@ export const load: LayoutLoad = async ({ params, depends, parent }) => {
 	);
 	if (!collection) error(404, 'Collection not found');
 
-	return {
-		collection,
-		documents: await listDocuments(params.collectionId),
-	};
+	return { collection };
 };
