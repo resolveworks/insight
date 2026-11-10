@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { refreshCollection } from '#lib/invalidation.js';
 import type {
+	DeletedDocument,
 	Document,
 	ImportOutcome,
 	PipelineProgress,
@@ -11,12 +12,28 @@ export async function listDocuments(collectionId: string): Promise<Document[]> {
 	return invoke<Document[]>('get_documents', { collectionId });
 }
 
+/** List a collection's deleted documents. */
+export async function listDeletedDocuments(
+	collectionId: string,
+): Promise<DeletedDocument[]> {
+	return invoke<DeletedDocument[]>('get_deleted_documents', { collectionId });
+}
+
 /** Delete a document and re-read the collection and its document list. */
 export async function deleteDocument(
 	collectionId: string,
 	documentId: string,
 ): Promise<void> {
 	await invoke('delete_document', { collectionId, documentId });
+	await refreshCollection(collectionId);
+}
+
+/** Restore a deleted document and re-read the collection and its document list. */
+export async function undeleteDocument(
+	collectionId: string,
+	documentId: string,
+): Promise<void> {
+	await invoke('undelete_document', { collectionId, documentId });
 	await refreshCollection(collectionId);
 }
 

@@ -12,8 +12,10 @@ import {
 import {
 	deleteDocument,
 	getPipelineProgress,
+	listDeletedDocuments,
 	listDocuments,
 	startImport,
+	undeleteDocument,
 } from './document';
 import {
 	deleteConversation,
@@ -166,6 +168,40 @@ describe('Document commands', () => {
 		});
 
 		await deleteDocument('col1', 'doc1');
+		expect(invalidate).toHaveBeenCalledWith('app:collections');
+		expect(invalidate).toHaveBeenCalledWith('app:collection:col1');
+	});
+
+	it('lists a collection’s deleted documents', async () => {
+		const deleted = {
+			id: 'doc2',
+			name: 'archived.pdf',
+			deleted_by: 'a1b2c3d4e5f6',
+			deleted_at: '2024-02-20T14:45:00Z',
+		};
+		mockIPC((cmd, args) => {
+			if (
+				cmd === 'get_deleted_documents' &&
+				commandArgs(args).collectionId === 'col1'
+			)
+				return [deleted];
+		});
+
+		expect(await listDeletedDocuments('col1')).toEqual([deleted]);
+		expect(invalidate).not.toHaveBeenCalled();
+	});
+
+	it('re-reads the collection and its documents after an undelete', async () => {
+		mockIPC((cmd, args) => {
+			if (
+				cmd === 'undelete_document' &&
+				commandArgs(args).collectionId === 'col1' &&
+				commandArgs(args).documentId === 'doc2'
+			)
+				return null;
+		});
+
+		await undeleteDocument('col1', 'doc2');
 		expect(invalidate).toHaveBeenCalledWith('app:collections');
 		expect(invalidate).toHaveBeenCalledWith('app:collection:col1');
 	});

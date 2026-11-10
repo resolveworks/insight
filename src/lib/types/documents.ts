@@ -17,6 +17,14 @@ export interface Document {
 	created_at: string;
 }
 
+/** A deleted document as returned by the command layer. */
+export interface DeletedDocument {
+	id: string;
+	name: string;
+	deleted_by: string;
+	deleted_at: string;
+}
+
 /** Per-stage progress counts. */
 export interface StageProgress {
 	pending: number;
