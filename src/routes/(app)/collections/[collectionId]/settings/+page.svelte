@@ -11,6 +11,30 @@
 	let { data }: PageProps = $props();
 
 	const collection = $derived(data.collection);
+	const sharing = $derived(data.sharing);
+
+	const accessLabel = $derived(
+		sharing.access === 'read_only' ? 'Read-only' : 'Can write',
+	);
+	const syncLabel = $derived(sharing.sync_running ? 'Running' : 'Not running');
+	const networkLabel = $derived(
+		{
+			online: 'Online',
+			connecting: 'Connecting',
+			offline: 'Offline',
+		}[sharing.network],
+	);
+
+	function formatFinishedAt(timestamp: string): string {
+		return new Intl.DateTimeFormat(undefined, {
+			dateStyle: 'medium',
+			timeStyle: 'short',
+		}).format(new Date(timestamp));
+	}
+
+	function shortPeer(peer: string): string {
+		return peer.length > 12 ? `${peer.slice(0, 8)}…` : peer;
+	}
 
 	// Share modal state
 	let showShareModal = $state(false);
@@ -72,11 +96,60 @@
 			<section class="card p-6">
 				<h2 class="text-sm font-semibold text-neutral-800">Share</h2>
 				<p class="mt-1 text-sm text-muted">
-					Generate a ticket to sync this collection, documents included, to
-					another device.
+					Anyone with a ticket can sync this collection, documents included, to
+					another device while this peer is available. Tickets cannot be
+					revoked.
 				</p>
+				<dl class="mt-4 divide-y divide-line border-t border-line">
+					<div class="flex items-baseline justify-between gap-4 py-2">
+						<dt class="text-sm text-muted">Access</dt>
+						<dd class="text-sm text-neutral-800">{accessLabel}</dd>
+					</div>
+					<div class="flex items-baseline justify-between gap-4 py-2">
+						<dt class="text-sm text-muted">Sync</dt>
+						<dd class="text-sm text-neutral-800">{syncLabel}</dd>
+					</div>
+					<div class="flex items-baseline justify-between gap-4 py-2">
+						<dt class="text-sm text-muted">Network</dt>
+						<dd class="text-sm text-neutral-800">{networkLabel}</dd>
+					</div>
+					<div class="flex items-baseline justify-between gap-4 py-2">
+						<dt class="text-sm text-muted">Peers</dt>
+						<dd class="text-sm text-neutral-800">
+							{sharing.connected_peers} connected · {sharing.known_peers}
+							previously synced
+						</dd>
+					</div>
+					<div class="flex items-baseline justify-between gap-4 py-2">
+						<dt class="text-sm text-muted">Last sync</dt>
+						<dd class="text-right text-sm text-neutral-800">
+							{#if sharing.last_sync}
+								<div>
+									{formatFinishedAt(sharing.last_sync.finished_at)} ·
+									<span class="font-mono"
+										>{shortPeer(sharing.last_sync.peer)}</span
+									>
+								</div>
+								{#if sharing.last_sync.error}
+									<div class="text-error">
+										Sync failed: {sharing.last_sync.error}
+									</div>
+								{:else}
+									<div>
+										{sharing.last_sync.entries_received} received · {sharing
+											.last_sync.entries_sent} sent
+									</div>
+								{/if}
+							{:else}
+								No sync completed since startup
+							{/if}
+						</dd>
+					</div>
+				</dl>
 				<div class="mt-4">
-					<Button variant="secondary" onclick={openShareModal}>Share</Button>
+					<Button variant="secondary" onclick={openShareModal}
+						>Create read-only ticket</Button
+					>
 				</div>
 			</section>
 
