@@ -1297,12 +1297,15 @@ impl Storage {
     // Two-phase import methods (for pipeline)
     // =========================================================================
 
-    /// Phase 1: Store PDF source bytes into a collection.
+    /// Phase 1: Store a source's bytes into a collection.
     ///
-    /// This is the first phase of the pipeline - just copies the PDF bytes
+    /// This is the first phase of the pipeline - just copies the source bytes
     /// to iroh storage without text extraction. Creates:
     /// - `files/{id}/meta` - metadata with no canonical extraction yet
-    /// - `files/{id}/source` - original PDF bytes
+    /// - `files/{id}/source` - original source bytes
+    ///
+    /// `file_type` is the source's MIME type, chosen by the caller from the
+    /// parser registry; it is what extraction later dispatches on.
     ///
     /// The document's id is the source's BLAKE3 hash.
     ///
@@ -1315,23 +1318,24 @@ impl Storage {
         &self,
         path: &std::path::Path,
         namespace_id: NamespaceId,
+        file_type: &str,
     ) -> Result<DocumentMetadata> {
         let file_name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown.pdf".to_string());
+            .with_context(|| format!("Path {} has no file name", path.display()))?;
 
-        let pdf_bytes = tokio::fs::read(path)
+        let source_bytes = tokio::fs::read(path)
             .await
-            .context("Failed to read PDF file")?;
+            .context("Failed to read source file")?;
 
         let metadata = self
-            .add_document(namespace_id, &file_name, "application/pdf", &pdf_bytes)
+            .add_document(namespace_id, &file_name, file_type, &source_bytes)
             .await?;
 
         tracing::info!(
             doc_id = %metadata.id,
-            "Stored PDF source for {file_name}"
+            "Stored source for {file_name}"
         );
 
         Ok(metadata)
@@ -2668,7 +2672,7 @@ mod tests {
 
         // Phase 1: Store source
         let document = storage
-            .store_pdf_source(&pdf_path, collection_id)
+            .store_pdf_source(&pdf_path, collection_id, "application/pdf")
             .await
             .unwrap();
         let doc_id = document.id;
@@ -2706,7 +2710,9 @@ mod tests {
             .unwrap()
             .expect("document should need extraction");
         assert_eq!(input_metadata.extraction, None);
-        let extraction = crate::pdf::extract_text_from_bytes(source).unwrap();
+        let registry = crate::parsers::default_registry();
+        let (document_parser, format) = registry.parser_for(&input_metadata.file_type).unwrap();
+        let extraction = document_parser.extract(format, &source).unwrap();
         let extracted = match storage
             .commit_extraction(collection_id, &doc_id, &extraction)
             .await
@@ -2715,7 +2721,7 @@ mod tests {
             CommitOutcome::Written(metadata) => metadata,
             CommitOutcome::DocumentGone => panic!("document vanished during extraction"),
         };
-        assert_eq!(extracted.extraction, Some(parser("mupdf-pdf-text")));
+        assert_eq!(extracted.extraction, Some(parser("mupdf")));
 
         // The canonical extraction carries the page structure and text.
         assert_eq!(
@@ -2733,7 +2739,7 @@ mod tests {
 
         // The same PDF is the same document, so it cannot be imported twice.
         assert!(storage
-            .store_pdf_source(&pdf_path, collection_id)
+            .store_pdf_source(&pdf_path, collection_id, "application/pdf")
             .await
             .is_err());
         assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);

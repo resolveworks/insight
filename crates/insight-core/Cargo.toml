@@ -15,9 +15,10 @@ iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = "0.101"
 
-# PDF text extraction. Default features off: MuPDF's optional document
-# formats, JS, barcode and OCR support stay out of the build.
-mupdf = { version = "0.8", default-features = false, features = ["base14-fonts"] }
+# Document text extraction. Default features off: `html` builds MuPDF's HTML,
+# plain-text and Office (docx/xlsx/pptx) handlers, `epub` its EPUB handler. JS,
+# barcode and OCR support stay out of the build.
+mupdf = { version = "0.8", default-features = false, features = ["base14-fonts", "html", "epub"] }
 
 # milli from meilisearch — full-text keyword search
 milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.56.1" }
