@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/state';
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
 	import Select from './Select.svelte';
@@ -12,10 +11,16 @@
 		listModels,
 		listProviders,
 		type ModelChoice,
+		type ProviderConfig,
 	} from '#lib/api/provider.js';
 
-	const provider = $derived(page.data.provider);
-	const providerError = $derived(page.data.providerError);
+	interface Props {
+		provider: ProviderConfig | null;
+		providerError: string | null;
+	}
+
+	let { provider, providerError }: Props = $props();
+
 	const current = $derived(provider?.current);
 
 	let selections = $state<string[]>([]);
