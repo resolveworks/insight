@@ -2,7 +2,7 @@
 	import type { PageProps } from './$types';
 	import Chat from '#lib/components/Chat.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
-	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
+	import LoadingScreen from '#lib/components/LoadingScreen.svelte';
 	import { isProviderReady } from '#lib/api/provider.js';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 
@@ -43,18 +43,14 @@
 				onDelete={handleDelete}
 			/>
 		{:else}
-			<div class="flex h-full items-center justify-center">
-				<LoadingSpinner ariaLabel="Loading conversations" />
-			</div>
+			<LoadingScreen label="Loading conversations" />
 		{/if}
 	</aside>
 
 	<!-- Main pane: chat, which points at Settings when no model is configured -->
 	<main class="min-w-0 flex-1 overflow-hidden bg-surface">
 		{#if activeCollectionId !== collectionId || !collection}
-			<div class="flex h-full items-center justify-center bg-surface">
-				<LoadingSpinner size="lg" ariaLabel="Loading collection" />
-			</div>
+			<LoadingScreen label="Loading collection" />
 		{:else}
 			<Chat
 				{collectionId}
