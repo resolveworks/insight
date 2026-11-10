@@ -4,9 +4,13 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
+	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import Modal from '#lib/components/Modal.svelte';
+	import PageContent from '#lib/components/PageContent.svelte';
+	import SectionHeading from '#lib/components/SectionHeading.svelte';
 	import { deleteCollection, shareCollection } from '#lib/api/collection.js';
 	import { describeError } from '#lib/api/provider.js';
+	import { formatTimestamp, shortenId } from '#lib/format.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -22,17 +26,6 @@
 			offline: 'Disconnected',
 		}[sharing.network],
 	);
-
-	function formatFinishedAt(timestamp: string): string {
-		return new Intl.DateTimeFormat(undefined, {
-			dateStyle: 'medium',
-			timeStyle: 'short',
-		}).format(new Date(timestamp));
-	}
-
-	function shortPeer(peer: string): string {
-		return peer.length > 12 ? `${peer.slice(0, 8)}…` : peer;
-	}
 
 	// Share modal state
 	let showShareModal = $state(false);
@@ -94,10 +87,10 @@
 </script>
 
 <div class="flex h-full flex-col">
-	<div class="flex-1 overflow-y-auto p-6">
-		<div class="max-w-2xl space-y-6">
+	<PageContent width="prose">
+		<div class="space-y-6">
 			<section class="card p-6">
-				<h2 class="text-sm font-semibold text-neutral-800">Share</h2>
+				<SectionHeading title="Share" />
 				<p class="mt-1 text-sm text-muted">
 					Anyone with a collaboration ticket can add, change, and delete
 					documents in this collection. They sync with this collection,
@@ -125,9 +118,9 @@
 						<dd class="text-right text-sm text-neutral-800">
 							{#if sharing.last_sync}
 								<div>
-									{formatFinishedAt(sharing.last_sync.finished_at)} ·
+									{formatTimestamp(sharing.last_sync.finished_at)} ·
 									<span class="font-mono"
-										>{shortPeer(sharing.last_sync.peer)}</span
+										>{shortenId(sharing.last_sync.peer)}</span
 									>
 								</div>
 								{#if sharing.last_sync.error}
@@ -154,9 +147,7 @@
 			</section>
 
 			<section class="card border-error/30 p-6">
-				<h2 class="text-sm font-semibold text-neutral-800">
-					Delete collection
-				</h2>
+				<SectionHeading title="Delete collection" />
 				<p class="mt-1 text-sm text-muted">
 					This deletes the collection, its documents, and its local
 					conversations. This cannot be undone.
@@ -168,7 +159,7 @@
 				</div>
 			</section>
 		</div>
-	</div>
+	</PageContent>
 </div>
 
 <!-- Share collection modal -->
@@ -177,7 +168,7 @@
 		{#if shareTicket}
 			<div class="space-y-3">
 				<div class="flex items-start gap-2">
-					<code class="flex-1 break-all text-xs text-neutral-600">
+					<code class="flex-1 break-all font-mono text-xs text-muted">
 						{shareTicket}
 					</code>
 					<Button size="sm" variant="secondary" onclick={copyTicket}>
@@ -199,7 +190,10 @@
 		{:else if shareError}
 			<Alert>{shareError}</Alert>
 		{:else}
-			<p class="text-sm text-subtle">Generating ticket...</p>
+			<div class="flex items-center gap-2 text-sm text-subtle">
+				<LoadingSpinner size="sm" />
+				<span>Generating ticket...</span>
+			</div>
 		{/if}
 	</Modal>
 {/if}
