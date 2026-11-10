@@ -1314,7 +1314,7 @@ impl Storage {
     /// Note: No extraction exists until an extract worker reads the source
     /// with [`Self::extraction_input`] and commits the result with
     /// [`Self::commit_extraction`].
-    pub async fn store_pdf_source(
+    pub async fn store_source(
         &self,
         path: &std::path::Path,
         namespace_id: NamespaceId,
@@ -2672,7 +2672,7 @@ mod tests {
 
         // Phase 1: Store source
         let document = storage
-            .store_pdf_source(&pdf_path, collection_id, "application/pdf")
+            .store_source(&pdf_path, collection_id, "application/pdf")
             .await
             .unwrap();
         let doc_id = document.id;
@@ -2739,7 +2739,7 @@ mod tests {
 
         // The same PDF is the same document, so it cannot be imported twice.
         assert!(storage
-            .store_pdf_source(&pdf_path, collection_id, "application/pdf")
+            .store_source(&pdf_path, collection_id, "application/pdf")
             .await
             .is_err());
         assert_eq!(storage.count_documents(collection_id).await.unwrap(), 1);

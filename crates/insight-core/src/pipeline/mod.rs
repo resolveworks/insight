@@ -222,9 +222,7 @@ impl Pipeline {
             let result = match self.registry.format_for_path(&path) {
                 Ok(format) => {
                     let storage = self.storage.read().await;
-                    storage
-                        .store_pdf_source(&path, namespace_id, format.mime)
-                        .await
+                    storage.store_source(&path, namespace_id, format.mime).await
                 }
                 Err(e) => Err(e),
             };
