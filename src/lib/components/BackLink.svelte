@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import Icon from './Icon.svelte';
 
 	interface Props {
 		href: string;
@@ -15,7 +16,7 @@
 	{href}
 	class="inline-flex items-center gap-1 text-sm text-muted transition-colors hover:text-primary-600 focus-visible:focus-ring"
 >
-	<span aria-hidden="true">←</span>
+	<Icon name="arrow-left" size="sm" />
 	{@render children()}
 </a>
 <!-- eslint-enable svelte/no-navigation-without-resolve -->
