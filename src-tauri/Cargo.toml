@@ -21,6 +21,7 @@ insight-core = { path = "../crates/insight-core" }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-log = "2"
 
 # Async runtime (needed for Tauri command layer)
 tokio = { version = "1", features = ["full"] }
@@ -37,8 +38,9 @@ anyhow = "1"
 
 # Utilities
 tokio-util = "0.7"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# `log` forwards every tracing event in the app (insight-core, milli, iroh)
+# to tauri-plugin-log, which is a `log` logger.
+tracing = { version = "0.1", features = ["log"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

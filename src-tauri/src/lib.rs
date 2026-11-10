@@ -3,29 +3,35 @@ pub mod core;
 pub mod error;
 
 use tauri::Manager;
+use tauri_plugin_log::{log::LevelFilter, Target, TargetKind};
 
 use crate::commands::collections::SharingStatusChanged;
 use crate::commands::documents::CollectionInvalidated;
 use crate::core::{AppEvent, AppState, Config};
 
-/// Initialize tracing/logging with the given directives
-pub fn init_logging(directives: &[&str]) {
-    let mut filter = tracing_subscriber::EnvFilter::from_default_env();
-    for directive in directives {
-        filter = filter.add_directive(directive.parse().unwrap());
-    }
-    tracing_subscriber::fmt().with_env_filter(filter).init();
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    init_logging(&["insight=debug", "milli=debug"]);
-    tracing::info!("Starting Insight");
-
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: None }),
+                ])
+                .max_file_size(10 * 1024 * 1024)
+                .level(LevelFilter::Info)
+                .level_for("insight_lib", LevelFilter::Debug)
+                .level_for("insight_core", LevelFilter::Debug)
+                .level_for("milli", LevelFilter::Debug)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // The log plugin installs its logger while plugins are set up, so
+            // this is the earliest line that reaches a target.
+            tracing::info!("Starting Insight");
+
             // Load config
             let config = Config::load_or_default();
             config.ensure_dirs()?;
