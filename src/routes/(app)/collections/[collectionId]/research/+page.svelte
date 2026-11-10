@@ -49,7 +49,7 @@
 		{/if}
 	</aside>
 
-	<!-- Main pane: chat, with provider setup in its lower region if needed -->
+	<!-- Main pane: chat, which points at Settings when no model is configured -->
 	<main class="min-w-0 flex-1 overflow-hidden bg-surface">
 		{#if activeCollectionId !== collectionId || !collection}
 			<div class="flex h-full items-center justify-center bg-surface">

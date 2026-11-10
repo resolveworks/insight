@@ -142,7 +142,7 @@ describe('Chat', () => {
 		expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
 	});
 
-	it('shows a stored transcript with provider setup below and no input', async () => {
+	it('shows a stored transcript with a link to Settings and no input', async () => {
 		await renderChat(
 			'no-provider',
 			{ providerReady: false },
@@ -154,8 +154,12 @@ describe('Chat', () => {
 
 		expect(await screen.findByText('Earlier question')).toBeInTheDocument();
 		expect(
-			screen.getByRole('heading', { name: 'Set up your language model' }),
+			screen.getByText('No language model configured. Research needs one.'),
 		).toBeInTheDocument();
+		expect(screen.getByRole('link', { name: 'Open Settings' })).toHaveAttribute(
+			'href',
+			'/settings',
+		);
 		expect(
 			screen.queryByPlaceholderText('Ask about your documents...'),
 		).not.toBeInTheDocument();

@@ -5,7 +5,6 @@
 	import Button from './Button.svelte';
 	import Input from './Input.svelte';
 	import Alert from './Alert.svelte';
-	import SetupScreen from './SetupScreen.svelte';
 	import ActivityStepView from './ActivityStep.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 	import { documentCountLabel } from '#lib/api/collection.js';
@@ -184,9 +183,21 @@
 			</div>
 		</div>
 	{:else}
-		<!-- Provider setup lives below the transcript so local history stays readable -->
-		<div class="h-80 max-h-[55%] shrink-0 overflow-y-auto border-t border-line">
-			<SetupScreen />
+		<!-- The provider form lives in Settings; research only points at it. -->
+		<div class="shrink-0 border-t border-line bg-surface-bright">
+			<div
+				class="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-6 py-3"
+			>
+				<p class="text-sm text-muted">
+					No language model configured. Research needs one.
+				</p>
+				<a
+					href={resolve('settings')}
+					class="inline-flex rounded-md border border-line-strong bg-surface-bright px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:border-primary-300 hover:text-primary-600"
+				>
+					Open Settings
+				</a>
+			</div>
 		</div>
 	{/if}
 </div>

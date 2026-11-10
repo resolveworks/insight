@@ -87,7 +87,7 @@ describe('Research conversations load', () => {
 });
 
 describe('Research workspace without a chat provider', () => {
-	it('keeps the local conversation sidebar available beside provider setup', async () => {
+	it('keeps the local conversation sidebar available beside the Settings link', async () => {
 		renderPage({
 			collections: [collection],
 			collection,
@@ -103,16 +103,14 @@ describe('Research workspace without a chat provider', () => {
 		).toBeInTheDocument();
 		expect(await screen.findByText('Earlier question')).toBeInTheDocument();
 		expect(
-			await screen.findByRole('heading', {
-				name: 'Set up your language model',
-			}),
-		).toBeInTheDocument();
+			await screen.findByRole('link', { name: 'Open Settings' }),
+		).toHaveAttribute('href', '/settings');
 		expect(
 			screen.queryByPlaceholderText('Ask about your documents...'),
 		).not.toBeInTheDocument();
 	});
 
-	it('shows provider setup and the read error when settings cannot be read', async () => {
+	it('shows the Settings link when settings cannot be read', async () => {
 		const reason = 'malformed settings file';
 		mockIPC((cmd) => {
 			if (cmd === 'get_current_provider')
@@ -135,13 +133,9 @@ describe('Research workspace without a chat provider', () => {
 			conversations: [],
 		});
 
-		expect(await screen.findByText(reason)).toBeInTheDocument();
 		expect(
-			await screen.findByRole('heading', {
-				name: 'Set up your language model',
-			}),
-		).toBeInTheDocument();
-		expect(screen.getByLabelText('Provider')).toBeInTheDocument();
+			await screen.findByRole('link', { name: 'Open Settings' }),
+		).toHaveAttribute('href', '/settings');
 		expect(
 			screen.queryByPlaceholderText('Ask about your documents...'),
 		).not.toBeInTheDocument();
