@@ -24,68 +24,148 @@
 <style>
 	.markdown {
 		overflow-wrap: anywhere;
+		line-height: 1.6;
 	}
-	.markdown :global(p) {
-		margin: 0.5em 0;
-	}
-	.markdown :global(p:first-child) {
+
+	.markdown > :global(:first-child) {
 		margin-top: 0;
 	}
-	.markdown :global(p:last-child) {
+	.markdown > :global(:last-child) {
 		margin-bottom: 0;
 	}
+
+	.markdown :global(p) {
+		margin: 0.75em 0;
+	}
+
 	.markdown :global(strong) {
 		font-weight: 600;
 	}
 	.markdown :global(em) {
 		font-style: italic;
 	}
-	.markdown :global(code) {
-		background: rgba(0, 0, 0, 0.3);
-		padding: 0.1em 0.3em;
-		border-radius: 0.25em;
-		font-size: 0.9em;
+
+	/* Prose-sized headings: a model-emitted document heading should not
+	   overpower the answer it belongs to. */
+	.markdown :global(h1),
+	.markdown :global(h2),
+	.markdown :global(h3),
+	.markdown :global(h4),
+	.markdown :global(h5),
+	.markdown :global(h6) {
+		font-weight: 600;
+		line-height: 1.3;
+		margin: 1.25em 0 0.5em;
 	}
-	.markdown :global(pre) {
-		background: rgba(0, 0, 0, 0.3);
-		padding: 0.75em 1em;
-		border-radius: 0.375em;
-		overflow-x: auto;
-		margin: 0.5em 0;
+	.markdown :global(h1) {
+		font-size: 1.125rem;
 	}
-	.markdown :global(pre code) {
-		background: none;
-		padding: 0;
+	.markdown :global(h2) {
+		font-size: 1rem;
 	}
+	.markdown :global(h3) {
+		font-size: 0.9375rem;
+	}
+	.markdown :global(h4),
+	.markdown :global(h5),
+	.markdown :global(h6) {
+		font-size: 0.875rem;
+	}
+
+	/* Tailwind's preflight strips list markers; restore them. */
 	.markdown :global(ul),
 	.markdown :global(ol) {
-		margin: 0.5em 0;
-		padding-left: 1.5em;
+		margin: 0.75em 0;
+		padding-left: 1.375em;
+	}
+	.markdown :global(ul) {
+		list-style: disc;
+	}
+	.markdown :global(ol) {
+		list-style: decimal;
 	}
 	.markdown :global(li) {
 		margin: 0.25em 0;
 	}
+	.markdown :global(li > p) {
+		margin: 0;
+	}
+	.markdown :global(li > ul),
+	.markdown :global(li > ol) {
+		margin: 0.25em 0;
+	}
+	.markdown :global(li::marker) {
+		color: var(--color-muted);
+	}
+
+	.markdown :global(code) {
+		background: var(--color-neutral-100);
+		border: 1px solid var(--color-line);
+		border-radius: var(--radius-sm);
+		color: var(--color-neutral-800);
+		font-family:
+			ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+			'Liberation Mono', monospace;
+		font-size: 0.8125rem;
+		padding: 0.1em 0.35em;
+	}
+	.markdown :global(pre) {
+		background: var(--color-neutral-100);
+		border: 1px solid var(--color-line);
+		border-radius: var(--radius-md);
+		color: var(--color-neutral-800);
+		font-size: 0.8125rem;
+		line-height: 1.5;
+		margin: 0.75em 0;
+		overflow-x: auto;
+		padding: 0.75rem 1rem;
+	}
+	.markdown :global(pre code) {
+		background: none;
+		border: 0;
+		font-size: inherit;
+		padding: 0;
+	}
+
 	.markdown :global(blockquote) {
-		border-left: 3px solid currentColor;
-		opacity: 0.8;
-		padding-left: 1em;
-		margin: 0.5em 0;
+		border-left: 2px solid var(--color-line-strong);
+		color: var(--color-muted);
+		margin: 0.75em 0;
+		padding-left: 0.875em;
 	}
+
 	.markdown :global(a) {
-		color: inherit;
+		color: var(--color-primary-700);
 		text-decoration: underline;
+		text-underline-offset: 2px;
 	}
-	.markdown :global(h1),
-	.markdown :global(h2),
-	.markdown :global(h3),
-	.markdown :global(h4) {
+
+	.markdown :global(hr) {
+		border: 0;
+		border-top: 1px solid var(--color-line);
+		margin: 1.25em 0;
+	}
+
+	.markdown :global(table) {
+		border-collapse: collapse;
+		font-size: 0.875em;
+		margin: 0.75em 0;
+		width: 100%;
+	}
+	.markdown :global(th),
+	.markdown :global(td) {
+		border: 1px solid var(--color-line);
+		padding: 0.375rem 0.5rem;
+		text-align: left;
+		vertical-align: top;
+	}
+	.markdown :global(th) {
+		background: var(--color-neutral-100);
 		font-weight: 600;
-		margin: 0.75em 0 0.25em;
 	}
-	.markdown :global(h1:first-child),
-	.markdown :global(h2:first-child),
-	.markdown :global(h3:first-child),
-	.markdown :global(h4:first-child) {
-		margin-top: 0;
+
+	.markdown :global(img) {
+		border-radius: var(--radius-md);
+		max-width: 100%;
 	}
 </style>

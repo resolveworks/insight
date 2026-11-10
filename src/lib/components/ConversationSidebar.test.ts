@@ -18,7 +18,7 @@ describe('ConversationSidebar', () => {
 		expect(screen.getByText('Climate research')).toBeInTheDocument();
 		expect(screen.getByText('Budget analysis')).toBeInTheDocument();
 		expect(
-			screen.getByRole('heading', { name: 'Conversations' }),
+			screen.getByRole('button', { name: 'New Chat' }),
 		).toBeInTheDocument();
 	});
 
