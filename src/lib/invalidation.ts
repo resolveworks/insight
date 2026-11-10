@@ -1,6 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { invalidate } from '$app/navigation';
-import type { PipelineProgress, StageProgress } from '#lib/types/documents.js';
+import { pipelineIsActive } from '#lib/pipeline.js';
+import type { PipelineProgress } from '#lib/types/documents.js';
 
 interface CollectionInvalidated {
 	collection_id: string;
@@ -51,18 +52,6 @@ export async function refreshConversations(
 /** Re-read the app-global provider configuration. */
 export async function refreshProvider(): Promise<void> {
 	await invalidate(dataKeys.provider);
-}
-
-function stageIsActive(stage: StageProgress): boolean {
-	return stage.pending > 0 || stage.active > 0;
-}
-
-function pipelineIsActive(progress: PipelineProgress): boolean {
-	return (
-		stageIsActive(progress.store) ||
-		stageIsActive(progress.extract) ||
-		stageIsActive(progress.index)
-	);
 }
 
 /**

@@ -15,7 +15,7 @@
 	let { notFound = false, message, onRetry }: Props = $props();
 </script>
 
-<div class="flex h-full items-center justify-center bg-surface p-6">
+<div class="flex h-full items-center justify-center p-6">
 	{#if notFound}
 		<EmptyState title="Collection not found">
 			{#snippet action()}

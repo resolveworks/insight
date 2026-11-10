@@ -12,6 +12,33 @@ export async function listDocuments(collectionId: string): Promise<Document[]> {
 	return invoke<Document[]>('get_documents', { collectionId });
 }
 
+/** Read a document's metadata. */
+export async function getDocument(
+	collectionId: string,
+	documentId: string,
+): Promise<Document> {
+	return invoke<Document>('get_document', { collectionId, documentId });
+}
+
+/** Read a document's extracted text. */
+export async function getDocumentText(
+	collectionId: string,
+	documentId: string,
+): Promise<string> {
+	return invoke<string>('get_document_text', { collectionId, documentId });
+}
+
+/** Read a document's text chunks. */
+export async function getDocumentChunks(
+	collectionId: string,
+	documentId: string,
+): Promise<string[]> {
+	return invoke<string[]>('get_document_chunks', {
+		collectionId,
+		documentId,
+	});
+}
+
 /** List a collection's deleted documents. */
 export async function listDeletedDocuments(
 	collectionId: string,

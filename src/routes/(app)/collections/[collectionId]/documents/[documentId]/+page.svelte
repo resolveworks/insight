@@ -1,11 +1,22 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { invoke } from '@tauri-apps/api/core';
 	import { onMount } from 'svelte';
 	import Alert from '#lib/components/Alert.svelte';
 	import BackLink from '#lib/components/BackLink.svelte';
+	import Disclosure from '#lib/components/Disclosure.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
+	import PageContent from '#lib/components/PageContent.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import SectionHeading from '#lib/components/SectionHeading.svelte';
+	import {
+		getDocument,
+		getDocumentChunks,
+		getDocumentText,
+	} from '#lib/api/document.js';
+	import { describeError } from '#lib/api/provider.js';
+	import { formatTimestamp } from '#lib/format.js';
 	import type { Document } from '#lib/types/documents.js';
 
 	let document = $state<Document | null>(null);
@@ -14,13 +25,13 @@
 	let loading = $state(true);
 	let loadingContent = $state(false);
 	let loadingChunks = $state(false);
-	let chunksExpanded = $state(false);
+	let chunksOpen = $state(false);
 	let chunksError = $state<string | null>(null);
 	let error = $state<string | null>(null);
 	let contentError = $state<string | null>(null);
 
-	const collectionId = $derived(page.params.collectionId);
-	const documentId = $derived(page.params.documentId);
+	const collectionId = $derived(page.params.collectionId!);
+	const documentId = $derived(page.params.documentId!);
 
 	interface MetadataRow {
 		label: string;
@@ -36,41 +47,10 @@
 					...(document.page_count !== null
 						? [{ label: 'Pages', value: `${document.page_count}` }]
 						: []),
-					{ label: 'Created', value: formatDate(document.created_at) },
+					{ label: 'Created', value: formatTimestamp(document.created_at) },
 				]
 			: [],
 	);
-
-	/** Robustly convert any thrown value (including Tauri v2 errors) to a string. */
-	function errorMessage(e: unknown): string {
-		if (typeof e === 'string') return e;
-		if (e instanceof Error) return e.message;
-		// Tauri v2 errors may be plain objects with a `message` property
-		if (
-			e &&
-			typeof e === 'object' &&
-			'message' in e &&
-			typeof (e as Record<string, unknown>).message === 'string'
-		) {
-			return (e as Record<string, unknown>).message as string;
-		}
-		return String(e);
-	}
-
-	function formatDate(dateString: string): string {
-		try {
-			const date = new Date(dateString);
-			return date.toLocaleDateString('en-US', {
-				year: 'numeric',
-				month: 'short',
-				day: 'numeric',
-				hour: '2-digit',
-				minute: '2-digit',
-			});
-		} catch {
-			return dateString;
-		}
-	}
 
 	async function loadChunks() {
 		if (chunks !== null || loadingChunks) return;
@@ -79,32 +59,25 @@
 		chunksError = null;
 
 		try {
-			chunks = await invoke<string[]>('get_document_chunks', {
-				collectionId,
-				documentId,
-			});
+			chunks = await getDocumentChunks(collectionId, documentId);
 		} catch (e) {
-			chunksError = errorMessage(e);
+			chunksError = describeError(e);
 		} finally {
 			loadingChunks = false;
 		}
 	}
 
-	function toggleChunks() {
-		chunksExpanded = !chunksExpanded;
-		if (chunksExpanded && chunks === null) {
-			loadChunks();
+	$effect(() => {
+		if (chunksOpen && chunks === null) {
+			void loadChunks();
 		}
-	}
+	});
 
 	onMount(async () => {
 		try {
-			document = await invoke<Document>('get_document', {
-				collectionId,
-				documentId,
-			});
+			document = await getDocument(collectionId, documentId);
 		} catch (e) {
-			error = errorMessage(e);
+			error = describeError(e);
 			loading = false;
 			return;
 		}
@@ -113,12 +86,9 @@
 		// the document was just imported and extraction may still be running.
 		loadingContent = true;
 		try {
-			content = await invoke<string>('get_document_text', {
-				collectionId,
-				documentId,
-			});
+			content = await getDocumentText(collectionId, documentId);
 		} catch (e) {
-			contentError = errorMessage(e);
+			contentError = describeError(e);
 		}
 
 		loading = false;
@@ -126,22 +96,40 @@
 	});
 </script>
 
+{#snippet backLink()}
+	<BackLink href={resolve(`collections/${collectionId}/documents`)}>
+		Back to documents
+	</BackLink>
+{/snippet}
+
+{#snippet preBlock(text: string)}
+	<pre
+		class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-neutral-700">{text}</pre>
+{/snippet}
+
 <div class="flex h-full flex-col bg-surface">
-	<div class="flex-1 overflow-y-auto p-6">
-		<div class="mb-4">
-			<BackLink href={resolve(`collections/${collectionId}/documents`)}>
-				Back to documents
-			</BackLink>
-		</div>
+	{#if document}
+		<PageHeader title={document.name}>
+			{#snippet eyebrow()}
+				{@render backLink()}
+			{/snippet}
+		</PageHeader>
+	{:else}
+		<PageContent>
+			<div class="mb-4">
+				{@render backLink()}
+			</div>
+			{#if loading}
+				<LoadingSpinner size="lg" ariaLabel="Loading document" />
+			{:else if error}
+				<Alert>{error}</Alert>
+			{/if}
+		</PageContent>
+	{/if}
 
-		{#if loading}
-			<LoadingSpinner size="lg" ariaLabel="Loading document" />
-		{:else if error}
-			<Alert>{error}</Alert>
-		{:else if document}
-			<h1 class="text-xl font-medium text-neutral-800">{document.name}</h1>
-
-			<div class="mt-6 max-w-2xl card">
+	{#if document}
+		<PageContent width="prose">
+			<div class="card">
 				<table class="w-full">
 					<tbody class="divide-y divide-line">
 						{#each metadataRows as row (row.label)}
@@ -164,7 +152,7 @@
 									<div class="flex flex-wrap gap-1">
 										{#each document.tags as tag (tag)}
 											<span
-												class="rounded-sm bg-secondary-300 px-2 py-0.5 text-xs text-neutral-800"
+												class="rounded-sm bg-surface-dim px-2 py-0.5 text-xs text-neutral-700"
 												>{tag}</span
 											>
 										{/each}
@@ -180,17 +168,14 @@
 
 			<!-- Document Content -->
 			<div class="mt-6">
-				<h2 class="mb-3 text-sm font-medium uppercase tracking-wide text-muted">
-					Content
-				</h2>
+				<SectionHeading title="Content" class="mb-3" />
 				{#if loadingContent}
 					<LoadingSpinner size="sm" ariaLabel="Loading content" />
 				{:else if contentError}
 					<Alert variant="warning">{contentError}</Alert>
 				{:else if content}
-					<div class="max-h-125 overflow-y-auto card p-4">
-						<pre
-							class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-neutral-700">{content}</pre>
+					<div class="max-h-96 overflow-y-auto card p-4">
+						{@render preBlock(content)}
 					</div>
 				{:else}
 					<p class="text-sm italic text-subtle">No content available</p>
@@ -198,52 +183,47 @@
 			</div>
 
 			<!-- Text Chunks -->
-			<div class="mt-6">
-				<button
-					onclick={toggleChunks}
-					class="flex items-center gap-2 text-sm font-medium uppercase tracking-wide text-muted transition-colors hover:text-neutral-700 focus-visible:focus-ring"
-				>
-					<span
-						class="inline-block transition-transform"
-						class:rotate-90={chunksExpanded}
-					>
-						&#9654;
-					</span>
-					Text Chunks
-					{#if chunks}
-						<span class="text-xs font-normal normal-case text-subtle"
-							>({chunks.length} chunks)</span
-						>
-					{/if}
-				</button>
-
-				{#if chunksExpanded}
-					<div class="mt-3">
-						{#if loadingChunks}
-							<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
-						{:else if chunksError}
-							<Alert variant="warning">{chunksError}</Alert>
-						{:else if chunks && chunks.length > 0}
-							<div class="space-y-3">
-								{#each chunks as chunk, i (i)}
-									<div class="card p-4">
-										<div
-											class="mb-2 flex items-center justify-between text-xs text-subtle"
-										>
-											<span>Chunk {i + 1}</span>
-											<span>{chunk.length} chars</span>
-										</div>
-										<pre
-											class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-neutral-700">{chunk}</pre>
-									</div>
-								{/each}
-							</div>
-						{:else}
-							<p class="text-sm italic text-subtle">No chunks generated</p>
+			<Disclosure bind:open={chunksOpen} class="mt-6">
+				{#snippet summary()}
+					<div class="flex items-center gap-2">
+						<Icon
+							name="chevron-right"
+							size="sm"
+							class="transition-transform group-open:rotate-90"
+						/>
+						<SectionHeading title="Text Chunks" />
+						{#if chunks}
+							<span class="text-xs font-normal text-subtle"
+								>({chunks.length} chunks)</span
+							>
 						{/if}
 					</div>
-				{/if}
-			</div>
-		{/if}
-	</div>
+				{/snippet}
+
+				<div class="mt-3">
+					{#if loadingChunks}
+						<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
+					{:else if chunksError}
+						<Alert variant="warning">{chunksError}</Alert>
+					{:else if chunks && chunks.length > 0}
+						<div class="space-y-3">
+							{#each chunks as chunk, i (i)}
+								<div class="card p-4">
+									<div
+										class="mb-2 flex items-center justify-between text-xs text-subtle"
+									>
+										<span>Chunk {i + 1}</span>
+										<span>{chunk.length} chars</span>
+									</div>
+									{@render preBlock(chunk)}
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="text-sm italic text-subtle">No chunks generated</p>
+					{/if}
+				</div>
+			</Disclosure>
+		</PageContent>
+	{/if}
 </div>
