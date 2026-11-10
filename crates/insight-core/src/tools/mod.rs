@@ -49,9 +49,6 @@ const SEARCH_LIMIT: usize = 15;
 const PASSAGE_LIMIT: usize = 500;
 /// Maximum document entries shown by [`list_documents`].
 const MAX_DOCS_TO_SHOW: usize = 25;
-/// Default and maximum term counts for [`get_collection_terms`].
-const TERMS_DEFAULT_LIMIT: usize = 50;
-const TERMS_MAX_LIMIT: usize = 200;
 
 /// Wrap an internal failure for safe model-facing presentation.
 fn infrastructure_error(error: impl std::fmt::Display) -> ToolExecutionError {
@@ -361,86 +358,6 @@ impl Tool for ListDocuments {
             truncated,
             total_pages,
             documents: entries,
-        })
-    }
-}
-
-// ==================== get_collection_terms ====================
-
-/// One term with its document frequency.
-#[derive(Debug, Serialize)]
-pub struct TermCount {
-    /// The indexed term.
-    pub term: String,
-    /// Number of documents containing the term.
-    pub doc_count: u64,
-}
-
-/// Output of [`get_collection_terms`].
-#[derive(Debug, Serialize)]
-pub struct CollectionTermsOutput {
-    /// Terms sorted by document frequency (descending).
-    pub terms: Vec<TermCount>,
-}
-
-/// Collection-term tool over the conversation's collection.
-pub struct GetCollectionTerms {
-    state: ToolState,
-}
-
-impl GetCollectionTerms {
-    pub fn new(state: ToolState) -> Self {
-        Self { state }
-    }
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-pub struct GetCollectionTermsArgs {
-    /// Maximum number of terms to return (default 50, max 200).
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-impl Tool for GetCollectionTerms {
-    const NAME: &'static str = "get_collection_terms";
-    type Args = GetCollectionTermsArgs;
-    type Output = CollectionTermsOutput;
-    type Error = ToolExecutionError;
-
-    fn description(&self) -> String {
-        "Get the most common terms in the collection by document frequency, to understand what topics are covered. Returns up to `limit` terms (default 50, max 200).".to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        args_schema::<GetCollectionTermsArgs>()
-    }
-
-    async fn call(
-        &self,
-        _context: &mut ToolContext,
-        args: GetCollectionTermsArgs,
-    ) -> Result<CollectionTermsOutput, ToolExecutionError> {
-        let state = &self.state;
-        let limit = args
-            .limit
-            .unwrap_or(TERMS_DEFAULT_LIMIT)
-            .min(TERMS_MAX_LIMIT);
-
-        tracing::info!(limit, "Getting collection terms");
-
-        let terms = search::get_collection_terms(&state.search, &state.collection_id, limit)
-            .map_err(infrastructure_error)?;
-
-        tracing::info!(term_count = terms.len(), "Retrieved collection terms");
-
-        Ok(CollectionTermsOutput {
-            terms: terms
-                .into_iter()
-                .map(|t| TermCount {
-                    term: t.term,
-                    doc_count: t.doc_count,
-                })
-                .collect(),
         })
     }
 }
@@ -914,91 +831,6 @@ mod tests {
         assert_eq!(documents[0].page_count, Some(3));
         assert_eq!(documents[1].name, "Unknown.pdf");
         assert_eq!(documents[1].page_count, None);
-    }
-
-    #[tokio::test]
-    async fn test_collection_terms_respects_limit() {
-        let (_tmp, mut state) = create_state().await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![make_chunk(
-                "doc1",
-                "varied.pdf",
-                "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu",
-                "col1",
-                0,
-                0,
-            )],
-        )
-        .unwrap();
-        state.collection_id = scope("col1");
-
-        let out = GetCollectionTerms::new(state)
-            .call(
-                &mut ToolContext::new(),
-                GetCollectionTermsArgs { limit: Some(3) },
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(out.terms.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn test_collection_terms_empty_index() {
-        let (_tmp, mut state) = create_state().await;
-        state.collection_id = scope("col1");
-
-        let out = GetCollectionTerms::new(state)
-            .call(
-                &mut ToolContext::new(),
-                GetCollectionTermsArgs { limit: None },
-            )
-            .await
-            .unwrap();
-        assert!(out.terms.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_collection_terms_with_documents() {
-        let (_tmp, mut state) = create_state().await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![
-                make_chunk(
-                    "doc1",
-                    "Climate_Report.pdf",
-                    "Climate change affects global temperatures and weather patterns.",
-                    "research",
-                    0,
-                    0,
-                ),
-                make_chunk(
-                    "doc2",
-                    "Weather_Analysis.pdf",
-                    "Weather patterns are shifting due to climate factors.",
-                    "research",
-                    0,
-                    0,
-                ),
-            ],
-        )
-        .unwrap();
-        state.collection_id = scope("research");
-
-        let out = GetCollectionTerms::new(state)
-            .call(
-                &mut ToolContext::new(),
-                GetCollectionTermsArgs { limit: Some(10) },
-            )
-            .await
-            .unwrap();
-
-        assert!(!out.terms.is_empty());
-        let climate = out.terms.iter().find(|t| t.term == "climate").unwrap();
-        assert_eq!(climate.doc_count, 2);
     }
 
     #[tokio::test]

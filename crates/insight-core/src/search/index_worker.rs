@@ -6,7 +6,8 @@
 //! LMDB (used by milli) only allows one writer at a time, so serializing
 //! writes through a single worker is both correct and efficient.
 
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use milli::update::IndexerConfig;
@@ -16,6 +17,9 @@ use tokio::sync::{mpsc, oneshot};
 use super::{
     delete_chunks_by_collection, delete_document_chunks, index_chunks_batch, ChunkToIndex,
 };
+
+/// Rendered collection-term context, cleared when a collection's chunks change.
+pub type TermsCache = Arc<Mutex<HashMap<String, String>>>;
 
 /// Request to the index worker.
 pub enum IndexRequest {
@@ -43,9 +47,15 @@ pub enum IndexRequest {
 #[derive(Clone)]
 pub struct IndexWorkerHandle {
     tx: mpsc::Sender<IndexRequest>,
+    terms_cache: TermsCache,
 }
 
 impl IndexWorkerHandle {
+    /// The rendered term context cache invalidated by this worker's writes.
+    pub fn terms_cache(&self) -> TermsCache {
+        self.terms_cache.clone()
+    }
+
     /// Index a batch of chunks.
     ///
     /// Returns when indexing is complete.
@@ -113,6 +123,8 @@ impl IndexWorkerHandle {
 /// all handles are dropped (channel closes).
 pub fn spawn_index_worker(index: Arc<Index>, indexer_config: IndexerConfig) -> IndexWorkerHandle {
     let (tx, mut rx) = mpsc::channel::<IndexRequest>(64);
+    let terms_cache = TermsCache::default();
+    let worker_terms_cache = terms_cache.clone();
 
     thread::Builder::new()
         .name("index-worker".into())
@@ -121,18 +133,23 @@ pub fn spawn_index_worker(index: Arc<Index>, indexer_config: IndexerConfig) -> I
 
             // Process requests until channel closed
             while let Some(request) = rx.blocking_recv() {
-                process_request(&index, &indexer_config, request);
+                process_request(&index, &indexer_config, &worker_terms_cache, request);
             }
 
             tracing::info!("Index worker stopped");
         })
         .expect("Failed to spawn index worker thread");
 
-    IndexWorkerHandle { tx }
+    IndexWorkerHandle { tx, terms_cache }
 }
 
 /// Process a single index request.
-fn process_request(index: &Index, indexer_config: &IndexerConfig, request: IndexRequest) {
+fn process_request(
+    index: &Index,
+    indexer_config: &IndexerConfig,
+    terms_cache: &TermsCache,
+    request: IndexRequest,
+) {
     match request {
         IndexRequest::Index {
             chunks,
@@ -141,11 +158,19 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
             let chunk_count = chunks.len();
             tracing::debug!(chunk_count, "Processing index request");
 
+            let collections: HashSet<String> = chunks
+                .iter()
+                .map(|chunk| chunk.collection_id.clone())
+                .collect();
             let result = index_chunks_batch(index, indexer_config, chunks);
 
             if let Err(ref e) = result {
                 tracing::error!(error = %e, "Failed to index chunks");
             } else {
+                let mut cache = terms_cache.lock().expect("terms cache lock poisoned");
+                for collection_id in collections {
+                    cache.remove(&collection_id);
+                }
                 tracing::debug!(chunk_count, "Indexed chunks successfully");
             }
 
@@ -174,6 +199,10 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
                     "Failed to delete document chunks"
                 );
             } else if let Ok(count) = result {
+                terms_cache
+                    .lock()
+                    .expect("terms cache lock poisoned")
+                    .remove(&collection_id);
                 tracing::debug!(
                     collection_id = %collection_id,
                     doc_id = %doc_id,
@@ -196,6 +225,10 @@ fn process_request(index: &Index, indexer_config: &IndexerConfig, request: Index
             if let Err(ref e) = result {
                 tracing::error!(collection_id = %collection_id, error = %e, "Failed to delete collection chunks");
             } else if let Ok(count) = result {
+                terms_cache
+                    .lock()
+                    .expect("terms cache lock poisoned")
+                    .remove(&collection_id);
                 tracing::debug!(collection_id = %collection_id, deleted = count, "Deleted collection chunks");
             }
 

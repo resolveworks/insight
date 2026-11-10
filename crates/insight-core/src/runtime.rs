@@ -3,10 +3,11 @@
 //! [`send_message`] drives a rig agent over the document tools
 //! ([`crate::tools`]) with [`crate::memory::FileConversationMemory`] persistence,
 //! streaming app-owned [`ChatEvent`]s built by [`RunTranscript`]. A conversation
-//! belongs to one collection, fixed at creation; that collection's name is
-//! attached as a run document on every turn so the model knows what its tools
-//! cover.
+//! belongs to one collection, fixed at creation; that collection's name and
+//! most common terms are attached as run documents on every turn so the model
+//! knows what its tools cover.
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use anyhow::{anyhow, Context, Result};
@@ -20,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use crate::chat::{from_messages, ChatEvent, RunTranscript, TranscriptItem, TranscriptKind};
 use crate::config::Settings;
 use crate::providers;
+use crate::search::TermFrequency;
 use crate::tools::{self, ToolState};
 use crate::AppState;
 
@@ -44,10 +46,60 @@ const TITLE_PROMPT: &str = "Summarize this conversation in a short title of at m
 /// Maximum tool-call iterations per user message.
 const MAX_TURNS: usize = 100;
 
+/// How many of the collection's most common terms the context document shows.
+const COLLECTION_TERMS_LIMIT: usize = 50;
+
 /// The text of the scope document attached to every agent run.
 fn format_scope_document(collection_name: &str) -> String {
     format!(
         "You are working in collection \"{collection_name}\". Your search and list tools only cover this collection."
+    )
+}
+
+/// The collection's term context, re-derived only after its chunks change.
+fn collection_terms_document(state: &AppState, collection_id: &str) -> Result<Document> {
+    let terms_cache = state.index_worker.terms_cache();
+    let mut cache = terms_cache.lock().expect("terms cache lock poisoned");
+    let text = match cache.get(collection_id) {
+        Some(text) => text.clone(),
+        None => {
+            // Refresh under the lock so a concurrent index write's invalidation
+            // cannot be followed by inserting the snapshot it just invalidated.
+            let terms = crate::search::get_collection_terms(
+                &state.search,
+                collection_id,
+                COLLECTION_TERMS_LIMIT,
+            )
+            .context("failed to read collection terms")?;
+            let text = format_collection_terms(&terms);
+            cache.insert(collection_id.to_string(), text.clone());
+            text
+        }
+    };
+    Ok(Document {
+        id: "collection_terms".to_string(),
+        text,
+        additional_props: Default::default(),
+    })
+}
+
+/// Term counts grouped like `count: term term`, most frequent group first.
+fn format_collection_terms(terms: &[TermFrequency]) -> String {
+    if terms.is_empty() {
+        return "The collection has no indexed terms yet.".to_string();
+    }
+    let mut groups = BTreeMap::<u64, Vec<&str>>::new();
+    for term in terms {
+        groups.entry(term.doc_count).or_default().push(&term.term);
+    }
+    let lines = groups
+        .iter()
+        .rev()
+        .map(|(count, terms)| format!("{count}: {}", terms.join(" ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "The most common terms in the collection by document frequency, each count followed by the terms found in that many documents. Use them to judge what the collection covers; this is a sample, not the full index.\n\n{lines}"
     )
 }
 
@@ -126,8 +178,7 @@ fn build_agent(
         .preamble(BASE_SYSTEM_PROMPT)
         .tool(tools::Search::new(tool_state.clone()))
         .tool(tools::ReadChunk::new(tool_state.clone()))
-        .tool(tools::ListDocuments::new(tool_state.clone()))
-        .tool(tools::GetCollectionTerms::new(tool_state))
+        .tool(tools::ListDocuments::new(tool_state))
         .memory(state.memory.store(collection_id, conversation_id)?)
         .conversation(conversation_id)
         .default_max_turns(MAX_TURNS)
@@ -161,7 +212,11 @@ async fn run_agent(
         text: format_scope_document(collection_name),
         additional_props: Default::default(),
     };
-    let mut stream = agent.prompt(message).document(scope_document).stream();
+    let terms_document = collection_terms_document(state, collection_id)?;
+    let mut stream = agent
+        .prompt(message)
+        .documents([scope_document, terms_document])
+        .stream();
     let mut transcript = RunTranscript::new(base);
     let mut final_messages = None;
 
@@ -371,16 +426,47 @@ mod tests {
         model.erase()
     }
 
-    /// The text of the `active_collection` run document sent with the probe's
-    /// first completion request.
-    fn first_scope_text(probe: &MockCompletionModel) -> String {
+    /// The text of one run document sent with the probe's first completion
+    /// request.
+    fn first_document_text(probe: &MockCompletionModel, id: &str) -> String {
         let requests = probe.requests();
         let request = requests.first().expect("one completion request");
         rig::test_utils::sent_documents(request)
             .into_iter()
-            .find(|(id, _)| id == "active_collection")
+            .find(|(document_id, _)| document_id == id)
             .map(|(_, text)| text)
-            .expect("scope document injected as run context")
+            .expect("document injected as run context")
+    }
+
+    /// The text of the `active_collection` run document sent with the probe's
+    /// first completion request.
+    fn first_scope_text(probe: &MockCompletionModel) -> String {
+        first_document_text(probe, "active_collection")
+    }
+
+    /// Send one message and return the collection-term context the model saw.
+    async fn terms_sent(
+        state: &AppState,
+        collection_id: &str,
+        conversation_id: &str,
+        collection_name: &str,
+    ) -> String {
+        let probe = MockCompletionModel::from_stream_turns([text_stream_turn("ok")]);
+        let requests = probe.clone();
+        run_agent(
+            state,
+            collection_id,
+            conversation_id,
+            collection_name,
+            false,
+            "summarize".into(),
+            handle(probe),
+            |_| {},
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        first_document_text(&requests, "collection_terms")
     }
 
     /// Collections that existed before startup are watched and their live
@@ -742,6 +828,60 @@ mod tests {
             event,
             ChatEvent::RunFinished { .. } | ChatEvent::RunFailed { .. }
         )));
+    }
+
+    #[tokio::test]
+    async fn run_seeds_terms_and_refreshes_them_after_indexing() {
+        let (_tmp, state) = test_state().await;
+        let id = "conv-terms";
+        let (collection_id, name) = setup_conversation(&state, id, "Climate Reports").await;
+
+        let empty = terms_sent(&state, &collection_id, id, &name).await;
+        assert_eq!(empty, "The collection has no indexed terms yet.");
+
+        let chunk = |parent_id: &str, content: &str| crate::search::ChunkToIndex {
+            id: crate::search::chunk_external_id(&collection_id, parent_id, 0),
+            parent_id: parent_id.to_string(),
+            parent_name: format!("{parent_id}.pdf"),
+            chunk_index: 0,
+            content: content.to_string(),
+            collection_id: collection_id.clone(),
+            text_offset_start: 0,
+            text_offset_end: content.len(),
+        };
+        state
+            .index_worker
+            .index_chunks(vec![chunk("doc1", "climate")])
+            .await
+            .unwrap();
+        let initial = terms_sent(&state, &collection_id, id, &name).await;
+        let climate = initial
+            .lines()
+            .find(|line| line.split(' ').any(|term| term == "climate"))
+            .expect("climate seeded");
+        assert!(
+            climate.starts_with("1: "),
+            "term and document frequency seeded: {initial}"
+        );
+
+        state
+            .index_worker
+            .index_chunks(vec![chunk("doc2", "climate budget")])
+            .await
+            .unwrap();
+        let refreshed = terms_sent(&state, &collection_id, id, &name).await;
+        let climate = refreshed
+            .lines()
+            .find(|line| line.split(' ').any(|term| term == "climate"))
+            .expect("climate remains seeded");
+        let budget = refreshed
+            .lines()
+            .find(|line| line.split(' ').any(|term| term == "budget"))
+            .expect("new term seeded");
+        assert!(
+            climate.starts_with("2: ") && budget.starts_with("1: "),
+            "indexing invalidates the previous snapshot: {refreshed}"
+        );
     }
 
     #[tokio::test]
