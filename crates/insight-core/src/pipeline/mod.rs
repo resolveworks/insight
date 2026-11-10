@@ -296,6 +296,16 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Queue index reconciliation for one document.
+    ///
+    /// Producers that change a document's indexable state outside the watcher
+    /// (local delete and undelete) use this: the index worker re-reads storage
+    /// and evicts chunks for absent or deleted documents, or reindexes the
+    /// canonical extraction.
+    pub async fn request_index(&self, namespace_id: NamespaceId, doc_id: String) {
+        self.index_queue.enqueue(namespace_id, doc_id).await;
+    }
+
     /// Queue an extraction job and its progress accounting.
     async fn enqueue_extract(&self, namespace_id: NamespaceId, doc_id: String) {
         self.progress
@@ -828,6 +838,122 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "chunks for a vanished document were not evicted"
+        );
+
+        test.pipeline.shutdown();
+    }
+
+    /// Queue one reconciliation and wait until the index stage settles with
+    /// at least `completed` finished jobs.
+    async fn reconcile_and_wait(
+        test: &TestPipeline,
+        namespace_id: NamespaceId,
+        doc_id: &str,
+        completed: usize,
+    ) {
+        test.pipeline
+            .request_index(namespace_id, doc_id.to_string())
+            .await;
+        let collection_id = namespace_id.to_string();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let progress = test
+                    .pipeline
+                    .get_progress(&collection_id)
+                    .await
+                    .expect("collection progress");
+                assert_eq!(progress.index.failed, 0);
+                if progress.index.completed >= completed && !progress.is_active() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("requested reconciliation did not settle");
+    }
+
+    /// A requested reconciliation evicts the chunks of a deleted document and
+    /// indexes them again once the document is restored.
+    #[tokio::test]
+    async fn request_index_reconciles_a_reversible_deletion() {
+        let test = test_pipeline().await;
+        let (namespace_id, _) = test
+            .storage
+            .read()
+            .await
+            .create_collection("Reconcile Delete")
+            .await
+            .unwrap();
+        let collection_id = namespace_id.to_string();
+        let document = test
+            .storage
+            .read()
+            .await
+            .add_document(
+                namespace_id,
+                "report.pdf",
+                "application/pdf",
+                b"reconcile source",
+            )
+            .await
+            .unwrap();
+        let parser = ParserId {
+            name: "test".to_string(),
+            version: "1".to_string(),
+        };
+        let extraction = Extraction {
+            parser: parser.clone(),
+            text: "reconcile marker text".to_string(),
+            unit_kind: None,
+            units: Vec::new(),
+        };
+        {
+            let storage = test.storage.read().await;
+            storage
+                .write_extraction(namespace_id, &document.id, &extraction)
+                .await
+                .unwrap();
+            storage
+                .set_canonical_extraction(namespace_id, &document.id, &parser)
+                .await
+                .unwrap();
+        }
+
+        reconcile_and_wait(&test, namespace_id, &document.id, 1).await;
+        assert!(
+            indexed_parent_ids(&test.index, &collection_id)
+                .unwrap()
+                .contains(&document.id),
+            "document's canonical extraction was not indexed"
+        );
+
+        test.storage
+            .read()
+            .await
+            .delete_document(namespace_id, &document.id)
+            .await
+            .unwrap();
+        reconcile_and_wait(&test, namespace_id, &document.id, 2).await;
+        assert!(
+            !indexed_parent_ids(&test.index, &collection_id)
+                .unwrap()
+                .contains(&document.id),
+            "deleted document's chunks were not evicted"
+        );
+
+        test.storage
+            .read()
+            .await
+            .undelete_document(namespace_id, &document.id)
+            .await
+            .unwrap();
+        reconcile_and_wait(&test, namespace_id, &document.id, 3).await;
+        assert!(
+            indexed_parent_ids(&test.index, &collection_id)
+                .unwrap()
+                .contains(&document.id),
+            "restored document's canonical extraction was not indexed"
         );
 
         test.pipeline.shutdown();

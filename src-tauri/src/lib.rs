@@ -93,6 +93,8 @@ pub fn run() {
             commands::documents::start_import,
             commands::documents::get_pipeline_progress,
             commands::documents::delete_document,
+            commands::documents::undelete_document,
+            commands::documents::get_deleted_documents,
             // Conversation commands
             commands::conversations::list_conversations,
             commands::conversations::load_conversation,

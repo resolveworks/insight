@@ -77,7 +77,8 @@ pub struct SearchHitResult {
 /// Output of [`search`].
 #[derive(Debug, Serialize)]
 pub struct SearchOutput {
-    /// Total number of matching passages before the limit.
+    /// Number of matching passages among the returned hits, after filtering
+    /// out passages whose document is no longer active.
     pub total_hits: usize,
     /// The returned hits.
     pub hits: Vec<SearchHitResult>,
@@ -133,6 +134,7 @@ impl Tool for Search {
 
         let results = search::search_index(index, params).map_err(infrastructure_error)?;
         let rtxn = index.read_txn().map_err(infrastructure_error)?;
+        let storage = state.storage.read().await;
         let mut hits = Vec::with_capacity(results.hits.len());
 
         for hit in &results.hits {
@@ -144,6 +146,26 @@ impl Tool for Search {
                         hit.doc_id
                     ))
                 })?;
+
+            // Chunks outlive a reversible delete until reconciliation evicts
+            // them; the document's active state decides whether they are
+            // searchable now.
+            let namespace_id = chunk
+                .collection_id
+                .parse::<iroh_docs::NamespaceId>()
+                .map_err(|_| {
+                    infrastructure_error(format!(
+                        "indexed chunk {} has invalid collection id {}",
+                        chunk.id, chunk.collection_id
+                    ))
+                })?;
+            let active = storage
+                .get_document(namespace_id, &chunk.parent_id)
+                .await
+                .map_err(infrastructure_error)?;
+            if active.is_none() {
+                continue;
+            }
 
             let truncated = chunk.content.chars().count() > PASSAGE_LIMIT;
             let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
@@ -161,7 +183,7 @@ impl Tool for Search {
         tracing::info!(query = %query, hits = hits.len(), "Search completed");
 
         Ok(SearchOutput {
-            total_hits: results.total_hits,
+            total_hits: hits.len(),
             hits,
         })
     }
@@ -235,6 +257,26 @@ impl Tool for ReadChunk {
             .ok_or_else(not_found)?;
 
         if chunk.collection_id != state.collection_id {
+            return Err(not_found());
+        }
+
+        let namespace_id = chunk
+            .collection_id
+            .parse::<iroh_docs::NamespaceId>()
+            .map_err(|_| {
+                infrastructure_error(format!(
+                    "indexed chunk {} has invalid collection id {}",
+                    chunk.id, chunk.collection_id
+                ))
+            })?;
+        let active = state
+            .storage
+            .read()
+            .await
+            .get_document(namespace_id, &chunk.parent_id)
+            .await
+            .map_err(infrastructure_error)?;
+        if active.is_none() {
             return Err(not_found());
         }
 
@@ -401,7 +443,8 @@ mod tests {
     }
 
     /// Store a document and, when a unit kind is given, an extraction whose
-    /// pages cover `text` up to the given end offsets.
+    /// pages cover `text` up to the given end offsets. Returns the stored
+    /// document id.
     async fn add_document(
         state: &ToolState,
         collection_id: &str,
@@ -410,7 +453,7 @@ mod tests {
         text: &str,
         page_ends: Vec<usize>,
         unit_kind: Option<UnitKind>,
-    ) {
+    ) -> String {
         let namespace_id = collection_id.parse::<iroh_docs::NamespaceId>().unwrap();
         let source = format!("source-{id}");
         let storage = state.storage.read().await;
@@ -452,6 +495,8 @@ mod tests {
                 .await
                 .unwrap();
         }
+
+        doc_id
     }
 
     /// Helper to create a chunk for indexing.
@@ -501,7 +546,7 @@ mod tests {
         let (_tmp, mut state) = create_state().await;
         let content = "Global temperatures are rising due to greenhouse gases.";
         let collection = create_collection(&state, "Research Papers").await;
-        add_document(
+        let document_id = add_document(
             &state,
             &collection,
             "doc1",
@@ -515,7 +560,7 @@ mod tests {
             &state.search,
             &IndexerConfig::default(),
             vec![make_chunk(
-                "doc1",
+                &document_id,
                 "Climate_Report.pdf",
                 content,
                 &collection,
@@ -539,7 +584,7 @@ mod tests {
         assert!(!out.hits.is_empty());
         let hit = &out.hits[0];
         assert_eq!(hit.document_name, "Climate_Report.pdf");
-        assert_eq!(hit.document_id, "doc1");
+        assert_eq!(hit.document_id, document_id);
         assert!(hit.score > 0.0);
         assert!(!hit.truncated);
     }
@@ -551,7 +596,7 @@ mod tests {
         let finance = create_collection(&state, "Finance").await;
         let research_content = "Scientific research on climate change.";
         let finance_content = "Financial analysis for climate initiatives.";
-        add_document(
+        let research_id = add_document(
             &state,
             &research,
             "doc1",
@@ -561,7 +606,7 @@ mod tests {
             None,
         )
         .await;
-        add_document(
+        let finance_id = add_document(
             &state,
             &finance,
             "doc2",
@@ -576,7 +621,7 @@ mod tests {
             &IndexerConfig::default(),
             vec![
                 make_chunk(
-                    "doc1",
+                    &research_id,
                     "Research_Paper.pdf",
                     research_content,
                     &research,
@@ -584,7 +629,7 @@ mod tests {
                     0,
                 ),
                 make_chunk(
-                    "doc2",
+                    &finance_id,
                     "Finance_Report.pdf",
                     finance_content,
                     &finance,
@@ -616,7 +661,7 @@ mod tests {
         let (_tmp, mut state) = create_state().await;
         let long_content = "climate research findings ".repeat(30); // ~780 chars
         let collection = create_collection(&state, "Long Docs").await;
-        add_document(
+        let document_id = add_document(
             &state,
             &collection,
             "doc1",
@@ -630,7 +675,7 @@ mod tests {
             &state.search,
             &IndexerConfig::default(),
             vec![make_chunk(
-                "doc1",
+                &document_id,
                 "Long.pdf",
                 &long_content,
                 &collection,
@@ -659,33 +704,44 @@ mod tests {
     #[tokio::test]
     async fn test_read_chunk_success() {
         let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Chunks").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "chunk-doc",
+            "Test_Document.pdf",
+            "This is the content of chunk 0 with important information.",
+            Vec::new(),
+            None,
+        )
+        .await;
         search::index_chunks_batch(
             &state.search,
             &IndexerConfig::default(),
             vec![make_chunk(
-                "test_doc",
+                &document_id,
                 "Test_Document.pdf",
                 "This is the content of chunk 0 with important information.",
-                "collection1",
+                &collection,
                 0,
                 0,
             )],
         )
         .unwrap();
-        state.collection_id = scope("collection1");
+        state.collection_id = scope(&collection);
 
         let out = ReadChunk::new(state)
             .call(
                 &mut ToolContext::new(),
                 ReadChunkArgs {
-                    document_id: "test_doc".to_string(),
+                    document_id: document_id.clone(),
                     chunk_index: 0,
                 },
             )
             .await
             .unwrap();
 
-        assert_eq!(out.document_id, "test_doc");
+        assert_eq!(out.document_id, document_id);
         assert_eq!(out.chunk_index, 0);
         assert!(out.content.contains("important information"));
     }
@@ -754,6 +810,136 @@ mod tests {
 
         assert_eq!(err.kind(), ToolErrorKind::NotFound);
         assert!(err.to_string().contains("test_doc"));
+    }
+
+    #[tokio::test]
+    async fn test_deleted_documents_are_hidden_from_search_and_read_chunk() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Reversible").await;
+        let namespace_id = collection.parse::<iroh_docs::NamespaceId>().unwrap();
+        let active_id = add_document(
+            &state,
+            &collection,
+            "active",
+            "Active.pdf",
+            "climate temperatures rising over land",
+            Vec::new(),
+            None,
+        )
+        .await;
+        let deleted_id = add_document(
+            &state,
+            &collection,
+            "deleted",
+            "Deleted.pdf",
+            "climate temperatures recorded at sea",
+            Vec::new(),
+            None,
+        )
+        .await;
+        search::index_chunks_batch(
+            &state.search,
+            &IndexerConfig::default(),
+            vec![
+                make_chunk(
+                    &active_id,
+                    "Active.pdf",
+                    "climate temperatures rising over land",
+                    &collection,
+                    0,
+                    0,
+                ),
+                make_chunk(
+                    &deleted_id,
+                    "Deleted.pdf",
+                    "climate temperatures recorded at sea",
+                    &collection,
+                    0,
+                    0,
+                ),
+            ],
+        )
+        .unwrap();
+        state.collection_id = scope(&collection);
+
+        state
+            .storage
+            .read()
+            .await
+            .delete_document(namespace_id, &deleted_id)
+            .await
+            .unwrap();
+
+        // The deleted document's chunks are still indexed here; the tools
+        // must hide them before reconciliation evicts them.
+        let deleted_chunk = search::chunk_external_id(&collection, &deleted_id, 0);
+        assert!(
+            search::get_indexed_chunk_by_external_id(&state.search, &deleted_chunk)
+                .unwrap()
+                .is_some()
+        );
+
+        let out = Search::new(state.clone())
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: "climate".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.total_hits, 1);
+        assert_eq!(out.hits.len(), 1);
+        assert_eq!(out.hits[0].document_id, active_id);
+
+        let err = ReadChunk::new(state.clone())
+            .call(
+                &mut ToolContext::new(),
+                ReadChunkArgs {
+                    document_id: deleted_id.clone(),
+                    chunk_index: 0,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), ToolErrorKind::NotFound);
+
+        state
+            .storage
+            .read()
+            .await
+            .undelete_document(namespace_id, &deleted_id)
+            .await
+            .unwrap();
+
+        let out = Search::new(state.clone())
+            .call(
+                &mut ToolContext::new(),
+                SearchArgs {
+                    query: "climate".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.total_hits, 2);
+        let ids: Vec<&str> = out
+            .hits
+            .iter()
+            .map(|hit| hit.document_id.as_str())
+            .collect();
+        assert!(ids.contains(&deleted_id.as_str()));
+
+        let out = ReadChunk::new(state)
+            .call(
+                &mut ToolContext::new(),
+                ReadChunkArgs {
+                    document_id: deleted_id,
+                    chunk_index: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(out.content.contains("recorded at sea"));
     }
 
     #[tokio::test]

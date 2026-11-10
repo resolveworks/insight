@@ -24,6 +24,17 @@ pub struct CollectionInvalidated {
     pub collection_id: String,
 }
 
+/// A document retained by a reversible deletion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedDocumentInfo {
+    pub id: String,
+    pub name: String,
+    /// Author that deleted the document, as the full author id string.
+    pub deleted_by: String,
+    /// RFC 3339 deletion timestamp.
+    pub deleted_at: String,
+}
+
 /// A file that could not be stored during an import.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportFailure {
@@ -204,7 +215,33 @@ pub async fn get_document_chunks(
     }
 }
 
+/// Get the documents retained by reversible deletion in a collection
+#[tauri::command]
+pub async fn get_deleted_documents(
+    collection_id: CollectionId,
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<DeletedDocumentInfo>> {
+    let storage = state.storage.read().await;
+    let deleted = storage
+        .list_deleted_documents(collection_id.namespace())
+        .await
+        .storage_err()?;
+
+    Ok(deleted
+        .into_iter()
+        .map(|document| DeletedDocumentInfo {
+            id: document.metadata.id,
+            name: document.metadata.name,
+            deleted_by: document.deleted_by.to_string(),
+            deleted_at: document.deleted_at,
+        })
+        .collect())
+}
+
 /// Delete a document from a collection
+///
+/// The deletion is reversible in storage; index reconciliation then evicts
+/// the document's chunks.
 #[tauri::command]
 pub async fn delete_document(
     collection_id: CollectionId,
@@ -218,7 +255,6 @@ pub async fn delete_document(
         namespace_id
     );
 
-    // Delete from storage first
     {
         let storage = state.storage.read().await;
         storage
@@ -227,31 +263,42 @@ pub async fn delete_document(
             .storage_err()?;
     }
 
-    // Delete all chunks for this document from search index in background
-    let index_worker = state.index_worker.clone();
-    let collection = namespace_id.to_string();
-    tokio::spawn(async move {
-        match index_worker
-            .delete_document_chunks(collection.clone(), document_id.clone())
+    state
+        .pipeline
+        .request_index(namespace_id, document_id)
+        .await;
+
+    Ok(())
+}
+
+/// Restore a deleted document to a collection
+///
+/// Index reconciliation reindexes the document's canonical extraction.
+#[tauri::command]
+pub async fn undelete_document(
+    collection_id: CollectionId,
+    document_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let namespace_id = collection_id.namespace();
+    tracing::info!(
+        "Restoring document {} in collection {}",
+        document_id,
+        namespace_id
+    );
+
+    {
+        let storage = state.storage.read().await;
+        storage
+            .undelete_document(namespace_id, &document_id)
             .await
-        {
-            Ok(count) => {
-                tracing::info!(
-                    "Removed {} chunks for document {} in collection {} from search index",
-                    count,
-                    document_id,
-                    collection
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to remove chunks for document {} from search index: {}",
-                    document_id,
-                    e
-                );
-            }
-        }
-    });
+            .storage_err()?;
+    }
+
+    state
+        .pipeline
+        .request_index(namespace_id, document_id)
+        .await;
 
     Ok(())
 }
