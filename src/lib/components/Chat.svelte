@@ -146,7 +146,9 @@
 
 	<!-- Error display -->
 	{#if error}
-		<Alert>{error}</Alert>
+		<div class="mx-auto w-full max-w-3xl px-6 pb-2">
+			<Alert>{error}</Alert>
+		</div>
 	{/if}
 
 	{#if providerReady}
