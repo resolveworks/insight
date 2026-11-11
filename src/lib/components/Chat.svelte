@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { resolve } from '$app/paths';
-	import Markdown from './Markdown.svelte';
 	import Button from './Button.svelte';
 	import ButtonLink from './ButtonLink.svelte';
 	import Input from './Input.svelte';
 	import Alert from './Alert.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import ActivityStepView from './ActivityStep.svelte';
+	import Message from './Message.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
 	import { documentCountLabel } from '#lib/api/collection.js';
-	import { transcriptBlocks } from '#lib/chat/activity.js';
+	import { transcriptBlocks, transcriptTurns } from '#lib/chat/activity.js';
 	import type { Collection } from '#lib/types/documents.js';
 
 	type Props = {
@@ -24,11 +24,12 @@
 	const collectionName = $derived(collection.name);
 	const documentCount = $derived(collection.document_count);
 	const hasDocuments = $derived(documentCount > 0);
-	const column = 'mx-auto w-full max-w-2xl px-6';
+	const column = 'mx-auto w-full max-w-xl px-6';
 
 	// Reactive reads from the conversations store
 	const transcript = $derived(chat.getItems());
 	const blocks = $derived(transcriptBlocks(transcript));
+	const turns = $derived(transcriptTurns(blocks));
 	const isGenerating = $derived(chat.getIsGenerating());
 	const error = $derived(chat.getError());
 
@@ -98,32 +99,31 @@
 					/>
 				{/if}
 			{:else}
-				<div class="space-y-4">
+				<div class="space-y-8">
 					<!-- One renderer over the transcript: a run committing only flips
-					     provisional/executing flags — blocks stay in place. -->
-					{#each blocks as block (block.key)}
-						{#if block.kind === 'activity'}
-							<!-- Consecutive reasoning/tool steps read as one subordinate trail. -->
-							<div class="my-2 space-y-1 border-l border-neutral-200 pl-4">
-								{#each block.steps as step (step.key)}
-									<ActivityStepView {step} />
-								{/each}
-							</div>
-						{:else if block.item.kind === 'user_text'}
-							<div
-								class="ml-auto w-fit max-w-full break-words rounded-lg border border-neutral-200 bg-neutral-100 px-4 py-3 text-base leading-relaxed text-neutral-800"
-							>
-								<Markdown content={block.item.text} />
-							</div>
-						{:else if block.item.kind === 'assistant_text'}
-							<div class="text-base leading-relaxed text-neutral-800">
-								<Markdown
-									content={block.item.text}
-								/>{#if block.item.streaming}<span
-										class="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-neutral-800 align-text-bottom"
-									></span>{/if}
-							</div>
-						{/if}
+					     provisional/executing flags — blocks stay in place. Turns group
+					     a question with the reply and activity that follow it. -->
+					{#each turns as turn (turn.key)}
+						<div class="space-y-4">
+							{#each turn.blocks as block (block.key)}
+								{#if block.kind === 'activity'}
+									<!-- Consecutive reasoning/tool steps read as one subordinate trail. -->
+									<div class="space-y-1">
+										{#each block.steps as step (step.key)}
+											<ActivityStepView {step} />
+										{/each}
+									</div>
+								{:else if block.item.kind === 'user_text'}
+									<Message from="user" text={block.item.text} />
+								{:else if block.item.kind === 'assistant_text'}
+									<Message
+										from="assistant"
+										text={block.item.text}
+										streaming={block.item.streaming}
+									/>
+								{/if}
+							{/each}
+						</div>
 					{/each}
 
 					<!-- Placeholder for the gap between send and the first delta. -->
