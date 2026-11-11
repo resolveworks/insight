@@ -11,24 +11,26 @@
 	const percent = $derived(max === 0 ? 0 : (value / max) * 100);
 </script>
 
-{#if label || detail}
+<div class="flex flex-col gap-1.5">
+	{#if label || detail}
+		<div
+			class="flex items-center justify-between gap-4 text-xs text-neutral-500"
+		>
+			<span>{label}</span>
+			<span>{detail}</span>
+		</div>
+	{/if}
 	<div
-		class="mb-1.5 flex items-center justify-between gap-4 text-xs text-neutral-500"
+		role="progressbar"
+		aria-valuenow={value}
+		aria-valuemin="0"
+		aria-valuemax={max}
+		aria-label={label}
+		class="h-1.5 w-full rounded-full bg-neutral-100"
 	>
-		<span>{label}</span>
-		<span>{detail}</span>
+		<div
+			class="h-1.5 rounded-full bg-blue-500 transition-all"
+			style:width="{percent}%"
+		></div>
 	</div>
-{/if}
-<div
-	role="progressbar"
-	aria-valuenow={value}
-	aria-valuemin="0"
-	aria-valuemax={max}
-	aria-label={label}
-	class="h-1.5 w-full rounded-full bg-neutral-100"
->
-	<div
-		class="h-1.5 rounded-full bg-blue-500 transition-all"
-		style:width="{percent}%"
-	></div>
 </div>

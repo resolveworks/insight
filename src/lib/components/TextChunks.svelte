@@ -25,31 +25,29 @@
 		{/if}
 	{/snippet}
 
-	<div class="mt-3">
-		{#if loading}
-			<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
-		{:else if error}
-			<Alert variant="warning">{error}</Alert>
-		{:else if chunks && chunks.length > 0}
-			<div class="space-y-3">
-				{#each chunks as chunk, i (i)}
-					<Card padding="sm">
-						<div
-							class="mb-2 flex items-center justify-between text-xs text-neutral-400"
-						>
-							<span>Chunk {i + 1}</span>
-							<span>{chunk.length} chars</span>
-						</div>
-						<p
-							class="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-neutral-700"
-						>
-							{chunk}
-						</p>
-					</Card>
-				{/each}
-			</div>
-		{:else}
-			<p class="text-sm italic text-neutral-400">No chunks generated</p>
-		{/if}
-	</div>
+	{#if loading}
+		<LoadingSpinner size="sm" ariaLabel="Loading chunks" />
+	{:else if error}
+		<Alert variant="warning">{error}</Alert>
+	{:else if chunks && chunks.length > 0}
+		<div class="space-y-3">
+			{#each chunks as chunk, i (i)}
+				<Card padding="sm">
+					<div
+						class="mb-2 flex items-center justify-between text-xs text-neutral-400"
+					>
+						<span>Chunk {i + 1}</span>
+						<span>{chunk.length} chars</span>
+					</div>
+					<p
+						class="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-neutral-700"
+					>
+						{chunk}
+					</p>
+				</Card>
+			{/each}
+		</div>
+	{:else}
+		<p class="text-sm italic text-neutral-400">No chunks generated</p>
+	{/if}
 </Disclosure>

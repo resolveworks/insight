@@ -19,7 +19,7 @@
 
 	const variantClasses: Record<NonNullable<Props['variant']>, string> = {
 		card: 'flex items-center justify-between gap-4 rounded-lg border border-neutral-200 bg-white px-4 py-3',
-		nav: 'flex items-center rounded-md transition-colors',
+		nav: 'flex items-center rounded-md px-2 py-1.5 transition-colors',
 	};
 
 	const navStateClasses = $derived(

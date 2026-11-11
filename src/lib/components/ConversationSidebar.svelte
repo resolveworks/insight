@@ -46,27 +46,25 @@
 						<button
 							onclick={() => onSelect(conv.id)}
 							aria-current={activeId === conv.id ? 'true' : undefined}
-							class="min-w-0 w-full truncate rounded-md px-2 py-1.5 text-left text-sm focus-visible:focus-ring"
+							class="min-w-0 w-full truncate text-left text-sm focus-visible:focus-ring"
 						>
 							{conv.title}
 						</button>
 						{#snippet actions()}
-							<span class="mr-1 shrink-0">
-								<Button
-									size="icon"
-									variant="outline"
-									label="Delete conversation"
-									onclick={(e) => {
-										e.stopPropagation();
-										pendingDelete = {
-											id: conv.id,
-											title: conv.title,
-										};
-									}}
-								>
-									<Icon name="trash" size="sm" />
-								</Button>
-							</span>
+							<Button
+								size="icon"
+								variant="outline"
+								label="Delete conversation"
+								onclick={(e) => {
+									e.stopPropagation();
+									pendingDelete = {
+										id: conv.id,
+										title: conv.title,
+									};
+								}}
+							>
+								<Icon name="trash" size="sm" />
+							</Button>
 						{/snippet}
 					</ListRow>
 				{/each}

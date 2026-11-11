@@ -33,10 +33,6 @@
 	</select>
 {/snippet}
 
-{#if label || hint}
-	<Field {id} {label} {hint}>
-		{@render control()}
-	</Field>
-{:else}
+<Field {id} {label} {hint}>
 	{@render control()}
-{/if}
+</Field>

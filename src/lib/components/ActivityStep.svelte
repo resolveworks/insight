@@ -23,7 +23,7 @@
 				<span class="min-w-0 truncate text-neutral-400">{step.preview}</span>
 			{/if}
 		{/snippet}
-		<div class="pb-2 pl-6 text-sm leading-relaxed text-neutral-700">
+		<div class="text-sm leading-relaxed text-neutral-700">
 			<pre class="whitespace-pre-wrap break-words">{step.text}</pre>
 		</div>
 	</Disclosure>
@@ -43,7 +43,7 @@
 			{/if}
 		{/snippet}
 
-		<div class="space-y-2 pb-2 pl-6 pt-1">
+		<div class="space-y-2">
 			{#if step.argsLines.length > 0}
 				<dl class="space-y-1 font-mono text-xs leading-relaxed">
 					{#each step.argsLines as line (line.key)}
