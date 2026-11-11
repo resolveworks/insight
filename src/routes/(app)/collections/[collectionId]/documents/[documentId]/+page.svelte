@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import Alert from '#lib/components/Alert.svelte';
+	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
@@ -36,11 +37,12 @@
 
 <Page measure="prose">
 	{#snippet header()}
+		<CollectionHeader collection={data.collection} active="documents" compact />
 		<PageHeader
 			title={data.document.name}
-			back={{
+			parent={{
 				href: resolve(`collections/${collectionId}/documents`),
-				label: 'Back to documents',
+				label: 'Documents',
 			}}
 		>
 			{#snippet subtitle()}
