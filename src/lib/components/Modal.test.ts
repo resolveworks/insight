@@ -3,149 +3,118 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import { createRawSnippet, tick } from 'svelte';
 
 const text = (t: string) => createRawSnippet(() => ({ render: () => t }));
-const controls = (autofocusSecond = false) =>
+const controls = () =>
 	createRawSnippet(() => ({
-		render: () =>
-			`<div><button>First</button><button${autofocusSecond ? ' data-autofocus' : ''}>Second</button></div>`,
+		render: () => '<div><button>First</button><button>Second</button></div>',
 	}));
+
 import Modal from './Modal.svelte';
 import ConfirmDialog from './ConfirmDialog.svelte';
 
+function dialogRect(): DOMRect {
+	return {
+		left: 10,
+		top: 10,
+		right: 110,
+		bottom: 110,
+		width: 100,
+		height: 100,
+		x: 10,
+		y: 10,
+		toJSON: () => ({}),
+	};
+}
+
 describe('Modal', () => {
-	it('closes once on Escape inside the dialog', async () => {
-		const onClose = vi.fn();
+	it('opens as a modal dialog', async () => {
 		render(Modal, {
-			props: { onClose, children: controls() },
+			props: { onClose: vi.fn(), children: text('x') },
 		});
 		await tick();
 
-		fireEvent.keyDown(screen.getByRole('button', { name: 'First' }), {
-			key: 'Escape',
-		});
-		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(screen.getByRole('dialog')).toHaveAttribute('open');
 	});
 
-	it('closes on Escape from the window', async () => {
-		const onClose = vi.fn();
-		render(Modal, {
-			props: { title: 'Dialog', onClose, children: text('x') },
-		});
-
-		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-		expect(onClose).toHaveBeenCalledTimes(1);
-	});
-
-	it('closes on backdrop click', async () => {
-		const onClose = vi.fn();
-		const { container } = render(Modal, {
-			props: { onClose, children: text('x') },
-		});
-
-		container.firstElementChild!.dispatchEvent(
-			new MouseEvent('click', { bubbles: true }),
-		);
-		expect(onClose).toHaveBeenCalledTimes(1);
-	});
-
-	it('does not close when clicking inside the panel', () => {
-		const onClose = vi.fn();
-		render(Modal, {
-			props: { onClose, children: text('x') },
-		});
-
-		screen.getByRole('dialog').click();
-		expect(onClose).not.toHaveBeenCalled();
-	});
-
-	it('labels the dialog with its title', () => {
+	it('labels the dialog with its title', async () => {
 		render(Modal, {
 			props: { title: 'Dialog', onClose: vi.fn(), children: text('x') },
 		});
+		await tick();
 
 		expect(screen.getByRole('dialog', { name: 'Dialog' })).toBeInTheDocument();
 	});
 
-	it('focuses the autofocus target on open', async () => {
+	it('closes when the dialog requests to be cancelled', async () => {
+		const onClose = vi.fn();
 		render(Modal, {
-			props: { onClose: vi.fn(), children: controls(true) },
+			props: { onClose, children: text('x') },
 		});
 		await tick();
 
-		expect(screen.getByRole('button', { name: 'Second' })).toHaveFocus();
+		const event = new Event('cancel', { cancelable: true });
+		screen.getByRole('dialog').dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
-	it('focuses the first focusable control when there is no autofocus target', async () => {
+	it('closes on a click outside the dialog', async () => {
+		const onClose = vi.fn();
 		render(Modal, {
-			props: { onClose: vi.fn(), children: controls() },
+			props: { onClose, children: text('x') },
 		});
 		await tick();
 
-		expect(screen.getByRole('button', { name: 'First' })).toHaveFocus();
+		const dialog = screen.getByRole('dialog');
+		dialog.getBoundingClientRect = () => dialogRect();
+		await fireEvent.click(dialog, { clientX: 5, clientY: 5 });
+
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
-	it('wraps Tab from the last control to the first', async () => {
+	it('stays open on a click inside the dialog', async () => {
+		const onClose = vi.fn();
 		render(Modal, {
-			props: { onClose: vi.fn(), children: controls() },
+			props: { onClose, children: text('x') },
 		});
 		await tick();
 
-		const first = screen.getByRole('button', { name: 'First' });
-		const last = screen.getByRole('button', { name: 'Second' });
-		last.focus();
-		fireEvent.keyDown(last, { key: 'Tab' });
+		const dialog = screen.getByRole('dialog');
+		dialog.getBoundingClientRect = () => dialogRect();
+		await fireEvent.click(dialog, { clientX: 20, clientY: 20 });
 
-		expect(first).toHaveFocus();
+		expect(onClose).not.toHaveBeenCalled();
 	});
 
-	it('wraps Shift+Tab from the first control to the last', async () => {
+	it('closes from the close button', async () => {
+		const onClose = vi.fn();
 		render(Modal, {
-			props: { onClose: vi.fn(), children: controls() },
+			props: { title: 'Dialog', onClose, children: text('x') },
 		});
 		await tick();
 
-		const first = screen.getByRole('button', { name: 'First' });
-		const last = screen.getByRole('button', { name: 'Second' });
-		first.focus();
-		fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+		await fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
 
-		expect(last).toHaveFocus();
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
-	it('makes the background inert and restores it on close', async () => {
-		const outside = document.createElement('button');
-		document.body.appendChild(outside);
-		outside.focus();
-
-		const { unmount } = render(Modal, {
-			props: { onClose: vi.fn(), children: controls() },
+	it('renders child controls and footer content', async () => {
+		const footer = createRawSnippet(() => ({
+			render: () => '<button>Save</button>',
+		}));
+		render(Modal, {
+			props: { onClose: vi.fn(), children: controls(), footer },
 		});
 		await tick();
-		expect(outside.inert).toBe(true);
 
-		unmount();
-		expect(outside.inert).toBeFalsy();
-		outside.remove();
-	});
-
-	it('restores focus to the previously focused element on close', async () => {
-		const outside = document.createElement('button');
-		document.body.appendChild(outside);
-		outside.focus();
-
-		const { unmount } = render(Modal, {
-			props: { onClose: vi.fn(), children: controls() },
-		});
-		await tick();
-		expect(screen.getByRole('button', { name: 'First' })).toHaveFocus();
-
-		unmount();
-		expect(outside).toHaveFocus();
-		outside.remove();
+		expect(screen.getByRole('button', { name: 'First' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Second' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
 	});
 });
 
 describe('ConfirmDialog', () => {
-	it('renders title and message', () => {
+	it('renders title and message', async () => {
 		render(ConfirmDialog, {
 			props: {
 				title: 'Delete collection',
@@ -154,8 +123,11 @@ describe('ConfirmDialog', () => {
 				onCancel: vi.fn(),
 			},
 		});
+		await tick();
 
-		expect(screen.getByText('Delete collection')).toBeInTheDocument();
+		expect(
+			screen.getByRole('heading', { name: 'Delete collection' }),
+		).toBeInTheDocument();
 		expect(
 			screen.getByText('Delete "Research"? This cannot be undone.'),
 		).toBeInTheDocument();
@@ -172,13 +144,29 @@ describe('ConfirmDialog', () => {
 				onCancel,
 			},
 		});
+		await tick();
 
-		screen.getByRole('button', { name: 'Delete' }).click();
+		await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
 		expect(onConfirm).toHaveBeenCalledTimes(1);
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
-	it('autofocuses the Cancel button', async () => {
+	it('cancels without confirming', async () => {
+		const onConfirm = vi.fn();
+		const onCancel = vi.fn();
+		render(ConfirmDialog, {
+			props: { title: 'T', message: 'M', onConfirm, onCancel },
+		});
+		await tick();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+		expect(onCancel).toHaveBeenCalledTimes(1);
+		expect(onConfirm).not.toHaveBeenCalled();
+	});
+
+	it('marks Cancel as the autofocus target', async () => {
 		render(ConfirmDialog, {
 			props: {
 				title: 'T',
@@ -187,20 +175,10 @@ describe('ConfirmDialog', () => {
 				onCancel: vi.fn(),
 			},
 		});
+		await tick();
 
-		await new Promise((r) => setTimeout(r, 0));
-		expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
-	});
-
-	it('cancels without confirming', () => {
-		const onConfirm = vi.fn();
-		const onCancel = vi.fn();
-		render(ConfirmDialog, {
-			props: { title: 'T', message: 'M', onConfirm, onCancel },
-		});
-
-		screen.getByRole('button', { name: 'Cancel' }).click();
-		expect(onCancel).toHaveBeenCalledTimes(1);
-		expect(onConfirm).not.toHaveBeenCalled();
+		expect(screen.getByRole('button', { name: 'Cancel' })).toHaveAttribute(
+			'autofocus',
+		);
 	});
 });

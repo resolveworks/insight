@@ -192,6 +192,35 @@ describe('Collection settings actions', () => {
 		);
 	});
 
+	it('ignores a share request that fails after the modal was reopened', async () => {
+		const requests: {
+			resolve: (ticket: string) => void;
+			reject: (error: unknown) => void;
+		}[] = [];
+
+		mockIPC((cmd) => {
+			if (cmd === 'share_collection')
+				return new Promise((resolve, reject) => {
+					requests.push({ resolve, reject });
+				});
+		});
+
+		renderPage();
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Create collaboration ticket' }),
+		);
+		await fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Create collaboration ticket' }),
+		);
+
+		requests[0].reject({ code: 'sharing', message: 'relay unavailable' });
+		requests[1].resolve('ticket-123');
+
+		expect(await screen.findByText('ticket-123')).toBeInTheDocument();
+		expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+	});
+
 	it('tells the user to copy manually when the clipboard rejects', async () => {
 		Object.defineProperty(navigator, 'clipboard', {
 			value: {

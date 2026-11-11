@@ -33,10 +33,11 @@
 	}: Props = $props();
 </script>
 
+<!-- svelte-ignore a11y_autofocus -->
 <button
 	{type}
 	class="{buttonClasses(variant, size)} {fullWidth ? 'w-full' : ''}"
-	data-autofocus={autofocus ? '' : undefined}
+	autofocus={autofocus || undefined}
 	{disabled}
 	aria-label={label}
 	title={label}
