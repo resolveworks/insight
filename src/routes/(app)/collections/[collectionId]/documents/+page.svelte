@@ -6,7 +6,6 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
-	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import DeletedDocumentRow from '#lib/components/DeletedDocumentRow.svelte';
 	import DocumentRow from '#lib/components/DocumentRow.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
@@ -125,10 +124,6 @@
 </script>
 
 <Page>
-	{#snippet header()}
-		<CollectionHeader collection={data.collection} active="documents" />
-	{/snippet}
-
 	{#if importFailures.length > 0}
 		<ImportFailures failures={importFailures} />
 	{/if}

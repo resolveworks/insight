@@ -4,7 +4,7 @@
 	type Measure = 'wide' | 'prose';
 
 	interface Props {
-		header: Snippet;
+		header?: Snippet;
 		children: Snippet;
 		measure?: Measure;
 	}
@@ -17,7 +17,9 @@
 </script>
 
 <div class="flex h-full flex-col bg-neutral-50">
-	{@render header()}
+	{#if header}
+		{@render header()}
+	{/if}
 	<div class="min-h-0 flex-1 overflow-y-auto p-6">
 		<div class="flex flex-col gap-6 {measureClasses}">
 			{@render children()}

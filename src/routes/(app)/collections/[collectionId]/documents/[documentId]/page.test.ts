@@ -65,23 +65,7 @@ describe('Document detail load', () => {
 });
 
 describe('Document detail page', () => {
-	it('names the document as the only first-level heading below the collection context', async () => {
-		mockIPC((cmd) => {
-			if (cmd === 'get_document_text') return 'Extracted text';
-		});
-
-		renderPage();
-
-		const headings = await screen.findAllByRole('heading', { level: 1 });
-		expect(headings.map((heading) => heading.textContent?.trim())).toEqual([
-			'report.pdf',
-		]);
-		expect(
-			screen.queryByRole('heading', { name: 'Climate Research' }),
-		).not.toBeInTheDocument();
-	});
-
-	it('keeps the collection workspace and section navigation above the document', async () => {
+	it('names the document with a second-level content heading', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
@@ -89,32 +73,9 @@ describe('Document detail page', () => {
 		renderPage();
 
 		expect(
-			await screen.findByRole('link', { name: 'Back to collections' }),
-		).toHaveAttribute('href', '/collections');
-		expect(screen.getByText('Climate Research')).toBeVisible();
-
-		expect(screen.getByRole('link', { name: 'Research' })).toHaveAttribute(
-			'href',
-			'/collections/col1/research',
-		);
-		expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute(
-			'href',
-			'/collections/col1/settings',
-		);
-
-		const documentLinks = screen.getAllByRole('link', { name: 'Documents' });
-		expect(documentLinks).toHaveLength(2);
-		for (const link of documentLinks) {
-			expect(link).toHaveAttribute('href', '/collections/col1/documents');
-		}
-		expect(
-			documentLinks.filter(
-				(link) => link.getAttribute('aria-current') === 'page',
-			),
-		).toHaveLength(1);
-		expect(
-			screen.queryByRole('link', { name: 'Back to documents' }),
-		).not.toBeInTheDocument();
+			await screen.findByRole('heading', { level: 2, name: 'report.pdf' }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
 	});
 
 	it('summarises the document under its title', async () => {

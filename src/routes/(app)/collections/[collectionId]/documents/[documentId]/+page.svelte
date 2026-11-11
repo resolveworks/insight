@@ -1,11 +1,8 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import Alert from '#lib/components/Alert.svelte';
-	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Page from '#lib/components/Page.svelte';
-	import PageHeader from '#lib/components/PageHeader.svelte';
 	import TagList from '#lib/components/TagList.svelte';
 	import { getDocumentText } from '#lib/api/document.js';
 	import { describeError } from '#lib/api/provider.js';
@@ -36,35 +33,27 @@
 </script>
 
 <Page measure="prose">
-	{#snippet header()}
-		<CollectionHeader collection={data.collection} active="documents" compact />
-		<PageHeader
-			title={data.document.name}
-			parent={{
-				href: resolve(`collections/${collectionId}/documents`),
-				label: 'Documents',
-			}}
+	<div>
+		<h2 class="truncate text-xl font-semibold text-neutral-800">
+			{data.document.name}
+		</h2>
+		<div
+			class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-neutral-500"
 		>
-			{#snippet subtitle()}
-				<div
-					class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-neutral-500"
-				>
-					{#if data.document.page_count !== null}
-						<span>
-							{data.document.page_count}
-							{data.document.page_count === 1 ? 'page' : 'pages'}
-						</span>
-						<span aria-hidden="true">·</span>
-					{/if}
-					<span>Added {formatTimestamp(data.document.created_at)}</span>
-					{#if data.document.tags.length > 0}
-						<span aria-hidden="true">·</span>
-						<TagList tags={data.document.tags} />
-					{/if}
-				</div>
-			{/snippet}
-		</PageHeader>
-	{/snippet}
+			{#if data.document.page_count !== null}
+				<span>
+					{data.document.page_count}
+					{data.document.page_count === 1 ? 'page' : 'pages'}
+				</span>
+				<span aria-hidden="true">·</span>
+			{/if}
+			<span>Added {formatTimestamp(data.document.created_at)}</span>
+			{#if data.document.tags.length > 0}
+				<span aria-hidden="true">·</span>
+				<TagList tags={data.document.tags} />
+			{/if}
+		</div>
+	</div>
 
 	{#if data.document.partially_indexed === true}
 		<Alert variant="warning">

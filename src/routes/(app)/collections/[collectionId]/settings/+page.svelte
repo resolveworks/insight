@@ -3,7 +3,6 @@
 	import { resolve } from '$app/paths';
 	import Button from '#lib/components/Button.svelte';
 	import CardSection from '#lib/components/CardSection.svelte';
-	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import Page from '#lib/components/Page.svelte';
@@ -86,10 +85,6 @@
 </script>
 
 <Page measure="prose">
-	{#snippet header()}
-		<CollectionHeader {collection} active="settings" />
-	{/snippet}
-
 	<CardSection
 		title="Share"
 		description="Anyone with a collaboration ticket can add, change, and delete documents in this collection. They sync with this collection, documents included, while this peer is available. Access cannot be revoked."
