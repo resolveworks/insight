@@ -236,7 +236,6 @@ async fn reconcile_document(
         id: document_external_id(collection_id, &metadata.id),
         document_id: metadata.id.clone(),
         document_name: metadata.name.clone(),
-        extraction: extraction.parser.key(),
         content: extraction.text,
         collection_id: collection_id.to_string(),
     };

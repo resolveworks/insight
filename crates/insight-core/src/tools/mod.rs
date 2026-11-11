@@ -20,7 +20,7 @@ use tokio::sync::RwLock;
 
 use crate::search;
 use crate::storage::Storage;
-use crate::text::{Extraction, ParserId};
+use crate::text::Extraction;
 
 /// Per-run state shared by the document tools.
 #[derive(Clone)]
@@ -69,24 +69,6 @@ fn namespace(state: &ToolState) -> Result<iroh_docs::NamespaceId, ToolExecutionE
                 state.collection_id
             ))
         })
-}
-
-/// Parse a stored `{name}@{version}` parser key.
-fn parser_id(key: &str) -> Result<ParserId, ToolExecutionError> {
-    let (name, version) = key.split_once('@').ok_or_else(|| {
-        ToolExecutionError::invalid_args(format!(
-            "extraction {key} is not a parser key of the form name@version"
-        ))
-    })?;
-    if name.is_empty() || version.is_empty() {
-        return Err(ToolExecutionError::invalid_args(format!(
-            "extraction {key} is not a parser key of the form name@version"
-        )));
-    }
-    Ok(ParserId {
-        name: name.to_string(),
-        version: version.to_string(),
-    })
 }
 
 /// Convert a zero-based character offset to a UTF-8 byte offset.
@@ -169,8 +151,6 @@ pub struct SearchHitResult {
     pub document_name: String,
     /// Document ID (use with `read_document`).
     pub document_id: String,
-    /// Parser key of the extraction the content came from.
-    pub extraction: String,
     /// Whether part of the document is outside the search index's coverage.
     pub partially_indexed: bool,
     /// Excerpt around the content match; `None` for a filename-only match.
@@ -212,7 +192,7 @@ impl Tool for Search {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Keyword full-text search over whole documents in the collection. Returns up to 15 ranked documents with document IDs and an optional excerpt around the matching text. Use read_document with the document_id, extraction key and excerpt offset to read further.".to_string()
+        "Keyword full-text search over whole documents in the collection. Returns up to 15 ranked documents with document IDs and an optional excerpt around the matching text. Use read_document with the document_id and excerpt offset to read further.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -253,18 +233,16 @@ impl Tool for Search {
                 continue;
             }
 
-            let parser = parser_id(&hit.extraction)?;
             let extraction = storage
-                .get_extraction(namespace_id, &hit.document_id, &parser)
+                .get_canonical_extraction(namespace_id, &hit.document_id)
                 .await
                 .map_err(infrastructure_error)?;
             let Some(extraction) = extraction else {
-                // The index record points at an extraction that is no longer
-                // selectable; reconciliation removes it.
+                // The index record points at a document with no canonical
+                // extraction; reconciliation removes it.
                 tracing::debug!(
                     document_id = %hit.document_id,
-                    extraction = %hit.extraction,
-                    "Skipping search hit with missing extraction"
+                    "Skipping search hit with no canonical extraction"
                 );
                 continue;
             };
@@ -285,7 +263,6 @@ impl Tool for Search {
             hits.push(SearchHitResult {
                 document_name: hit.document_name,
                 document_id: hit.document_id,
-                extraction: hit.extraction,
                 partially_indexed: hit.partially_indexed,
                 excerpt,
                 score: search::compute_hit_score(&hit.scores),
@@ -308,8 +285,6 @@ impl Tool for Search {
 pub struct ReadDocumentOutput {
     /// The document the extraction belongs to.
     pub document_id: String,
-    /// Parser key of the extraction that was read.
-    pub extraction: String,
     /// Bounded extraction text starting at `offset`.
     pub content: String,
     /// Zero-based character offset of `content` in the extraction.
@@ -341,9 +316,7 @@ impl ReadDocument {
 pub struct ReadDocumentArgs {
     /// The document ID from a search hit.
     pub document_id: String,
-    /// The extraction parser key from the search hit.
-    pub extraction: String,
-    /// Zero-based character offset into the extraction.
+    /// Zero-based character offset into the document's text.
     pub offset: usize,
     /// Maximum characters to return (default 4000, hard maximum 8000).
     #[serde(default)]
@@ -357,7 +330,7 @@ impl Tool for ReadDocument {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Read a bounded passage of a whole document by document ID, extraction key and zero-based character offset. Returns at most 8000 characters (default 4000), with offsets and source pages for reading further.".to_string()
+        "Read a bounded passage of a whole document by document ID and zero-based character offset. Returns at most 8000 characters (default 4000), with offsets and source pages for reading further.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -371,12 +344,10 @@ impl Tool for ReadDocument {
     ) -> Result<ReadDocumentOutput, ToolExecutionError> {
         let state = &self.state;
         let document_id = args.document_id;
-        let extraction_key = args.extraction;
         let offset = args.offset;
         let max_chars = args.max_chars.unwrap_or(DEFAULT_READ_CHARS);
         tracing::info!(
             document_id = %document_id,
-            extraction = %extraction_key,
             offset,
             max_chars,
             "Reading document"
@@ -389,15 +360,14 @@ impl Tool for ReadDocument {
         }
 
         let namespace_id = namespace(state)?;
-        let parser = parser_id(&extraction_key)?;
         let storage = state.storage.read().await;
         let extraction = storage
-            .get_extraction(namespace_id, &document_id, &parser)
+            .get_canonical_extraction(namespace_id, &document_id)
             .await
             .map_err(infrastructure_error)?
             .ok_or_else(|| {
                 ToolExecutionError::not_found(format!(
-                    "extraction {extraction_key} not found for document {document_id}"
+                    "no readable extraction for document {document_id}"
                 ))
             })?;
 
@@ -419,7 +389,6 @@ impl Tool for ReadDocument {
 
         Ok(ReadDocumentOutput {
             document_id,
-            extraction: extraction_key,
             content: extraction.text[start_byte..end_byte].to_string(),
             offset,
             next_offset,
@@ -547,8 +516,6 @@ mod tests {
     use milli::update::IndexerConfig;
     use rig::tool::{Tool, ToolContext, ToolErrorKind};
 
-    const TEST_PARSER: &str = "test-parser@1";
-
     /// Tool state over a temporary index/storage, with an empty scope.
     async fn create_state() -> (tempfile::TempDir, ToolState) {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -650,7 +617,6 @@ mod tests {
                 id: search::document_external_id(collection_id, document_id),
                 document_id: document_id.to_string(),
                 document_name: name.to_string(),
-                extraction: TEST_PARSER.to_string(),
                 content: content.to_string(),
                 collection_id: collection_id.to_string(),
             }],
@@ -676,7 +642,6 @@ mod tests {
     async fn read(
         state: &ToolState,
         document_id: &str,
-        extraction: &str,
         offset: usize,
         max_chars: Option<usize>,
     ) -> Result<ReadDocumentOutput, ToolExecutionError> {
@@ -685,7 +650,6 @@ mod tests {
                 &mut ToolContext::new(),
                 ReadDocumentArgs {
                     document_id: document_id.to_string(),
-                    extraction: extraction.to_string(),
                     offset,
                     max_chars,
                 },
@@ -731,7 +695,6 @@ mod tests {
         let hit = &out.hits[0];
         assert_eq!(hit.document_name, "Climate_Report.pdf");
         assert_eq!(hit.document_id, document_id);
-        assert_eq!(hit.extraction, TEST_PARSER);
         assert!(!hit.partially_indexed);
         assert!(hit.score > 0.0);
         let excerpt = hit.excerpt.as_ref().expect("content match has an excerpt");
@@ -764,7 +727,6 @@ mod tests {
         let out = search(&state, "Budget_Report").await.unwrap();
         assert_eq!(out.hits.len(), 1);
         assert!(out.hits[0].excerpt.is_none());
-        assert_eq!(out.hits[0].extraction, TEST_PARSER);
     }
 
     #[tokio::test]
@@ -859,12 +821,9 @@ mod tests {
         .await;
         state.collection_id = scope(&collection);
 
-        let out = read(&state, &document_id, TEST_PARSER, 0, None)
-            .await
-            .unwrap();
+        let out = read(&state, &document_id, 0, None).await.unwrap();
 
         assert_eq!(out.document_id, document_id);
-        assert_eq!(out.extraction, TEST_PARSER);
         assert_eq!(out.content, content);
         assert_eq!(out.offset, 0);
         assert_eq!(out.next_offset, content.chars().count());
@@ -872,6 +831,50 @@ mod tests {
         assert!(!out.has_more_before);
         assert!(!out.has_more_after);
         assert_eq!(out.source_range.as_ref().unwrap().start, 1);
+    }
+
+    #[tokio::test]
+    async fn test_read_document_uses_canonical_extraction() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Latest").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Latest.pdf",
+            "older extraction",
+            vec![16],
+            Some(UnitKind::Page),
+        )
+        .await;
+        let namespace_id = collection.parse::<iroh_docs::NamespaceId>().unwrap();
+        let latest = Extraction {
+            parser: ParserId {
+                name: "test-parser".to_string(),
+                version: "2".to_string(),
+            },
+            text: "latest extraction".to_string(),
+            unit_kind: Some(UnitKind::Page),
+            units: vec![Unit {
+                number: 1,
+                spans: vec![TextSpan { start: 0, end: 17 }],
+            }],
+        };
+        {
+            let storage = state.storage.read().await;
+            storage
+                .write_extraction(namespace_id, &document_id, &latest)
+                .await
+                .unwrap();
+            storage
+                .set_canonical_extraction(namespace_id, &document_id, &latest.parser)
+                .await
+                .unwrap();
+        }
+        state.collection_id = scope(&collection);
+
+        let out = read(&state, &document_id, 0, None).await.unwrap();
+
+        assert_eq!(out.content, "latest extraction");
     }
 
     #[tokio::test]
@@ -890,9 +893,7 @@ mod tests {
         .await;
         state.collection_id = scope(&collection);
 
-        let out = read(&state, &document_id, TEST_PARSER, 2, Some(2))
-            .await
-            .unwrap();
+        let out = read(&state, &document_id, 2, Some(2)).await.unwrap();
 
         assert_eq!(out.content, "a語");
         assert_eq!(out.offset, 2);
@@ -917,9 +918,7 @@ mod tests {
         .await;
         state.collection_id = scope(&collection);
 
-        let out = read(&state, &document_id, TEST_PARSER, 3, Some(3))
-            .await
-            .unwrap();
+        let out = read(&state, &document_id, 3, Some(3)).await.unwrap();
 
         assert_eq!(out.content, "345");
         let range = out.source_range.expect("cross-page source range");
@@ -941,25 +940,14 @@ mod tests {
         .await;
         state.collection_id = scope(&collection);
 
-        let err = read(&state, &document_id, TEST_PARSER, 99, None)
-            .await
-            .unwrap_err();
+        let err = read(&state, &document_id, 99, None).await.unwrap_err();
         assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
         assert!(err.to_string().contains("99"));
 
-        let err = read(&state, &document_id, TEST_PARSER, 0, Some(0))
-            .await
-            .unwrap_err();
+        let err = read(&state, &document_id, 0, Some(0)).await.unwrap_err();
         assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
 
-        let err = read(&state, &document_id, TEST_PARSER, 0, Some(8001))
-            .await
-            .unwrap_err();
-        assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
-
-        let err = read(&state, &document_id, "not-a-parser-key", 0, None)
-            .await
-            .unwrap_err();
+        let err = read(&state, &document_id, 0, Some(8001)).await.unwrap_err();
         assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
     }
 
@@ -978,9 +966,7 @@ mod tests {
         .await;
         state.collection_id = scope(&collection);
 
-        let out = read(&state, &document_id, TEST_PARSER, 0, None)
-            .await
-            .unwrap();
+        let out = read(&state, &document_id, 0, None).await.unwrap();
 
         assert_eq!(out.content, "");
         assert_eq!(out.total_length, 0);
@@ -1006,9 +992,7 @@ mod tests {
         let other = create_collection(&state, "Other").await;
         state.collection_id = scope(&other);
 
-        let err = read(&state, &document_id, TEST_PARSER, 0, None)
-            .await
-            .unwrap_err();
+        let err = read(&state, &document_id, 0, None).await.unwrap_err();
         assert_eq!(err.kind(), ToolErrorKind::NotFound);
         assert!(err.to_string().contains(&document_id));
     }
@@ -1076,9 +1060,7 @@ mod tests {
         assert_eq!(out.hits[0].document_id, active_id);
         assert!(!out.hits.iter().any(|hit| hit.document_id == deleted_id));
 
-        let err = read(&state, &deleted_id, TEST_PARSER, 0, None)
-            .await
-            .unwrap_err();
+        let err = read(&state, &deleted_id, 0, None).await.unwrap_err();
         assert_eq!(err.kind(), ToolErrorKind::NotFound);
 
         state
@@ -1098,9 +1080,7 @@ mod tests {
             .collect();
         assert!(ids.contains(&deleted_id.as_str()));
 
-        let out = read(&state, &deleted_id, TEST_PARSER, 0, None)
-            .await
-            .unwrap();
+        let out = read(&state, &deleted_id, 0, None).await.unwrap();
         assert!(out.content.contains("recorded at sea"));
     }
 
@@ -1189,7 +1169,7 @@ mod tests {
 
         assert_eq!(
             ReadDocument::new(state.clone()).parameters()["required"],
-            serde_json::json!(["document_id", "extraction", "offset"])
+            serde_json::json!(["document_id", "offset"])
         );
     }
 }

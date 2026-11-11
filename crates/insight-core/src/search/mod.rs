@@ -123,8 +123,6 @@ pub struct DocumentToIndex {
     pub document_id: String,
     /// Document filename, indexed as its own searchable field.
     pub document_name: String,
-    /// Parser key of the extraction the content came from.
-    pub extraction: String,
     /// Complete canonical extraction text.
     pub content: String,
     /// Collection this document belongs to.
@@ -144,8 +142,6 @@ pub struct IndexedDocument {
     pub document_id: String,
     /// Document filename.
     pub document_name: String,
-    /// Parser key of the extraction the content came from.
-    pub extraction: String,
     /// Complete canonical extraction text.
     pub content: String,
     /// Collection this document belongs to.
@@ -222,10 +218,6 @@ fn index_document_batch(
             m.insert(
                 "document_name".to_string(),
                 Value::String(document.document_name.clone()),
-            );
-            m.insert(
-                "extraction".to_string(),
-                Value::String(document.extraction.clone()),
             );
             m.insert(
                 "content".to_string(),
@@ -390,8 +382,6 @@ pub struct SearchHit {
     pub document_id: String,
     /// Document filename.
     pub document_name: String,
-    /// Parser key of the extraction the content came from.
-    pub extraction: String,
     /// Whether part of the content is outside the search index's coverage.
     pub partially_indexed: bool,
     /// An excerpt around the matching content, when the content matched.
@@ -485,7 +475,6 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
             scores,
             document_id: document.document_id,
             document_name: document.document_name,
-            extraction: document.extraction,
             partially_indexed: document.partially_indexed,
             excerpt,
         });
@@ -842,7 +831,6 @@ mod tests {
             id: document_external_id(collection_id, document_id),
             document_id: document_id.to_string(),
             document_name: document_name.to_string(),
-            extraction: "test@1".to_string(),
             content: content.to_string(),
             collection_id: collection_id.to_string(),
         }

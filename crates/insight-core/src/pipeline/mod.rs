@@ -729,7 +729,6 @@ mod tests {
             id: document_external_id(other_collection, &document.id),
             document_id: document.id.clone(),
             document_name: "report.pdf".to_string(),
-            extraction: parser.key(),
             content: "other collection text".to_string(),
             collection_id: other_collection.to_string(),
         };
@@ -809,7 +808,6 @@ mod tests {
                 id: external_id.clone(),
                 document_id: ghost_id.to_string(),
                 document_name: "vanished.pdf".to_string(),
-                extraction: "test@1".to_string(),
                 content: "vanished document text".to_string(),
                 collection_id: collection_id.clone(),
             }])

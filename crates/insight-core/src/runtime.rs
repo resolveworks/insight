@@ -905,7 +905,6 @@ mod tests {
             id: crate::search::document_external_id(&collection_id, document_id),
             document_id: document_id.to_string(),
             document_name: format!("{document_id}.pdf"),
-            extraction: "test@1".to_string(),
             content: content.to_string(),
             collection_id: collection_id.clone(),
         };

@@ -211,13 +211,11 @@ describe('Chat', () => {
 							{
 								document_name: 'report.pdf',
 								document_id: 'doc-1',
-								extraction: 'pdf@1',
 								excerpt: { content: 'unique excerpt content' },
 							},
 							{
 								document_name: 'notes.txt',
 								document_id: 'doc-2',
-								extraction: 'text@1',
 								excerpt: null,
 							},
 						],
@@ -295,12 +293,10 @@ describe('Chat', () => {
 				transcript: [
 					toolCall('1-0', 'read_document', {
 						document_id: 'doc-1',
-						extraction: 'pdf@1',
 						offset: 400,
 					}),
 					toolResult('2-0', 'read_document', {
 						document_id: 'doc-1',
-						extraction: 'pdf@1',
 						content: 'excerpt text',
 						offset: 400,
 						next_offset: 452,

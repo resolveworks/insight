@@ -255,7 +255,6 @@ mod tests {
             id: search::document_external_id(collection_id, document_id),
             document_id: document_id.to_string(),
             document_name: "test.pdf".to_string(),
-            extraction: "test@1".to_string(),
             content: content.to_string(),
             collection_id: collection_id.to_string(),
         }

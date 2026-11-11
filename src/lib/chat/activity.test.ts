@@ -231,10 +231,7 @@ describe('toolLabel', () => {
 
 	it('labels a document read generically', () => {
 		expect(
-			toolLabel(
-				'read_document',
-				'{"document_id":"doc1","extraction":"pdf@1","offset":400}',
-			),
+			toolLabel('read_document', '{"document_id":"doc1","offset":400}'),
 		).toBe('Read document');
 	});
 
