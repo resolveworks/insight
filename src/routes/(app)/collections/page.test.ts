@@ -214,3 +214,27 @@ describe('Collections landing page', () => {
 		expect(invalidate).toHaveBeenLastCalledWith('app:collections');
 	});
 });
+
+describe('Collection creation', () => {
+	it('creates one collection when the form is submitted twice', async () => {
+		const created: string[] = [];
+		mockIPC((cmd, args) => {
+			if (cmd === 'create_collection') {
+				created.push((args as { name: string }).name);
+				return { ...collection, id: 'new1', document_count: 0 };
+			}
+		});
+
+		renderPage();
+		const field = screen.getByPlaceholderText('New collection...');
+		const form = field.closest('form')!;
+
+		await fireEvent.input(field, {
+			target: { value: 'Machine Learning' },
+		});
+		await fireEvent.submit(form);
+		await fireEvent.submit(form);
+
+		expect(created).toEqual(['Machine Learning']);
+	});
+});

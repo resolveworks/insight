@@ -157,9 +157,7 @@
 		</EmptyState>
 	{:else}
 		<div>
-			<Button variant="solid" onclick={importPdf} disabled={processing}
-				>Import documents</Button
-			>
+			<Button variant="solid" onclick={importPdf}>Import documents</Button>
 		</div>
 
 		<List>

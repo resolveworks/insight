@@ -29,10 +29,9 @@
 	let apiKey = $state('');
 	let baseUrl = $state('');
 	let models = $state<ModelChoice[]>([]);
-	let busy = $state(false);
 	let error = $state<string | null>(null);
 
-	const canSave = $derived(!busy && !!family && !!model.trim());
+	const canSave = $derived(!!family && !!model.trim());
 	const providerOptions = $derived(
 		selections.map((id) => ({ value: id, label: id })),
 	);
@@ -61,7 +60,6 @@
 
 	async function save() {
 		if (!canSave) return;
-		busy = true;
 		error = null;
 		try {
 			await configureProvider({
@@ -72,20 +70,15 @@
 			});
 		} catch (e) {
 			error = describeError(e);
-		} finally {
-			busy = false;
 		}
 	}
 
 	async function disable() {
-		busy = true;
 		error = null;
 		try {
 			await disableProvider();
 		} catch (e) {
 			error = describeError(e);
-		} finally {
-			busy = false;
 		}
 	}
 
@@ -124,7 +117,6 @@
 		bind:value={family}
 		options={providerOptions}
 		onchange={selectFamily}
-		disabled={busy}
 		id="provider-family-select"
 	/>
 
@@ -134,7 +126,6 @@
 		label="Base URL"
 		bind:value={baseUrl}
 		placeholder="https://api.example.com/v1"
-		disabled={busy}
 	/>
 
 	<Input
@@ -143,25 +134,19 @@
 		label="API Key"
 		bind:value={apiKey}
 		placeholder="API key"
-		disabled={busy}
 	/>
 
 	<Select
 		label="Model"
 		bind:value={model}
 		options={modelOptions}
-		disabled={busy}
 		id="model-input"
 	/>
 
 	<div class="flex gap-2">
-		<Button variant="solid" onclick={save} disabled={!canSave} loading={busy}
-			>Save</Button
-		>
+		<Button variant="solid" onclick={save} disabled={!canSave}>Save</Button>
 		{#if current}
-			<Button variant="outline" onclick={disable} disabled={busy}
-				>Disable</Button
-			>
+			<Button variant="outline" onclick={disable}>Disable</Button>
 		{/if}
 	</div>
 

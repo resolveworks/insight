@@ -48,9 +48,6 @@ let isLoading = $state(false);
 let error = $state<string | null>(null);
 
 let initPromise: Promise<void> | null = null;
-// Synchronous send guard: blocks re-entry while a draft conversation is
-// being created (before `isGenerating`/`activeId` would catch it).
-let sendInFlight = false;
 
 // =============================================================================
 // Internal helpers
@@ -289,42 +286,45 @@ export async function deleteConversation(
 /** Send a user message to the active conversation. */
 export async function sendMessage(text: string): Promise<void> {
 	const trimmed = text.trim();
-	if (!trimmed || isGenerating || sendInFlight) return;
+	if (!trimmed || isGenerating) return;
 	const collectionId = activeCollectionId;
 	if (!collectionId) {
 		throw new Error('Cannot send a message without a collection');
 	}
-	sendInFlight = true;
-	try {
-		// Draft state: persist the conversation in the active collection now.
-		if (!activeId) {
-			if (!(await createNew())) return;
-		}
 
-		const convId = activeId!;
-		error = null;
-		isGenerating = true;
+	// The run is marked from the moment the send lands, before the draft
+	// conversation exists; the run's own events clear it.
+	isGenerating = true;
 
-		const channel = new Channel<ChatEvent>();
-		channel.onmessage = (event) => {
-			if (convId !== activeId) return;
-			applyEvent(event);
-		};
-
-		try {
-			await invoke('send_message', {
-				collectionId,
-				conversationId: convId,
-				message: trimmed,
-				onEvent: channel,
-			});
-		} catch (e) {
-			error = `Failed to send message: ${e}`;
-			console.error('Failed to send message:', e);
+	// Draft state: persist the conversation in the active collection now.
+	if (!activeId) {
+		const created = await createNew();
+		if (!created) {
 			isGenerating = false;
+			return;
 		}
-	} finally {
-		sendInFlight = false;
+	}
+
+	const convId = activeId!;
+	error = null;
+
+	const channel = new Channel<ChatEvent>();
+	channel.onmessage = (event) => {
+		if (convId !== activeId) return;
+		applyEvent(event);
+	};
+
+	try {
+		await invoke('send_message', {
+			collectionId,
+			conversationId: convId,
+			message: trimmed,
+			onEvent: channel,
+		});
+	} catch (e) {
+		error = `Failed to send message: ${e}`;
+		console.error('Failed to send message:', e);
+		isGenerating = false;
 	}
 }
 

@@ -14,6 +14,9 @@
 		event.preventDefault();
 		const collectionName = name.trim();
 		if (!collectionName) return;
+		// Clearing the field is what stops a second Enter or click from
+		// creating the same collection while the first create is in flight.
+		name = '';
 		onCreate(collectionName);
 	}
 </script>
@@ -22,5 +25,5 @@
 	<div class="w-48">
 		<Input placeholder="New collection..." bind:value={name} />
 	</div>
-	<Button type="submit" variant="solid">Create</Button>
+	<Button type="submit" variant="solid" disabled={!name.trim()}>Create</Button>
 </form>

@@ -70,8 +70,6 @@
 	});
 
 	async function sendMessage() {
-		if (!inputValue.trim() || isGenerating || !hasDocuments || !providerReady)
-			return;
 		const text = inputValue;
 		inputValue = '';
 		await chat.sendMessage(text);
