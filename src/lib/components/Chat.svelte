@@ -101,8 +101,9 @@
 			{:else}
 				<div class="space-y-8">
 					<!-- One renderer over the transcript: a run committing only flips
-					     provisional/executing flags — blocks stay in place. Turns group
-					     a question with the reply and activity that follow it. -->
+					     provisional/executing flags — blocks stay in place. A question is
+					     its own turn, so a reply's activity and text sit closer to each
+					     other than to the question that prompted them. -->
 					{#each turns as turn (turn.key)}
 						<div class="space-y-4">
 							{#each turn.blocks as block (block.key)}
