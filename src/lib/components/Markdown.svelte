@@ -27,10 +27,10 @@
 	}
 
 	.markdown > :global(:first-child) {
-		margin-top: 0;
+		margin-block-start: 0;
 	}
 	.markdown > :global(:last-child) {
-		margin-bottom: 0;
+		margin-block-end: 0;
 	}
 
 	.markdown :global(p) {
@@ -71,7 +71,7 @@
 	.markdown :global(ul),
 	.markdown :global(ol) {
 		margin: 0.75em 0;
-		padding-left: 1.375em;
+		padding-inline-start: 1.375em;
 	}
 	.markdown :global(ul) {
 		list-style: disc;
@@ -123,10 +123,10 @@
 	}
 
 	.markdown :global(blockquote) {
-		border-left: 2px solid var(--color-neutral-300);
+		border-inline-start: 2px solid var(--color-neutral-300);
 		color: var(--color-neutral-500);
 		margin: 0.75em 0;
-		padding-left: 0.875em;
+		padding-inline-start: 0.875em;
 	}
 
 	.markdown :global(a) {
@@ -136,7 +136,7 @@
 
 	.markdown :global(hr) {
 		border: 0;
-		border-top: 1px solid var(--color-neutral-200);
+		border-block-start: 1px solid var(--color-neutral-200);
 		margin: 1.25em 0;
 	}
 
@@ -150,7 +150,7 @@
 	.markdown :global(td) {
 		border: 1px solid var(--color-neutral-200);
 		padding: 0.375rem 0.5rem;
-		text-align: left;
+		text-align: start;
 		vertical-align: top;
 	}
 	.markdown :global(th) {

@@ -13,7 +13,7 @@
 	// user surface reuses the solid button token to mean "authored by the user".
 	const surface = $derived(
 		from === 'user'
-			? 'ml-auto w-fit max-w-[80%] rounded-lg bg-neutral-900 px-4 py-3 text-base text-white'
+			? 'ms-auto w-fit max-w-4/5 rounded-lg bg-neutral-900 px-4 py-3 text-base text-white'
 			: 'text-base text-neutral-800',
 	);
 </script>
@@ -22,7 +22,7 @@
 	<Markdown content={text} />
 	{#if streaming}
 		<span
-			class="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-neutral-800 align-text-bottom"
+			class="ms-0.5 inline-block h-4 w-0.5 animate-pulse bg-neutral-800 align-text-bottom"
 		></span>
 	{/if}
 </div>

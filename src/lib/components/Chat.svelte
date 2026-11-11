@@ -99,17 +99,17 @@
 					/>
 				{/if}
 			{:else}
-				<div class="space-y-8">
+				<div class="flex flex-col gap-8">
 					<!-- One renderer over the transcript: a run committing only flips
 					     provisional/executing flags — blocks stay in place. A question is
 					     its own turn, so a reply's activity and text sit closer to each
 					     other than to the question that prompted them. -->
 					{#each turns as turn (turn.key)}
-						<div class="space-y-4">
+						<div class="flex flex-col gap-4">
 							{#each turn.blocks as block (block.key)}
 								{#if block.kind === 'activity'}
 									<!-- Consecutive reasoning/tool steps read as one subordinate trail. -->
-									<div class="space-y-1">
+									<div class="flex flex-col gap-1">
 										{#each block.steps as step (step.key)}
 											<ActivityStepView {step} />
 										{/each}

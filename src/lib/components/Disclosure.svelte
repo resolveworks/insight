@@ -22,5 +22,5 @@
 		/>
 		{@render summary()}
 	</summary>
-	<div class="pt-1 pb-2 pl-6">{@render children()}</div>
+	<div class="pt-1 pb-2 ps-6">{@render children()}</div>
 </details>

@@ -112,7 +112,7 @@
 	});
 </script>
 
-<div class="space-y-4">
+<div class="flex flex-col gap-4">
 	{#if providerError}
 		<Alert>{providerError}</Alert>
 	{:else if provider?.status.error}

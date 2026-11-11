@@ -46,7 +46,7 @@
 						<button
 							onclick={() => onSelect(conv.id)}
 							aria-current={activeId === conv.id ? 'true' : undefined}
-							class="min-w-0 w-full truncate text-left text-sm focus-visible:focus-ring"
+							class="w-full min-w-0 truncate text-start text-sm focus-visible:focus-ring"
 						>
 							{conv.title}
 						</button>

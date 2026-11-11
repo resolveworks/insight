@@ -161,9 +161,11 @@
 			{/snippet}
 		</EmptyState>
 	{:else}
-		<Button variant="solid" onclick={importPdf} disabled={processing}
-			>Import documents</Button
-		>
+		<div>
+			<Button variant="solid" onclick={importPdf} disabled={processing}
+				>Import documents</Button
+			>
+		</div>
 
 		<List>
 			{#each documents as doc (doc.id)}

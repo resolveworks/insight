@@ -19,7 +19,7 @@
 </script>
 
 {#if state.status === 'ready'}
-	<div class="space-y-3">
+	<div class="flex flex-col gap-3">
 		<div class="flex items-start gap-2">
 			<code class="flex-1 break-all font-mono text-xs text-neutral-500">
 				{state.ticket}

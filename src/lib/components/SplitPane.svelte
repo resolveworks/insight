@@ -11,7 +11,7 @@
 
 <div class="flex h-full overflow-hidden">
 	<aside
-		class="flex w-64 shrink-0 flex-col overflow-hidden border-r border-neutral-200 bg-neutral-100"
+		class="flex w-64 shrink-0 flex-col overflow-hidden border-e border-neutral-200 bg-neutral-100"
 	>
 		{@render sidebar()}
 	</aside>

@@ -30,7 +30,7 @@
 	{:else if error}
 		<Alert variant="warning">{error}</Alert>
 	{:else if chunks && chunks.length > 0}
-		<div class="space-y-3">
+		<div class="flex flex-col gap-3">
 			{#each chunks as chunk, i (i)}
 				<Card padding="sm">
 					<div

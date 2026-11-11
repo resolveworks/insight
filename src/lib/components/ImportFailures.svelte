@@ -11,7 +11,7 @@
 
 <Alert variant="warning">
 	<p class="font-medium">Some files could not be imported.</p>
-	<ul class="mt-1 list-disc pl-5">
+	<ul class="mt-1 list-disc ps-5">
 		{#each failures as failure, index (index)}
 			<li>{failure.path}: {failure.message}</li>
 		{/each}

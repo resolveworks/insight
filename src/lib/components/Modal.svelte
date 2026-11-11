@@ -132,7 +132,7 @@
 				</Button>
 			</div>
 		{/if}
-		<div class="space-y-3">
+		<div class="flex flex-col gap-3">
 			{@render children()}
 		</div>
 		{#if footer}

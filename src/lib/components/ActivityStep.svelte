@@ -37,13 +37,13 @@
 			{/if}
 			<span class="min-w-0 truncate">{step.label}</span>
 			{#if step.hint}
-				<span class="ml-auto shrink-0 pl-2 text-neutral-400">{step.hint}</span>
+				<span class="ms-auto shrink-0 ps-2 text-neutral-400">{step.hint}</span>
 			{/if}
 		{/snippet}
 
-		<div class="space-y-2">
+		<div class="flex flex-col gap-2">
 			{#if step.argsLines.length > 0}
-				<dl class="space-y-1 font-mono text-xs leading-relaxed">
+				<dl class="flex flex-col gap-1 font-mono text-xs leading-relaxed">
 					{#each step.argsLines as line (line.key)}
 						<div class="flex gap-2">
 							<dt class="shrink-0 text-neutral-400">{line.key}:</dt>
