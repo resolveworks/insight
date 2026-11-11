@@ -28,17 +28,6 @@ export async function getDocumentText(
 	return invoke<string>('get_document_text', { collectionId, documentId });
 }
 
-/** Read a document's text chunks. */
-export async function getDocumentChunks(
-	collectionId: string,
-	documentId: string,
-): Promise<string[]> {
-	return invoke<string[]>('get_document_chunks', {
-		collectionId,
-		documentId,
-	});
-}
-
 /** List a collection's deleted documents. */
 export async function listDeletedDocuments(
 	collectionId: string,

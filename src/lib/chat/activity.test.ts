@@ -59,7 +59,7 @@ describe('transcriptBlocks', () => {
 			kind: 'tool',
 			key: '1-0',
 			label: 'Search “climate”',
-			hint: '2 passages',
+			hint: '2 documents',
 			executing: false,
 			isError: false,
 		});
@@ -78,11 +78,11 @@ describe('transcriptBlocks', () => {
 		expect(activity.steps).toHaveLength(2);
 		expect(activity.steps[0]).toMatchObject({
 			label: 'Search “first”',
-			hint: '1 passage',
+			hint: '1 document',
 		});
 		expect(activity.steps[1]).toMatchObject({
 			label: 'Search “second”',
-			hint: '3 passages',
+			hint: '3 documents',
 		});
 	});
 
@@ -229,10 +229,13 @@ describe('toolLabel', () => {
 		);
 	});
 
-	it('labels a chunk read by its index only', () => {
+	it('labels a document read generically', () => {
 		expect(
-			toolLabel('read_chunk', '{"document_id":"doc1","chunk_index":3}'),
-		).toBe('Read passage 3');
+			toolLabel(
+				'read_document',
+				'{"document_id":"doc1","extraction":"pdf@1","offset":400}',
+			),
+		).toBe('Read document');
 	});
 
 	it('labels the document listing', () => {
@@ -251,9 +254,9 @@ describe('toolLabel', () => {
 });
 
 describe('resultHint', () => {
-	it('counts search hits', () => {
-		expect(resultHint('search', '{"hits":[{},{}]}', false)).toBe('2 passages');
-		expect(resultHint('search', '{"hits":[{}]}', false)).toBe('1 passage');
+	it('counts search hits as documents', () => {
+		expect(resultHint('search', '{"hits":[{},{}]}', false)).toBe('2 documents');
+		expect(resultHint('search', '{"hits":[{}]}', false)).toBe('1 document');
 	});
 
 	it('counts the documents known to list_documents', () => {
@@ -262,8 +265,8 @@ describe('resultHint', () => {
 		);
 	});
 
-	it('gives no hint for read_chunk or a failed result', () => {
-		expect(resultHint('read_chunk', '{"content":"text"}', false)).toBeNull();
+	it('gives no hint for read_document or a failed result', () => {
+		expect(resultHint('read_document', '{"content":"text"}', false)).toBeNull();
 		expect(resultHint('search', '{"hits":[{}]}', true)).toBeNull();
 	});
 

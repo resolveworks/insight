@@ -84,7 +84,7 @@ export function reasoningPreview(text: string): string {
 	return text.replace(/\s+/g, ' ').trim();
 }
 
-/** `read_chunk` → `Read chunk`: capitalise the first word, lower the rest. */
+/** `read_document` → `Read document`: capitalise the first word, lower the rest. */
 export function sentenceCase(name: string): string {
 	return name
 		.split('_')
@@ -144,11 +144,8 @@ export function toolLabel(name: string, argsText: string): string {
 				}
 				return pairsLabel(name, args);
 
-			case 'read_chunk':
-				if (typeof args.chunk_index === 'number') {
-					return `Read passage ${args.chunk_index}`;
-				}
-				return pairsLabel(name, args);
+			case 'read_document':
+				return 'Read document';
 
 			case 'list_documents':
 				return 'List documents';
@@ -176,7 +173,7 @@ export function resultHint(
 	if (result === null) return null;
 
 	if (name === 'search' && Array.isArray(result.hits)) {
-		return plural(result.hits.length, 'passage');
+		return plural(result.hits.length, 'document');
 	}
 	if (name === 'list_documents' && typeof result.total === 'number') {
 		return plural(result.total, 'document');
