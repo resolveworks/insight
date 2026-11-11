@@ -17,12 +17,10 @@
 {:else if error}
 	<Alert variant="warning">{error}</Alert>
 {:else if content}
-	<div class="max-h-96 overflow-y-auto">
-		<Card padding="sm">
-			<pre
-				class="font-sans text-base leading-relaxed whitespace-pre-wrap text-neutral-800">{content}</pre>
-		</Card>
-	</div>
+	<Card>
+		<pre
+			class="font-sans text-base leading-relaxed whitespace-pre-wrap text-neutral-800">{content}</pre>
+	</Card>
 {:else}
 	<p class="text-sm text-neutral-400 italic">No content available</p>
 {/if}

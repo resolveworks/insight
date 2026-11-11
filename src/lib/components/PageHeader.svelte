@@ -6,11 +6,12 @@
 	interface Props {
 		back?: { href: string; label: string };
 		title: string;
+		subtitle?: Snippet;
 		actions?: Snippet;
 		tabs?: Snippet;
 	}
 
-	let { back, title, actions, tabs }: Props = $props();
+	let { back, title, subtitle, actions, tabs }: Props = $props();
 </script>
 
 <header class="border-b border-neutral-200 bg-white px-6 py-4">
@@ -25,6 +26,11 @@
 				</div>
 			{/if}
 			<h1 class="truncate text-xl font-semibold text-neutral-800">{title}</h1>
+			{#if subtitle}
+				<div class="mt-1">
+					{@render subtitle()}
+				</div>
+			{/if}
 		</div>
 		{#if actions}
 			<div class="shrink-0">

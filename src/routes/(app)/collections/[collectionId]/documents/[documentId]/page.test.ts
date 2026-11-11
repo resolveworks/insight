@@ -4,6 +4,7 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 import { load as documentLoad } from './+page';
 import DocumentPage from './+page.svelte';
 import type { PageProps } from './$types';
+import { formatTimestamp } from '#lib/format.js';
 import type { Document } from '#lib/types/documents.js';
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -88,6 +89,20 @@ describe('Document detail page', () => {
 		});
 		expect(backLinks).toHaveLength(1);
 		expect(backLinks[0]).toHaveAttribute('href', '/collections/col1/documents');
+	});
+
+	it('summarises the document under its title', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+		});
+
+		renderPage({ page_count: 1, tags: ['budget', 'eu'] });
+
+		expect(await screen.findByText('1 page')).toBeVisible();
+		expect(
+			screen.getByText(`Added ${formatTimestamp(document.created_at)}`),
+		).toBeVisible();
+		expect(screen.getByText('budget')).toBeVisible();
 	});
 
 	it('renders the extracted document text', async () => {

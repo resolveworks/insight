@@ -2,13 +2,9 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import Alert from '#lib/components/Alert.svelte';
-	import Card from '#lib/components/Card.svelte';
-	import DescriptionList from '#lib/components/DescriptionList.svelte';
-	import DescriptionRow from '#lib/components/DescriptionRow.svelte';
 	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
-	import PageSection from '#lib/components/PageSection.svelte';
 	import TagList from '#lib/components/TagList.svelte';
 	import { getDocumentText } from '#lib/api/document.js';
 	import { describeError } from '#lib/api/provider.js';
@@ -46,25 +42,27 @@
 				href: resolve(`collections/${collectionId}/documents`),
 				label: 'Back to documents',
 			}}
-		/>
-	{/snippet}
-
-	<Card>
-		<DescriptionList>
-			<DescriptionRow label="ID" mono>{data.document.id}</DescriptionRow>
-			<DescriptionRow label="Type">{data.document.file_type}</DescriptionRow>
-			{#if data.document.page_count !== null}
-				<DescriptionRow label="Pages">{data.document.page_count}</DescriptionRow
+		>
+			{#snippet subtitle()}
+				<div
+					class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-neutral-500"
 				>
-			{/if}
-			<DescriptionRow label="Created">
-				{formatTimestamp(data.document.created_at)}
-			</DescriptionRow>
-			<DescriptionRow label="Tags">
-				<TagList tags={data.document.tags} />
-			</DescriptionRow>
-		</DescriptionList>
-	</Card>
+					{#if data.document.page_count !== null}
+						<span>
+							{data.document.page_count}
+							{data.document.page_count === 1 ? 'page' : 'pages'}
+						</span>
+						<span aria-hidden="true">·</span>
+					{/if}
+					<span>Added {formatTimestamp(data.document.created_at)}</span>
+					{#if data.document.tags.length > 0}
+						<span aria-hidden="true">·</span>
+						<TagList tags={data.document.tags} />
+					{/if}
+				</div>
+			{/snippet}
+		</PageHeader>
+	{/snippet}
 
 	{#if data.document.partially_indexed === true}
 		<Alert variant="warning">
@@ -76,7 +74,5 @@
 		</Alert>
 	{/if}
 
-	<PageSection title="Content">
-		<DocumentText {content} error={contentError} loading={loadingContent} />
-	</PageSection>
+	<DocumentText {content} error={contentError} loading={loadingContent} />
 </Page>
