@@ -8,13 +8,17 @@ Insight is a desktop application rather than a hosted document service. Its arch
 
 ## How documents become searchable
 
-[MuPDF](https://mupdf.com/) extracts the existing text from PDFs while preserving its page locations. [milli](https://github.com/meilisearch/milli) builds a local full-text keyword search index using BM25. Search therefore runs on the user's machine and does not require uploading the collection.
+[MuPDF](https://mupdf.com/) extracts the existing text from PDFs while preserving its page locations. [milli](https://github.com/meilisearch/milli) builds a local keyword search index and ranks matching documents using keyword relevance. Search therefore runs on the user's machine and does not require uploading the collection.
+
+The index holds one record per collection document. Each record contains the document's complete canonical extraction in a single content field, with the document name in a separate searchable field. A search returns ranked documents with a bounded excerpt around the matching text. The agent reads further with `read_document`, which takes the document's extraction key and a character offset into that extraction, keeping excerpts and full text aligned.
+
+milli indexes at most the first 65,536 token positions of a field. A document whose content extends beyond that is shown as partially searchable: its full extraction remains stored and readable, but text past the limit does not appear in search results.
 
 Original documents are immutable, content-addressed blobs. Extracted text is a separate, derived artifact: it can be regenerated or replaced when extraction improves without changing the source document. Content addressing also lets peers verify that they received exactly the data they requested.
 
 ## How Insight talks to models
 
-Insight uses [rig](https://github.com/0xPlaygrounds/rig) to provide a consistent agent and tool-calling interface across model providers. When someone asks a question, the agent uses local tools to search the collection and read relevant passages, then asks the configured model to synthesize an answer from that evidence.
+Insight uses [rig](https://github.com/0xPlaygrounds/rig) to provide a consistent agent and tool-calling interface across model providers. When someone asks a question, the agent uses local tools to search the collection and read matching excerpts and surrounding text, then asks the configured model to synthesize an answer from that evidence.
 
 The model provider receives the conversation and retrieved excerpts. It does not receive direct access to the document library or search index. Hosted models and local model servers use the same research workflow, allowing users to choose between managed inference and keeping model processing local.
 

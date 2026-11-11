@@ -110,7 +110,7 @@ fn stored_document(metadata: insight_core::storage::DocumentMetadata) -> Documen
 
 /// Get pipeline progress for all active collections
 ///
-/// Returns progress for each stage: Store, Extract, Embed, Index.
+/// Returns progress for each stage: Store, Extract, Index.
 /// Each stage has counts for pending, active, completed, and failed items.
 #[tauri::command]
 pub async fn get_pipeline_progress(
