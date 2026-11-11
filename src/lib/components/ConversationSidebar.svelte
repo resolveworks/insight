@@ -2,7 +2,6 @@
 	import type { ConversationSummary } from '#lib/types/chat.js';
 	import Button from './Button.svelte';
 	import ConfirmDialog from './ConfirmDialog.svelte';
-	import EmptyState from './EmptyState.svelte';
 	import Icon from './Icon.svelte';
 	import List from './List.svelte';
 	import ListRow from './ListRow.svelte';
@@ -39,7 +38,7 @@
 
 	<div class="flex-1 overflow-y-auto px-4 pb-4">
 		{#if conversations.length === 0}
-			<EmptyState title="No conversations yet" density="inline" />
+			<p class="px-2 py-1.5 text-sm text-neutral-500">No conversations yet</p>
 		{:else}
 			<List>
 				{#each conversations as conv (conv.id)}

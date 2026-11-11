@@ -5,22 +5,15 @@
 		title: string;
 		description?: string;
 		action?: Snippet;
-		density?: 'page' | 'inline';
 	}
 
-	let { title, description, action, density = 'page' }: Props = $props();
-
-	const page = $derived(density === 'page');
+	let { title, description, action }: Props = $props();
 </script>
 
-<div
-	class="flex flex-col items-center justify-center text-center {page
-		? 'py-12'
-		: 'py-6'}"
->
+<div class="flex flex-col items-center justify-center py-12 text-center">
 	<p class="text-neutral-800">{title}</p>
 	{#if description}
-		<p class="mt-1 text-sm text-neutral-500 {page ? 'max-w-sm' : ''}">
+		<p class="mt-1 max-w-sm text-sm text-neutral-500">
 			{description}
 		</p>
 	{/if}

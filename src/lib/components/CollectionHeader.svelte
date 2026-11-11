@@ -1,7 +1,5 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import ButtonLink from './ButtonLink.svelte';
-	import Icon from './Icon.svelte';
 	import PageHeader from './PageHeader.svelte';
 	import TabNav from './TabNav.svelte';
 
@@ -24,13 +22,10 @@
 	}));
 </script>
 
-<PageHeader title={collection.name}>
-	{#snippet eyebrow()}
-		<ButtonLink href={resolve('collections')} variant="outline" size="sm">
-			<Icon name="arrow-left" size="sm" />
-			Back to collections
-		</ButtonLink>
-	{/snippet}
+<PageHeader
+	title={collection.name}
+	back={{ href: resolve('collections'), label: 'Back to collections' }}
+>
 	{#snippet tabs()}
 		<TabNav label="Collection sections" items={sections} activeId={active} />
 	{/snippet}

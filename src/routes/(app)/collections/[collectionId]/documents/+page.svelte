@@ -177,7 +177,8 @@
 	{/if}
 
 	{#if deletedDocuments.length > 0}
-		<PageSection title="Deleted items" id="deleted-items-heading" divider>
+		<hr class="border-neutral-200" />
+		<PageSection title="Deleted items" id="deleted-items-heading">
 			<List labelledBy="deleted-items-heading">
 				{#each deletedDocuments as doc (doc.id)}
 					<DeletedDocumentRow

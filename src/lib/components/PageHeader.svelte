@@ -1,22 +1,27 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import ButtonLink from './ButtonLink.svelte';
+	import Icon from './Icon.svelte';
 
 	interface Props {
-		eyebrow?: Snippet;
+		back?: { href: string; label: string };
 		title: string;
 		actions?: Snippet;
 		tabs?: Snippet;
 	}
 
-	let { eyebrow, title, actions, tabs }: Props = $props();
+	let { back, title, actions, tabs }: Props = $props();
 </script>
 
 <header class="border-b border-neutral-200 bg-white px-6 py-4">
 	<div class="flex items-center justify-between gap-4">
 		<div class="min-w-0">
-			{#if eyebrow}
+			{#if back}
 				<div class="mb-1">
-					{@render eyebrow()}
+					<ButtonLink href={back.href} variant="outline" size="sm">
+						<Icon name="arrow-left" size="sm" />
+						{back.label}
+					</ButtonLink>
 				</div>
 			{/if}
 			<h1 class="truncate text-xl font-semibold text-neutral-800">{title}</h1>

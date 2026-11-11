@@ -5,14 +5,13 @@
 	interface Props {
 		title: string;
 		id?: string;
-		divider?: boolean;
 		children: Snippet;
 	}
 
-	let { title, id, divider = false, children }: Props = $props();
+	let { title, id, children }: Props = $props();
 </script>
 
-<section class={divider ? 'border-t border-neutral-200 pt-6' : ''}>
+<section>
 	<div class="mb-3">
 		<SectionHeading {title} {id} />
 	</div>
