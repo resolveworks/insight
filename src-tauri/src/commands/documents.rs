@@ -12,6 +12,9 @@ pub struct DocumentInfo {
     pub name: String,
     pub file_type: String,
     pub page_count: Option<u32>,
+    /// Whether the document is indexed with only partial search coverage.
+    /// `None` while the document has no index record yet.
+    pub partially_indexed: Option<bool>,
     pub tags: Vec<String>,
     pub created_at: String,
 }
@@ -54,7 +57,7 @@ pub struct ImportOutcome {
 /// Runs the store stage of the event-driven import pipeline:
 /// 1. Store source → triggers extract
 /// 2. Extract text → triggers index
-/// 3. Chunk + index → document searchable
+/// 3. Index the whole extraction → document searchable
 ///
 /// Progress flows through the pipeline's progress tracker. Returns the
 /// documents this import stored so the caller need not re-read them.
@@ -99,6 +102,7 @@ fn stored_document(metadata: insight_core::storage::DocumentMetadata) -> Documen
         name: metadata.name,
         file_type: metadata.file_type,
         page_count: None,
+        partially_indexed: None,
         tags: metadata.tags,
         created_at: metadata.created_at,
     }
@@ -124,22 +128,28 @@ pub async fn get_documents(
     let storage = state.storage.read().await;
 
     let namespace_id = collection_id.namespace();
+    let collection_id = namespace_id.to_string();
     let documents = storage
         .list_documents_with_page_counts(namespace_id)
         .await
         .storage_err()?;
 
-    Ok(documents
-        .into_iter()
-        .map(|(document, page_count)| DocumentInfo {
+    let mut infos = Vec::with_capacity(documents.len());
+    for (document, page_count) in documents {
+        let partially_indexed =
+            insight_core::search::is_partially_indexed(&state.search, &collection_id, &document.id)
+                .storage_err()?;
+        infos.push(DocumentInfo {
             page_count: page_count.map(|p| p as u32),
+            partially_indexed,
             id: document.id,
             name: document.name,
             file_type: document.file_type,
             tags: document.tags,
             created_at: document.created_at,
-        })
-        .collect())
+        });
+    }
+    Ok(infos)
 }
 
 /// Get a single document from a collection by ID
@@ -152,6 +162,7 @@ pub async fn get_document(
     let storage = state.storage.read().await;
 
     let namespace_id = collection_id.namespace();
+    let collection_id = namespace_id.to_string();
     let document = storage
         .get_document(namespace_id, &document_id)
         .await
@@ -162,8 +173,13 @@ pub async fn get_document(
         .await
         .storage_err()?;
 
+    let partially_indexed =
+        insight_core::search::is_partially_indexed(&state.search, &collection_id, &document.id)
+            .storage_err()?;
+
     Ok(DocumentInfo {
         page_count: page_count.map(|p| p as u32),
+        partially_indexed,
         id: document.id,
         name: document.name,
         file_type: document.file_type,
@@ -188,31 +204,6 @@ pub async fn get_document_text(
         .ok_or(CommandError::text_not_found())?;
 
     Ok(extraction.text)
-}
-
-/// Get the text chunks for a document (chunked on demand; no embeddings).
-///
-/// Returns an empty list when the document has no canonical extraction yet.
-#[tauri::command]
-pub async fn get_document_chunks(
-    collection_id: CollectionId,
-    document_id: String,
-    state: State<'_, AppState>,
-) -> CommandResult<Vec<String>> {
-    let storage = state.storage.read().await;
-    let extraction = storage
-        .get_canonical_extraction(collection_id.namespace(), &document_id)
-        .await
-        .storage_err()?;
-    drop(storage);
-
-    match extraction {
-        Some(extraction) => Ok(insight_core::pipeline::chunk_text(&extraction.text)
-            .into_iter()
-            .map(|chunk| chunk.text)
-            .collect()),
-        None => Ok(vec![]), // No canonical extraction yet
-    }
 }
 
 /// Get the documents retained by reversible deletion in a collection
@@ -241,7 +232,7 @@ pub async fn get_deleted_documents(
 /// Delete a document from a collection
 ///
 /// The deletion is reversible in storage; index reconciliation then evicts
-/// the document's chunks.
+/// the document's index record.
 #[tauri::command]
 pub async fn delete_document(
     collection_id: CollectionId,

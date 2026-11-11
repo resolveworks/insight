@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 
 use crate::search;
 use crate::storage::Storage;
+use crate::text::{Extraction, ParserId};
 
 /// Per-run state shared by the document tools.
 #[derive(Clone)]
@@ -43,11 +44,13 @@ impl ToolState {
     }
 }
 
-/// Maximum number of passages returned by [`search`].
+/// Maximum number of documents returned by [`Search`].
 const SEARCH_LIMIT: usize = 15;
-/// Maximum characters of a passage included in search results.
-const PASSAGE_LIMIT: usize = 500;
-/// Maximum document entries shown by [`list_documents`].
+/// Maximum characters read by [`ReadDocument`] when `max_chars` is omitted.
+const DEFAULT_READ_CHARS: usize = 4_000;
+/// Hard cap on characters returned by [`ReadDocument`].
+const MAX_READ_CHARS: usize = 8_000;
+/// Maximum document entries shown by [`ListDocuments`].
 const MAX_DOCS_TO_SHOW: usize = 25;
 
 /// Wrap an internal failure for safe model-facing presentation.
@@ -55,29 +58,131 @@ fn infrastructure_error(error: impl std::fmt::Display) -> ToolExecutionError {
     ToolExecutionError::from_error(std::io::Error::other(error.to_string()))
 }
 
+/// Parse the run's collection id, reporting an invalid scope as tool args.
+fn namespace(state: &ToolState) -> Result<iroh_docs::NamespaceId, ToolExecutionError> {
+    state
+        .collection_id
+        .parse::<iroh_docs::NamespaceId>()
+        .map_err(|_| {
+            ToolExecutionError::invalid_args(format!(
+                "collection {} is not a valid namespace ID",
+                state.collection_id
+            ))
+        })
+}
+
+/// Parse a stored `{name}@{version}` parser key.
+fn parser_id(key: &str) -> Result<ParserId, ToolExecutionError> {
+    let (name, version) = key.split_once('@').ok_or_else(|| {
+        ToolExecutionError::invalid_args(format!(
+            "extraction {key} is not a parser key of the form name@version"
+        ))
+    })?;
+    if name.is_empty() || version.is_empty() {
+        return Err(ToolExecutionError::invalid_args(format!(
+            "extraction {key} is not a parser key of the form name@version"
+        )));
+    }
+    Ok(ParserId {
+        name: name.to_string(),
+        version: version.to_string(),
+    })
+}
+
+/// Convert a zero-based character offset to a UTF-8 byte offset.
+///
+/// `Some(text.len())` is returned for an offset equal to the character count.
+fn char_to_byte(text: &str, char_offset: usize) -> Option<usize> {
+    if char_offset == 0 {
+        return Some(0);
+    }
+    if let Some((byte, _)) = text.char_indices().nth(char_offset) {
+        return Some(byte);
+    }
+    (char_offset == text.chars().count()).then_some(text.len())
+}
+
+/// Inclusive source unit numbers (pages) covering the character range.
+fn source_range(
+    extraction: &Extraction,
+    text: &str,
+    start_char: usize,
+    end_char: usize,
+) -> Option<SourceRange> {
+    let start_byte = char_to_byte(text, start_char)?;
+    let end_byte = char_to_byte(text, end_char)?;
+    if end_byte <= start_byte {
+        return None;
+    }
+
+    let mut range: Option<SourceRange> = None;
+    for unit in &extraction.units {
+        let overlaps = unit
+            .spans
+            .iter()
+            .any(|span| span.start < end_byte && span.end > start_byte);
+        if overlaps {
+            match &mut range {
+                Some(range) => range.end = unit.number,
+                None => {
+                    range = Some(SourceRange {
+                        start: unit.number,
+                        end: unit.number,
+                    })
+                }
+            }
+        }
+    }
+    range
+}
+
+/// An inclusive range of source units (pages) in an extraction.
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceRange {
+    /// First source unit number.
+    pub start: usize,
+    /// Last source unit number.
+    pub end: usize,
+}
+
 // ==================== search ====================
 
-/// One search hit with the fields the model needs for citation.
+/// A bounded excerpt around the matching content of one document.
+#[derive(Debug, Serialize)]
+pub struct SearchExcerptResult {
+    /// Excerpt text.
+    pub content: String,
+    /// Zero-based character offset of the excerpt in the extraction.
+    pub offset: usize,
+    /// Character offset one past the excerpt.
+    pub next_offset: usize,
+    /// Total character length of the extraction.
+    pub total_length: usize,
+    /// Source pages covered by the excerpt, when the extraction maps pages.
+    pub source_range: Option<SourceRange>,
+}
+
+/// One ranked document search hit.
 #[derive(Debug, Serialize)]
 pub struct SearchHitResult {
-    /// Name of the document the passage belongs to.
+    /// Name of the matched document.
     pub document_name: String,
-    /// Document ID (use with `read_chunk`).
+    /// Document ID (use with `read_document`).
     pub document_id: String,
-    /// Chunk index within the document.
-    pub chunk_index: i64,
-    /// Passage content, truncated to ~500 characters.
-    pub passage: String,
-    /// Whether the passage was truncated.
-    pub truncated: bool,
+    /// Parser key of the extraction the content came from.
+    pub extraction: String,
+    /// Whether part of the document is outside the search index's coverage.
+    pub partially_indexed: bool,
+    /// Excerpt around the content match; `None` for a filename-only match.
+    pub excerpt: Option<SearchExcerptResult>,
     /// Relevance score.
     pub score: f64,
 }
 
-/// Output of [`search`].
+/// Output of [`Search`].
 #[derive(Debug, Serialize)]
 pub struct SearchOutput {
-    /// Total number of matching passages before the limit.
+    /// Total number of matching documents before the limit.
     pub total_hits: usize,
     /// The returned hits.
     pub hits: Vec<SearchHitResult>,
@@ -107,7 +212,7 @@ impl Tool for Search {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Keyword (BM25) full-text search over indexed document chunks. Returns up to 15 passages with document IDs and chunk indices. Use read_chunk with the document_id and chunk_index to read a full passage.".to_string()
+        "Keyword full-text search over whole documents in the collection. Returns up to 15 ranked documents with document IDs and an optional excerpt around the matching text. Use read_document with the document_id, extraction key and excerpt offset to read further.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -123,6 +228,7 @@ impl Tool for Search {
         let query = args.query;
         tracing::info!(query = %query, "Executing keyword search");
 
+        let namespace_id = namespace(state)?;
         let index = &*state.search;
         let params = search::SearchParams {
             query: &query,
@@ -132,49 +238,56 @@ impl Tool for Search {
         };
 
         let results = search::search_index(index, params).map_err(infrastructure_error)?;
-        let rtxn = index.read_txn().map_err(infrastructure_error)?;
         let storage = state.storage.read().await;
         let mut hits = Vec::with_capacity(results.hits.len());
 
-        for hit in &results.hits {
-            let chunk = search::get_indexed_chunk(index, &rtxn, hit.doc_id)
-                .map_err(infrastructure_error)?
-                .ok_or_else(|| {
-                    infrastructure_error(format!(
-                        "search hit references missing indexed chunk {}",
-                        hit.doc_id
-                    ))
-                })?;
-
-            // Chunks outlive a reversible delete until reconciliation evicts
-            // them; the document's active state decides whether they are
-            // searchable now.
-            let namespace_id = chunk
-                .collection_id
-                .parse::<iroh_docs::NamespaceId>()
-                .map_err(|_| {
-                    infrastructure_error(format!(
-                        "indexed chunk {} has invalid collection id {}",
-                        chunk.id, chunk.collection_id
-                    ))
-                })?;
+        for hit in results.hits {
+            // Index records outlive a reversible delete until reconciliation
+            // evicts them; the document's active state decides whether they
+            // are searchable now.
             let active = storage
-                .get_document(namespace_id, &chunk.parent_id)
+                .get_document(namespace_id, &hit.document_id)
                 .await
                 .map_err(infrastructure_error)?;
             if active.is_none() {
                 continue;
             }
 
-            let truncated = chunk.content.chars().count() > PASSAGE_LIMIT;
-            let passage: String = chunk.content.chars().take(PASSAGE_LIMIT).collect();
+            let parser = parser_id(&hit.extraction)?;
+            let extraction = storage
+                .get_extraction(namespace_id, &hit.document_id, &parser)
+                .await
+                .map_err(infrastructure_error)?;
+            let Some(extraction) = extraction else {
+                // The index record points at an extraction that is no longer
+                // selectable; reconciliation removes it.
+                tracing::debug!(
+                    document_id = %hit.document_id,
+                    extraction = %hit.extraction,
+                    "Skipping search hit with missing extraction"
+                );
+                continue;
+            };
+
+            let excerpt = hit.excerpt.map(|excerpt| SearchExcerptResult {
+                source_range: source_range(
+                    &extraction,
+                    &extraction.text,
+                    excerpt.offset,
+                    excerpt.next_offset,
+                ),
+                content: excerpt.content,
+                offset: excerpt.offset,
+                next_offset: excerpt.next_offset,
+                total_length: excerpt.total_length,
+            });
 
             hits.push(SearchHitResult {
-                document_name: chunk.parent_name,
-                document_id: chunk.parent_id,
-                chunk_index: chunk.chunk_index as i64,
-                passage,
-                truncated,
+                document_name: hit.document_name,
+                document_id: hit.document_id,
+                extraction: hit.extraction,
+                partially_indexed: hit.partially_indexed,
+                excerpt,
                 score: search::compute_hit_score(&hit.scores),
             });
         }
@@ -188,101 +301,132 @@ impl Tool for Search {
     }
 }
 
-// ==================== read_chunk ====================
+// ==================== read_document ====================
 
-/// Output of [`read_chunk`].
+/// Output of [`ReadDocument`].
 #[derive(Debug, Serialize)]
-pub struct ReadChunkOutput {
-    /// The document the chunk belongs to.
+pub struct ReadDocumentOutput {
+    /// The document the extraction belongs to.
     pub document_id: String,
-    /// The chunk index within the document.
-    pub chunk_index: usize,
-    /// The full text content of the chunk.
+    /// Parser key of the extraction that was read.
+    pub extraction: String,
+    /// Bounded extraction text starting at `offset`.
     pub content: String,
+    /// Zero-based character offset of `content` in the extraction.
+    pub offset: usize,
+    /// Character offset one past `content`.
+    pub next_offset: usize,
+    /// Total character length of the extraction.
+    pub total_length: usize,
+    /// Whether text exists before `offset`.
+    pub has_more_before: bool,
+    /// Whether text exists after `next_offset`.
+    pub has_more_after: bool,
+    /// Source pages covered by `content`, when the extraction maps pages.
+    pub source_range: Option<SourceRange>,
 }
 
-/// Chunk-reading tool over the per-run collection scope.
-pub struct ReadChunk {
+/// Document-reading tool over the per-run collection scope.
+pub struct ReadDocument {
     state: ToolState,
 }
 
-impl ReadChunk {
+impl ReadDocument {
     pub fn new(state: ToolState) -> Self {
         Self { state }
     }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-pub struct ReadChunkArgs {
+pub struct ReadDocumentArgs {
     /// The document ID from a search hit.
     pub document_id: String,
-    /// The chunk index within the document.
-    pub chunk_index: usize,
+    /// The extraction parser key from the search hit.
+    pub extraction: String,
+    /// Zero-based character offset into the extraction.
+    pub offset: usize,
+    /// Maximum characters to return (default 4000, hard maximum 8000).
+    #[serde(default)]
+    pub max_chars: Option<usize>,
 }
 
-impl Tool for ReadChunk {
-    const NAME: &'static str = "read_chunk";
-    type Args = ReadChunkArgs;
-    type Output = ReadChunkOutput;
+impl Tool for ReadDocument {
+    const NAME: &'static str = "read_document";
+    type Args = ReadDocumentArgs;
+    type Output = ReadDocumentOutput;
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Read the full text of a document chunk by document ID and chunk index, as returned by the search tool.".to_string()
+        "Read a bounded passage of a whole document by document ID, extraction key and zero-based character offset. Returns at most 8000 characters (default 4000), with offsets and source pages for reading further.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        args_schema::<ReadChunkArgs>()
+        args_schema::<ReadDocumentArgs>()
     }
 
     async fn call(
         &self,
         _context: &mut ToolContext,
-        args: ReadChunkArgs,
-    ) -> Result<ReadChunkOutput, ToolExecutionError> {
+        args: ReadDocumentArgs,
+    ) -> Result<ReadDocumentOutput, ToolExecutionError> {
         let state = &self.state;
         let document_id = args.document_id;
-        let chunk_index = args.chunk_index;
-        tracing::info!(document_id = %document_id, chunk_index, "Reading chunk");
+        let extraction_key = args.extraction;
+        let offset = args.offset;
+        let max_chars = args.max_chars.unwrap_or(DEFAULT_READ_CHARS);
+        tracing::info!(
+            document_id = %document_id,
+            extraction = %extraction_key,
+            offset,
+            max_chars,
+            "Reading document"
+        );
 
-        let chunk_id = search::chunk_external_id(&state.collection_id, &document_id, chunk_index);
-        let not_found = || {
-            ToolExecutionError::not_found(format!(
-                "chunk {chunk_index} not found for document {document_id}. Try a different chunk index."
-            ))
-        };
-
-        let chunk = search::get_indexed_chunk_by_external_id(&state.search, &chunk_id)
-            .map_err(infrastructure_error)?
-            .ok_or_else(not_found)?;
-
-        if chunk.collection_id != state.collection_id {
-            return Err(not_found());
+        if max_chars == 0 || max_chars > MAX_READ_CHARS {
+            return Err(ToolExecutionError::invalid_args(format!(
+                "max_chars must be between 1 and {MAX_READ_CHARS}, got {max_chars}"
+            )));
         }
 
-        let namespace_id = chunk
-            .collection_id
-            .parse::<iroh_docs::NamespaceId>()
-            .map_err(|_| {
-                infrastructure_error(format!(
-                    "indexed chunk {} has invalid collection id {}",
-                    chunk.id, chunk.collection_id
+        let namespace_id = namespace(state)?;
+        let parser = parser_id(&extraction_key)?;
+        let storage = state.storage.read().await;
+        let extraction = storage
+            .get_extraction(namespace_id, &document_id, &parser)
+            .await
+            .map_err(infrastructure_error)?
+            .ok_or_else(|| {
+                ToolExecutionError::not_found(format!(
+                    "extraction {extraction_key} not found for document {document_id}"
                 ))
             })?;
-        let active = state
-            .storage
-            .read()
-            .await
-            .get_document(namespace_id, &chunk.parent_id)
-            .await
-            .map_err(infrastructure_error)?;
-        if active.is_none() {
-            return Err(not_found());
-        }
 
-        Ok(ReadChunkOutput {
+        let total_length = extraction.text.chars().count();
+        if offset > total_length {
+            return Err(ToolExecutionError::invalid_args(format!(
+                "offset {offset} is beyond the extraction's {total_length} characters"
+            )));
+        }
+        let next_offset = offset.saturating_add(max_chars).min(total_length);
+        let start_byte = char_to_byte(&extraction.text, offset).ok_or_else(|| {
+            ToolExecutionError::invalid_args(format!("offset {offset} is not a character boundary"))
+        })?;
+        let end_byte = char_to_byte(&extraction.text, next_offset).ok_or_else(|| {
+            ToolExecutionError::invalid_args(format!(
+                "offset {next_offset} is not a character boundary"
+            ))
+        })?;
+
+        Ok(ReadDocumentOutput {
             document_id,
-            chunk_index,
-            content: chunk.content,
+            extraction: extraction_key,
+            content: extraction.text[start_byte..end_byte].to_string(),
+            offset,
+            next_offset,
+            total_length,
+            has_more_before: offset > 0,
+            has_more_after: next_offset < total_length,
+            source_range: source_range(&extraction, &extraction.text, offset, next_offset),
         })
     }
 }
@@ -294,13 +438,13 @@ impl Tool for ReadChunk {
 pub struct DocumentEntry {
     /// Document file name.
     pub name: String,
-    /// Document ID (use with read_chunk / search).
+    /// Document ID (use with read_document / search).
     pub id: String,
     /// Total page count, when the source is paginated.
     pub page_count: Option<usize>,
 }
 
-/// Output of [`list_documents`].
+/// Output of [`ListDocuments`].
 #[derive(Debug, Serialize)]
 pub struct ListDocumentsOutput {
     /// Total documents in the collection.
@@ -352,15 +496,7 @@ impl Tool for ListDocuments {
         tracing::info!("Listing documents");
         let storage = state.storage.read().await;
 
-        let namespace_id = state
-            .collection_id
-            .parse::<iroh_docs::NamespaceId>()
-            .map_err(|_| {
-                ToolExecutionError::invalid_args(format!(
-                    "collection {} is not a valid namespace ID",
-                    state.collection_id
-                ))
-            })?;
+        let namespace_id = namespace(state)?;
 
         let mut documents = storage
             .list_documents(namespace_id)
@@ -406,10 +542,12 @@ impl Tool for ListDocuments {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::ChunkToIndex;
+    use crate::search::DocumentToIndex;
     use crate::text::{Extraction, ParserId, TextSpan, Unit, UnitKind};
     use milli::update::IndexerConfig;
     use rig::tool::{Tool, ToolContext, ToolErrorKind};
+
+    const TEST_PARSER: &str = "test-parser@1";
 
     /// Tool state over a temporary index/storage, with an empty scope.
     async fn create_state() -> (tempfile::TempDir, ToolState) {
@@ -447,14 +585,13 @@ mod tests {
     async fn add_document(
         state: &ToolState,
         collection_id: &str,
-        id: &str,
         name: &str,
         text: &str,
         page_ends: Vec<usize>,
         unit_kind: Option<UnitKind>,
     ) -> String {
         let namespace_id = collection_id.parse::<iroh_docs::NamespaceId>().unwrap();
-        let source = format!("source-{id}");
+        let source = format!("source-{name}");
         let storage = state.storage.read().await;
         let doc_id = storage
             .add_document(namespace_id, name, "application/pdf", source.as_bytes())
@@ -498,45 +635,70 @@ mod tests {
         doc_id
     }
 
-    /// Helper to create a chunk for indexing.
-    #[allow(clippy::too_many_arguments)]
-    fn make_chunk(
-        parent_id: &str,
-        parent_name: &str,
-        content: &str,
+    /// Index an already-stored document as a whole extraction.
+    fn index_document(
+        state: &ToolState,
         collection_id: &str,
-        chunk_index: usize,
-        text_offset_start: usize,
-    ) -> ChunkToIndex {
-        ChunkToIndex {
-            id: crate::search::chunk_external_id(collection_id, parent_id, chunk_index),
-            parent_id: parent_id.to_string(),
-            parent_name: parent_name.to_string(),
-            chunk_index,
-            content: content.to_string(),
-            collection_id: collection_id.to_string(),
-            text_offset_start,
-            text_offset_end: text_offset_start + content.len(),
-        }
+        document_id: &str,
+        name: &str,
+        content: &str,
+    ) {
+        search::index_documents_batch(
+            &state.search,
+            &IndexerConfig::default(),
+            vec![DocumentToIndex {
+                id: search::document_external_id(collection_id, document_id),
+                document_id: document_id.to_string(),
+                document_name: name.to_string(),
+                extraction: TEST_PARSER.to_string(),
+                content: content.to_string(),
+                collection_id: collection_id.to_string(),
+            }],
+        )
+        .unwrap();
     }
 
     fn scope(id: &str) -> String {
         id.to_string()
     }
 
-    #[tokio::test]
-    async fn test_search_empty_query_returns_no_hits() {
-        let (_tmp, mut state) = create_state().await;
-        state.collection_id = scope("col1");
-        let out = Search::new(state)
+    async fn search(state: &ToolState, query: &str) -> Result<SearchOutput, ToolExecutionError> {
+        Search::new(state.clone())
             .call(
                 &mut ToolContext::new(),
                 SearchArgs {
-                    query: String::new(),
+                    query: query.to_string(),
                 },
             )
             .await
-            .unwrap();
+    }
+
+    async fn read(
+        state: &ToolState,
+        document_id: &str,
+        extraction: &str,
+        offset: usize,
+        max_chars: Option<usize>,
+    ) -> Result<ReadDocumentOutput, ToolExecutionError> {
+        ReadDocument::new(state.clone())
+            .call(
+                &mut ToolContext::new(),
+                ReadDocumentArgs {
+                    document_id: document_id.to_string(),
+                    extraction: extraction.to_string(),
+                    offset,
+                    max_chars,
+                },
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_search_empty_query_returns_no_hits() {
+        let (_tmp, mut state) = create_state().await;
+        state.collection_id = create_collection(&state, "Empty").await;
+
+        let out = search(&state, "").await.unwrap();
         assert!(out.hits.is_empty());
     }
 
@@ -548,44 +710,61 @@ mod tests {
         let document_id = add_document(
             &state,
             &collection,
-            "doc1",
             "Climate_Report.pdf",
             content,
             vec![content.len()],
             Some(UnitKind::Page),
         )
         .await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![make_chunk(
-                &document_id,
-                "Climate_Report.pdf",
-                content,
-                &collection,
-                0,
-                0,
-            )],
-        )
-        .unwrap();
+        index_document(
+            &state,
+            &collection,
+            &document_id,
+            "Climate_Report.pdf",
+            content,
+        );
         state.collection_id = scope(&collection);
 
-        let out = Search::new(state)
-            .call(
-                &mut ToolContext::new(),
-                SearchArgs {
-                    query: "climate temperatures".to_string(),
-                },
-            )
-            .await
-            .unwrap();
+        let out = search(&state, "climate temperatures").await.unwrap();
 
         assert!(!out.hits.is_empty());
         let hit = &out.hits[0];
         assert_eq!(hit.document_name, "Climate_Report.pdf");
         assert_eq!(hit.document_id, document_id);
+        assert_eq!(hit.extraction, TEST_PARSER);
+        assert!(!hit.partially_indexed);
         assert!(hit.score > 0.0);
-        assert!(!hit.truncated);
+        let excerpt = hit.excerpt.as_ref().expect("content match has an excerpt");
+        assert!(excerpt.content.to_lowercase().contains("temperatures"));
+        assert_eq!(excerpt.source_range.as_ref().unwrap().start, 1);
+    }
+
+    #[tokio::test]
+    async fn test_search_filename_only_hit_has_no_excerpt() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Names").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Budget_Report.pdf",
+            "Annual figures.",
+            vec![14],
+            Some(UnitKind::Page),
+        )
+        .await;
+        index_document(
+            &state,
+            &collection,
+            &document_id,
+            "Budget_Report.pdf",
+            "Annual figures.",
+        );
+        state.collection_id = scope(&collection);
+
+        let out = search(&state, "Budget_Report").await.unwrap();
+        assert_eq!(out.hits.len(), 1);
+        assert!(out.hits[0].excerpt.is_none());
+        assert_eq!(out.hits[0].extraction, TEST_PARSER);
     }
 
     #[tokio::test]
@@ -598,57 +777,38 @@ mod tests {
         let research_id = add_document(
             &state,
             &research,
-            "doc1",
             "Research_Paper.pdf",
             research_content,
-            vec![],
-            None,
+            vec![research_content.len()],
+            Some(UnitKind::Page),
         )
         .await;
         let finance_id = add_document(
             &state,
             &finance,
-            "doc2",
             "Finance_Report.pdf",
             finance_content,
-            vec![],
-            None,
+            vec![finance_content.len()],
+            Some(UnitKind::Page),
         )
         .await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![
-                make_chunk(
-                    &research_id,
-                    "Research_Paper.pdf",
-                    research_content,
-                    &research,
-                    0,
-                    0,
-                ),
-                make_chunk(
-                    &finance_id,
-                    "Finance_Report.pdf",
-                    finance_content,
-                    &finance,
-                    0,
-                    0,
-                ),
-            ],
-        )
-        .unwrap();
+        index_document(
+            &state,
+            &research,
+            &research_id,
+            "Research_Paper.pdf",
+            research_content,
+        );
+        index_document(
+            &state,
+            &finance,
+            &finance_id,
+            "Finance_Report.pdf",
+            finance_content,
+        );
         state.collection_id = scope(&research);
 
-        let out = Search::new(state)
-            .call(
-                &mut ToolContext::new(),
-                SearchArgs {
-                    query: "climate".to_string(),
-                },
-            )
-            .await
-            .unwrap();
+        let out = search(&state, "climate").await.unwrap();
 
         let names: Vec<&str> = out.hits.iter().map(|h| h.document_name.as_str()).collect();
         assert!(names.contains(&"Research_Paper.pdf"));
@@ -656,209 +816,242 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_truncates_long_passages() {
+    async fn test_search_excerpt_is_bounded() {
         let (_tmp, mut state) = create_state().await;
-        let long_content = "climate research findings ".repeat(30); // ~780 chars
+        let long_content = "climate research findings ".repeat(30);
         let collection = create_collection(&state, "Long Docs").await;
         let document_id = add_document(
             &state,
             &collection,
-            "doc1",
             "Long.pdf",
             &long_content,
-            vec![],
-            None,
+            vec![long_content.len()],
+            Some(UnitKind::Page),
         )
         .await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![make_chunk(
-                &document_id,
-                "Long.pdf",
-                &long_content,
-                &collection,
-                0,
-                0,
-            )],
-        )
-        .unwrap();
+        index_document(&state, &collection, &document_id, "Long.pdf", &long_content);
         state.collection_id = scope(&collection);
 
-        let out = Search::new(state)
-            .call(
-                &mut ToolContext::new(),
-                SearchArgs {
-                    query: "climate".to_string(),
-                },
-            )
-            .await
-            .unwrap();
+        let out = search(&state, "climate").await.unwrap();
 
-        assert!(!out.hits.is_empty());
-        assert!(out.hits[0].truncated);
-        assert!(out.hits[0].passage.chars().count() <= 500);
+        let excerpt = out.hits[0].excerpt.as_ref().unwrap();
+        assert!(excerpt.content.chars().count() <= 500);
+        assert_eq!(excerpt.total_length, long_content.chars().count());
+        assert_eq!(
+            excerpt.content.chars().count(),
+            excerpt.next_offset - excerpt.offset
+        );
     }
 
     #[tokio::test]
-    async fn test_read_chunk_success() {
+    async fn test_read_document_success() {
         let (_tmp, mut state) = create_state().await;
-        let collection = create_collection(&state, "Chunks").await;
+        let collection = create_collection(&state, "Documents").await;
+        let content = "This is the content of the document with important information.";
         let document_id = add_document(
             &state,
             &collection,
-            "chunk-doc",
             "Test_Document.pdf",
-            "This is the content of chunk 0 with important information.",
-            Vec::new(),
-            None,
+            content,
+            vec![content.len()],
+            Some(UnitKind::Page),
         )
         .await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![make_chunk(
-                &document_id,
-                "Test_Document.pdf",
-                "This is the content of chunk 0 with important information.",
-                &collection,
-                0,
-                0,
-            )],
-        )
-        .unwrap();
         state.collection_id = scope(&collection);
 
-        let out = ReadChunk::new(state)
-            .call(
-                &mut ToolContext::new(),
-                ReadChunkArgs {
-                    document_id: document_id.clone(),
-                    chunk_index: 0,
-                },
-            )
+        let out = read(&state, &document_id, TEST_PARSER, 0, None)
             .await
             .unwrap();
 
         assert_eq!(out.document_id, document_id);
-        assert_eq!(out.chunk_index, 0);
-        assert!(out.content.contains("important information"));
+        assert_eq!(out.extraction, TEST_PARSER);
+        assert_eq!(out.content, content);
+        assert_eq!(out.offset, 0);
+        assert_eq!(out.next_offset, content.chars().count());
+        assert_eq!(out.total_length, content.chars().count());
+        assert!(!out.has_more_before);
+        assert!(!out.has_more_after);
+        assert_eq!(out.source_range.as_ref().unwrap().start, 1);
     }
 
     #[tokio::test]
-    async fn test_read_chunk_wrong_index() {
+    async fn test_read_document_honours_max_chars_and_char_offsets() {
         let (_tmp, mut state) = create_state().await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![make_chunk(
-                "test_doc",
-                "Test.pdf",
-                "Content of chunk 0",
-                "col1",
-                0,
-                0,
-            )],
+        let collection = create_collection(&state, "Unicode").await;
+        let content = "日本a語b";
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Unicode.pdf",
+            content,
+            vec![content.len()],
+            Some(UnitKind::Page),
         )
-        .unwrap();
-        state.collection_id = scope("col1");
+        .await;
+        state.collection_id = scope(&collection);
 
-        let err = ReadChunk::new(state)
-            .call(
-                &mut ToolContext::new(),
-                ReadChunkArgs {
-                    document_id: "test_doc".to_string(),
-                    chunk_index: 5,
-                },
-            )
+        let out = read(&state, &document_id, TEST_PARSER, 2, Some(2))
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "a語");
+        assert_eq!(out.offset, 2);
+        assert_eq!(out.next_offset, 4);
+        assert_eq!(out.total_length, 5);
+        assert!(out.has_more_before);
+        assert!(out.has_more_after);
+    }
+
+    #[tokio::test]
+    async fn test_read_document_reports_cross_page_range() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Paged").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Paged.pdf",
+            "0123456789",
+            vec![4, 8, 10],
+            Some(UnitKind::Page),
+        )
+        .await;
+        state.collection_id = scope(&collection);
+
+        let out = read(&state, &document_id, TEST_PARSER, 3, Some(3))
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "345");
+        let range = out.source_range.expect("cross-page source range");
+        assert_eq!((range.start, range.end), (1, 2));
+    }
+
+    #[tokio::test]
+    async fn test_read_document_rejects_invalid_arguments() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Invalid").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Short.pdf",
+            "short",
+            vec![5],
+            Some(UnitKind::Page),
+        )
+        .await;
+        state.collection_id = scope(&collection);
+
+        let err = read(&state, &document_id, TEST_PARSER, 99, None)
             .await
             .unwrap_err();
+        assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
+        assert!(err.to_string().contains("99"));
 
-        assert_eq!(err.kind(), ToolErrorKind::NotFound);
-        assert!(err.to_string().to_lowercase().contains("chunk 5"));
-    }
-
-    #[tokio::test]
-    async fn test_read_chunk_rejects_chunk_outside_scope() {
-        let (_tmp, mut state) = create_state().await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![make_chunk(
-                "test_doc",
-                "Test.pdf",
-                "Content in another collection",
-                "other_collection",
-                0,
-                0,
-            )],
-        )
-        .unwrap();
-        state.collection_id = scope("active_collection");
-
-        let err = ReadChunk::new(state)
-            .call(
-                &mut ToolContext::new(),
-                ReadChunkArgs {
-                    document_id: "test_doc".to_string(),
-                    chunk_index: 0,
-                },
-            )
+        let err = read(&state, &document_id, TEST_PARSER, 0, Some(0))
             .await
             .unwrap_err();
+        assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
 
-        assert_eq!(err.kind(), ToolErrorKind::NotFound);
-        assert!(err.to_string().contains("test_doc"));
+        let err = read(&state, &document_id, TEST_PARSER, 0, Some(8001))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
+
+        let err = read(&state, &document_id, "not-a-parser-key", 0, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), ToolErrorKind::InvalidArgs);
     }
 
     #[tokio::test]
-    async fn test_deleted_documents_are_hidden_from_search_and_read_chunk() {
+    async fn test_read_document_empty_extraction() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Empty Extraction").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Empty.pdf",
+            "",
+            vec![0],
+            Some(UnitKind::Page),
+        )
+        .await;
+        state.collection_id = scope(&collection);
+
+        let out = read(&state, &document_id, TEST_PARSER, 0, None)
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "");
+        assert_eq!(out.total_length, 0);
+        assert_eq!(out.next_offset, 0);
+        assert!(!out.has_more_before);
+        assert!(!out.has_more_after);
+        assert!(out.source_range.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_document_rejects_extraction_outside_scope() {
+        let (_tmp, mut state) = create_state().await;
+        let collection = create_collection(&state, "Owned").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Owned.pdf",
+            "owned content",
+            Vec::new(),
+            None,
+        )
+        .await;
+        let other = create_collection(&state, "Other").await;
+        state.collection_id = scope(&other);
+
+        let err = read(&state, &document_id, TEST_PARSER, 0, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), ToolErrorKind::NotFound);
+        assert!(err.to_string().contains(&document_id));
+    }
+
+    #[tokio::test]
+    async fn test_deleted_documents_are_hidden_from_search_and_read_document() {
         let (_tmp, mut state) = create_state().await;
         let collection = create_collection(&state, "Reversible").await;
         let namespace_id = collection.parse::<iroh_docs::NamespaceId>().unwrap();
+        let active_content = "climate temperatures rising over land";
+        let deleted_content = "climate temperatures recorded at sea";
         let active_id = add_document(
             &state,
             &collection,
-            "active",
             "Active.pdf",
-            "climate temperatures rising over land",
-            Vec::new(),
-            None,
+            active_content,
+            vec![active_content.len()],
+            Some(UnitKind::Page),
         )
         .await;
         let deleted_id = add_document(
             &state,
             &collection,
-            "deleted",
             "Deleted.pdf",
-            "climate temperatures recorded at sea",
-            Vec::new(),
-            None,
+            deleted_content,
+            vec![deleted_content.len()],
+            Some(UnitKind::Page),
         )
         .await;
-        search::index_chunks_batch(
-            &state.search,
-            &IndexerConfig::default(),
-            vec![
-                make_chunk(
-                    &active_id,
-                    "Active.pdf",
-                    "climate temperatures rising over land",
-                    &collection,
-                    0,
-                    0,
-                ),
-                make_chunk(
-                    &deleted_id,
-                    "Deleted.pdf",
-                    "climate temperatures recorded at sea",
-                    &collection,
-                    0,
-                    0,
-                ),
-            ],
-        )
-        .unwrap();
+        index_document(
+            &state,
+            &collection,
+            &active_id,
+            "Active.pdf",
+            active_content,
+        );
+        index_document(
+            &state,
+            &collection,
+            &deleted_id,
+            "Deleted.pdf",
+            deleted_content,
+        );
         state.collection_id = scope(&collection);
 
         state
@@ -869,36 +1062,21 @@ mod tests {
             .await
             .unwrap();
 
-        // The deleted document's chunks are still indexed here; the tools
-        // must hide them before reconciliation evicts them.
-        let deleted_chunk = search::chunk_external_id(&collection, &deleted_id, 0);
+        // The deleted document's index record is still present here; the
+        // tools must hide it before reconciliation evicts it.
+        let deleted_record = search::document_external_id(&collection, &deleted_id);
         assert!(
-            search::get_indexed_chunk_by_external_id(&state.search, &deleted_chunk)
+            search::get_indexed_document_by_external_id(&state.search, &deleted_record)
                 .unwrap()
                 .is_some()
         );
 
-        let out = Search::new(state.clone())
-            .call(
-                &mut ToolContext::new(),
-                SearchArgs {
-                    query: "climate".to_string(),
-                },
-            )
-            .await
-            .unwrap();
+        let out = search(&state, "climate").await.unwrap();
         assert_eq!(out.hits.len(), 1);
         assert_eq!(out.hits[0].document_id, active_id);
         assert!(!out.hits.iter().any(|hit| hit.document_id == deleted_id));
 
-        let err = ReadChunk::new(state.clone())
-            .call(
-                &mut ToolContext::new(),
-                ReadChunkArgs {
-                    document_id: deleted_id.clone(),
-                    chunk_index: 0,
-                },
-            )
+        let err = read(&state, &deleted_id, TEST_PARSER, 0, None)
             .await
             .unwrap_err();
         assert_eq!(err.kind(), ToolErrorKind::NotFound);
@@ -911,15 +1089,7 @@ mod tests {
             .await
             .unwrap();
 
-        let out = Search::new(state.clone())
-            .call(
-                &mut ToolContext::new(),
-                SearchArgs {
-                    query: "climate".to_string(),
-                },
-            )
-            .await
-            .unwrap();
+        let out = search(&state, "climate").await.unwrap();
         assert_eq!(out.total_hits, 2);
         let ids: Vec<&str> = out
             .hits
@@ -928,14 +1098,7 @@ mod tests {
             .collect();
         assert!(ids.contains(&deleted_id.as_str()));
 
-        let out = ReadChunk::new(state)
-            .call(
-                &mut ToolContext::new(),
-                ReadChunkArgs {
-                    document_id: deleted_id,
-                    chunk_index: 0,
-                },
-            )
+        let out = read(&state, &deleted_id, TEST_PARSER, 0, None)
             .await
             .unwrap();
         assert!(out.content.contains("recorded at sea"));
@@ -984,7 +1147,6 @@ mod tests {
         add_document(
             &state,
             &collection,
-            "doc-paged",
             "Paged.pdf",
             "0123456789",
             vec![4, 8, 10],
@@ -994,7 +1156,6 @@ mod tests {
         add_document(
             &state,
             &collection,
-            "doc-unknown",
             "Unknown.pdf",
             "no extraction",
             Vec::new(),
@@ -1027,8 +1188,8 @@ mod tests {
         );
 
         assert_eq!(
-            ReadChunk::new(state.clone()).parameters()["required"],
-            serde_json::json!(["document_id", "chunk_index"])
+            ReadDocument::new(state.clone()).parameters()["required"],
+            serde_json::json!(["document_id", "extraction", "offset"])
         );
     }
 }

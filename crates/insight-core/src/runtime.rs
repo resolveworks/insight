@@ -56,7 +56,7 @@ fn format_scope_document(collection_name: &str) -> String {
     )
 }
 
-/// The collection's term context, re-derived only after its chunks change.
+/// The collection's term context, re-derived only after its documents change.
 fn collection_terms_document(state: &AppState, collection_id: &str) -> Result<Document> {
     let terms_cache = state.index_worker.terms_cache();
     let mut cache = terms_cache.lock().expect("terms cache lock poisoned");
@@ -179,7 +179,7 @@ fn build_agent(
     Ok(AgentBuilder::new(model)
         .preamble(BASE_SYSTEM_PROMPT)
         .tool(tools::Search::new(tool_state.clone()))
-        .tool(tools::ReadChunk::new(tool_state.clone()))
+        .tool(tools::ReadDocument::new(tool_state.clone()))
         .tool(tools::ListDocuments::new(tool_state))
         .memory(state.memory.store(collection_id, conversation_id)?)
         .conversation(conversation_id)
@@ -901,19 +901,17 @@ mod tests {
         let empty = terms_sent(&state, &collection_id, id, &name).await;
         assert_eq!(empty, "The collection has no indexed terms yet.");
 
-        let chunk = |parent_id: &str, content: &str| crate::search::ChunkToIndex {
-            id: crate::search::chunk_external_id(&collection_id, parent_id, 0),
-            parent_id: parent_id.to_string(),
-            parent_name: format!("{parent_id}.pdf"),
-            chunk_index: 0,
+        let document = |document_id: &str, content: &str| crate::search::DocumentToIndex {
+            id: crate::search::document_external_id(&collection_id, document_id),
+            document_id: document_id.to_string(),
+            document_name: format!("{document_id}.pdf"),
+            extraction: "test@1".to_string(),
             content: content.to_string(),
             collection_id: collection_id.clone(),
-            text_offset_start: 0,
-            text_offset_end: content.len(),
         };
         state
             .index_worker
-            .index_chunks(vec![chunk("doc1", "climate")])
+            .index_documents(vec![document("doc1", "climate")])
             .await
             .unwrap();
         let initial = terms_sent(&state, &collection_id, id, &name).await;
@@ -928,7 +926,7 @@ mod tests {
 
         state
             .index_worker
-            .index_chunks(vec![chunk("doc2", "climate budget")])
+            .index_documents(vec![document("doc2", "climate budget")])
             .await
             .unwrap();
         let refreshed = terms_sent(&state, &collection_id, id, &name).await;

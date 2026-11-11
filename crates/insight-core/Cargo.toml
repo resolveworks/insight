@@ -49,9 +49,6 @@ rig-core = "0.46"
 rig-memory = { version = "0.46", features = ["fs"] }
 schemars = "1"
 
-# Text chunking for search indexing
-text-splitter = "0.33"
-
 # Utilities
 anyhow = "1"
 thiserror = "2"

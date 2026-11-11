@@ -15,26 +15,26 @@ use milli::Index;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    delete_chunks_by_collection, delete_document_chunks, index_chunks_batch, ChunkToIndex,
+    delete_document, delete_documents_by_collection, index_documents_batch, DocumentToIndex,
 };
 
-/// Rendered collection-term context, cleared when a collection's chunks change.
+/// Rendered collection-term context, cleared when a collection's documents change.
 pub type TermsCache = Arc<Mutex<HashMap<String, String>>>;
 
 /// Request to the index worker.
 pub enum IndexRequest {
-    /// Index a batch of chunks (creates or updates documents).
+    /// Index a batch of whole documents (creates or updates records).
     Index {
-        chunks: Vec<ChunkToIndex>,
+        documents: Vec<DocumentToIndex>,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
-    /// Delete all chunks belonging to a document in one collection.
+    /// Delete a document's index record in one collection.
     DeleteDocument {
         collection_id: String,
-        doc_id: String,
-        response_tx: oneshot::Sender<anyhow::Result<usize>>,
+        document_id: String,
+        response_tx: oneshot::Sender<anyhow::Result<bool>>,
     },
-    /// Delete all chunks in a collection.
+    /// Delete every document index record in a collection.
     DeleteCollection {
         collection_id: String,
         response_tx: oneshot::Sender<anyhow::Result<usize>>,
@@ -56,14 +56,14 @@ impl IndexWorkerHandle {
         self.terms_cache.clone()
     }
 
-    /// Index a batch of chunks.
+    /// Index a batch of whole documents.
     ///
     /// Returns when indexing is complete.
-    pub async fn index_chunks(&self, chunks: Vec<ChunkToIndex>) -> anyhow::Result<()> {
+    pub async fn index_documents(&self, documents: Vec<DocumentToIndex>) -> anyhow::Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(IndexRequest::Index {
-                chunks,
+                documents,
                 response_tx,
             })
             .await
@@ -73,19 +73,19 @@ impl IndexWorkerHandle {
             .map_err(|_| anyhow::anyhow!("Index worker dropped response"))?
     }
 
-    /// Delete all chunks for a document in one collection.
+    /// Delete a document's index record in one collection.
     ///
-    /// Returns the number of chunks deleted.
-    pub async fn delete_document_chunks(
+    /// Returns whether a record was deleted.
+    pub async fn delete_document(
         &self,
         collection_id: String,
-        doc_id: String,
-    ) -> anyhow::Result<usize> {
+        document_id: String,
+    ) -> anyhow::Result<bool> {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(IndexRequest::DeleteDocument {
                 collection_id,
-                doc_id,
+                document_id,
                 response_tx,
             })
             .await
@@ -95,10 +95,10 @@ impl IndexWorkerHandle {
             .map_err(|_| anyhow::anyhow!("Index worker dropped response"))?
     }
 
-    /// Delete all chunks in a collection.
+    /// Delete every document index record in a collection.
     ///
-    /// Returns the number of chunks deleted.
-    pub async fn delete_collection_chunks(&self, collection_id: String) -> anyhow::Result<usize> {
+    /// Returns the number of records deleted.
+    pub async fn delete_collection(&self, collection_id: String) -> anyhow::Result<usize> {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(IndexRequest::DeleteCollection {
@@ -152,26 +152,26 @@ fn process_request(
 ) {
     match request {
         IndexRequest::Index {
-            chunks,
+            documents,
             response_tx,
         } => {
-            let chunk_count = chunks.len();
-            tracing::debug!(chunk_count, "Processing index request");
+            let document_count = documents.len();
+            tracing::debug!(document_count, "Processing index request");
 
-            let collections: HashSet<String> = chunks
+            let collections: HashSet<String> = documents
                 .iter()
-                .map(|chunk| chunk.collection_id.clone())
+                .map(|document| document.collection_id.clone())
                 .collect();
-            let result = index_chunks_batch(index, indexer_config, chunks);
+            let result = index_documents_batch(index, indexer_config, documents);
 
             if let Err(ref e) = result {
-                tracing::error!(error = %e, "Failed to index chunks");
+                tracing::error!(error = %e, "Failed to index documents");
             } else {
                 let mut cache = terms_cache.lock().expect("terms cache lock poisoned");
                 for collection_id in collections {
                     cache.remove(&collection_id);
                 }
-                tracing::debug!(chunk_count, "Indexed chunks successfully");
+                tracing::debug!(document_count, "Indexed documents successfully");
             }
 
             // Send response (ignore if receiver dropped)
@@ -180,34 +180,34 @@ fn process_request(
 
         IndexRequest::DeleteDocument {
             collection_id,
-            doc_id,
+            document_id,
             response_tx,
         } => {
             tracing::debug!(
                 collection_id = %collection_id,
-                doc_id = %doc_id,
-                "Processing delete document chunks request"
+                document_id = %document_id,
+                "Processing delete document request"
             );
 
-            let result = delete_document_chunks(index, indexer_config, &collection_id, &doc_id);
+            let result = delete_document(index, indexer_config, &collection_id, &document_id);
 
             if let Err(ref e) = result {
                 tracing::error!(
                     collection_id = %collection_id,
-                    doc_id = %doc_id,
+                    document_id = %document_id,
                     error = %e,
-                    "Failed to delete document chunks"
+                    "Failed to delete document"
                 );
-            } else if let Ok(count) = result {
+            } else if let Ok(deleted) = result {
                 terms_cache
                     .lock()
                     .expect("terms cache lock poisoned")
                     .remove(&collection_id);
                 tracing::debug!(
                     collection_id = %collection_id,
-                    doc_id = %doc_id,
-                    deleted = count,
-                    "Deleted document chunks"
+                    document_id = %document_id,
+                    deleted,
+                    "Deleted document"
                 );
             }
 
@@ -218,18 +218,18 @@ fn process_request(
             collection_id,
             response_tx,
         } => {
-            tracing::debug!(collection_id = %collection_id, "Processing delete collection chunks request");
+            tracing::debug!(collection_id = %collection_id, "Processing delete collection request");
 
-            let result = delete_chunks_by_collection(index, indexer_config, &collection_id);
+            let result = delete_documents_by_collection(index, indexer_config, &collection_id);
 
             if let Err(ref e) = result {
-                tracing::error!(collection_id = %collection_id, error = %e, "Failed to delete collection chunks");
+                tracing::error!(collection_id = %collection_id, error = %e, "Failed to delete collection documents");
             } else if let Ok(count) = result {
                 terms_cache
                     .lock()
                     .expect("terms cache lock poisoned")
                     .remove(&collection_id);
-                tracing::debug!(collection_id = %collection_id, deleted = count, "Deleted collection chunks");
+                tracing::debug!(collection_id = %collection_id, deleted = count, "Deleted collection documents");
             }
 
             let _ = response_tx.send(result);
@@ -241,7 +241,6 @@ fn process_request(
 mod tests {
     use super::*;
     use crate::search;
-    use crate::search::chunk_external_id;
     use tempfile::tempdir;
 
     fn test_index() -> (Arc<Index>, IndexerConfig) {
@@ -251,50 +250,43 @@ mod tests {
         (Arc::new(index), config)
     }
 
+    fn document(collection_id: &str, document_id: &str, content: &str) -> DocumentToIndex {
+        DocumentToIndex {
+            id: search::document_external_id(collection_id, document_id),
+            document_id: document_id.to_string(),
+            document_name: "test.pdf".to_string(),
+            extraction: "test@1".to_string(),
+            content: content.to_string(),
+            collection_id: collection_id.to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_index_worker_delete_is_scoped_to_collection() {
         let (index, config) = test_index();
         let handle = spawn_index_worker(index.clone(), config);
 
-        let chunks = vec![
-            ChunkToIndex {
-                id: chunk_external_id("col1", "doc1", 0),
-                parent_id: "doc1".to_string(),
-                parent_name: "test.pdf".to_string(),
-                chunk_index: 0,
-                content: "First collection content".to_string(),
-                collection_id: "col1".to_string(),
-                text_offset_start: 0,
-                text_offset_end: 24,
-            },
-            ChunkToIndex {
-                id: chunk_external_id("col2", "doc1", 0),
-                parent_id: "doc1".to_string(),
-                parent_name: "test.pdf".to_string(),
-                chunk_index: 0,
-                content: "Second collection content".to_string(),
-                collection_id: "col2".to_string(),
-                text_offset_start: 0,
-                text_offset_end: 25,
-            },
+        let documents = vec![
+            document("col1", "doc1", "First collection content"),
+            document("col2", "doc1", "Second collection content"),
         ];
-        handle.index_chunks(chunks).await.unwrap();
+        handle.index_documents(documents).await.unwrap();
 
         let deleted = handle
-            .delete_document_chunks("col1".to_string(), "doc1".to_string())
+            .delete_document("col1".to_string(), "doc1".to_string())
             .await
             .unwrap();
-        assert_eq!(deleted, 1);
+        assert!(deleted);
 
-        assert!(search::get_indexed_chunk_by_external_id(
+        assert!(search::get_indexed_document_by_external_id(
             &index,
-            &chunk_external_id("col1", "doc1", 0)
+            &search::document_external_id("col1", "doc1")
         )
         .unwrap()
         .is_none());
-        assert!(search::get_indexed_chunk_by_external_id(
+        assert!(search::get_indexed_document_by_external_id(
             &index,
-            &chunk_external_id("col2", "doc1", 0)
+            &search::document_external_id("col2", "doc1")
         )
         .unwrap()
         .is_some());

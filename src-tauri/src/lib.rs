@@ -95,7 +95,6 @@ pub fn run() {
             commands::documents::get_documents,
             commands::documents::get_document,
             commands::documents::get_document_text,
-            commands::documents::get_document_chunks,
             commands::documents::start_import,
             commands::documents::get_pipeline_progress,
             commands::documents::delete_document,
