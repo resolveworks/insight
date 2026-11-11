@@ -37,14 +37,30 @@
 	let inputValue = $state('');
 	let messagesContainer: HTMLElement | undefined;
 
-	// Auto-scroll to bottom whenever chat content changes. Reading the
-	// transcript length plus the last item's text size is what tells $effect
-	// to re-run — text, reasoning and tool-call args all grow `text`.
-	$effect(() => {
+	const bottomSlack = 20;
+	let shownConversationId: string | null = null;
+
+	function atBottom(element: HTMLElement): boolean {
+		return (
+			element.scrollTop + element.clientHeight >
+			element.scrollHeight - bottomSlack
+		);
+	}
+
+	// Follow new content only while the reader is at the end of the transcript.
+	// `$effect.pre` runs before the DOM update, so the measurements below still
+	// describe the view the reader is looking at — text, reasoning and tool-call
+	// args all grow `text`, which is what re-runs the effect. Opening a
+	// conversation always starts at its end.
+	$effect.pre(() => {
+		const conversationId = chat.getActiveId();
 		const last = transcript[transcript.length - 1];
-		if (transcript.length === 0 || last.text.length === 0) {
-			return;
-		}
+
+		const switched = conversationId !== shownConversationId;
+		shownConversationId = conversationId;
+
+		if (transcript.length === 0 || last.text.length === 0) return;
+		if (!switched && messagesContainer && !atBottom(messagesContainer)) return;
 
 		tick().then(() => {
 			if (messagesContainer) {
@@ -73,7 +89,7 @@
 
 <div class="flex h-full flex-col bg-neutral-50">
 	<!-- Transcript -->
-	<div bind:this={messagesContainer} class="flex-1 overflow-y-auto">
+	<div bind:this={messagesContainer} role="log" class="flex-1 overflow-y-auto">
 		<div class="{column} py-6">
 			{#if transcript.length === 0}
 				{#if !hasDocuments}

@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/svelte';
+import {
+	render,
+	screen,
+	cleanup,
+	fireEvent,
+	waitFor,
+} from '@testing-library/svelte';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { page } from '$app/state';
 import Chat from './Chat.svelte';
@@ -9,6 +15,12 @@ import type {
 	TranscriptItem,
 	TranscriptKind,
 } from '#lib/types/chat.js';
+
+/** jsdom lays out nothing: give the transcript a viewport shorter than its content. */
+function scrollableTranscript(transcript: HTMLElement) {
+	Object.defineProperty(transcript, 'clientHeight', { value: 400 });
+	Object.defineProperty(transcript, 'scrollHeight', { value: 2000 });
+}
 
 const collection = {
 	id: 'col1',
@@ -353,6 +365,44 @@ describe('Chat', () => {
 		expect(screen.queryByText('Reasoning')).not.toBeInTheDocument();
 		expect(screen.getByRole('status', { name: 'Thinking' })).toBeVisible();
 		expect(label.closest('details')).not.toHaveAttribute('open');
+	});
+
+	it('follows new content only while the transcript is at its end', async () => {
+		await renderChat(
+			'scrolled-up',
+			{},
+			{
+				conversations: [{ id: 'c1', title: 'Existing chat' }],
+				transcript: [userItem('Earlier question')],
+			},
+		);
+
+		const transcript = await screen.findByRole('log');
+		scrollableTranscript(transcript);
+
+		// Reader parks well above the end of the conversation.
+		transcript.scrollTop = 800;
+		chat.applyEvent({
+			type: 'item_upserted',
+			item: item('1-0', 'assistant_text', {
+				text: 'Emissions fell',
+				streaming: true,
+			}),
+		});
+		await screen.findByText('Emissions fell');
+		expect(transcript.scrollTop).toBe(800);
+
+		// Back at the end, the transcript follows the newest content again.
+		transcript.scrollTop = 1600;
+		chat.applyEvent({
+			type: 'item_upserted',
+			item: item('1-0', 'assistant_text', {
+				text: 'Emissions fell by 4%',
+				streaming: true,
+			}),
+		});
+		await screen.findByText('Emissions fell by 4%');
+		await waitFor(() => expect(transcript.scrollTop).toBe(2000));
 	});
 
 	it('previews completed reasoning on one line', async () => {
