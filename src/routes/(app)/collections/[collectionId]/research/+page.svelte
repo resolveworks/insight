@@ -3,8 +3,7 @@
 	import Chat from '#lib/components/Chat.svelte';
 	import CollectionHeader from '#lib/components/CollectionHeader.svelte';
 	import ConversationSidebar from '#lib/components/ConversationSidebar.svelte';
-	import LoadingScreen from '#lib/components/LoadingScreen.svelte';
-	import Page from '#lib/components/Page.svelte';
+	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import SplitPane from '#lib/components/SplitPane.svelte';
 	import { isProviderReady } from '#lib/api/provider.js';
 	import * as chat from '#lib/stores/conversations.svelte.js';
@@ -32,11 +31,8 @@
 	}
 </script>
 
-<Page>
-	{#snippet header()}
-		<CollectionHeader {collection} active="research" />
-	{/snippet}
-
+<div class="flex h-full flex-col bg-neutral-50">
+	<CollectionHeader {collection} active="research" />
 	<SplitPane>
 		{#snippet sidebar()}
 			<!-- This collection's conversation history, always local -->
@@ -49,15 +45,19 @@
 					onDelete={handleDelete}
 				/>
 			{:else}
-				<LoadingScreen label="Loading conversations" />
+				<div class="flex h-full items-center justify-center">
+					<LoadingSpinner size="lg" ariaLabel="Loading conversations" />
+				</div>
 			{/if}
 		{/snippet}
 
 		<!-- Chat points at Settings when no model is configured -->
 		{#if activeCollectionId !== collectionId || !collection}
-			<LoadingScreen label="Loading collection" />
+			<div class="flex h-full items-center justify-center">
+				<LoadingSpinner size="lg" ariaLabel="Loading collection" />
+			</div>
 		{:else}
 			<Chat {collection} {providerReady} />
 		{/if}
 	</SplitPane>
-</Page>
+</div>

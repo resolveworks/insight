@@ -8,7 +8,6 @@
 	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Page from '#lib/components/Page.svelte';
-	import PageContent from '#lib/components/PageContent.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
 	import PageSection from '#lib/components/PageSection.svelte';
 	import TagList from '#lib/components/TagList.svelte';
@@ -77,7 +76,7 @@
 	</ButtonLink>
 {/snippet}
 
-<Page>
+<Page measure="prose">
 	{#snippet header()}
 		<PageHeader title={data.document.name}>
 			{#snippet eyebrow()}
@@ -86,34 +85,31 @@
 		</PageHeader>
 	{/snippet}
 
-	<PageContent width="prose">
-		<Card>
-			<DescriptionList>
-				<DescriptionRow label="ID" mono>{data.document.id}</DescriptionRow>
-				<DescriptionRow label="Type">{data.document.file_type}</DescriptionRow>
-				{#if data.document.page_count !== null}
-					<DescriptionRow label="Pages"
-						>{data.document.page_count}</DescriptionRow
-					>
-				{/if}
-				<DescriptionRow label="Created">
-					{formatTimestamp(data.document.created_at)}
-				</DescriptionRow>
-				<DescriptionRow label="Tags">
-					<TagList tags={data.document.tags} />
-				</DescriptionRow>
-			</DescriptionList>
-		</Card>
+	<Card>
+		<DescriptionList>
+			<DescriptionRow label="ID" mono>{data.document.id}</DescriptionRow>
+			<DescriptionRow label="Type">{data.document.file_type}</DescriptionRow>
+			{#if data.document.page_count !== null}
+				<DescriptionRow label="Pages">{data.document.page_count}</DescriptionRow
+				>
+			{/if}
+			<DescriptionRow label="Created">
+				{formatTimestamp(data.document.created_at)}
+			</DescriptionRow>
+			<DescriptionRow label="Tags">
+				<TagList tags={data.document.tags} />
+			</DescriptionRow>
+		</DescriptionList>
+	</Card>
 
-		<PageSection title="Content">
-			<DocumentText {content} error={contentError} loading={loadingContent} />
-		</PageSection>
+	<PageSection title="Content">
+		<DocumentText {content} error={contentError} loading={loadingContent} />
+	</PageSection>
 
-		<TextChunks
-			bind:open={chunksOpen}
-			{chunks}
-			error={chunksError}
-			loading={loadingChunks}
-		/>
-	</PageContent>
+	<TextChunks
+		bind:open={chunksOpen}
+		{chunks}
+		error={chunksError}
+		loading={loadingChunks}
+	/>
 </Page>

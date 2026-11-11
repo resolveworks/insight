@@ -7,7 +7,6 @@
 	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import Page from '#lib/components/Page.svelte';
-	import PageContent from '#lib/components/PageContent.svelte';
 	import ShareTicket from '#lib/components/ShareTicket.svelte';
 	import SharingStatus from '#lib/components/SharingStatus.svelte';
 	import { deleteCollection, shareCollection } from '#lib/api/collection.js';
@@ -86,36 +85,34 @@
 	}
 </script>
 
-<Page>
+<Page measure="prose">
 	{#snippet header()}
 		<CollectionHeader {collection} active="settings" />
 	{/snippet}
 
-	<PageContent width="prose">
-		<CardSection
-			title="Share"
-			description="Anyone with a collaboration ticket can add, change, and delete documents in this collection. They sync with this collection, documents included, while this peer is available. Access cannot be revoked."
-		>
-			<SharingStatus {sharing} />
-			{#snippet footer()}
-				<Button variant="outline" onclick={openShareModal}
-					>Create collaboration ticket</Button
-				>
-			{/snippet}
-		</CardSection>
+	<CardSection
+		title="Share"
+		description="Anyone with a collaboration ticket can add, change, and delete documents in this collection. They sync with this collection, documents included, while this peer is available. Access cannot be revoked."
+	>
+		<SharingStatus {sharing} />
+		{#snippet footer()}
+			<Button variant="outline" onclick={openShareModal}
+				>Create collaboration ticket</Button
+			>
+		{/snippet}
+	</CardSection>
 
-		<CardSection
-			title="Delete collection"
-			description="This deletes the collection, its documents, and its local conversations. This cannot be undone."
-			tone="danger"
-		>
-			{#snippet footer()}
-				<Button variant="outline" onclick={() => (confirmingDelete = true)}
-					>Delete collection</Button
-				>
-			{/snippet}
-		</CardSection>
-	</PageContent>
+	<CardSection
+		title="Delete collection"
+		description="This deletes the collection, its documents, and its local conversations. This cannot be undone."
+		tone="danger"
+	>
+		{#snippet footer()}
+			<Button variant="outline" onclick={() => (confirmingDelete = true)}
+				>Delete collection</Button
+			>
+		{/snippet}
+	</CardSection>
 </Page>
 
 <!-- Share collection modal -->

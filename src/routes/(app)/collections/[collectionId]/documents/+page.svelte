@@ -13,9 +13,7 @@
 	import ImportFailures from '#lib/components/ImportFailures.svelte';
 	import List from '#lib/components/List.svelte';
 	import Page from '#lib/components/Page.svelte';
-	import PageContent from '#lib/components/PageContent.svelte';
 	import PageSection from '#lib/components/PageSection.svelte';
-	import PageToolbar from '#lib/components/PageToolbar.svelte';
 	import PipelineProgress from '#lib/components/PipelineProgress.svelte';
 	import {
 		deleteDocument,
@@ -131,70 +129,65 @@
 		<CollectionHeader collection={data.collection} active="documents" />
 	{/snippet}
 
-	<!-- Content -->
-	<PageContent>
-		{#if importFailures.length > 0}
-			<ImportFailures failures={importFailures} />
-		{/if}
+	{#if importFailures.length > 0}
+		<ImportFailures failures={importFailures} />
+	{/if}
 
-		{#if importError}
-			<Alert>{importError}</Alert>
-		{/if}
+	{#if importError}
+		<Alert>{importError}</Alert>
+	{/if}
 
-		{#if pipelineProgress}
-			<PipelineProgress progress={pipelineProgress} />
-		{/if}
+	{#if pipelineProgress}
+		<PipelineProgress progress={pipelineProgress} />
+	{/if}
 
-		{#if documents.length === 0 && processing}
-			<EmptyState
-				title="Processing documents…"
-				description="Documents will appear here as they finish importing."
-			/>
-		{:else if documents.length === 0 && deletedDocuments.length > 0}
-			<EmptyState
-				title="No active documents"
-				description="Every document in this collection is in Deleted items."
-			/>
-		{:else if documents.length === 0}
-			<EmptyState
-				title="No documents yet"
-				description="Documents you import or that arrive from colleagues syncing this collection will appear here as they become available."
-			>
-				{#snippet action()}
-					<Button variant="solid" onclick={importPdf}>Import documents</Button>
-				{/snippet}
-			</EmptyState>
-		{:else}
-			<PageToolbar>
-				<Button variant="solid" onclick={importPdf} disabled={processing}
-					>Import documents</Button
-				>
-			</PageToolbar>
+	{#if documents.length === 0 && processing}
+		<EmptyState
+			title="Processing documents…"
+			description="Documents will appear here as they finish importing."
+		/>
+	{:else if documents.length === 0 && deletedDocuments.length > 0}
+		<EmptyState
+			title="No active documents"
+			description="Every document in this collection is in Deleted items."
+		/>
+	{:else if documents.length === 0}
+		<EmptyState
+			title="No documents yet"
+			description="Documents you import or that arrive from colleagues syncing this collection will appear here as they become available."
+		>
+			{#snippet action()}
+				<Button variant="solid" onclick={importPdf}>Import documents</Button>
+			{/snippet}
+		</EmptyState>
+	{:else}
+		<Button variant="solid" onclick={importPdf} disabled={processing}
+			>Import documents</Button
+		>
 
-			<List>
-				{#each documents as doc (doc.id)}
-					<DocumentRow
+		<List>
+			{#each documents as doc (doc.id)}
+				<DocumentRow
+					document={doc}
+					href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
+					onDelete={(d) => (deletingDocument = d)}
+				/>
+			{/each}
+		</List>
+	{/if}
+
+	{#if deletedDocuments.length > 0}
+		<PageSection title="Deleted items" id="deleted-items-heading" divider>
+			<List labelledBy="deleted-items-heading">
+				{#each deletedDocuments as doc (doc.id)}
+					<DeletedDocumentRow
 						document={doc}
-						href={resolve(`collections/${collectionId}/documents/${doc.id}`)}
-						onDelete={(d) => (deletingDocument = d)}
+						onRestore={undeleteDeletedDocument}
 					/>
 				{/each}
 			</List>
-		{/if}
-
-		{#if deletedDocuments.length > 0}
-			<PageSection title="Deleted items" id="deleted-items-heading" divider>
-				<List labelledBy="deleted-items-heading">
-					{#each deletedDocuments as doc (doc.id)}
-						<DeletedDocumentRow
-							document={doc}
-							onRestore={undeleteDeletedDocument}
-						/>
-					{/each}
-				</List>
-			</PageSection>
-		{/if}
-	</PageContent>
+		</PageSection>
+	{/if}
 </Page>
 
 {#if deletingDocument}

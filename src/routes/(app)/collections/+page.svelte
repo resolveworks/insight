@@ -3,7 +3,6 @@
 	import { resolve } from '$app/paths';
 	import Page from '#lib/components/Page.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
-	import PageContent from '#lib/components/PageContent.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
@@ -11,7 +10,6 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NewCollectionForm from '#lib/components/NewCollectionForm.svelte';
-	import PageToolbar from '#lib/components/PageToolbar.svelte';
 	import CardGrid from '#lib/components/CardGrid.svelte';
 	import CollectionCard from '#lib/components/CollectionCard.svelte';
 	import { createCollection, importCollection } from '#lib/api/collection.js';
@@ -84,30 +82,27 @@
 		</PageHeader>
 	{/snippet}
 
-	<!-- Content -->
-	<PageContent>
-		<PageToolbar>
-			<NewCollectionForm onCreate={handleCreateCollection} />
-			<Button variant="outline" onclick={openImportModal}>Import</Button>
-		</PageToolbar>
+	<div class="flex flex-wrap items-center gap-2">
+		<NewCollectionForm onCreate={handleCreateCollection} />
+		<Button variant="outline" onclick={openImportModal}>Import</Button>
+	</div>
 
-		<!-- Collections grid -->
-		{#if collectionList.length === 0}
-			<EmptyState
-				title="No collections yet"
-				description="Create one above to start organizing your documents."
-			/>
-		{:else}
-			<CardGrid>
-				{#each collectionList as collection (collection.id)}
-					<CollectionCard
-						{collection}
-						href={resolve(`collections/${collection.id}`)}
-					/>
-				{/each}
-			</CardGrid>
-		{/if}
-	</PageContent>
+	<!-- Collections grid -->
+	{#if collectionList.length === 0}
+		<EmptyState
+			title="No collections yet"
+			description="Create one above to start organizing your documents."
+		/>
+	{:else}
+		<CardGrid>
+			{#each collectionList as collection (collection.id)}
+				<CollectionCard
+					{collection}
+					href={resolve(`collections/${collection.id}`)}
+				/>
+			{/each}
+		</CardGrid>
+	{/if}
 </Page>
 
 <!-- Import shared collection modal -->
