@@ -13,7 +13,7 @@
 	// user surface reuses the solid button token to mean "authored by the user".
 	const surface = $derived(
 		from === 'user'
-			? 'w-fit rounded-lg bg-neutral-900 px-4 py-3 text-base text-white'
+			? 'ml-auto w-fit max-w-[80%] rounded-lg bg-neutral-900 px-4 py-3 text-base text-white'
 			: 'text-base text-neutral-800',
 	);
 </script>
