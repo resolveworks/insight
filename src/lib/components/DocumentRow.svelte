@@ -26,7 +26,7 @@
 	{#snippet actions()}
 		<Button
 			size="icon"
-			variant="outline"
+			variant="ghost"
 			label="Delete document"
 			onclick={() => onDelete(document)}
 		>

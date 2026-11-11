@@ -85,7 +85,7 @@
 						{#snippet action()}
 							<ButtonLink
 								href={resolve(`collections/${collectionId}/documents`)}
-								variant="solid"
+								variant="ghost"
 							>
 								Go to Documents
 							</ButtonLink>

@@ -30,7 +30,7 @@
 
 <div class="flex h-full flex-col">
 	<div class="px-4 pt-4 pb-2">
-		<Button variant="outline" fullWidth onclick={() => onNew()}>
+		<Button variant="ghost" fullWidth onclick={() => onNew()}>
 			<Icon name="plus" size="sm" />
 			New Chat
 		</Button>
@@ -53,7 +53,7 @@
 						{#snippet actions()}
 							<Button
 								size="icon"
-								variant="outline"
+								variant="ghost"
 								label="Delete conversation"
 								onclick={(e) => {
 									e.stopPropagation();

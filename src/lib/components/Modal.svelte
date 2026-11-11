@@ -124,7 +124,7 @@
 				</h2>
 				<Button
 					size="icon"
-					variant="outline"
+					variant="ghost"
 					label="Close dialog"
 					onclick={onClose}
 				>
