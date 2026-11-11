@@ -22,7 +22,7 @@
 			{/if}
 		{/snippet}
 		<div class="text-sm leading-relaxed text-neutral-700">
-			<pre class="whitespace-pre-wrap break-words">{step.text}</pre>
+			<pre class="break-words whitespace-pre-wrap">{step.text}</pre>
 		</div>
 	</Disclosure>
 {:else}
@@ -48,7 +48,7 @@
 						<div class="flex gap-2">
 							<dt class="shrink-0 text-neutral-400">{line.key}:</dt>
 							<dd
-								class="min-w-0 whitespace-pre-wrap break-words text-neutral-700"
+								class="min-w-0 break-words whitespace-pre-wrap text-neutral-700"
 							>
 								{line.value}
 							</dd>

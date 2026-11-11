@@ -20,7 +20,7 @@
 </script>
 
 {#snippet control()}
-	<input {id} {type} bind:value class="field w-full {className}" {...rest} />
+	<input {id} {type} bind:value class="w-full field {className}" {...rest} />
 {/snippet}
 
 <Field {id} {label} {hint}>

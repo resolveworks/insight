@@ -24,7 +24,7 @@
 	<select
 		{id}
 		bind:value
-		class="field w-full cursor-pointer {className}"
+		class="w-full cursor-pointer field {className}"
 		{...rest}
 	>
 		{#each options as option (option.value)}

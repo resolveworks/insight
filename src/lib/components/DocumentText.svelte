@@ -20,9 +20,9 @@
 	<div class="max-h-96 overflow-y-auto">
 		<Card padding="sm">
 			<pre
-				class="whitespace-pre-wrap font-sans text-base leading-relaxed text-neutral-800">{content}</pre>
+				class="font-sans text-base leading-relaxed whitespace-pre-wrap text-neutral-800">{content}</pre>
 		</Card>
 	</div>
 {:else}
-	<p class="text-sm italic text-neutral-400">No content available</p>
+	<p class="text-sm text-neutral-400 italic">No content available</p>
 {/if}

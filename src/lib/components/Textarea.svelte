@@ -25,7 +25,7 @@
 		{id}
 		{rows}
 		bind:value
-		class="field w-full resize-none {className}"
+		class="w-full resize-none field {className}"
 		{...rest}></textarea>
 {/snippet}
 

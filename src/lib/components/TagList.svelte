@@ -16,5 +16,5 @@
 		{/each}
 	</div>
 {:else}
-	<span class="italic text-neutral-400">(none)</span>
+	<span class="text-neutral-400 italic">(none)</span>
 {/if}

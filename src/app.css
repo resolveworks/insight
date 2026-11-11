@@ -10,7 +10,7 @@
 /* Base styles */
 @layer base {
 	body {
-		@apply bg-neutral-100 text-neutral-800 font-sans antialiased;
+		@apply bg-neutral-100 font-sans text-neutral-800 antialiased;
 	}
 
 	h1,

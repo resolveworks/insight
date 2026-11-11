@@ -21,7 +21,7 @@
 {#if state.status === 'ready'}
 	<div class="flex flex-col gap-3">
 		<div class="flex items-start gap-2">
-			<code class="flex-1 break-all font-mono text-xs text-neutral-500">
+			<code class="flex-1 font-mono text-xs break-all text-neutral-500">
 				{state.ticket}
 			</code>
 			<Button size="sm" variant="outline" onclick={onCopy}>
