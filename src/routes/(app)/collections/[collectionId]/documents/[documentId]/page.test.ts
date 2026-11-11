@@ -78,6 +78,20 @@ describe('Document detail page', () => {
 		expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
 	});
 
+	it('links back to the documents list above the title', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+		});
+
+		renderPage();
+
+		const back = await screen.findByRole('link', { name: 'Back to documents' });
+		expect(back).toHaveAttribute('href', '/collections/col1/documents');
+		expect(
+			back.compareDocumentPosition(screen.getByRole('heading', { level: 2 })),
+		).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+	});
+
 	it('summarises the document under its title', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';

@@ -1,6 +1,9 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import Alert from '#lib/components/Alert.svelte';
+	import ButtonLink from '#lib/components/ButtonLink.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import TagList from '#lib/components/TagList.svelte';
@@ -34,6 +37,14 @@
 
 <Page measure="prose">
 	<div>
+		<ButtonLink
+			href={resolve(`collections/${collectionId}/documents`)}
+			variant="outline"
+			size="sm"
+		>
+			<Icon name="arrow-left" size="sm" />
+			Back to documents
+		</ButtonLink>
 		<h2 class="truncate text-xl font-semibold text-neutral-800">
 			{data.document.name}
 		</h2>
