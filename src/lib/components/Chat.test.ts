@@ -207,7 +207,20 @@ describe('Chat', () => {
 					toolCall('1-0', 'search', { query: 'climate budget' }),
 					toolResult('2-0', 'search', {
 						total_hits: 2,
-						hits: [{ passage: 'unique passage content' }, { passage: 'other' }],
+						hits: [
+							{
+								document_name: 'report.pdf',
+								document_id: 'doc-1',
+								extraction: 'pdf@1',
+								excerpt: { content: 'unique excerpt content' },
+							},
+							{
+								document_name: 'notes.txt',
+								document_id: 'doc-2',
+								extraction: 'text@1',
+								excerpt: null,
+							},
+						],
 					}),
 				],
 			},
@@ -219,14 +232,14 @@ describe('Chat', () => {
 		expect(details?.querySelector('summary')).toHaveTextContent(
 			'Search “climate budget”',
 		);
-		expect(screen.getByText('2 passages')).toBeInTheDocument();
+		expect(screen.getByText('2 documents')).toBeInTheDocument();
 		expect(screen.queryByText(/^Tool:/)).not.toBeInTheDocument();
 		expect(screen.queryByText(/^Tool result:/)).not.toBeInTheDocument();
-		expect(screen.getByText(/unique passage content/)).not.toBeVisible();
+		expect(screen.getByText(/unique excerpt content/)).not.toBeVisible();
 
 		await fireEvent.click(label);
 		expect(details).toHaveAttribute('open');
-		expect(screen.getByText(/unique passage content/)).toBeVisible();
+		expect(screen.getByText(/unique excerpt content/)).toBeVisible();
 		expect(screen.getByText(/query:/)).toBeVisible();
 	});
 
@@ -242,7 +255,7 @@ describe('Chat', () => {
 
 		expect(await screen.findByText('Search “climate”')).toBeInTheDocument();
 		expect(screen.getByRole('status', { name: 'Running' })).toBeVisible();
-		expect(screen.queryByText(/passages?$/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/documents?$/)).not.toBeInTheDocument();
 	});
 
 	it('opens a failed step with its message and no result hint', async () => {
@@ -267,33 +280,39 @@ describe('Chat', () => {
 		expect(message).toBeVisible();
 		expect(message.closest('details')).toHaveAttribute('open');
 		expect(screen.getByRole('img', { name: 'Failed' })).toBeVisible();
-		expect(screen.queryByText('1 passage')).not.toBeInTheDocument();
+		expect(screen.queryByText('1 document')).not.toBeInTheDocument();
 		expect(
 			screen.queryByRole('status', { name: 'Running' }),
 		).not.toBeInTheDocument();
 	});
 
-	it('labels a passage read by its chunk index', async () => {
+	it('labels a document read generically', async () => {
 		await renderChat(
-			'read-chunk',
+			'read-document',
 			{},
 			{
 				conversations: [{ id: 'c1', title: 'Existing chat' }],
 				transcript: [
-					toolCall('1-0', 'read_chunk', {
+					toolCall('1-0', 'read_document', {
 						document_id: 'doc-1',
-						chunk_index: 3,
+						extraction: 'pdf@1',
+						offset: 400,
 					}),
-					toolResult('2-0', 'read_chunk', {
+					toolResult('2-0', 'read_document', {
 						document_id: 'doc-1',
-						chunk_index: 3,
-						content: 'passage text',
+						extraction: 'pdf@1',
+						content: 'excerpt text',
+						offset: 400,
+						next_offset: 452,
+						total_length: 900,
+						has_more_before: true,
+						has_more_after: true,
 					}),
 				],
 			},
 		);
 
-		const label = await screen.findByText('Read passage 3');
+		const label = await screen.findByText('Read document');
 		expect(label.closest('details')).not.toHaveAttribute('open');
 	});
 

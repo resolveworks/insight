@@ -4,6 +4,7 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 import { load as documentLoad } from './+page';
 import DocumentPage from './+page.svelte';
 import type { PageProps } from './$types';
+import type { Document } from '#lib/types/documents.js';
 
 vi.mock('@tauri-apps/api/event', () => ({
 	listen: vi.fn(async () => () => {}),
@@ -16,23 +17,25 @@ const collection = {
 	total_pages: 12,
 };
 
-const document = {
+const document: Document = {
 	id: 'doc1',
 	name: 'report.pdf',
 	file_type: 'application/pdf',
 	page_count: 12,
+	partially_indexed: null,
 	tags: [],
 	created_at: '2024-01-15T10:30:00Z',
 };
 
-function renderPage() {
+function renderPage(overrides: Partial<typeof document> = {}) {
+	const pageDocument = { ...document, ...overrides };
 	render(DocumentPage, {
 		props: {
 			data: {
 				collections: [collection],
 				collection,
-				documents: [document],
-				document,
+				documents: [pageDocument],
+				document: pageDocument,
 				provider: null,
 				providerError: null,
 			} as PageProps['data'],
@@ -85,5 +88,52 @@ describe('Document detail page', () => {
 		});
 		expect(backLinks).toHaveLength(1);
 		expect(backLinks[0]).toHaveAttribute('href', '/collections/col1/documents');
+	});
+
+	it('renders the extracted document text', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+		});
+
+		renderPage();
+
+		expect(await screen.findByText('Extracted text')).toBeVisible();
+	});
+
+	it('warns that search covers only part of a partially indexed document', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+		});
+
+		renderPage({ partially_indexed: true });
+
+		expect(await screen.findByText('Partially searchable')).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				'Text near the end of this document is not included in search because it exceeds the indexing limit. The full document is still available.',
+			),
+		).toBeVisible();
+	});
+
+	it('shows no partial-index warning when coverage is full', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+		});
+
+		renderPage({ partially_indexed: false });
+
+		expect(await screen.findByText('Extracted text')).toBeVisible();
+		expect(screen.queryByText('Partially searchable')).not.toBeInTheDocument();
+	});
+
+	it('shows no partial-index warning while coverage is unknown', async () => {
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+		});
+
+		renderPage({ partially_indexed: null });
+
+		expect(await screen.findByText('Extracted text')).toBeVisible();
+		expect(screen.queryByText('Partially searchable')).not.toBeInTheDocument();
 	});
 });

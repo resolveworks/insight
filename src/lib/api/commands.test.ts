@@ -50,6 +50,7 @@ const document = {
 	name: 'report.pdf',
 	file_type: 'application/pdf',
 	page_count: 12,
+	partially_indexed: null,
 	tags: [],
 	created_at: '2024-01-15T10:30:00Z',
 };

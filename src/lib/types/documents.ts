@@ -13,6 +13,11 @@ export interface Document {
 	name: string;
 	file_type: string;
 	page_count: number | null;
+	/**
+	 * Whether the search index covers only part of the document.
+	 * `null` while the document has no index record yet.
+	 */
+	partially_indexed: boolean | null;
 	tags: string[];
 	created_at: string;
 }
