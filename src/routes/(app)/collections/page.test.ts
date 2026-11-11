@@ -175,7 +175,7 @@ describe('Collections landing page', () => {
 			screen.getByRole('heading', { name: 'Climate Research' }),
 		).toBeInTheDocument();
 		const workspaceLink = screen.getByRole('link', {
-			name: /Open research workspace/,
+			name: /Climate Research/,
 		});
 		expect(workspaceLink).toHaveAttribute('href', '/collections/col1');
 		expect(screen.getByText('2 documents')).toBeInTheDocument();

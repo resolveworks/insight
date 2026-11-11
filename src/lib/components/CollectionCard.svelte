@@ -16,5 +16,4 @@
 	<p class="mt-1 text-sm text-neutral-500">
 		{documentCountLabel(collection.document_count)}
 	</p>
-	<p class="mt-3 text-sm font-medium text-blue-600">Open research workspace</p>
 </Card>

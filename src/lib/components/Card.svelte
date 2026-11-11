@@ -3,25 +3,19 @@
 
 	interface Props {
 		padding?: 'sm' | 'md';
-		tone?: 'default' | 'danger';
 		href?: string;
 		children: Snippet;
 	}
 
-	let { padding = 'md', tone = 'default', href, children }: Props = $props();
+	let { padding = 'md', href, children }: Props = $props();
 
 	const paddingClasses: Record<NonNullable<Props['padding']>, string> = {
 		sm: 'p-4',
 		md: 'p-6',
 	};
 
-	const toneClasses: Record<NonNullable<Props['tone']>, string> = {
-		default: 'border-neutral-200',
-		danger: 'border-red-600/30',
-	};
-
 	const interactionClasses =
-		'transition-colors hover:border-blue-300 hover:shadow-sm';
+		'transition-colors hover:border-neutral-400 hover:shadow-sm';
 </script>
 
 {#if href}
@@ -29,7 +23,7 @@
 	<!-- eslint-disable svelte/no-navigation-without-resolve -->
 	<a
 		{href}
-		class="block rounded-lg border bg-white {toneClasses[tone]} {paddingClasses[
+		class="block rounded-lg border border-neutral-200 bg-white {paddingClasses[
 			padding
 		]} {interactionClasses} focus-visible:focus-ring"
 	>
@@ -38,7 +32,7 @@
 	<!-- eslint-enable svelte/no-navigation-without-resolve -->
 {:else}
 	<div
-		class="rounded-lg border bg-white {toneClasses[tone]} {paddingClasses[
+		class="rounded-lg border border-neutral-200 bg-white {paddingClasses[
 			padding
 		]}"
 	>

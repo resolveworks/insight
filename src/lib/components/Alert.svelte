@@ -10,16 +10,11 @@
 	}
 
 	let { variant = 'error', action, children }: Props = $props();
-
-	const variantClasses: Record<Variant, string> = {
-		error: 'border-red-600/50 bg-red-600/10 text-red-600',
-		warning: 'border-amber-600/50 bg-amber-600/10 text-amber-600',
-	};
 </script>
 
 <div
 	role={variant === 'error' ? 'alert' : 'status'}
-	class="rounded-lg border p-4 text-sm {variantClasses[variant]}"
+	class="rounded-lg border border-neutral-300 bg-neutral-100 p-4 text-sm text-neutral-800"
 >
 	{@render children()}
 	{#if action}

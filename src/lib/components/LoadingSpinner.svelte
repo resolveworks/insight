@@ -1,35 +1,24 @@
 <script lang="ts">
 	type Size = 'xs' | 'sm' | 'lg';
-	type Color = 'primary' | 'current';
 
 	interface Props {
 		size?: Size;
-		color?: Color;
 		ariaLabel?: string;
 	}
 
-	let {
-		size = 'sm',
-		color = 'primary',
-		ariaLabel = 'Loading',
-	}: Props = $props();
+	let { size = 'sm', ariaLabel = 'Loading' }: Props = $props();
 
 	const sizeClasses: Record<Size, string> = {
 		xs: 'h-3.5 w-3.5',
 		sm: 'h-4 w-4',
 		lg: 'h-12 w-12',
 	};
-
-	const colorClasses: Record<Color, string> = {
-		primary: 'text-blue-500',
-		current: 'text-current',
-	};
 </script>
 
 <svg
 	role="status"
 	aria-label={ariaLabel}
-	class="animate-spin {sizeClasses[size]} {colorClasses[color]}"
+	class="animate-spin {sizeClasses[size]}"
 	fill="none"
 	viewBox="0 0 24 24"
 >

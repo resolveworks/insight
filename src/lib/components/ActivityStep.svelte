@@ -8,8 +8,6 @@
 	type Props = { step: ActivityStep };
 
 	let { step }: Props = $props();
-
-	const isError = $derived(step.kind === 'tool' && step.isError);
 </script>
 
 {#if step.kind === 'reasoning'}
@@ -33,9 +31,9 @@
 			{#if step.executing}
 				<LoadingSpinner size="xs" ariaLabel="Running" />
 			{:else if step.isError}
-				<Icon name="warning" size="xs" class="text-red-600" label="Failed" />
+				<Icon name="warning" size="xs" label="Failed" />
 			{:else}
-				<Icon name="check" size="xs" class="text-green-600" label="Finished" />
+				<Icon name="check" size="xs" label="Finished" />
 			{/if}
 			<span class="min-w-0 truncate">{step.label}</span>
 			{#if step.hint}
@@ -58,20 +56,14 @@
 					{/each}
 				</dl>
 				{#if step.argsTruncated}
-					<CodeBlock
-						text={step.argsText}
-						tone={isError ? 'error' : 'default'}
-					/>
+					<CodeBlock text={step.argsText} />
 				{/if}
 			{:else if !step.argsParseable && step.argsText.trim()}
-				<CodeBlock text={step.argsText} tone={isError ? 'error' : 'default'} />
+				<CodeBlock text={step.argsText} />
 			{/if}
 
 			{#if step.resultText !== null}
-				<CodeBlock
-					text={formatResult(step.resultText)}
-					tone={isError ? 'error' : 'default'}
-				/>
+				<CodeBlock text={formatResult(step.resultText)} />
 			{/if}
 		</div>
 	</Disclosure>

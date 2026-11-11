@@ -45,7 +45,7 @@
 					onDelete={handleDelete}
 				/>
 			{:else}
-				<div class="flex h-full items-center justify-center">
+				<div class="flex h-full items-center justify-center text-neutral-400">
 					<LoadingSpinner size="lg" ariaLabel="Loading conversations" />
 				</div>
 			{/if}
@@ -53,7 +53,7 @@
 
 		<!-- Chat points at Settings when no model is configured -->
 		{#if activeCollectionId !== collectionId || !collection}
-			<div class="flex h-full items-center justify-center">
+			<div class="flex h-full items-center justify-center text-neutral-400">
 				<LoadingSpinner size="lg" ariaLabel="Loading collection" />
 			</div>
 		{:else}

@@ -120,7 +120,7 @@
 								<Markdown
 									content={block.item.text}
 								/>{#if block.item.streaming}<span
-										class="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-blue-500 align-text-bottom"
+										class="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-neutral-800 align-text-bottom"
 									></span>{/if}
 							</div>
 						{/if}

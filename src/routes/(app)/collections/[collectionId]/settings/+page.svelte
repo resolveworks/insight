@@ -105,7 +105,6 @@
 	<CardSection
 		title="Delete collection"
 		description="This deletes the collection, its documents, and its local conversations. This cannot be undone."
-		tone="danger"
 	>
 		{#snippet footer()}
 			<Button variant="outline" onclick={() => (confirmingDelete = true)}

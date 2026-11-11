@@ -44,7 +44,7 @@
 		font-style: italic;
 	}
 
-	/* Prose-sized headings: a model-emitted document heading should not
+	/* Prose headings: a model-emitted document heading should not
 	   overpower the answer it belongs to. */
 	.markdown :global(h1),
 	.markdown :global(h2),
@@ -130,7 +130,6 @@
 	}
 
 	.markdown :global(a) {
-		color: var(--color-blue-600);
 		text-decoration: underline;
 		text-underline-offset: 2px;
 	}

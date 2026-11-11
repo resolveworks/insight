@@ -34,7 +34,7 @@
 				<span class="font-mono">{shortenId(sharing.last_sync.peer)}</span>
 			</div>
 			{#if sharing.last_sync.error}
-				<div class="text-red-600">
+				<div class="text-neutral-700">
 					Sync failed: {sharing.last_sync.error}
 				</div>
 			{:else}

@@ -29,7 +29,7 @@
 		class="h-1.5 w-full rounded-full bg-neutral-100"
 	>
 		<div
-			class="h-1.5 rounded-full bg-blue-500 transition-all"
+			class="h-1.5 rounded-full bg-neutral-800 transition-all"
 			style:width="{percent}%"
 		></div>
 	</div>

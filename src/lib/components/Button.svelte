@@ -40,7 +40,7 @@
 	{...rest}
 >
 	{#if loading}
-		<LoadingSpinner size="sm" color="current" />
+		<LoadingSpinner size="sm" />
 	{/if}
 	{@render children()}
 </button>

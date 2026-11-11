@@ -7,20 +7,13 @@
 		title: string;
 		description?: string;
 		footer?: Snippet;
-		tone?: 'default' | 'danger';
 		children?: Snippet;
 	}
 
-	let {
-		title,
-		description,
-		footer,
-		tone = 'default',
-		children,
-	}: Props = $props();
+	let { title, description, footer, children }: Props = $props();
 </script>
 
-<Card {tone}>
+<Card>
 	<SectionHeading {title} />
 	{#if description}
 		<p class="mt-1 text-sm text-neutral-500">{description}</p>
