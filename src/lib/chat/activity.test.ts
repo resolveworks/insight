@@ -7,6 +7,7 @@ import {
 	sentenceCase,
 	toolLabel,
 	transcriptBlocks,
+	transcriptTurns,
 } from './activity.js';
 import type { TranscriptItem, TranscriptKind } from '#lib/types/chat.js';
 
@@ -132,6 +133,92 @@ describe('transcriptBlocks', () => {
 			'item',
 			'activity',
 		]);
+	});
+});
+
+describe('transcriptTurns', () => {
+	it('splits a question from the activity and answer that follow it', () => {
+		const blocks = transcriptBlocks([
+			item('0-0', 'user_text', { text: 'Question' }),
+			searchCall('1-0'),
+			searchResult('2-0', [{}]),
+			item('3-0', 'assistant_text', { text: 'Answer' }),
+		]);
+
+		const turns = transcriptTurns(blocks);
+
+		expect(turns.map((turn) => turn.key)).toEqual(['0-0', '1-0']);
+		expect(turns[0].blocks.map((block) => block.kind)).toEqual(['item']);
+		expect(turns[1].blocks.map((block) => block.kind)).toEqual([
+			'activity',
+			'item',
+		]);
+	});
+
+	it('keeps text, tool and text in one reply turn', () => {
+		const blocks = transcriptBlocks([
+			item('0-0', 'assistant_text', { text: 'First' }),
+			searchCall('1-0'),
+			searchResult('2-0', [{}]),
+			item('3-0', 'assistant_text', { text: 'Second' }),
+		]);
+
+		const turns = transcriptTurns(blocks);
+
+		expect(turns).toHaveLength(1);
+		expect(turns[0].key).toBe('0-0');
+		expect(turns[0].blocks).toEqual(blocks);
+	});
+
+	it('gives each of two consecutive questions its own turn', () => {
+		const blocks = transcriptBlocks([
+			item('0-0', 'user_text', { text: 'First question' }),
+			item('1-0', 'user_text', { text: 'Second question' }),
+			searchCall('2-0'),
+			searchResult('3-0', [{}]),
+			item('4-0', 'assistant_text', { text: 'Answer' }),
+		]);
+
+		const turns = transcriptTurns(blocks);
+
+		expect(turns.map((turn) => turn.key)).toEqual(['0-0', '1-0', '2-0']);
+		expect(turns[0].blocks.map((block) => block.key)).toEqual(['0-0']);
+		expect(turns[1].blocks.map((block) => block.key)).toEqual(['1-0']);
+		expect(turns[2].blocks.map((block) => block.key)).toEqual(['2-0', '4-0']);
+	});
+
+	it('puts a leading tool call in its own turn before the question', () => {
+		const blocks = transcriptBlocks([
+			searchCall('0-0'),
+			searchResult('1-0', []),
+			item('2-0', 'user_text', { text: 'Question' }),
+		]);
+
+		const turns = transcriptTurns(blocks);
+
+		expect(turns.map((turn) => turn.key)).toEqual(['0-0', '2-0']);
+		expect(turns[0].blocks.map((block) => block.kind)).toEqual(['activity']);
+		expect(turns[1].blocks.map((block) => block.kind)).toEqual(['item']);
+	});
+
+	it('yields no turns for an empty transcript', () => {
+		expect(transcriptTurns([])).toEqual([]);
+	});
+
+	it('preserves every block in order across turns', () => {
+		const blocks = transcriptBlocks([
+			item('0-0', 'user_text', { text: 'Question' }),
+			item('1-0', 'reasoning', { text: 'Thinking' }),
+			searchCall('1-1'),
+			searchResult('2-0', [{}]),
+			item('3-0', 'assistant_text', { text: 'Answer' }),
+			item('4-0', 'user_text', { text: 'Follow-up' }),
+			item('5-0', 'assistant_text', { text: 'Reply' }),
+		]);
+
+		const turns = transcriptTurns(blocks);
+
+		expect(turns.flatMap((turn) => turn.blocks)).toEqual(blocks);
 	});
 });
 
