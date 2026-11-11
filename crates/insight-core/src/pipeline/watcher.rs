@@ -48,14 +48,15 @@ impl CollectionWatcher {
         senders: JobSenders,
         cancel: CancellationToken,
     ) -> anyhow::Result<Self> {
-        let stream = {
+        let (doc, stream) = {
             let storage_guard = storage.read().await;
             storage_guard.subscribe(namespace_id).await?
         };
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = run_watcher(namespace_id, stream, senders, cancel_clone.clone()).await {
+            let result = run_watcher(namespace_id, stream, senders, cancel_clone.clone()).await;
+            if let Err(ref e) = result {
                 if !cancel_clone.is_cancelled() {
                     tracing::error!(
                         namespace = %namespace_id,
@@ -63,6 +64,15 @@ impl CollectionWatcher {
                         "CollectionWatcher error"
                     );
                 }
+            }
+            // The watcher holds the replica open for as long as it consumes
+            // the document's events.
+            if let Err(e) = doc.close().await {
+                tracing::warn!(
+                    namespace = %namespace_id,
+                    error = %e,
+                    "Failed to close watched collection replica"
+                );
             }
         });
 

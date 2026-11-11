@@ -1171,15 +1171,21 @@ impl Storage {
 
     /// Subscribe to document events for a namespace
     ///
-    /// Returns a stream of LiveEvent that includes:
+    /// Returns the replica handle together with a stream of LiveEvent that includes:
     /// - InsertLocal: When a document is added locally
     /// - InsertRemote: When a document is added from a peer
     /// - ContentReady: When content has been downloaded
     /// - SyncFinished: When a sync operation completes
+    ///
+    /// The caller owns the handle and closes it once it stops consuming the
+    /// stream; opening a replica without closing it leaks a handle.
     pub async fn subscribe(
         &self,
         namespace_id: NamespaceId,
-    ) -> Result<impl Stream<Item = Result<LiveEvent>> + Send + Unpin + 'static> {
+    ) -> Result<(
+        iroh_docs::api::Doc,
+        impl Stream<Item = Result<LiveEvent>> + Send + Unpin + 'static,
+    )> {
         let doc = self
             .docs
             .api()
@@ -1189,7 +1195,7 @@ impl Storage {
 
         let stream = doc.subscribe().await?;
 
-        Ok(stream)
+        Ok((doc, stream))
     }
 
     /// Generate a collaboration ticket for a collection.
