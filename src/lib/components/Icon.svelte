@@ -23,11 +23,10 @@
 	interface Props {
 		name: IconName;
 		size?: Size;
-		class?: string;
 		label?: string;
 	}
 
-	let { name, size = 'sm', class: className = '', label }: Props = $props();
+	let { name, size = 'sm', label }: Props = $props();
 
 	const icons: Record<IconName, IconDef> = {
 		'arrow-left': {
@@ -86,7 +85,7 @@
 </script>
 
 <svg
-	class="{sizeClasses[size]} {className}"
+	class={sizeClasses[size]}
 	viewBox={icon.viewBox}
 	fill={icon.filled ? 'currentColor' : 'none'}
 	stroke={icon.filled ? undefined : 'currentColor'}

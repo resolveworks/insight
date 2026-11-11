@@ -1,12 +1,14 @@
 <script lang="ts">
-	import type { HTMLSelectAttributes } from 'svelte/elements';
 	import Field from './Field.svelte';
 
-	interface Props extends Omit<HTMLSelectAttributes, 'value'> {
+	interface Props {
 		options: { value: string; label: string }[];
 		value?: string;
 		label?: string;
 		hint?: string;
+		id?: string;
+		disabled?: boolean;
+		onchange?: (value: string) => void;
 	}
 
 	let {
@@ -15,24 +17,26 @@
 		label,
 		hint,
 		id,
-		class: className = '',
-		...rest
+		disabled = false,
+		onchange,
 	}: Props = $props();
+
+	function handleChange(event: Event & { currentTarget: HTMLSelectElement }) {
+		value = event.currentTarget.value;
+		onchange?.(value);
+	}
 </script>
 
-{#snippet control()}
+<Field {id} {label} {hint}>
 	<select
 		{id}
-		bind:value
-		class="w-full cursor-pointer field {className}"
-		{...rest}
+		{disabled}
+		{value}
+		onchange={handleChange}
+		class="w-full cursor-pointer field"
 	>
 		{#each options as option (option.value)}
 			<option value={option.value}>{option.label}</option>
 		{/each}
 	</select>
-{/snippet}
-
-<Field {id} {label} {hint}>
-	{@render control()}
 </Field>

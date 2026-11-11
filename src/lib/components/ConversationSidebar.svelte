@@ -42,21 +42,18 @@
 		{:else}
 			<List>
 				{#each conversations as conv (conv.id)}
-					<ListRow variant="nav" active={activeId === conv.id}>
-						<button
-							onclick={() => onSelect(conv.id)}
-							aria-current={activeId === conv.id ? 'true' : undefined}
-							class="w-full min-w-0 truncate text-start text-sm focus-visible:focus-ring"
-						>
-							{conv.title}
-						</button>
+					<ListRow
+						variant="nav"
+						active={activeId === conv.id}
+						onclick={() => onSelect(conv.id)}
+					>
+						{conv.title}
 						{#snippet actions()}
 							<Button
 								size="icon"
 								variant="ghost"
 								label="Delete conversation"
-								onclick={(e) => {
-									e.stopPropagation();
+								onclick={() => {
 									pendingDelete = {
 										id: conv.id,
 										title: conv.title,

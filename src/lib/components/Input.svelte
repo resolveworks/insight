@@ -1,28 +1,27 @@
 <script lang="ts">
-	import type { HTMLInputAttributes } from 'svelte/elements';
 	import Field from './Field.svelte';
 
-	interface Props extends Omit<HTMLInputAttributes, 'value'> {
+	interface Props {
+		id?: string;
 		label?: string;
 		hint?: string;
+		type?: 'text' | 'password';
+		placeholder?: string;
+		disabled?: boolean;
 		value?: string;
 	}
 
 	let {
+		id,
 		label,
 		hint,
-		id,
 		type = 'text',
+		placeholder,
+		disabled = false,
 		value = $bindable(''),
-		class: className = '',
-		...rest
 	}: Props = $props();
 </script>
 
-{#snippet control()}
-	<input {id} {type} bind:value class="w-full field {className}" {...rest} />
-{/snippet}
-
 <Field {id} {label} {hint}>
-	{@render control()}
+	<input {id} {type} {placeholder} {disabled} bind:value class="w-full field" />
 </Field>

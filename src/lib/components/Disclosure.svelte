@@ -15,11 +15,9 @@
 	<summary
 		class="flex cursor-pointer list-none items-center gap-2 py-2 text-sm [&::-webkit-details-marker]:hidden"
 	>
-		<Icon
-			name="chevron-right"
-			size="sm"
-			class="shrink-0 transition-transform group-open:rotate-90"
-		/>
+		<span class="shrink-0 transition-transform group-open:rotate-90">
+			<Icon name="chevron-right" size="sm" />
+		</span>
 		{@render summary()}
 	</summary>
 	<div class="ps-6 pt-1 pb-2">{@render children()}</div>

@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import type { HTMLButtonAttributes } from 'svelte/elements';
 	import LoadingSpinner from './LoadingSpinner.svelte';
 	import {
 		buttonClasses,
@@ -8,12 +7,18 @@
 		type ButtonVariant,
 	} from './button-classes';
 
-	interface Props extends HTMLButtonAttributes {
+	interface Props {
 		variant: ButtonVariant;
 		size?: ButtonSize;
+		/** Accessible name for icon-only buttons. */
 		label?: string;
+		type?: 'button' | 'submit';
+		disabled?: boolean;
 		loading?: boolean;
 		fullWidth?: boolean;
+		/** A Modal focuses this control when it opens. */
+		autofocus?: boolean;
+		onclick?: (event: MouseEvent) => void;
 		children: Snippet;
 	}
 
@@ -21,23 +26,25 @@
 		variant,
 		size = 'md',
 		label,
+		type = 'button',
+		disabled = false,
 		loading = false,
 		fullWidth = false,
-		type = 'button',
-		disabled,
+		autofocus = false,
+		onclick,
 		children,
-		...rest
 	}: Props = $props();
 </script>
 
 <button
 	{type}
 	class="{buttonClasses(variant, size)} {fullWidth ? 'w-full' : ''}"
+	data-autofocus={autofocus ? '' : undefined}
 	disabled={disabled || loading}
 	aria-busy={loading}
 	aria-label={label}
 	title={label}
-	{...rest}
+	{onclick}
 >
 	{#if loading}
 		<LoadingSpinner size="sm" />

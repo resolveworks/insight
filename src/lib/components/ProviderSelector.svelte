@@ -123,7 +123,7 @@
 		label="Provider"
 		bind:value={family}
 		options={providerOptions}
-		onchange={(e) => selectFamily(e.currentTarget.value)}
+		onchange={selectFamily}
 		disabled={busy}
 		id="provider-family-select"
 	/>

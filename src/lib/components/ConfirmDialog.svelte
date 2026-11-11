@@ -22,7 +22,7 @@
 <Modal {title} onClose={onCancel}>
 	<p class="text-sm text-neutral-500">{message}</p>
 	{#snippet footer()}
-		<Button variant="outline" onclick={onCancel} data-autofocus>Cancel</Button>
+		<Button variant="outline" onclick={onCancel} autofocus>Cancel</Button>
 		<Button variant="solid" onclick={onConfirm}>{confirmLabel}</Button>
 	{/snippet}
 </Modal>

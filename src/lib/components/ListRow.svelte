@@ -4,7 +4,10 @@
 	interface Props {
 		variant?: 'card' | 'nav';
 		active?: boolean;
-		interactive?: boolean;
+		/** Renders the row as a link. */
+		href?: string;
+		/** Renders the row as a button. */
+		onclick?: () => void;
 		actions?: Snippet;
 		children: Snippet;
 	}
@@ -12,7 +15,8 @@
 	let {
 		variant = 'card',
 		active = false,
-		interactive = false,
+		href,
+		onclick,
 		actions,
 		children,
 	}: Props = $props();
@@ -27,18 +31,37 @@
 			? 'bg-white text-neutral-800'
 			: 'text-neutral-500 hover:bg-neutral-100',
 	);
+
+	const actionable = $derived(href !== undefined || onclick !== undefined);
 </script>
 
 <li
 	class="{variantClasses[variant]} {variant === 'nav'
 		? navStateClasses
-		: interactive
+		: actionable
 			? 'transition-colors hover:border-neutral-400 hover:shadow-sm'
 			: ''}"
 >
-	<div class="min-w-0 flex-1">
-		{@render children()}
-	</div>
+	{#if href}
+		<!-- Callers pass already-resolved paths. -->
+		<!-- eslint-disable svelte/no-navigation-without-resolve -->
+		<a {href} class="block min-w-0 flex-1 focus-visible:focus-ring">
+			{@render children()}
+		</a>
+		<!-- eslint-enable svelte/no-navigation-without-resolve -->
+	{:else if onclick}
+		<button
+			{onclick}
+			aria-current={active ? 'true' : undefined}
+			class="min-w-0 flex-1 truncate text-start text-sm focus-visible:focus-ring"
+		>
+			{@render children()}
+		</button>
+	{:else}
+		<div class="min-w-0 flex-1">
+			{@render children()}
+		</div>
+	{/if}
 	{#if actions}
 		<div class="shrink-0">
 			{@render actions()}

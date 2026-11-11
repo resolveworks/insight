@@ -65,11 +65,9 @@
 		await chat.cancelGeneration();
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !e.shiftKey) {
-			e.preventDefault();
-			sendMessage();
-		}
+	function handleSubmit(event: SubmitEvent) {
+		event.preventDefault();
+		sendMessage();
 	}
 </script>
 
@@ -148,29 +146,29 @@
 	{#if providerReady}
 		<!-- Composer -->
 		<div class="{column} shrink-0 pb-6">
-			<div class="flex items-center gap-2">
-				<Input
-					type="text"
-					bind:value={inputValue}
-					class="flex-1"
-					onkeydown={handleKeydown}
-					placeholder={hasDocuments
-						? 'Ask about your documents...'
-						: 'Add documents to start asking questions'}
-					disabled={isGenerating || !hasDocuments}
-				/>
+			<form class="flex items-center gap-2" onsubmit={handleSubmit}>
+				<div class="flex-1">
+					<Input
+						type="text"
+						bind:value={inputValue}
+						placeholder={hasDocuments
+							? 'Ask about your documents...'
+							: 'Add documents to start asking questions'}
+						disabled={isGenerating || !hasDocuments}
+					/>
+				</div>
 				{#if isGenerating}
 					<Button variant="outline" onclick={cancelGeneration}>Cancel</Button>
 				{:else}
 					<Button
+						type="submit"
 						variant="solid"
-						onclick={sendMessage}
 						disabled={!hasDocuments || !inputValue.trim()}
 					>
 						Send
 					</Button>
 				{/if}
-			</div>
+			</form>
 		</div>
 	{:else}
 		<!-- The provider form lives in Settings; research only points at it. -->

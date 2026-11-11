@@ -13,16 +13,11 @@
 	let { document, href, onDelete }: Props = $props();
 </script>
 
-<ListRow interactive>
-	<!-- Callers pass already-resolved paths. -->
-	<!-- eslint-disable svelte/no-navigation-without-resolve -->
-	<a {href} class="block min-w-0 focus-visible:focus-ring">
-		<span class="text-sm text-neutral-800">{document.name}</span>
-		{#if document.page_count !== null}
-			<p class="mt-1 text-xs text-neutral-500">{document.page_count} pages</p>
-		{/if}
-	</a>
-	<!-- eslint-enable svelte/no-navigation-without-resolve -->
+<ListRow {href}>
+	<span class="text-sm text-neutral-800">{document.name}</span>
+	{#if document.page_count !== null}
+		<p class="mt-1 text-xs text-neutral-500">{document.page_count} pages</p>
+	{/if}
 	{#snippet actions()}
 		<Button
 			size="icon"

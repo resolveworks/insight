@@ -19,6 +19,8 @@
 </script>
 
 <form class="flex items-center gap-2" onsubmit={submit}>
-	<Input placeholder="New collection..." bind:value={name} class="w-48" />
+	<div class="w-48">
+		<Input placeholder="New collection..." bind:value={name} />
+	</div>
 	<Button type="submit" variant="solid">Create</Button>
 </form>

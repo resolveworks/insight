@@ -1,34 +1,33 @@
 <script lang="ts">
-	import type { HTMLTextareaAttributes } from 'svelte/elements';
 	import Field from './Field.svelte';
 
-	interface Props extends Omit<HTMLTextareaAttributes, 'value'> {
+	interface Props {
+		id?: string;
 		label?: string;
 		hint?: string;
 		rows?: number;
+		placeholder?: string;
+		disabled?: boolean;
 		value?: string;
 	}
 
 	let {
+		id,
 		label,
 		hint,
-		id,
 		rows,
+		placeholder,
+		disabled = false,
 		value = $bindable(''),
-		class: className = '',
-		...rest
 	}: Props = $props();
 </script>
 
-{#snippet control()}
+<Field {id} {label} {hint}>
 	<textarea
 		{id}
 		{rows}
+		{placeholder}
+		{disabled}
 		bind:value
-		class="w-full resize-none field {className}"
-		{...rest}></textarea>
-{/snippet}
-
-<Field {id} {label} {hint}>
-	{@render control()}
+		class="w-full resize-none field"></textarea>
 </Field>
