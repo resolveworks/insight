@@ -11,22 +11,20 @@
 //!   Extract worker ──commit extraction──► Index worker
 //!                                           │
 //!                                           ▼
-//!                              chunks canonical extraction text
-//!                              (char-based) → milli index
+//!                              complete canonical extraction text
+//!                              → milli index
 //! ```
 //!
 //! The watcher only queues index reconciliation for remote `files/` entries.
 //! It ignores local insert events because the local import path already
 //! handed the work off explicitly.
 
-mod chunk;
 mod index_queue;
 mod progress;
 mod types;
 mod watcher;
 mod workers;
 
-pub use chunk::{chunk_text, Chunk};
 pub use index_queue::IndexQueue;
 pub use progress::{PipelineProgress, ProgressTracker, StageProgress};
 pub use types::{ExtractJob, IndexJob, Stage};
@@ -42,7 +40,7 @@ use iroh_docs::NamespaceId;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
-use crate::search::{indexed_parent_ids, IndexWorkerHandle};
+use crate::search::{indexed_document_ids, IndexWorkerHandle};
 use crate::storage::{DocumentMetadata, Storage};
 
 use workers::{spawn_extract_workers, SharedReceiver};
@@ -251,9 +249,9 @@ impl Pipeline {
     /// Queue catch-up work for a collection after startup.
     ///
     /// Locally authored documents without a canonical extraction are queued
-    /// for extraction. Documents with a canonical extraction but no indexed
-    /// chunks are queued for index reconciliation, as are indexed documents
-    /// that no longer exist in storage (their chunks are evicted).
+    /// for extraction. Documents with a canonical extraction but no index
+    /// record are queued for index reconciliation, as are indexed documents
+    /// that no longer exist in storage (their records are evicted).
     ///
     /// Returns after enqueueing the work; the workers run it asynchronously.
     pub async fn resume_collection(
@@ -279,7 +277,7 @@ impl Pipeline {
             (documents, to_extract)
         };
 
-        let indexed = indexed_parent_ids(index, &collection_id)?;
+        let indexed = indexed_document_ids(index, &collection_id)?;
         let present: HashSet<&str> = documents
             .iter()
             .map(|document| document.id.as_str())
@@ -297,12 +295,12 @@ impl Pipeline {
             }
         }
 
-        for parent_id in indexed
+        for document_id in indexed
             .iter()
-            .filter(|parent_id| !present.contains(parent_id.as_str()))
+            .filter(|document_id| !present.contains(document_id.as_str()))
         {
             self.index_queue
-                .enqueue(namespace_id, parent_id.clone())
+                .enqueue(namespace_id, document_id.clone())
                 .await;
         }
 
@@ -313,7 +311,7 @@ impl Pipeline {
     ///
     /// Producers that change a document's indexable state outside the watcher
     /// (local delete and undelete) use this: the index worker re-reads storage
-    /// and evicts chunks for absent or deleted documents, or reindexes the
+    /// and evicts records for absent or deleted documents, or reindexes the
     /// canonical extraction.
     pub async fn request_index(&self, namespace_id: NamespaceId, doc_id: String) {
         self.index_queue.enqueue(namespace_id, doc_id).await;
@@ -400,8 +398,8 @@ mod tests {
 
     use super::*;
     use crate::search::{
-        chunk_external_id, get_indexed_chunk, get_indexed_chunk_by_external_id, indexed_parent_ids,
-        search_index, ChunkToIndex, SearchParams,
+        document_external_id, get_indexed_document, get_indexed_document_by_external_id,
+        indexed_document_ids, search_index, DocumentToIndex, SearchParams,
     };
     use crate::storage::{doc_meta_key, doc_source_key, doc_state_key, DocumentState};
     use crate::text::{Extraction, ParserId};
@@ -502,10 +500,10 @@ mod tests {
         .unwrap();
         assert_eq!(results.hits.len(), 1, "imported document is not searchable");
         let rtxn = index.read_txn().unwrap();
-        let chunk = get_indexed_chunk(&index, &rtxn, results.hits[0].doc_id)
+        let document = get_indexed_document(&index, &rtxn, results.hits[0].doc_id)
             .unwrap()
-            .expect("hit must deserialize as an indexed chunk");
-        assert_eq!(chunk.parent_id, doc_id);
+            .expect("hit must deserialize as an indexed document");
+        assert_eq!(document.document_id, doc_id);
 
         pipeline.shutdown();
     }
@@ -580,10 +578,10 @@ mod tests {
         .unwrap();
         assert_eq!(results.hits.len(), 1, "resumed document is not searchable");
         let rtxn = test.index.read_txn().unwrap();
-        let chunk = get_indexed_chunk(&test.index, &rtxn, results.hits[0].doc_id)
+        let indexed = get_indexed_document(&test.index, &rtxn, results.hits[0].doc_id)
             .unwrap()
-            .expect("hit must deserialize as an indexed chunk");
-        assert_eq!(chunk.parent_id, document.id);
+            .expect("hit must deserialize as an indexed document");
+        assert_eq!(indexed.document_id, document.id);
 
         test.pipeline.shutdown();
     }
@@ -678,8 +676,9 @@ mod tests {
         test.pipeline.shutdown();
     }
 
-    /// A canonical extraction with no chunks in its own collection is queued
-    /// for indexing, even when the same document ID is indexed elsewhere.
+    /// A canonical extraction with no index record in its own collection is
+    /// queued for indexing, even when the same document ID is indexed
+    /// elsewhere.
     #[tokio::test]
     async fn resume_indexes_canonical_extraction_missing_from_its_collection() {
         let test = test_pipeline().await;
@@ -726,18 +725,16 @@ mod tests {
         }
 
         let other_collection = "other-collection";
-        let other_chunk = ChunkToIndex {
-            id: chunk_external_id(other_collection, &document.id, 0),
-            parent_id: document.id.clone(),
-            parent_name: "report.pdf".to_string(),
-            chunk_index: 0,
+        let other_document = DocumentToIndex {
+            id: document_external_id(other_collection, &document.id),
+            document_id: document.id.clone(),
+            document_name: "report.pdf".to_string(),
+            extraction: parser.key(),
             content: "other collection text".to_string(),
             collection_id: other_collection.to_string(),
-            text_offset_start: 0,
-            text_offset_end: 21,
         };
         test.index_worker
-            .index_chunks(vec![other_chunk])
+            .index_documents(vec![other_document])
             .await
             .unwrap();
 
@@ -764,13 +761,13 @@ mod tests {
         .await
         .expect("resume did not index the canonical extraction");
 
-        let parents = indexed_parent_ids(&test.index, &collection_id).unwrap();
-        assert!(parents.contains(&document.id));
+        let indexed = indexed_document_ids(&test.index, &collection_id).unwrap();
+        assert!(indexed.contains(&document.id));
         assert!(
-            indexed_parent_ids(&test.index, other_collection)
+            indexed_document_ids(&test.index, other_collection)
                 .unwrap()
                 .contains(&document.id),
-            "the other collection's chunks were changed"
+            "the other collection's index record was changed"
         );
 
         let results = search_index(
@@ -792,10 +789,10 @@ mod tests {
         test.pipeline.shutdown();
     }
 
-    /// Indexed chunks whose document no longer exists in storage are
+    /// Index records whose document no longer exists in storage are
     /// reconciled away by the startup resume pass.
     #[tokio::test]
-    async fn resume_evicts_chunks_for_documents_absent_from_storage() {
+    async fn resume_evicts_records_for_documents_absent_from_storage() {
         let test = test_pipeline().await;
         let (namespace_id, _) = test
             .storage
@@ -806,23 +803,23 @@ mod tests {
             .unwrap();
         let collection_id = namespace_id.to_string();
         let ghost_id = "vanished-document";
-        let external_id = chunk_external_id(&collection_id, ghost_id, 0);
+        let external_id = document_external_id(&collection_id, ghost_id);
         test.index_worker
-            .index_chunks(vec![ChunkToIndex {
+            .index_documents(vec![DocumentToIndex {
                 id: external_id.clone(),
-                parent_id: ghost_id.to_string(),
-                parent_name: "vanished.pdf".to_string(),
-                chunk_index: 0,
+                document_id: ghost_id.to_string(),
+                document_name: "vanished.pdf".to_string(),
+                extraction: "test@1".to_string(),
                 content: "vanished document text".to_string(),
                 collection_id: collection_id.clone(),
-                text_offset_start: 0,
-                text_offset_end: 23,
             }])
             .await
             .unwrap();
-        assert!(get_indexed_chunk_by_external_id(&test.index, &external_id)
-            .unwrap()
-            .is_some());
+        assert!(
+            get_indexed_document_by_external_id(&test.index, &external_id)
+                .unwrap()
+                .is_some()
+        );
 
         test.pipeline
             .resume_collection(namespace_id, &test.index)
@@ -847,10 +844,10 @@ mod tests {
         .expect("resume did not reconcile the vanished document");
 
         assert!(
-            get_indexed_chunk_by_external_id(&test.index, &external_id)
+            get_indexed_document_by_external_id(&test.index, &external_id)
                 .unwrap()
                 .is_none(),
-            "chunks for a vanished document were not evicted"
+            "the index record for a vanished document was not evicted"
         );
 
         test.pipeline.shutdown();
@@ -886,8 +883,8 @@ mod tests {
         .expect("requested reconciliation did not settle");
     }
 
-    /// A requested reconciliation evicts the chunks of a deleted document and
-    /// indexes them again once the document is restored.
+    /// A requested reconciliation evicts the index record of a deleted
+    /// document and indexes it again once the document is restored.
     #[tokio::test]
     async fn request_index_reconciles_a_reversible_deletion() {
         let test = test_pipeline().await;
@@ -935,7 +932,7 @@ mod tests {
 
         reconcile_and_wait(&test, namespace_id, &document.id, 1).await;
         assert!(
-            indexed_parent_ids(&test.index, &collection_id)
+            indexed_document_ids(&test.index, &collection_id)
                 .unwrap()
                 .contains(&document.id),
             "document's canonical extraction was not indexed"
@@ -949,10 +946,10 @@ mod tests {
             .unwrap();
         reconcile_and_wait(&test, namespace_id, &document.id, 2).await;
         assert!(
-            !indexed_parent_ids(&test.index, &collection_id)
+            !indexed_document_ids(&test.index, &collection_id)
                 .unwrap()
                 .contains(&document.id),
-            "deleted document's chunks were not evicted"
+            "deleted document's index record was not evicted"
         );
 
         test.storage
@@ -963,7 +960,7 @@ mod tests {
             .unwrap();
         reconcile_and_wait(&test, namespace_id, &document.id, 3).await;
         assert!(
-            indexed_parent_ids(&test.index, &collection_id)
+            indexed_document_ids(&test.index, &collection_id)
                 .unwrap()
                 .contains(&document.id),
             "restored document's canonical extraction was not indexed"

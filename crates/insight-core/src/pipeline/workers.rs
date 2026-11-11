@@ -6,10 +6,9 @@ use anyhow::Context;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::parsers::Registry;
-use crate::search::{chunk_external_id, ChunkToIndex, IndexWorkerHandle};
+use crate::search::{document_external_id, DocumentToIndex, IndexWorkerHandle};
 use crate::storage::{CommitOutcome, DocumentMetadata, Storage};
 
-use super::chunk::chunk_text;
 use super::index_queue::IndexQueue;
 use super::progress::ProgressTracker;
 use super::types::{ExtractJob, Stage};
@@ -102,9 +101,9 @@ pub fn spawn_extract_workers(
 
 /// Spawn index worker.
 ///
-/// Single worker that reconciles a document's chunks in milli with its
+/// Single worker that reconciles a document's index record in milli with its
 /// current canonical extraction. A document that is gone or has no local
-/// canonical text loses its stale chunks.
+/// canonical text loses its stale record.
 pub fn spawn_index_worker(
     queue: IndexQueue,
     storage: Arc<RwLock<Storage>>,
@@ -191,10 +190,10 @@ async fn extract_document(
     }
 }
 
-/// Bring one document's chunks in one collection in line with storage.
+/// Bring one document's index record in one collection in line with storage.
 ///
-/// Missing documents and missing or not-yet-local canonical text evict stale
-/// chunks. Empty canonical text evicts them too; non-empty text replaces them.
+/// Missing documents and missing or not-yet-local canonical text evict the
+/// record. Empty canonical text evicts it too; non-empty text replaces it.
 async fn reconcile_document(
     storage: &RwLock<Storage>,
     index_worker: &IndexWorkerHandle,
@@ -217,39 +216,32 @@ async fn reconcile_document(
     };
 
     index_worker
-        .delete_document_chunks(collection_id.to_string(), doc_id.to_string())
+        .delete_document(collection_id.to_string(), doc_id.to_string())
         .await?;
 
     let (Some(metadata), Some(extraction)) = (metadata, extraction) else {
         tracing::debug!(
             doc_id = %doc_id,
-            "Document gone or canonical extraction unavailable; evicted stale chunks"
+            "Document gone or canonical extraction unavailable; evicted stale index record"
         );
         return Ok(());
     };
 
-    let chunks = chunk_text(&extraction.text);
-    if chunks.is_empty() {
+    if extraction.text.trim().is_empty() {
         tracing::debug!(doc_id = %doc_id, "Document has no text to index");
         return Ok(());
     }
 
-    let to_index: Vec<ChunkToIndex> = chunks
-        .into_iter()
-        .enumerate()
-        .map(|(i, chunk)| ChunkToIndex {
-            id: chunk_external_id(collection_id, &metadata.id, i),
-            parent_id: metadata.id.clone(),
-            parent_name: metadata.name.clone(),
-            chunk_index: i,
-            content: format!("[{}]\n\n{}", metadata.name, chunk.text),
-            collection_id: collection_id.to_string(),
-            text_offset_start: chunk.start,
-            text_offset_end: chunk.end,
-        })
-        .collect();
+    let document = DocumentToIndex {
+        id: document_external_id(collection_id, &metadata.id),
+        document_id: metadata.id.clone(),
+        document_name: metadata.name.clone(),
+        extraction: extraction.parser.key(),
+        content: extraction.text,
+        collection_id: collection_id.to_string(),
+    };
 
-    index_worker.index_chunks(to_index).await
+    index_worker.index_documents(vec![document]).await
 }
 
 #[cfg(test)]

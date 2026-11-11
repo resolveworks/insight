@@ -337,19 +337,19 @@ impl AppState {
         let index_collection_id = collection_id.clone();
         tokio::spawn(async move {
             match index_worker
-                .delete_collection_chunks(index_collection_id.clone())
+                .delete_collection(index_collection_id.clone())
                 .await
             {
                 Ok(deleted_count) => {
                     tracing::info!(
-                        "Removed {} chunks from search index for collection {}",
+                        "Removed {} documents from search index for collection {}",
                         deleted_count,
                         index_collection_id
                     );
                 }
                 Err(e) => {
                     tracing::error!(
-                        "Failed to remove chunks from search index for collection {}: {}",
+                        "Failed to remove documents from search index for collection {}: {}",
                         index_collection_id,
                         e
                     );

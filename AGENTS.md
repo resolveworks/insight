@@ -41,6 +41,7 @@ Adding data: if Rust knows it, it is a command read through a load. If it change
 
 - Collections are expected to contain tens of thousands of documents; design ingestion, indexing, storage, and sync for that scale.
 - Sources are immutable; text is a derivation stored per `{parser}@{version}`. Parser names may not contain `/` or `@`; bump the version by hand when a parser's output changes.
+- Search indexes one record per collection document, containing the complete canonical extraction. milli covers at most the first 65,536 token positions of a field; a document beyond that is marked `partially_indexed`, and its full extraction remains readable.
 - A document's page count is derived from its canonical extraction's units, never stored.
 - Conversations are local and never sync; collections sync fully, blobs included.
 - There is one stored shape: the one the current build writes. Nothing we persist or emit carries a compatibility contract. We're early stage with no users, so state written by an older build is not the app's problem — it gets re-imported or deleted by hand, not read, detected, or converted.
