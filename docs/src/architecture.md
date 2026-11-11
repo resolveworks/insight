@@ -10,10 +10,6 @@ Insight is a desktop application rather than a hosted document service. Its arch
 
 [MuPDF](https://mupdf.com/) extracts the existing text from PDFs while preserving its page locations. [milli](https://github.com/meilisearch/milli) builds a local keyword search index and ranks matching documents using keyword relevance. Search therefore runs on the user's machine and does not require uploading the collection.
 
-The index holds one record per collection document. Each record contains the document's complete canonical extraction in a single content field, with the document name in a separate searchable field. A search returns ranked documents with a bounded excerpt around the matching text. The agent reads further with `read_document`, which takes the document's extraction key and a character offset into that extraction, keeping excerpts and full text aligned.
-
-milli indexes at most the first 65,536 token positions of a field. A document whose content extends beyond that is shown as partially searchable: its full extraction remains stored and readable, but text past the limit does not appear in search results.
-
 Original documents are immutable, content-addressed blobs. Extracted text is a separate, derived artifact: it can be regenerated or replaced when extraction improves without changing the source document. Content addressing also lets peers verify that they received exactly the data they requested.
 
 ## How Insight talks to models
