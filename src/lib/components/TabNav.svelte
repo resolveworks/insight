@@ -21,7 +21,7 @@
 		{@const active = item.id === activeId}
 		<a
 			href={item.href}
-			class="rounded-t-md border-b-2 px-4 py-2 text-sm font-medium no-underline transition-colors hover:no-underline focus-visible:focus-ring {active
+			class="rounded-t-md border-b-2 px-4 py-2 text-sm font-medium transition-colors focus-visible:focus-ring {active
 				? 'border-blue-500 text-blue-600'
 				: 'border-transparent text-neutral-500 hover:text-neutral-800'}"
 			aria-current={active ? 'page' : undefined}

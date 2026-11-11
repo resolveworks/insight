@@ -85,7 +85,7 @@
 						{#snippet action()}
 							<ButtonLink
 								href={resolve(`collections/${collectionId}/documents`)}
-								variant="primary"
+								variant="solid"
 							>
 								Go to Documents
 							</ButtonLink>
@@ -160,11 +160,10 @@
 						disabled={isGenerating || !hasDocuments}
 					/>
 					{#if isGenerating}
-						<Button variant="secondary" onclick={cancelGeneration}
-							>Cancel</Button
-						>
+						<Button variant="outline" onclick={cancelGeneration}>Cancel</Button>
 					{:else}
 						<Button
+							variant="solid"
 							onclick={sendMessage}
 							disabled={!hasDocuments || !inputValue.trim()}
 						>
@@ -181,7 +180,7 @@
 				<p class="text-sm text-neutral-500">
 					No language model configured. Research needs one.
 				</p>
-				<ButtonLink href={resolve('settings')} variant="primary">
+				<ButtonLink href={resolve('settings')} variant="solid">
 					Open Settings
 				</ButtonLink>
 			</div>

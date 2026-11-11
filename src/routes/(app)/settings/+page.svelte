@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import BackLink from '#lib/components/BackLink.svelte';
+	import ButtonLink from '#lib/components/ButtonLink.svelte';
 	import CardSection from '#lib/components/CardSection.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
@@ -15,7 +16,10 @@
 	{#snippet header()}
 		<PageHeader title="Settings">
 			{#snippet eyebrow()}
-				<BackLink href={resolve('collections')}>Back to collections</BackLink>
+				<ButtonLink href={resolve('collections')} variant="outline" size="sm">
+					<Icon name="arrow-left" size="sm" />
+					Back to collections
+				</ButtonLink>
 			{/snippet}
 		</PageHeader>
 	{/snippet}

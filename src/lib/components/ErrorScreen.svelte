@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import Alert from './Alert.svelte';
-	import BackLink from './BackLink.svelte';
+	import ButtonLink from './ButtonLink.svelte';
 	import Button from './Button.svelte';
+	import Icon from './Icon.svelte';
 	import EmptyState from './EmptyState.svelte';
 
 	interface Props {
@@ -19,7 +20,10 @@
 	{#if notFound}
 		<EmptyState title="Collection not found">
 			{#snippet action()}
-				<BackLink href={resolve('collections')}>Back to collections</BackLink>
+				<ButtonLink href={resolve('collections')} variant="outline" size="sm">
+					<Icon name="arrow-left" size="sm" />
+					Back to collections
+				</ButtonLink>
 			{/snippet}
 		</EmptyState>
 	{:else}
@@ -27,7 +31,7 @@
 			<Alert>
 				{message}
 				{#snippet action()}
-					<Button variant="primary" onclick={onRetry}>Retry</Button>
+					<Button variant="solid" onclick={onRetry}>Retry</Button>
 				{/snippet}
 			</Alert>
 		</div>

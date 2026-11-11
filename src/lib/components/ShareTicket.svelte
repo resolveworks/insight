@@ -24,7 +24,7 @@
 			<code class="flex-1 break-all font-mono text-xs text-neutral-500">
 				{state.ticket}
 			</code>
-			<Button size="sm" variant="secondary" onclick={onCopy}>
+			<Button size="sm" variant="outline" onclick={onCopy}>
 				{copied ? 'Copied!' : 'Copy'}
 			</Button>
 		</div>

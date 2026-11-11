@@ -20,11 +20,7 @@
 		)}
 	</p>
 	{#snippet actions()}
-		<Button
-			variant="secondary"
-			size="sm"
-			onclick={() => onRestore(document.id)}
-		>
+		<Button variant="outline" size="sm" onclick={() => onRestore(document.id)}>
 			Restore
 		</Button>
 	{/snippet}

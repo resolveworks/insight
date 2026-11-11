@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
-	import BackLink from '#lib/components/BackLink.svelte';
+	import ButtonLink from '#lib/components/ButtonLink.svelte';
 	import Card from '#lib/components/Card.svelte';
 	import DescriptionList from '#lib/components/DescriptionList.svelte';
 	import DescriptionRow from '#lib/components/DescriptionRow.svelte';
 	import DocumentText from '#lib/components/DocumentText.svelte';
+	import Icon from '#lib/components/Icon.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import PageContent from '#lib/components/PageContent.svelte';
 	import PageHeader from '#lib/components/PageHeader.svelte';
@@ -66,9 +67,14 @@
 </script>
 
 {#snippet backLink()}
-	<BackLink href={resolve(`collections/${collectionId}/documents`)}>
+	<ButtonLink
+		href={resolve(`collections/${collectionId}/documents`)}
+		variant="outline"
+		size="sm"
+	>
+		<Icon name="arrow-left" size="sm" />
 		Back to documents
-	</BackLink>
+	</ButtonLink>
 {/snippet}
 
 <Page>

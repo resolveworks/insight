@@ -161,12 +161,12 @@
 				description="Documents you import or that arrive from colleagues syncing this collection will appear here as they become available."
 			>
 				{#snippet action()}
-					<Button onclick={importPdf}>Import documents</Button>
+					<Button variant="solid" onclick={importPdf}>Import documents</Button>
 				{/snippet}
 			</EmptyState>
 		{:else}
 			<PageToolbar>
-				<Button onclick={importPdf} disabled={processing}
+				<Button variant="solid" onclick={importPdf} disabled={processing}
 					>Import documents</Button
 				>
 			</PageToolbar>

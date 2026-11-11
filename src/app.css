@@ -21,10 +21,6 @@
 	h6 {
 		@apply font-semibold tracking-tight;
 	}
-
-	a {
-		@apply text-blue-600 hover:underline;
-	}
 }
 
 @utility field {
@@ -32,5 +28,5 @@
 }
 
 @utility focus-ring {
-	@apply outline-2 outline-offset-2 outline-blue-500;
+	@apply outline-2 outline-offset-2 outline-neutral-900;
 }

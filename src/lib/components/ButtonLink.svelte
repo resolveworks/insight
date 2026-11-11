@@ -9,18 +9,12 @@
 
 	interface Props extends HTMLAnchorAttributes {
 		href: string;
-		variant?: ButtonVariant;
+		variant: ButtonVariant;
 		size?: ButtonSize;
 		children: Snippet;
 	}
 
-	let {
-		href,
-		variant = 'primary',
-		size = 'md',
-		children,
-		...rest
-	}: Props = $props();
+	let { href, variant, size = 'md', children, ...rest }: Props = $props();
 </script>
 
 <!-- Callers pass already-resolved paths. -->

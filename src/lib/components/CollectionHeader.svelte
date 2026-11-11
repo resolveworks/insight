@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import BackLink from './BackLink.svelte';
+	import ButtonLink from './ButtonLink.svelte';
+	import Icon from './Icon.svelte';
 	import PageHeader from './PageHeader.svelte';
 	import TabNav from './TabNav.svelte';
 
@@ -25,7 +26,10 @@
 
 <PageHeader title={collection.name}>
 	{#snippet eyebrow()}
-		<BackLink href={resolve('collections')}>Back to collections</BackLink>
+		<ButtonLink href={resolve('collections')} variant="outline" size="sm">
+			<Icon name="arrow-left" size="sm" />
+			Back to collections
+		</ButtonLink>
 	{/snippet}
 	{#snippet tabs()}
 		<TabNav label="Collection sections" items={sections} activeId={active} />

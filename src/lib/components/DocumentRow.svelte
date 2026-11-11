@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import IconButton from './IconButton.svelte';
+	import Button from './Button.svelte';
 	import ListRow from './ListRow.svelte';
 	import type { Document } from '#lib/types/documents.js';
 
@@ -24,12 +24,13 @@
 	</a>
 	<!-- eslint-enable svelte/no-navigation-without-resolve -->
 	{#snippet actions()}
-		<IconButton
-			variant="danger"
+		<Button
+			size="icon"
+			variant="outline"
 			label="Delete document"
 			onclick={() => onDelete(document)}
 		>
 			<Icon name="trash" size="sm" />
-		</IconButton>
+		</Button>
 	{/snippet}
 </ListRow>

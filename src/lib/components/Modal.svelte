@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import Icon from './Icon.svelte';
-	import IconButton from './IconButton.svelte';
+	import Button from './Button.svelte';
 
 	interface Props {
 		title?: string;
@@ -122,9 +122,14 @@
 				<h2 id={titleId} class="text-base font-semibold text-neutral-800">
 					{title}
 				</h2>
-				<IconButton label="Close dialog" onclick={onClose}>
+				<Button
+					size="icon"
+					variant="outline"
+					label="Close dialog"
+					onclick={onClose}
+				>
 					<Icon name="close" size="sm" />
-				</IconButton>
+				</Button>
 			</div>
 		{/if}
 		<div class="space-y-3">

@@ -20,5 +20,5 @@
 
 <form class="flex items-center gap-2" onsubmit={submit}>
 	<Input placeholder="New collection..." bind:value={name} class="w-48" />
-	<Button type="submit">Create</Button>
+	<Button type="submit" variant="solid">Create</Button>
 </form>

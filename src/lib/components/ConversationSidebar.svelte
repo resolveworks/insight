@@ -4,7 +4,6 @@
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import Icon from './Icon.svelte';
-	import IconButton from './IconButton.svelte';
 	import List from './List.svelte';
 	import ListRow from './ListRow.svelte';
 
@@ -32,7 +31,7 @@
 
 <div class="flex h-full flex-col">
 	<div class="px-4 pt-4 pb-2">
-		<Button variant="ghost" fullWidth onclick={() => onNew()}>
+		<Button variant="outline" fullWidth onclick={() => onNew()}>
 			<Icon name="plus" size="sm" />
 			New Chat
 		</Button>
@@ -54,9 +53,10 @@
 						</button>
 						{#snippet actions()}
 							<span class="mr-1 shrink-0">
-								<IconButton
+								<Button
+									size="icon"
+									variant="outline"
 									label="Delete conversation"
-									variant="danger"
 									onclick={(e) => {
 										e.stopPropagation();
 										pendingDelete = {
@@ -66,7 +66,7 @@
 									}}
 								>
 									<Icon name="trash" size="sm" />
-								</IconButton>
+								</Button>
 							</span>
 						{/snippet}
 					</ListRow>

@@ -98,7 +98,7 @@
 		>
 			<SharingStatus {sharing} />
 			{#snippet footer()}
-				<Button variant="secondary" onclick={openShareModal}
+				<Button variant="outline" onclick={openShareModal}
 					>Create collaboration ticket</Button
 				>
 			{/snippet}
@@ -110,7 +110,7 @@
 			tone="danger"
 		>
 			{#snippet footer()}
-				<Button variant="danger" onclick={() => (confirmingDelete = true)}
+				<Button variant="outline" onclick={() => (confirmingDelete = true)}
 					>Delete collection</Button
 				>
 			{/snippet}

@@ -77,7 +77,7 @@
 	{#snippet header()}
 		<PageHeader title="Collections">
 			{#snippet actions()}
-				<ButtonLink href={resolve('settings')} variant="ghost" size="sm">
+				<ButtonLink href={resolve('settings')} variant="outline" size="sm">
 					Settings
 				</ButtonLink>
 			{/snippet}
@@ -88,7 +88,7 @@
 	<PageContent>
 		<PageToolbar>
 			<NewCollectionForm onCreate={handleCreateCollection} />
-			<Button variant="secondary" onclick={openImportModal}>Import</Button>
+			<Button variant="solid" onclick={openImportModal}>Import</Button>
 		</PageToolbar>
 
 		<!-- Collections grid -->
@@ -122,8 +122,9 @@
 			<Alert>{importError}</Alert>
 		{/if}
 		{#snippet footer()}
-			<Button variant="ghost" onclick={closeImportModal}>Cancel</Button>
+			<Button variant="outline" onclick={closeImportModal}>Cancel</Button>
 			<Button
+				variant="solid"
 				onclick={handleImportCollection}
 				disabled={importingCollection || !importTicket.trim()}
 			>
