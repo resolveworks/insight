@@ -46,6 +46,12 @@ export type TranscriptBlock =
 	| { kind: 'item'; key: string; item: TranscriptItem }
 	| { kind: 'activity'; key: string; steps: ActivityStep[] };
 
+/** One turn of the transcript: a user question, or the reply that follows it. */
+export interface TranscriptTurn {
+	key: string;
+	blocks: TranscriptBlock[];
+}
+
 type ActivityEntry = ReasoningStep | ToolDraft;
 
 interface ToolDraft {
@@ -320,4 +326,27 @@ export function transcriptBlocks(items: TranscriptItem[]): TranscriptBlock[] {
 
 	flush();
 	return blocks.map(finalizeBlock);
+}
+
+/**
+ * Group renderable blocks into turns: a question on its own, followed by the
+ * reply it prompted. Everything after a question, activity included, belongs
+ * to that reply until the next question.
+ */
+export function transcriptTurns(blocks: TranscriptBlock[]): TranscriptTurn[] {
+	const turns: TranscriptTurn[] = [];
+	let current: TranscriptTurn | null = null;
+	let awaitingReply = false;
+
+	for (const block of blocks) {
+		const isQuestion = block.kind === 'item' && block.item.kind === 'user_text';
+		if (current === null || isQuestion || awaitingReply) {
+			current = { key: block.key, blocks: [] };
+			turns.push(current);
+		}
+		current.blocks.push(block);
+		awaitingReply = isQuestion;
+	}
+
+	return turns;
 }
