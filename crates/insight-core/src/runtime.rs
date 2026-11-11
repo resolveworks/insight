@@ -107,10 +107,12 @@ fn format_collection_terms(terms: &[TermFrequency]) -> String {
 ///
 /// The run emits the user's item, then [`ChatEvent`]s as the agent produces
 /// them, and ends with [`ChatEvent::RunFinished`] carrying the items this run
-/// appended. A stream error ends the run and is returned as `Err`, so the
-/// caller owns the single failure event on the channel. Cancelling `cancel`
-/// aborts the run (dropping the stream), records nothing, and returns
-/// `Ok(())` after an empty [`ChatEvent::RunFinished`].
+/// appended. That event is the commit: the turn's messages, its `updated`
+/// time, and its generated title are all persisted before it is sent. A stream
+/// error ends the run and is returned as `Err`, so the caller owns the single
+/// failure event on the channel. Cancelling `cancel` aborts the run (dropping
+/// the stream and any title generation), records nothing, and returns `Ok(())`
+/// after an empty [`ChatEvent::RunFinished`].
 pub async fn send_message(
     state: &AppState,
     collection_id: &str,
@@ -250,30 +252,42 @@ async fn run_agent(
 
     let final_messages =
         final_messages.ok_or_else(|| anyhow!("agent stream ended without a final response"))?;
-    on_event(ChatEvent::RunFinished {
-        items: from_messages(&final_messages, base),
-    });
+    let items = from_messages(&final_messages, base);
 
+    // Everything this turn persisted is durable before the commit event: the
+    // client re-reads the conversation list when it arrives.
     state
         .memory
         .touch(collection_id, conversation_id)
         .await
         .map_err(|e| anyhow!("failed to touch conversation: {e}"))?;
 
-    // First real turn: replace the empty title with a generated one.
+    // First real turn: replace the empty title with a generated one. Cancelling
+    // here leaves the title empty, which the next turn generates.
     if needs_title {
         let history = initial_history
             .into_iter()
             .chain(final_messages)
             .collect::<Vec<_>>();
         if history.len() >= 2 {
-            if let Err(e) =
-                generate_title_with(state, collection_id, conversation_id, &history, &model).await
-            {
+            let generated = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                result = generate_title_with(
+                    state,
+                    collection_id,
+                    conversation_id,
+                    &history,
+                    &model,
+                ) => Some(result),
+            };
+            if let Some(Err(e)) = generated {
                 tracing::warn!(conversation_id, error = %e, "title generation failed");
             }
         }
     }
+
+    on_event(ChatEvent::RunFinished { items });
 
     Ok(())
 }
@@ -356,6 +370,7 @@ fn first_user_text(history: &[Message]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{ConversationSummary, DEFAULT_TITLE};
     use rig::completion::Usage;
     use rig::test_utils::{mock_final, MockCompletionModel, MockStreamEvent};
     use std::sync::Mutex;
@@ -567,6 +582,53 @@ mod tests {
             .unwrap();
         assert!(!meta.title.is_empty());
         assert!(meta.title.starts_with("What do the reports say?"));
+    }
+
+    /// The commit event is what the client re-reads the conversation list on:
+    /// by then the generated title must already be what the list reports.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_conversation_list_shows_the_new_title_when_the_run_commits() {
+        let (_tmp, state) = test_state().await;
+        let id = "conv-commit";
+        let (collection_id, name) = setup_conversation(&state, id, "Climate Reports").await;
+
+        let at_commit: std::sync::Arc<Mutex<Option<Vec<ConversationSummary>>>> =
+            std::sync::Arc::new(Mutex::new(None));
+        let observed = at_commit.clone();
+        let memory = state.memory.clone();
+        let list_collection = collection_id.clone();
+        let model = handle(MockCompletionModel::from_stream_turns([text_stream_turn(
+            "The reports mention rising sea levels.",
+        )]));
+
+        run_agent(
+            &state,
+            &collection_id,
+            id,
+            &name,
+            true,
+            "What do the reports say?".into(),
+            model,
+            move |event| {
+                if matches!(event, ChatEvent::RunFinished { .. }) {
+                    let listed = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(memory.list_summaries(&list_collection))
+                    });
+                    *observed.lock().unwrap() = Some(listed.unwrap());
+                }
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let listed = at_commit.lock().unwrap().clone().expect("run committed");
+        assert_eq!(listed.len(), 1);
+        assert_ne!(
+            listed[0].title, DEFAULT_TITLE,
+            "the title must be durable before the commit event"
+        );
     }
 
     #[tokio::test]

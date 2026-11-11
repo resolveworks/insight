@@ -68,6 +68,10 @@ pub enum ChatEvent {
         key: String,
     },
     /// The run committed: the items this run appended, at their final keys.
+    ///
+    /// Sent once everything the turn persisted is durable, so the client can
+    /// re-read the conversation list on arrival and see the new title and
+    /// update time.
     RunFinished {
         /// The items the run appended, with provisional and live flags
         /// cleared. Items already committed before the run are not repeated.
