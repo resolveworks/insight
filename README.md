@@ -2,15 +2,13 @@
 
 **Local-first document research for journalists.**
 
+![Insight asking a question about a collection of papers, with the retrieved passages cited in the answer](.github/assets/insight-chat.png)
+
 Insight lets you build collections of PDFs, ask questions in plain language, and receive answers with citations. Documents and search indexes stay on your computer. Collections can sync directly between colleagues, and you choose the AI provider used for chat.
 
 ## Project status
 
 Insight is a research project exploring AI-assisted document research, peer-to-peer collaboration, and local-first tools for journalism. It is not production-ready.
-
-## Documentation
-
-The [Insight guide](https://resolveworks.github.io/insight/) covers installation, collections, chat, privacy, and sharing. Its [architecture overview](https://resolveworks.github.io/insight/architecture.html) explains what Insight is built on, how it talks to models, and how sync works.
 
 ## Development
 

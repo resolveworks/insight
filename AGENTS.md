@@ -2,8 +2,6 @@
 
 Tauri 2 desktop app: Rust backend (`crates/insight-core`, `src-tauri`), SvelteKit + Svelte 5 frontend, Tailwind 4.
 
-Product behaviour and high-level architecture live in `docs/src/`. Read those rather than re-deriving them from source.
-
 **Product invariant:** document storage, search and sync stay local. Only the conversation — queries and retrieved excerpts — is sent to the configured chat provider. No code path may ship document content off-device.
 
 ## Commands
