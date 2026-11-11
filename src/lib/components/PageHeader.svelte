@@ -5,13 +5,14 @@
 
 	interface Props {
 		back?: { href: string; label: string };
+		parent?: { href: string; label: string };
 		title: string;
 		subtitle?: Snippet;
 		actions?: Snippet;
 		tabs?: Snippet;
 	}
 
-	let { back, title, subtitle, actions, tabs }: Props = $props();
+	let { back, parent, title, subtitle, actions, tabs }: Props = $props();
 </script>
 
 <header class="border-b border-neutral-200 bg-white px-6 py-4">
@@ -23,6 +24,19 @@
 						<Icon name="arrow-left" size="sm" />
 						{back.label}
 					</ButtonLink>
+				</div>
+			{/if}
+			{#if parent}
+				<div class="mb-1">
+					<!-- Callers pass an already-resolved path. -->
+					<!-- eslint-disable svelte/no-navigation-without-resolve -->
+					<a
+						href={parent.href}
+						class="text-sm text-neutral-500 transition-colors hover:text-neutral-800 focus-visible:focus-ring"
+					>
+						{parent.label}
+					</a>
+					<!-- eslint-enable svelte/no-navigation-without-resolve -->
 				</div>
 			{/if}
 			<h1 class="truncate text-xl font-semibold text-neutral-800">{title}</h1>
