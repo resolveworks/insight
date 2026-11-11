@@ -88,7 +88,7 @@
 	<PageContent>
 		<PageToolbar>
 			<NewCollectionForm onCreate={handleCreateCollection} />
-			<Button variant="solid" onclick={openImportModal}>Import</Button>
+			<Button variant="outline" onclick={openImportModal}>Import</Button>
 		</PageToolbar>
 
 		<!-- Collections grid -->
