@@ -24,7 +24,7 @@
 	const collectionName = $derived(collection.name);
 	const documentCount = $derived(collection.document_count);
 	const hasDocuments = $derived(documentCount > 0);
-	const column = 'mx-auto w-full max-w-xl px-6';
+	const column = 'mx-auto w-full max-w-2xl px-6';
 
 	// Reactive reads from the conversations store
 	const transcript = $derived(chat.getItems());
