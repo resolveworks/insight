@@ -147,44 +147,40 @@
 
 	{#if providerReady}
 		<!-- Composer -->
-		<div class="shrink-0 border-t border-neutral-200 bg-white">
-			<div class="{column} py-4">
-				<div class="flex items-center gap-2">
-					<Input
-						type="text"
-						bind:value={inputValue}
-						class="flex-1"
-						onkeydown={handleKeydown}
-						placeholder={hasDocuments
-							? 'Ask about your documents...'
-							: 'Add documents to start asking questions'}
-						disabled={isGenerating || !hasDocuments}
-					/>
-					{#if isGenerating}
-						<Button variant="outline" onclick={cancelGeneration}>Cancel</Button>
-					{:else}
-						<Button
-							variant="solid"
-							onclick={sendMessage}
-							disabled={!hasDocuments || !inputValue.trim()}
-						>
-							Send
-						</Button>
-					{/if}
-				</div>
+		<div class="{column} shrink-0 pb-6">
+			<div class="flex items-center gap-2">
+				<Input
+					type="text"
+					bind:value={inputValue}
+					class="flex-1"
+					onkeydown={handleKeydown}
+					placeholder={hasDocuments
+						? 'Ask about your documents...'
+						: 'Add documents to start asking questions'}
+					disabled={isGenerating || !hasDocuments}
+				/>
+				{#if isGenerating}
+					<Button variant="outline" onclick={cancelGeneration}>Cancel</Button>
+				{:else}
+					<Button
+						variant="solid"
+						onclick={sendMessage}
+						disabled={!hasDocuments || !inputValue.trim()}
+					>
+						Send
+					</Button>
+				{/if}
 			</div>
 		</div>
 	{:else}
 		<!-- The provider form lives in Settings; research only points at it. -->
-		<div class="shrink-0 border-t border-neutral-200 bg-white">
-			<div class="{column} flex items-center justify-between gap-4 py-4">
-				<p class="text-sm text-neutral-500">
-					No language model configured. Research needs one.
-				</p>
-				<ButtonLink href={resolve('settings')} variant="solid">
-					Open Settings
-				</ButtonLink>
-			</div>
+		<div class="{column} flex shrink-0 items-center justify-between gap-4 pb-6">
+			<p class="text-sm text-neutral-500">
+				No language model configured. Research needs one.
+			</p>
+			<ButtonLink href={resolve('settings')} variant="solid">
+				Open Settings
+			</ButtonLink>
 		</div>
 	{/if}
 </div>
