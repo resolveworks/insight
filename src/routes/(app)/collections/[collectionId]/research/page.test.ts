@@ -86,6 +86,28 @@ describe('Research conversations load', () => {
 	});
 });
 
+describe('Pending collection research workspace', () => {
+	it('names the collection after its id in the empty state', () => {
+		const pending = {
+			...collection,
+			id: 'pending1',
+			name: null,
+			document_count: 0,
+		};
+		renderPage({
+			collections: [pending],
+			collection: pending,
+			conversations: [],
+			provider,
+			providerError: null,
+		});
+
+		expect(
+			screen.getByText('No documents in Shared collection pending1'),
+		).toBeInTheDocument();
+	});
+});
+
 describe('Research workspace without a chat provider', () => {
 	it('keeps the local conversation sidebar available beside the Settings link', async () => {
 		renderPage({

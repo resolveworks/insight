@@ -137,8 +137,7 @@ pub async fn send_message(
         .get_collection_metadata(namespace_id)
         .await
         .context("failed to read collection metadata")?
-        .map(|metadata| metadata.name)
-        .ok_or_else(|| anyhow!("collection not found: {collection_id}"))?;
+        .map_or_else(|| collection_id.to_string(), |metadata| metadata.name);
 
     let model = build_configured_model(state)?;
     run_agent(
@@ -970,6 +969,65 @@ mod tests {
             scope.contains(&name),
             "scope text names the conversation's collection: {scope}"
         );
+    }
+
+    #[tokio::test]
+    async fn send_message_runs_in_a_pending_collection_before_its_metadata_arrives() {
+        let (_source_tmp, source) = test_state().await;
+        let (namespace, _) = source
+            .storage
+            .write()
+            .await
+            .create_collection("Pending until first sync")
+            .await
+            .unwrap();
+        let ticket = source
+            .storage
+            .read()
+            .await
+            .share_collection(namespace)
+            .await
+            .unwrap();
+        let ticket: iroh_docs::DocTicket = ticket.parse().unwrap();
+
+        let (_tmp, state) = test_state().await;
+        let collection_id = state
+            .storage
+            .read()
+            .await
+            .register_collection_import(&ticket)
+            .await
+            .unwrap()
+            .to_string();
+        state
+            .memory
+            .create(&collection_id, "conv-pending")
+            .await
+            .unwrap();
+        let settings = Settings {
+            provider: Some(crate::providers::ProviderSettings {
+                family: "ollama/openai".into(),
+                model: "llama3".into(),
+                api_key: None,
+                base_url: None,
+            }),
+        };
+        settings.save(&state.config.settings_file).unwrap();
+
+        // The run is cancelled before its first poll: reaching it proves the
+        // absent metadata was accepted, without a provider call.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        send_message(
+            &state,
+            &collection_id,
+            "conv-pending",
+            "hi".into(),
+            |_| {},
+            cancel,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

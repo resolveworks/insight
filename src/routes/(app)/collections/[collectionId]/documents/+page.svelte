@@ -36,6 +36,7 @@
 	let importFailures = $state<ImportOutcome['failures']>([]);
 	let importError = $state<string | null>(null);
 
+	const collection = $derived(data.collection);
 	const collectionId = $derived(data.collection.id);
 	const documents = $derived(data.documents);
 	const deletedDocuments = $derived(data.deletedDocuments);
@@ -136,7 +137,12 @@
 		<PipelineProgress progress={pipelineProgress} />
 	{/if}
 
-	{#if documents.length === 0 && processing}
+	{#if documents.length === 0 && collection.name === null}
+		<EmptyState
+			title="Waiting for collection data"
+			description="Documents will appear here after a peer syncs this collection."
+		/>
+	{:else if documents.length === 0 && processing}
 		<EmptyState
 			title="Processing documents…"
 			description="Documents will appear here as they finish importing."

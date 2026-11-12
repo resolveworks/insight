@@ -72,9 +72,9 @@
 	<ImportCollectionModal
 		bind:ticket={importTicket}
 		onClose={() => (showImportModal = false)}
-		onImported={(collection) => {
+		onImported={(collectionId) => {
 			showImportModal = false;
-			goto(resolve(`collections/${collection.id}/documents`));
+			goto(resolve(`collections/${collectionId}/documents`));
 		}}
 	/>
 {/if}
