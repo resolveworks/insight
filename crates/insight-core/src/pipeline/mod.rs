@@ -185,13 +185,16 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Stop watching a collection.
-    pub async fn unwatch(&self, namespace_id: &NamespaceId) {
-        let mut watchers = self.watchers.write().await;
-        if let Some(watcher) = watchers.remove(namespace_id) {
-            watcher.stop();
+    /// Stop watching a collection and wait for its watcher to finish.
+    ///
+    /// Removing an absent watcher is a no-op.
+    pub async fn unwatch(&self, namespace_id: &NamespaceId) -> anyhow::Result<()> {
+        let watcher = self.watchers.write().await.remove(namespace_id);
+        if let Some(watcher) = watcher {
+            watcher.shutdown().await?;
             tracing::info!(namespace = %namespace_id, "Stopped watching collection");
         }
+        Ok(())
     }
 
     /// Import files into a collection.
