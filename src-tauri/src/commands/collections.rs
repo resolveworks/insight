@@ -25,10 +25,7 @@ pub async fn get_collections(state: State<'_, AppState>) -> CommandResult<Vec<Co
     // Build CollectionInfo for each collection
     let mut result = Vec::with_capacity(collections.len());
     for (namespace_id, metadata) in collections {
-        let documents = storage
-            .list_documents(namespace_id)
-            .await
-            .unwrap_or_default();
+        let documents = storage.list_documents(namespace_id).await.storage_err()?;
         let document_count = documents.len();
         let mut page_counts = Vec::with_capacity(documents.len());
         for document in &documents {
@@ -40,12 +37,16 @@ pub async fn get_collections(state: State<'_, AppState>) -> CommandResult<Vec<Co
             );
         }
         let total_pages = sum_page_counts(page_counts);
+        let (name, created_at) = match metadata {
+            Some(metadata) => (Some(metadata.name), Some(metadata.created_at)),
+            None => (None, None),
+        };
         result.push(CollectionInfo {
             id: namespace_id.to_string(),
-            name: metadata.name,
+            name,
             document_count,
             total_pages,
-            created_at: Some(metadata.created_at),
+            created_at,
         });
     }
 
@@ -71,7 +72,7 @@ pub async fn create_collection(
 
     Ok(CollectionInfo {
         id: namespace_id.to_string(),
-        name: metadata.name,
+        name: Some(metadata.name),
         document_count: 0,
         total_pages: None,
         created_at: Some(metadata.created_at),
@@ -123,48 +124,16 @@ pub async fn share_collection(
 /// Import a collection from a share ticket
 ///
 /// The ticket string is obtained from someone who called `share_collection`.
-/// After import, the collection will sync with the original peer.
+/// The collection is registered and syncing starts immediately; its metadata
+/// and documents arrive as peers become reachable.
 #[tauri::command]
 pub async fn import_collection(
     ticket: String,
     state: State<'_, AppState>,
-) -> CommandResult<CollectionInfo> {
+) -> CommandResult<String> {
     tracing::info!("Importing collection from ticket");
 
-    let (namespace_id, metadata) = state.import_collection(&ticket).await.storage_err()?;
+    let namespace_id = state.import_collection(&ticket).await.storage_err()?;
 
-    // The initial sync events may have completed before the watcher attached,
-    // so queue pipeline work for whatever the imported state already holds.
-    state
-        .pipeline
-        .resume_collection(namespace_id, &state.search)
-        .await
-        .internal_err()?;
-
-    // Fetch collection info
-    let storage = state.storage.read().await;
-
-    let documents = storage
-        .list_documents(namespace_id)
-        .await
-        .unwrap_or_default();
-    let document_count = documents.len();
-    let mut page_counts = Vec::with_capacity(documents.len());
-    for document in &documents {
-        page_counts.push(
-            storage
-                .page_count(namespace_id, &document.id)
-                .await
-                .storage_err()?,
-        );
-    }
-    let total_pages = sum_page_counts(page_counts);
-
-    Ok(CollectionInfo {
-        id: namespace_id.to_string(),
-        name: metadata.name,
-        document_count,
-        total_pages,
-        created_at: Some(metadata.created_at),
-    })
+    Ok(namespace_id.to_string())
 }

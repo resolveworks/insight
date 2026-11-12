@@ -34,7 +34,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionInfo {
     pub id: String,
-    pub name: String,
+    /// `None` until the collection's metadata has synced from a peer.
+    pub name: Option<String>,
     /// Number of documents in this collection
     #[serde(default)]
     pub document_count: usize,
@@ -64,9 +65,6 @@ pub use providers::{ModelChoice, ProviderSettings};
 pub use runtime::{send_message, BASE_SYSTEM_PROMPT};
 pub use search::{spawn_index_worker, IndexWorkerHandle};
 pub use storage::Storage;
-
-/// How long an import waits for the shared collection's metadata to arrive.
-const COLLECTION_IMPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Application state shared across Tauri commands
 #[derive(Clone)]
@@ -180,24 +178,22 @@ impl AppState {
             }
         };
 
-        for (namespace_id, metadata) in &collections {
+        for (namespace_id, _) in &collections {
             // Subscribe before sync starts so startup neighbor and sync events
             // reach the watcher rather than landing before it listens.
             if let Err(e) = self.pipeline.watch(*namespace_id).await {
                 tracing::error!(
                     namespace = %namespace_id,
-                    collection = %metadata.name,
                     error = %e,
                     "Failed to watch collection at startup"
                 );
                 continue;
             }
-            tracing::debug!("Watching collection '{}' ({})", metadata.name, namespace_id);
+            tracing::debug!("Watching collection {}", namespace_id);
 
             if let Err(e) = self.storage.read().await.resume_sync(*namespace_id).await {
                 tracing::warn!(
                     namespace = %namespace_id,
-                    collection = %metadata.name,
                     error = %e,
                     "Failed to resume collection sync at startup"
                 );
@@ -210,7 +206,6 @@ impl AppState {
             {
                 tracing::warn!(
                     namespace = %namespace_id,
-                    collection = %metadata.name,
                     error = %e,
                     "Failed to resume collection pipeline at startup"
                 );
@@ -237,76 +232,42 @@ impl AppState {
         self.pipeline.unwatch(namespace_id).await;
     }
 
-    /// Import a collection from a share ticket and wait for its metadata.
+    /// Import a collection from a share ticket.
+    ///
+    /// Registers the collection locally and starts syncing it. The namespace
+    /// exists from this point on; its metadata and documents arrive as peers
+    /// become reachable, so importing the same ticket again is idempotent.
     ///
     /// The watcher is attached before sync starts so the initial neighbor and
-    /// sync events are observed. A failed first import is rolled back; a failed
-    /// re-import leaves the existing collection in place.
+    /// sync events are observed.
     pub async fn import_collection(
         &self,
         ticket_str: &str,
-    ) -> anyhow::Result<(iroh_docs::NamespaceId, storage::CollectionMetadata)> {
-        self.import_collection_with_timeout(ticket_str, COLLECTION_IMPORT_TIMEOUT)
-            .await
-    }
-
-    async fn import_collection_with_timeout(
-        &self,
-        ticket_str: &str,
-        timeout: std::time::Duration,
-    ) -> anyhow::Result<(iroh_docs::NamespaceId, storage::CollectionMetadata)> {
+    ) -> anyhow::Result<iroh_docs::NamespaceId> {
         let ticket: iroh_docs::DocTicket = ticket_str.parse().context("Invalid share ticket")?;
         let namespace_id = ticket.capability.id();
 
-        let existed = {
-            let storage = self.storage.read().await;
-            storage.collection_exists(namespace_id).await?
-        };
         {
             let storage = self.storage.read().await;
             storage.register_collection_import(&ticket).await?;
         }
 
-        let (watching, result) = match self.pipeline.watch(namespace_id).await {
-            Ok(watching) => {
-                let result = async {
-                    {
-                        let storage = self.storage.read().await;
-                        storage.start_collection_sync(&ticket).await?;
-                    }
-                    let storage = self.storage.read().await;
-                    storage
-                        .wait_for_collection_metadata(namespace_id, timeout)
-                        .await
-                }
-                .await;
-                (watching, result)
-            }
-            Err(e) => (false, Err(e)),
-        };
+        self.pipeline.watch(namespace_id).await?;
 
-        match result {
-            Ok(metadata) => {
-                tracing::info!("Imported collection {} ('{}')", namespace_id, metadata.name);
-                Ok((namespace_id, metadata))
-            }
-            Err(err) => {
-                if watching {
-                    self.pipeline.unwatch(&namespace_id).await;
-                }
-                if !existed {
-                    let storage = self.storage.read().await;
-                    if let Err(cleanup) = storage.delete_collection(namespace_id).await {
-                        tracing::error!(
-                            namespace = %namespace_id,
-                            error = %cleanup,
-                            "Failed to remove collection after failed import"
-                        );
-                    }
-                }
-                Err(err)
-            }
+        {
+            let storage = self.storage.read().await;
+            storage.start_collection_sync(&ticket).await?;
         }
+
+        // The initial sync events may have completed before the watcher attached,
+        // so queue pipeline work for whatever the imported state already holds.
+        self.pipeline
+            .resume_collection(namespace_id, &self.search)
+            .await?;
+
+        tracing::info!("Imported collection {}", namespace_id);
+
+        Ok(namespace_id)
     }
 
     /// Delete a collection, its conversations and its search index entries.
@@ -395,7 +356,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_first_import_leaves_no_collection() {
+    async fn unreachable_peer_import_succeeds_and_is_listed_pending() {
         let (_source_dir, source) = test_state().await;
         let (collection, _) = source
             .storage
@@ -416,24 +377,56 @@ mod tests {
             .unwrap();
 
         let (_target_dir, target) = test_state().await;
-        target
-            .import_collection_with_timeout(&ticket, Duration::from_millis(200))
-            .await
-            .unwrap_err();
+        let imported = target.import_collection(&ticket).await.unwrap();
+        assert_eq!(imported, collection);
 
         let storage = target.storage.read().await;
-        assert!(!storage.collection_exists(collection).await.unwrap());
-        assert!(storage.list_collections().await.unwrap().is_empty());
+        assert!(storage.collection_exists(collection).await.unwrap());
+        let collections = storage.list_collections().await.unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].0, collection);
+        assert!(collections[0].1.is_none());
     }
 
     #[tokio::test]
-    async fn failed_reimport_leaves_existing_collection() {
+    async fn reimport_is_idempotent() {
         let (_source_dir, source) = test_state().await;
         let (collection, _) = source
             .storage
             .write()
             .await
-            .create_collection("Existing")
+            .create_collection("Pending")
+            .await
+            .unwrap();
+        let ticket = share(&source, collection).await;
+        source
+            .storage
+            .read()
+            .await
+            .delete_collection(collection)
+            .await
+            .unwrap();
+
+        let (_target_dir, target) = test_state().await;
+        assert_eq!(target.import_collection(&ticket).await.unwrap(), collection);
+        assert_eq!(target.import_collection(&ticket).await.unwrap(), collection);
+
+        let storage = target.storage.read().await;
+        assert!(storage.collection_exists(collection).await.unwrap());
+        let collections = storage.list_collections().await.unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].0, collection);
+        assert!(collections[0].1.is_none());
+    }
+
+    #[tokio::test]
+    async fn startup_watches_and_resumes_pending_imports() {
+        let (_source_dir, source) = test_state().await;
+        let (collection, _) = source
+            .storage
+            .write()
+            .await
+            .create_collection("Pending at startup")
             .await
             .unwrap();
         let ticket = share(&source, collection).await;
@@ -447,35 +440,30 @@ mod tests {
             .register_collection_import(&parsed)
             .await
             .unwrap();
-        assert!(target
-            .storage
-            .read()
-            .await
-            .collection_exists(collection)
-            .await
-            .unwrap());
 
-        // Make the shared metadata unreachable while keeping the namespace local.
-        source
-            .storage
-            .read()
-            .await
-            .delete_collection(collection)
-            .await
-            .unwrap();
+        let storage = target.storage.read().await;
+        assert!(storage.list_collections().await.unwrap()[0].1.is_none());
+        assert!(
+            !storage
+                .collection_sharing_status(collection)
+                .await
+                .unwrap()
+                .sync_running
+        );
+        drop(storage);
 
-        target
-            .import_collection_with_timeout(&ticket, Duration::from_millis(200))
-            .await
-            .unwrap_err();
+        target.restore_configs_from_settings().await.unwrap();
 
-        assert!(target
-            .storage
-            .read()
-            .await
-            .collection_exists(collection)
-            .await
-            .unwrap());
+        assert!(
+            target
+                .storage
+                .read()
+                .await
+                .collection_sharing_status(collection)
+                .await
+                .unwrap()
+                .sync_running
+        );
     }
 
     #[tokio::test]
@@ -491,9 +479,8 @@ mod tests {
             .unwrap();
         let ticket = share(&source, collection).await;
 
-        let (imported, metadata) = target.import_collection(&ticket).await.unwrap();
+        let imported = target.import_collection(&ticket).await.unwrap();
         assert_eq!(imported, collection);
-        assert_eq!(metadata.name, "Reimported");
 
         target.delete_collection(collection).await.unwrap();
         assert!(!target
@@ -504,7 +491,7 @@ mod tests {
             .await
             .unwrap());
 
-        let (reimported, _) = target.import_collection(&ticket).await.unwrap();
+        let reimported = target.import_collection(&ticket).await.unwrap();
         assert_eq!(reimported, collection);
 
         let doc_id = source
