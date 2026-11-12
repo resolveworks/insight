@@ -13,6 +13,7 @@ import Page from './+page.svelte';
 import AppError from '../+error.svelte';
 import { load } from './+layout';
 import { startInvalidationListeners } from '#lib/invalidation.js';
+import type { Collection } from '#lib/types/documents.js';
 
 type EventListener = (event: { payload: unknown }) => void;
 const listeners = new Map<string, EventListener>();
@@ -28,7 +29,7 @@ function emit(name: string, payload: unknown) {
 	listeners.get(name)?.({ payload });
 }
 
-const collection = {
+const collection: Collection = {
 	id: 'col1',
 	name: 'Climate Research',
 	document_count: 2,
@@ -84,7 +85,7 @@ describe('Collection import', () => {
 
 	it('navigates to the imported collection’s documents', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'import_collection') return collection;
+			if (cmd === 'import_collection') return collection.id;
 		});
 
 		renderPage();
@@ -116,7 +117,7 @@ describe('Collection import', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 
-		resolveImport!(collection);
+		resolveImport!(collection.id);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(goto).not.toHaveBeenCalled();
@@ -179,6 +180,16 @@ describe('Collections landing page', () => {
 		});
 		expect(workspaceLink).toHaveAttribute('href', '/collections/col1');
 		expect(screen.getByText('2 documents')).toBeInTheDocument();
+	});
+
+	it('shows a pending collection waiting for its first sync', () => {
+		renderPage([{ ...collection, name: null, document_count: 0 }]);
+
+		expect(
+			screen.getByRole('heading', { name: 'Shared collection col1' }),
+		).toBeInTheDocument();
+		expect(screen.getByText('Waiting for first sync')).toBeInTheDocument();
+		expect(screen.queryByText('0 documents')).not.toBeInTheDocument();
 	});
 
 	it('keeps loaded cards visible while a background refresh is pending', async () => {

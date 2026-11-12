@@ -4,11 +4,12 @@
 
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { collectionDisplayName } from '#lib/api/collection.js';
 	import PageHeader from './PageHeader.svelte';
 	import TabNav from './TabNav.svelte';
 
 	interface Props {
-		collection: { id: string; name: string };
+		collection: { id: string; name: string | null };
 		active: Section;
 	}
 
@@ -25,7 +26,7 @@
 </script>
 
 <PageHeader
-	title={collection.name}
+	title={collectionDisplayName(collection)}
 	back={{ href: resolve('collections'), label: 'Back to collections' }}
 >
 	{#snippet actions()}

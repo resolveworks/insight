@@ -11,8 +11,9 @@ import { goto } from '$app/navigation';
 import Page from './+page.svelte';
 import { load } from './+page';
 import type { CollectionSharingStatus } from '#lib/types/sharing.js';
+import type { Collection } from '#lib/types/documents.js';
 
-const collection = {
+const collection: Collection = {
 	id: 'col1',
 	name: 'Climate Research',
 	document_count: 2,
@@ -35,13 +36,13 @@ const sharingStatus: CollectionSharingStatus = {
 	},
 };
 
-function renderPage(sharing = sharingStatus) {
+function renderPage(sharing = sharingStatus, activeCollection = collection) {
 	render(Page, {
 		props: {
 			params: { collectionId: 'col1' },
 			data: {
-				collections: [collection],
-				collection,
+				collections: [activeCollection],
+				collection: activeCollection,
 				provider: { current: null, status: providerStatus },
 				providerError: null,
 				sharing,
@@ -244,6 +245,18 @@ describe('Collection settings actions', () => {
 			"Couldn't copy the ticket. Select it and copy it manually.",
 		);
 		expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+	});
+
+	it('names a pending collection after its id in the delete confirmation', async () => {
+		renderPage(sharingStatus, { ...collection, name: null });
+
+		await fireEvent.click(
+			screen.getByRole('button', { name: 'Delete collection' }),
+		);
+
+		expect(
+			screen.getByRole('dialog', { name: 'Delete collection' }),
+		).toHaveTextContent('Delete "Shared collection col1"?');
 	});
 
 	it('states the deletion consequence and returns to the collection list', async () => {

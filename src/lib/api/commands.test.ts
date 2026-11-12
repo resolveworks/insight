@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { invalidate } from '$app/navigation';
 import {
+	collectionDisplayName,
 	createCollection,
 	deleteCollection,
 	getCollectionSharingStatus,
@@ -129,10 +130,10 @@ describe('Collection commands', () => {
 				cmd === 'import_collection' &&
 				commandArgs(args).ticket === 'ticket-123'
 			)
-				return collection;
+				return collection.id;
 		});
 
-		expect(await importCollection('  ticket-123  ')).toEqual(collection);
+		expect(await importCollection('  ticket-123  ')).toBe('col1');
 		expect(invalidate).toHaveBeenCalledWith('app:collections');
 	});
 
@@ -145,6 +146,18 @@ describe('Collection commands', () => {
 			'disk full',
 		);
 		expect(invalidate).not.toHaveBeenCalled();
+	});
+});
+
+describe('Collection display names', () => {
+	it('uses a named collection’s own name', () => {
+		expect(collectionDisplayName(collection)).toBe('Climate Research');
+	});
+
+	it('names a pending collection after its id prefix', () => {
+		expect(collectionDisplayName({ ...collection, name: null })).toBe(
+			'Shared collection col1',
+		);
 	});
 });
 

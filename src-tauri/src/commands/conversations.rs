@@ -99,11 +99,9 @@ pub async fn start_chat(
     let namespace = collection_id.namespace();
     {
         let storage = state.storage.read().await;
-        storage
-            .get_collection_metadata(namespace)
-            .await
-            .storage_err()?
-            .ok_or_else(CommandError::collection_not_found)?;
+        if !storage.collection_exists(namespace).await.storage_err()? {
+            return Err(CommandError::collection_not_found());
+        }
     }
 
     let collection_id = namespace.to_string();

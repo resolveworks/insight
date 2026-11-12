@@ -6,12 +6,11 @@
 	import Textarea from './Textarea.svelte';
 	import { importCollection } from '#lib/api/collection.js';
 	import { describeError } from '#lib/api/provider.js';
-	import type { Collection } from '#lib/types/documents.js';
 
 	interface Props {
 		ticket?: string;
 		onClose: () => void;
-		onImported: (collection: Collection) => void;
+		onImported: (collectionId: string) => void;
 	}
 
 	let { ticket = $bindable(''), onClose, onImported }: Props = $props();
@@ -34,10 +33,10 @@
 		error = null;
 
 		try {
-			const collection = await importCollection(ticket);
+			const collectionId = await importCollection(ticket);
 			if (cancelled) return;
 			ticket = '';
-			onImported(collection);
+			onImported(collectionId);
 		} catch (e) {
 			if (cancelled) return;
 			console.error('Failed to import collection:', e);

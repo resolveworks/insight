@@ -1,7 +1,8 @@
 /** A collection as returned by the command layer. */
 export interface Collection {
 	id: string;
-	name: string;
+	/** `null` until the collection's metadata has synced from a peer. */
+	name: string | null;
 	document_count: number;
 	total_pages: number | null;
 	created_at?: string;

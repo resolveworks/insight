@@ -9,7 +9,10 @@
 	import ActivityStepView from './ActivityStep.svelte';
 	import Message from './Message.svelte';
 	import * as chat from '#lib/stores/conversations.svelte.js';
-	import { documentCountLabel } from '#lib/api/collection.js';
+	import {
+		collectionDisplayName,
+		documentCountLabel,
+	} from '#lib/api/collection.js';
 	import { transcriptBlocks, transcriptTurns } from '#lib/chat/activity.js';
 	import type { Collection } from '#lib/types/documents.js';
 
@@ -21,7 +24,7 @@
 	let { collection, providerReady }: Props = $props();
 
 	const collectionId = $derived(collection.id);
-	const collectionName = $derived(collection.name);
+	const collectionName = $derived(collectionDisplayName(collection));
 	const documentCount = $derived(collection.document_count);
 	const hasDocuments = $derived(documentCount > 0);
 	const column = 'mx-auto w-full max-w-2xl px-6';

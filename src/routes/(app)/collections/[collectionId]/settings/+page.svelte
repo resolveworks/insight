@@ -7,12 +7,16 @@
 	import Page from '#lib/components/Page.svelte';
 	import ShareCollectionModal from '#lib/components/ShareCollectionModal.svelte';
 	import SharingStatus from '#lib/components/SharingStatus.svelte';
-	import { deleteCollection } from '#lib/api/collection.js';
+	import {
+		collectionDisplayName,
+		deleteCollection,
+	} from '#lib/api/collection.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
 	const collection = $derived(data.collection);
+	const collectionName = $derived(collectionDisplayName(collection));
 	const sharing = $derived(data.sharing);
 
 	// Share modal state
@@ -70,7 +74,7 @@
 	<ConfirmDialog
 		title="Delete collection"
 		confirmLabel="Delete collection"
-		message="Delete &quot;{collection.name}&quot;? This deletes the collection, its documents, and its local conversations. This cannot be undone."
+		message="Delete &quot;{collectionName}&quot;? This deletes the collection, its documents, and its local conversations. This cannot be undone."
 		onConfirm={handleDelete}
 		onCancel={() => (confirmingDelete = false)}
 	/>

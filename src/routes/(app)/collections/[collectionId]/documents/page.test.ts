@@ -12,6 +12,7 @@ import { invalidate } from '$app/navigation';
 import { dataKeys } from '#lib/invalidation.js';
 import Page from './+page.svelte';
 import { load } from './+page';
+import type { Collection } from '#lib/types/documents.js';
 
 type EventListener = (event: { payload: unknown }) => void;
 const listeners = new Map<string, EventListener>();
@@ -31,7 +32,7 @@ function emit(name: string, payload: unknown) {
 	listeners.get(name)?.({ payload });
 }
 
-const collection = {
+const collection: Collection = {
 	id: 'col1',
 	name: 'Climate Research',
 	document_count: 1,
@@ -82,13 +83,14 @@ beforeEach(() => {
 function renderPage(
 	documents = [document],
 	deletedDocuments: (typeof deletedDocument)[] = [],
+	activeCollection = collection,
 ) {
 	render(Page, {
 		props: {
 			params: { collectionId: 'col1' },
 			data: {
-				collections: [collection],
-				collection,
+				collections: [activeCollection],
+				collection: activeCollection,
 				documents,
 				deletedDocuments,
 				provider: { current: null, status: providerStatus },
@@ -139,6 +141,39 @@ describe('Collection documents page', () => {
 		expect(
 			screen.getByRole('button', { name: 'Import documents' }),
 		).toBeInTheDocument();
+	});
+
+	it('waits for a pending collection’s data without offering local import', () => {
+		renderPage([], [], { ...collection, name: null, document_count: 0 });
+
+		expect(screen.getByText('Waiting for collection data')).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				'Documents will appear here after a peer syncs this collection.',
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole('button', { name: 'Import documents' }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText('No documents yet')).not.toBeInTheDocument();
+	});
+
+	it('renders a pending collection’s synced documents normally', () => {
+		renderPage([document], [], {
+			...collection,
+			name: null,
+			document_count: 1,
+		});
+
+		expect(
+			screen.getByRole('link', { name: /report\.pdf/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Import documents' }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText('Waiting for collection data'),
+		).not.toBeInTheDocument();
 	});
 
 	it('shows each document as a link with a labeled delete action', async () => {

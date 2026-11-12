@@ -4,8 +4,9 @@ import { createRawSnippet } from 'svelte';
 import { page } from '$app/state';
 import Layout from './+layout.svelte';
 import { load } from './+layout';
+import type { Collection } from '#lib/types/documents.js';
 
-const collection = {
+const collection: Collection = {
 	id: 'col1',
 	name: 'Climate Research',
 	document_count: 2,
@@ -46,6 +47,36 @@ describe('Collection workspace shell', () => {
 			'aria-current',
 			'page',
 		);
+	});
+});
+
+describe('Pending collection workspace shell', () => {
+	it('names the collection after its id until metadata arrives', () => {
+		page.route.id = '/(app)/collections/[collectionId]/documents';
+		const pending = { ...collection, name: null, document_count: 0 };
+		const children = createRawSnippet(() => ({
+			render: () => '<p>Route content</p>',
+		}));
+
+		render(Layout, {
+			props: {
+				data: {
+					provider: null,
+					providerError: null,
+					collections: [pending],
+					collection: pending,
+				},
+				children,
+				params: { collectionId: pending.id },
+			},
+		});
+
+		expect(
+			screen.getByRole('heading', {
+				level: 1,
+				name: 'Shared collection col1',
+			}),
+		).toBeInTheDocument();
 	});
 });
 

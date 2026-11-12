@@ -38,12 +38,19 @@ export async function getCollectionSharingStatus(
 }
 
 /** Import a shared collection and re-read the collection list. */
-export async function importCollection(ticket: string): Promise<Collection> {
-	const collection = await invoke<Collection>('import_collection', {
+export async function importCollection(ticket: string): Promise<string> {
+	const collectionId = await invoke<string>('import_collection', {
 		ticket: ticket.trim(),
 	});
 	await refreshCollections();
-	return collection;
+	return collectionId;
+}
+
+/** A collection's display name, pending metadata included. */
+export function collectionDisplayName(
+	collection: Pick<Collection, 'id' | 'name'>,
+): string {
+	return collection.name ?? `Shared collection ${collection.id.slice(0, 8)}`;
 }
 
 /** A collection's document count with its unit, e.g. "1 document". */
