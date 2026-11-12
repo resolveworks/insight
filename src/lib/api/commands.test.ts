@@ -12,6 +12,7 @@ import {
 } from './collection';
 import {
 	deleteDocument,
+	getDocumentSource,
 	getPipelineProgress,
 	listDeletedDocuments,
 	listDocuments,
@@ -184,6 +185,23 @@ describe('Document commands', () => {
 		await deleteDocument('col1', 'doc1');
 		expect(invalidate).toHaveBeenCalledWith('app:collections');
 		expect(invalidate).toHaveBeenCalledWith('app:collection:col1');
+	});
+
+	it('reads a document’s source bytes without re-reading anything', async () => {
+		const bytes = new TextEncoder().encode('%PDF-1.4');
+		mockIPC((cmd, args) => {
+			if (
+				cmd === 'get_document_source' &&
+				commandArgs(args).collectionId === 'col1' &&
+				commandArgs(args).documentId === 'doc1'
+			)
+				return bytes.buffer;
+		});
+
+		const source = await getDocumentSource('col1', 'doc1');
+		expect(source).toBeInstanceOf(Uint8Array);
+		expect(Array.from(source)).toEqual(Array.from(bytes));
+		expect(invalidate).not.toHaveBeenCalled();
 	});
 
 	it('lists a collection’s deleted documents', async () => {

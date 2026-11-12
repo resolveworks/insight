@@ -16,6 +16,7 @@ pub enum CommandError {
     // Not found errors
     DocumentNotFound { message: String },
     TextNotFound { message: String },
+    SourceNotAvailable { message: String },
     CollectionNotFound { message: String },
     ConversationNotFound { message: String },
 
@@ -38,6 +39,12 @@ impl CommandError {
     pub fn text_not_found() -> Self {
         Self::TextNotFound {
             message: "Text content not found".to_string(),
+        }
+    }
+
+    pub fn source_not_available() -> Self {
+        Self::SourceNotAvailable {
+            message: "Source not available".to_string(),
         }
     }
 
@@ -84,6 +91,7 @@ impl std::fmt::Display for CommandError {
             Self::InvalidUtf8 { message } => write!(f, "{}", message),
             Self::DocumentNotFound { message } => write!(f, "{}", message),
             Self::TextNotFound { message } => write!(f, "{}", message),
+            Self::SourceNotAvailable { message } => write!(f, "{}", message),
             Self::CollectionNotFound { message } => write!(f, "{}", message),
             Self::ConversationNotFound { message } => write!(f, "{}", message),
             Self::ProviderNotConfigured { message } => write!(f, "{}", message),
