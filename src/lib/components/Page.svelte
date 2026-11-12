@@ -7,10 +7,9 @@
 		header?: Snippet;
 		children: Snippet;
 		measure?: Measure;
-		fill?: boolean;
 	}
 
-	let { header, children, measure = 'wide', fill = false }: Props = $props();
+	let { header, children, measure = 'wide' }: Props = $props();
 
 	const measureClasses = $derived(
 		measure === 'prose' ? 'mx-auto max-w-2xl' : '',
@@ -22,7 +21,7 @@
 		{@render header()}
 	{/if}
 	<div class="min-h-0 flex-1 overflow-y-auto p-6">
-		<div class="flex flex-col gap-6 {measureClasses} {fill ? 'h-full' : ''}">
+		<div class="flex flex-col gap-6 {measureClasses}">
 			{@render children()}
 		</div>
 	</div>

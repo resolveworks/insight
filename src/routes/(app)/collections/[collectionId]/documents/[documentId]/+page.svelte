@@ -57,7 +57,7 @@
 	});
 </script>
 
-<Page measure={renderer ? 'wide' : 'prose'} fill={renderer !== undefined}>
+<Page measure={renderer ? 'wide' : 'prose'}>
 	<div>
 		<ButtonLink
 			href={resolve(`collections/${collectionId}/documents`)}
@@ -135,7 +135,6 @@
 			id="source-panel"
 			aria-labelledby="source-tab"
 			hidden={activeTab !== 'source'}
-			class="min-h-0 flex-1"
 		>
 			{#await renderer.load() then Renderer}
 				<Renderer {collectionId} {documentId} page={requestedPage} />
