@@ -447,32 +447,20 @@ impl Storage {
         Ok((namespace_id, metadata))
     }
 
-    /// List all collections with their metadata
-    pub async fn list_collections(&self) -> Result<Vec<(NamespaceId, CollectionMetadata)>> {
+    /// List every locally registered collection and its metadata when present.
+    ///
+    /// A registered collection whose `_collection` entry or metadata blob has
+    /// not synced yet is listed with `None`.
+    pub async fn list_collections(&self) -> Result<Vec<(NamespaceId, Option<CollectionMetadata>)>> {
         use futures::StreamExt;
 
         let mut collections = Vec::new();
-
-        // Get all namespaces
         let mut stream = self.docs.api().list().await?;
 
         while let Some(result) = stream.next().await {
             let (namespace_id, _capability) = result?;
-            tracing::debug!("Checking namespace {}", namespace_id);
-
-            // Try to read the collection metadata
-            match self.get_collection_metadata(namespace_id).await {
-                Ok(Some(metadata)) => {
-                    tracing::debug!("Found metadata for {}: {}", namespace_id, metadata.name);
-                    collections.push((namespace_id, metadata));
-                }
-                Ok(None) => {
-                    tracing::debug!("No metadata found for {}", namespace_id);
-                }
-                Err(e) => {
-                    tracing::warn!("Error reading metadata for {}: {}", namespace_id, e);
-                }
-            }
+            let metadata = self.get_collection_metadata(namespace_id).await?;
+            collections.push((namespace_id, metadata));
         }
 
         Ok(collections)
@@ -492,28 +480,12 @@ impl Storage {
         let query = Query::key_exact(b"_collection");
         let entry = doc.get_one(query).await?;
 
-        let metadata = if let Some(entry) = entry {
-            let hash = entry.content_hash();
-            tracing::debug!("Found _collection entry with hash {}", hash);
-
-            // Fetch content from blob storage
-            match self.get_blob(&hash).await {
-                Ok(Some(data)) => {
-                    tracing::debug!("Fetched blob, {} bytes", data.len());
-                    Some(serde_json::from_slice(&data)?)
-                }
-                Ok(None) => {
-                    tracing::debug!("Blob not found for hash {}", hash);
-                    None
-                }
-                Err(e) => {
-                    tracing::warn!("Error fetching blob {}: {}", hash, e);
-                    return Err(e);
-                }
-            }
-        } else {
-            tracing::debug!("No _collection entry found");
-            None
+        let metadata = match entry {
+            Some(entry) => match self.get_blob(&entry.content_hash()).await? {
+                Some(data) => Some(serde_json::from_slice(&data)?),
+                None => None,
+            },
+            None => None,
         };
 
         doc.close().await?;
@@ -1273,32 +1245,6 @@ impl Storage {
         Ok(())
     }
 
-    /// Wait until a collection's metadata is readable locally.
-    ///
-    /// Polls storage because sync delivers entries asynchronously. A read
-    /// error or the timeout is returned as an error.
-    pub async fn wait_for_collection_metadata(
-        &self,
-        namespace_id: NamespaceId,
-        timeout: std::time::Duration,
-    ) -> Result<CollectionMetadata> {
-        let poll_interval = std::time::Duration::from_millis(100);
-        tokio::time::timeout(timeout, async {
-            loop {
-                if let Some(metadata) = self.get_collection_metadata(namespace_id).await? {
-                    return Ok(metadata);
-                }
-                tokio::time::sleep(poll_interval).await;
-            }
-        })
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Timed out after {timeout:?} waiting for collection metadata for {namespace_id}"
-            )
-        })?
-    }
-
     // =========================================================================
     // Two-phase import methods (for pipeline)
     // =========================================================================
@@ -1531,7 +1477,13 @@ mod tests {
         let collections = storage.list_collections().await.unwrap();
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].0, id);
-        assert_eq!(collections[0].1.name, "Test Collection");
+        assert_eq!(
+            collections[0]
+                .1
+                .as_ref()
+                .map(|metadata| metadata.name.as_str()),
+            Some("Test Collection")
+        );
     }
 
     #[tokio::test]
@@ -2509,40 +2461,6 @@ mod tests {
         let storage = Storage::open(temp_dir.path()).await.unwrap();
 
         assert!(storage.resume_sync(NamespaceId::default()).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_wait_for_collection_metadata_errors_on_timeout() {
-        let source_dir = tempfile::tempdir().unwrap();
-        let source = Storage::open(source_dir.path()).await.unwrap();
-        let (collection_id, _) = source.create_collection("Unreachable").await.unwrap();
-        let ticket: DocTicket = source
-            .share_collection(collection_id)
-            .await
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        let target_dir = tempfile::tempdir().unwrap();
-        let target = Storage::open(target_dir.path()).await.unwrap();
-        target.register_collection_import(&ticket).await.unwrap();
-
-        let started = std::time::Instant::now();
-        let err = target
-            .wait_for_collection_metadata(collection_id, std::time::Duration::from_millis(100))
-            .await
-            .unwrap_err();
-
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "timeout primitive should return promptly, took {:?}",
-            started.elapsed()
-        );
-        assert!(
-            err.to_string().contains("Timed out"),
-            "unexpected error: {err}"
-        );
-        assert!(target.collection_exists(collection_id).await.unwrap());
     }
 
     #[tokio::test]

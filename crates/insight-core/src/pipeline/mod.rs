@@ -156,14 +156,13 @@ impl Pipeline {
     ///
     /// Subscribes to iroh-docs events and dispatches them to workers. Returns
     /// once the subscription is active, so a caller may start sync afterwards
-    /// without missing events. The result is `true` when this call inserted the
-    /// watcher and `false` when it was already watching.
-    pub async fn watch(&self, namespace_id: NamespaceId) -> anyhow::Result<bool> {
+    /// without missing events.
+    pub async fn watch(&self, namespace_id: NamespaceId) -> anyhow::Result<()> {
         let mut watchers = self.watchers.write().await;
 
         if watchers.contains_key(&namespace_id) {
             tracing::debug!(namespace = %namespace_id, "Already watching");
-            return Ok(false);
+            return Ok(());
         }
 
         let sharing = self.storage.read().await.sharing().clone();
@@ -183,7 +182,7 @@ impl Pipeline {
 
         watchers.insert(namespace_id, watcher);
         tracing::info!(namespace = %namespace_id, "Started watching collection");
-        Ok(true)
+        Ok(())
     }
 
     /// Stop watching a collection.
