@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, cleanup } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import { mockIPC } from '@tauri-apps/api/mocks';
+import type { Viewer } from '@embedpdf/viewer-svelte';
+import { page } from '$app/state';
 import { load as documentLoad } from './+page';
 import DocumentPage from './+page.svelte';
 import type { PageProps } from './$types';
@@ -11,6 +14,25 @@ vi.mock('@tauri-apps/api/event', () => ({
 	listen: vi.fn(async () => () => {}),
 }));
 
+vi.mock('@embedpdf/viewer', () => ({}));
+
+interface ViewerElement extends HTMLElement {
+	src?: Uint8Array;
+	config: { onReady: (viewer: Viewer) => void };
+}
+
+const textEncoder = new TextEncoder();
+
+function mockPdfSource() {
+	return { source: textEncoder.encode('%PDF-1.4') };
+}
+
+function viewerElement(): ViewerElement {
+	const element = document.querySelector('embedpdf-viewer');
+	if (!element) throw new Error('PDF viewer is not mounted');
+	return element as ViewerElement;
+}
+
 const collection = {
 	id: 'col1',
 	name: 'Climate Research',
@@ -18,7 +40,7 @@ const collection = {
 	total_pages: 12,
 };
 
-const document: Document = {
+const documentMeta: Document = {
 	id: 'doc1',
 	name: 'report.pdf',
 	file_type: 'application/pdf',
@@ -28,8 +50,8 @@ const document: Document = {
 	created_at: '2024-01-15T10:30:00Z',
 };
 
-function renderPage(overrides: Partial<typeof document> = {}) {
-	const pageDocument = { ...document, ...overrides };
+function renderPage(overrides: Partial<typeof documentMeta> = {}) {
+	const pageDocument = { ...documentMeta, ...overrides };
 	render(DocumentPage, {
 		props: {
 			data: {
@@ -45,10 +67,20 @@ function renderPage(overrides: Partial<typeof document> = {}) {
 	});
 }
 
+beforeEach(() => {
+	page.url = new URL('http://localhost/collections/col1/documents/doc1');
+});
+
+afterEach(() => {
+	cleanup();
+	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
+});
+
 describe('Document detail load', () => {
 	it('registers its dependency and returns the document', async () => {
 		mockIPC((cmd) => {
-			if (cmd === 'get_document') return document;
+			if (cmd === 'get_document') return documentMeta;
 		});
 		const depends = vi.fn();
 
@@ -56,11 +88,11 @@ describe('Document detail load', () => {
 			params: { collectionId: 'col1', documentId: 'doc1' },
 			depends,
 		} as unknown as Parameters<typeof documentLoad>[0])) as {
-			document: typeof document;
+			document: typeof documentMeta;
 		};
 
 		expect(depends).toHaveBeenCalledWith('app:collection:col1');
-		expect(data.document).toEqual(document);
+		expect(data.document).toEqual(documentMeta);
 	});
 });
 
@@ -69,6 +101,7 @@ describe('Document detail page', () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
+		mockPdfSource();
 
 		renderPage();
 
@@ -82,6 +115,7 @@ describe('Document detail page', () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
+		mockPdfSource();
 
 		renderPage();
 
@@ -96,12 +130,13 @@ describe('Document detail page', () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
+		mockPdfSource();
 
 		renderPage({ page_count: 1, tags: ['budget', 'eu'] });
 
 		expect(await screen.findByText('1 page')).toBeVisible();
 		expect(
-			screen.getByText(`Added ${formatTimestamp(document.created_at)}`),
+			screen.getByText(`Added ${formatTimestamp(documentMeta.created_at)}`),
 		).toBeVisible();
 		expect(screen.getByText('budget')).toBeVisible();
 	});
@@ -110,8 +145,10 @@ describe('Document detail page', () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
+		mockPdfSource();
 
 		renderPage();
+		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
 
 		expect(await screen.findByText('Extracted text')).toBeVisible();
 	});
@@ -120,6 +157,7 @@ describe('Document detail page', () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
+		mockPdfSource();
 
 		renderPage({ partially_indexed: true });
 
@@ -135,8 +173,10 @@ describe('Document detail page', () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
+		mockPdfSource();
 
 		renderPage({ partially_indexed: false });
+		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
 
 		expect(await screen.findByText('Extracted text')).toBeVisible();
 		expect(screen.queryByText('Partially searchable')).not.toBeInTheDocument();
@@ -146,10 +186,111 @@ describe('Document detail page', () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
 		});
+		mockPdfSource();
 
 		renderPage({ partially_indexed: null });
+		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
 
 		expect(await screen.findByText('Extracted text')).toBeVisible();
 		expect(screen.queryByText('Partially searchable')).not.toBeInTheDocument();
+	});
+});
+
+describe('Document detail source and text tabs', () => {
+	function tabPanel(id: 'source-panel' | 'text-panel') {
+		const panel = document.getElementById(id);
+		if (!panel) throw new Error(`Missing tab panel #${id}`);
+		return panel;
+	}
+
+	it('shows source and text tabs with the source selected', async () => {
+		const { source } = mockPdfSource();
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return source.buffer;
+		});
+
+		renderPage();
+
+		const sourceTab = await screen.findByRole('tab', { name: 'Source' });
+		const textTab = screen.getByRole('tab', { name: 'Text' });
+		expect(sourceTab).toHaveAttribute('aria-selected', 'true');
+		expect(textTab).toHaveAttribute('aria-selected', 'false');
+		expect(tabPanel('text-panel')).toHaveAttribute('hidden');
+	});
+
+	it('switches to the extraction and back to the source', async () => {
+		const { source } = mockPdfSource();
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return source.buffer;
+		});
+
+		renderPage();
+
+		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
+
+		expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute(
+			'aria-selected',
+			'true',
+		);
+		expect(await screen.findByText('Extracted text')).toBeVisible();
+		expect(tabPanel('source-panel')).toHaveAttribute('hidden');
+
+		await userEvent.click(screen.getByRole('tab', { name: 'Source' }));
+
+		expect(screen.getByRole('tab', { name: 'Source' })).toHaveAttribute(
+			'aria-selected',
+			'true',
+		);
+		expect(tabPanel('source-panel')).not.toHaveAttribute('hidden');
+		expect(tabPanel('text-panel')).toHaveAttribute('hidden');
+	});
+
+	it('selects the source and forwards the requested page', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?page=3',
+		);
+		const { source } = mockPdfSource();
+		mockIPC((cmd) => {
+			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return source.buffer;
+		});
+		const goToPage = vi.fn();
+		let opened: (() => void) | undefined;
+		const viewer = {
+			documents: {
+				onOpened: vi.fn((callback: () => void) => {
+					opened = callback;
+				}),
+			},
+			get: vi.fn(() => ({ goToPage })),
+		} as unknown as Viewer;
+
+		renderPage();
+
+		expect(await screen.findByRole('tab', { name: 'Source' })).toHaveAttribute(
+			'aria-selected',
+			'true',
+		);
+
+		await waitFor(() => expect(viewerElement().src).toBeDefined());
+		viewerElement().config.onReady(viewer);
+		opened?.();
+		await waitFor(() => expect(goToPage).toHaveBeenCalledWith(2));
+	});
+
+	it('renders text without tabs and never reads the source', async () => {
+		const commands: string[] = [];
+		mockIPC((cmd) => {
+			commands.push(cmd);
+			if (cmd === 'get_document_text') return 'Extracted text';
+		});
+
+		renderPage({ name: 'notes.txt', file_type: 'text/plain' });
+
+		expect(await screen.findByText('Extracted text')).toBeVisible();
+		expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+		expect(commands).not.toContain('get_document_source');
 	});
 });
