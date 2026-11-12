@@ -28,6 +28,18 @@ export async function getDocumentText(
 	return invoke<string>('get_document_text', { collectionId, documentId });
 }
 
+/** Read a document's original source bytes. */
+export async function getDocumentSource(
+	collectionId: string,
+	documentId: string,
+): Promise<Uint8Array> {
+	const buffer = await invoke<ArrayBuffer>('get_document_source', {
+		collectionId,
+		documentId,
+	});
+	return new Uint8Array(buffer);
+}
+
 /** List a collection's deleted documents. */
 export async function listDeletedDocuments(
 	collectionId: string,

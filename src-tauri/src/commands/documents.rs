@@ -206,6 +206,31 @@ pub async fn get_document_text(
     Ok(extraction.text)
 }
 
+/// Get a document's original source file bytes
+#[tauri::command]
+pub async fn get_document_source(
+    collection_id: CollectionId,
+    document_id: String,
+    state: State<'_, AppState>,
+) -> CommandResult<tauri::ipc::Response> {
+    let storage = state.storage.read().await;
+    let namespace_id = collection_id.namespace();
+
+    storage
+        .get_document(namespace_id, &document_id)
+        .await
+        .storage_err()?
+        .ok_or(CommandError::document_not_found())?;
+
+    let source = storage
+        .get_document_source(namespace_id, &document_id)
+        .await
+        .storage_err()?
+        .ok_or(CommandError::source_not_available())?;
+
+    Ok(tauri::ipc::Response::new(source))
+}
+
 /// Get the documents retained by reversible deletion in a collection
 #[tauri::command]
 pub async fn get_deleted_documents(
