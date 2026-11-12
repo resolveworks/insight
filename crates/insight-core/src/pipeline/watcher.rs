@@ -6,10 +6,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use anyhow::Context;
 use futures::{Stream, StreamExt};
 use iroh_blobs::Hash;
 use iroh_docs::{ContentStatus, NamespaceId};
 use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::{LastSyncSummary, LiveEvent, SharingTracker, Storage};
@@ -33,6 +35,7 @@ fn extract_doc_id(key: &str) -> Option<&str> {
 /// Watches a collection for iroh events and dispatches to worker pools.
 pub struct CollectionWatcher {
     cancel: CancellationToken,
+    task: JoinHandle<()>,
 }
 
 impl CollectionWatcher {
@@ -54,7 +57,7 @@ impl CollectionWatcher {
         };
         let cancel_clone = cancel.clone();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let result = run_watcher(namespace_id, stream, senders, cancel_clone.clone()).await;
             if let Err(ref e) = result {
                 if !cancel_clone.is_cancelled() {
@@ -76,12 +79,16 @@ impl CollectionWatcher {
             }
         });
 
-        Ok(Self { cancel })
+        Ok(Self { cancel, task })
     }
 
-    /// Stop the watcher.
-    pub fn stop(&self) {
+    /// Stop the watcher and wait for its task to finish.
+    ///
+    /// Returns once the task has closed the document replica it holds open.
+    pub async fn shutdown(self) -> anyhow::Result<()> {
         self.cancel.cancel();
+        self.task.await.context("CollectionWatcher task failed")?;
+        Ok(())
     }
 }
 

@@ -227,11 +227,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Stop watching a namespace.
-    pub async fn unwatch_namespace(&self, namespace_id: &iroh_docs::NamespaceId) {
-        self.pipeline.unwatch(namespace_id).await;
-    }
-
     /// Import a collection from a share ticket.
     ///
     /// Registers the collection locally and starts syncing it. The namespace
@@ -259,8 +254,9 @@ impl AppState {
             storage.start_collection_sync(&ticket).await?;
         }
 
-        // The initial sync events may have completed before the watcher attached,
-        // so queue pipeline work for whatever the imported state already holds.
+        // The watcher is attached before sync starts, so reconciliation only
+        // covers entries the imported state already holds, especially on
+        // re-import.
         self.pipeline
             .resume_collection(namespace_id, &self.search)
             .await?;
@@ -272,8 +268,8 @@ impl AppState {
 
     /// Delete a collection, its conversations and its search index entries.
     ///
-    /// Cancels in-flight generations first, then removes storage state and the
-    /// watcher so a later import attaches a fresh one.
+    /// Cancels in-flight generations first, then finishes the watcher before
+    /// removing storage state, so a later import attaches a fresh one.
     pub async fn delete_collection(
         &self,
         namespace_id: iroh_docs::NamespaceId,
@@ -288,11 +284,12 @@ impl AppState {
             }
         }
 
+        self.pipeline.unwatch(&namespace_id).await?;
+
         {
             let storage = self.storage.read().await;
             storage.delete_collection(namespace_id).await?;
         }
-        self.pipeline.unwatch(&namespace_id).await;
 
         let index_worker = self.index_worker.clone();
         let index_collection_id = collection_id.clone();
@@ -527,5 +524,52 @@ mod tests {
         .expect("the re-imported collection should receive the new document");
 
         assert_eq!(synced.name, "after-delete.pdf");
+    }
+
+    #[tokio::test]
+    async fn pending_import_can_be_deleted_and_reimported() {
+        let (_source_dir, source) = test_state().await;
+        let (collection, _) = source
+            .storage
+            .write()
+            .await
+            .create_collection("Gone before import")
+            .await
+            .unwrap();
+        let ticket = share(&source, collection).await;
+        source
+            .storage
+            .read()
+            .await
+            .delete_collection(collection)
+            .await
+            .unwrap();
+
+        let (_target_dir, target) = test_state().await;
+        assert_eq!(target.import_collection(&ticket).await.unwrap(), collection);
+        assert!(target
+            .storage
+            .read()
+            .await
+            .collection_exists(collection)
+            .await
+            .unwrap());
+
+        target.delete_collection(collection).await.unwrap();
+        assert!(!target
+            .storage
+            .read()
+            .await
+            .collection_exists(collection)
+            .await
+            .unwrap());
+
+        assert_eq!(target.import_collection(&ticket).await.unwrap(), collection);
+
+        let storage = target.storage.read().await;
+        let collections = storage.list_collections().await.unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].0, collection);
+        assert!(collections[0].1.is_none());
     }
 }
