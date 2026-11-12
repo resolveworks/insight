@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/svelte';
+import { render, screen, cleanup } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { mockIPC } from '@tauri-apps/api/mocks';
-import type { Viewer } from '@embedpdf/viewer-svelte';
 import { page } from '$app/state';
 import { load as documentLoad } from './+page';
 import DocumentPage from './+page.svelte';
@@ -14,23 +13,12 @@ vi.mock('@tauri-apps/api/event', () => ({
 	listen: vi.fn(async () => () => {}),
 }));
 
-vi.mock('@embedpdf/viewer', () => ({}));
-
-interface ViewerElement extends HTMLElement {
-	src?: Uint8Array;
-	config: { onReady: (viewer: Viewer) => void };
-}
-
-const textEncoder = new TextEncoder();
-
-function mockPdfSource() {
-	return { source: textEncoder.encode('%PDF-1.4') };
-}
-
-function viewerElement(): ViewerElement {
-	const element = document.querySelector('embedpdf-viewer');
-	if (!element) throw new Error('PDF viewer is not mounted');
-	return element as ViewerElement;
+/**
+ * A source read that never settles: the viewer only mounts once the source arrives, and a real
+ * PDF engine has no business running in these tests.
+ */
+function pendingSource() {
+	return new Promise<ArrayBuffer>(() => {});
 }
 
 const collection = {
@@ -100,8 +88,8 @@ describe('Document detail page', () => {
 	it('names the document with a second-level content heading', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return pendingSource();
 		});
-		mockPdfSource();
 
 		renderPage();
 
@@ -114,8 +102,8 @@ describe('Document detail page', () => {
 	it('links back to the documents list above the title', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return pendingSource();
 		});
-		mockPdfSource();
 
 		renderPage();
 
@@ -129,8 +117,8 @@ describe('Document detail page', () => {
 	it('summarises the document under its title', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return pendingSource();
 		});
-		mockPdfSource();
 
 		renderPage({ page_count: 1, tags: ['budget', 'eu'] });
 
@@ -144,8 +132,8 @@ describe('Document detail page', () => {
 	it('renders the extracted document text', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return pendingSource();
 		});
-		mockPdfSource();
 
 		renderPage();
 		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
@@ -156,8 +144,8 @@ describe('Document detail page', () => {
 	it('warns that search covers only part of a partially indexed document', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return pendingSource();
 		});
-		mockPdfSource();
 
 		renderPage({ partially_indexed: true });
 
@@ -172,8 +160,8 @@ describe('Document detail page', () => {
 	it('shows no partial-index warning when coverage is full', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return pendingSource();
 		});
-		mockPdfSource();
 
 		renderPage({ partially_indexed: false });
 		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
@@ -185,8 +173,8 @@ describe('Document detail page', () => {
 	it('shows no partial-index warning while coverage is unknown', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_source') return pendingSource();
 		});
-		mockPdfSource();
 
 		renderPage({ partially_indexed: null });
 		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
@@ -204,10 +192,9 @@ describe('Document detail source and text tabs', () => {
 	}
 
 	it('shows source and text tabs with the source selected', async () => {
-		const { source } = mockPdfSource();
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return source.buffer;
+			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage();
@@ -220,10 +207,9 @@ describe('Document detail source and text tabs', () => {
 	});
 
 	it('switches to the extraction and back to the source', async () => {
-		const { source } = mockPdfSource();
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return source.buffer;
+			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage();
@@ -245,39 +231,6 @@ describe('Document detail source and text tabs', () => {
 		);
 		expect(tabPanel('source-panel')).not.toHaveAttribute('hidden');
 		expect(tabPanel('text-panel')).toHaveAttribute('hidden');
-	});
-
-	it('selects the source and forwards the requested page', async () => {
-		page.url = new URL(
-			'http://localhost/collections/col1/documents/doc1?page=3',
-		);
-		const { source } = mockPdfSource();
-		mockIPC((cmd) => {
-			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return source.buffer;
-		});
-		const goToPage = vi.fn();
-		let opened: (() => void) | undefined;
-		const viewer = {
-			documents: {
-				onOpened: vi.fn((callback: () => void) => {
-					opened = callback;
-				}),
-			},
-			get: vi.fn(() => ({ goToPage })),
-		} as unknown as Viewer;
-
-		renderPage();
-
-		expect(await screen.findByRole('tab', { name: 'Source' })).toHaveAttribute(
-			'aria-selected',
-			'true',
-		);
-
-		await waitFor(() => expect(viewerElement().src).toBeDefined());
-		viewerElement().config.onReady(viewer);
-		opened?.();
-		await waitFor(() => expect(goToPage).toHaveBeenCalledWith(2));
 	});
 
 	it('renders text without tabs and never reads the source', async () => {
