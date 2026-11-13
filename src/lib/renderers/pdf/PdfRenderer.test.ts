@@ -24,7 +24,13 @@ describe('PdfRenderer', () => {
 		});
 
 		render(PdfRenderer, {
-			props: { collectionId: 'col1', documentId: 'doc1', page: null },
+			props: {
+				collectionId: 'col1',
+				documentId: 'doc1',
+				page: null,
+				query: '',
+				activeHit: 0,
+			},
 		});
 
 		await waitFor(() =>
@@ -38,7 +44,13 @@ describe('PdfRenderer', () => {
 		});
 
 		render(PdfRenderer, {
-			props: { collectionId: 'col1', documentId: 'doc1', page: null },
+			props: {
+				collectionId: 'col1',
+				documentId: 'doc1',
+				page: null,
+				query: '',
+				activeHit: 0,
+			},
 		});
 
 		expect(
@@ -54,7 +66,13 @@ describe('PdfRenderer', () => {
 		});
 
 		render(PdfRenderer, {
-			props: { collectionId: 'col1', documentId: 'doc1', page: null },
+			props: {
+				collectionId: 'col1',
+				documentId: 'doc1',
+				page: null,
+				query: '',
+				activeHit: 0,
+			},
 		});
 
 		expect(await screen.findByRole('alert')).toHaveTextContent(

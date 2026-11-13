@@ -1,6 +1,7 @@
 <script lang="ts">
 	type IconName =
 		| 'arrow-left'
+		| 'chevron-left'
 		| 'chevron-right'
 		| 'plus'
 		| 'trash'
@@ -32,6 +33,10 @@
 		'arrow-left': {
 			viewBox: '0 0 24 24',
 			shapes: [{ tag: 'path', d: 'M19 12H5M12 19l-7-7 7-7' }],
+		},
+		'chevron-left': {
+			viewBox: '0 0 24 24',
+			shapes: [{ tag: 'path', d: 'M15 18l-6-6 6-6' }],
 		},
 		'chevron-right': {
 			viewBox: '0 0 24 24',

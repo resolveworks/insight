@@ -4,6 +4,8 @@ export interface RendererProps {
 	collectionId: string;
 	documentId: string;
 	page: number | null;
+	query: string;
+	activeHit: number;
 }
 
 export interface Renderer {
