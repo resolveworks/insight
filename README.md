@@ -4,7 +4,7 @@
 
 ![Insight asking a question about a collection of papers, with the retrieved passages cited in the answer](.github/assets/insight-chat.png)
 
-Insight lets you build collections of PDFs, ask questions in plain language, and receive answers with citations. Documents and search indexes stay on your computer. Collections can sync directly between colleagues, and you choose the AI provider used for chat.
+Insight lets you build collections of documents, ask questions in plain language, and receive answers with citations. Documents and search indexes stay on your computer. Collections can sync directly between colleagues, and you choose the AI provider used for chat.
 
 ## Project status
 
