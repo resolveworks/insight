@@ -126,7 +126,7 @@
 									<!-- Consecutive reasoning/tool steps read as one subordinate trail. -->
 									<div class="flex flex-col gap-1">
 										{#each block.steps as step (step.key)}
-											<ActivityStepView {step} />
+											<ActivityStepView {step} {collectionId} />
 										{/each}
 									</div>
 								{:else if block.item.kind === 'user_text'}
