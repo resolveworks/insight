@@ -3,6 +3,7 @@ import { refreshCollection } from '#lib/invalidation.js';
 import type {
 	DeletedDocument,
 	Document,
+	DocumentSearchResults,
 	ImportOutcome,
 	PipelineProgress,
 } from '#lib/types/documents.js';
@@ -26,6 +27,19 @@ export async function getDocumentText(
 	documentId: string,
 ): Promise<string> {
 	return invoke<string>('get_document_text', { collectionId, documentId });
+}
+
+/** Search one document's indexed content for a literal phrase. */
+export async function searchDocument(
+	collectionId: string,
+	documentId: string,
+	query: string,
+): Promise<DocumentSearchResults> {
+	return invoke<DocumentSearchResults>('search_document', {
+		collectionId,
+		documentId,
+		query,
+	});
 }
 
 /** Read a document's original source bytes. */
