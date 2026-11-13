@@ -6,6 +6,7 @@ export interface RendererProps {
 	page: number | null;
 	query: string;
 	activeHit: number;
+	visible: boolean;
 }
 
 export interface Renderer {

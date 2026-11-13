@@ -1,9 +1,11 @@
 <script lang="ts" module>
 	import { localEngine } from '@embedpdf/engine';
 	import { renderPlugin } from '@embedpdf/svelte/render';
+	import { searchPlugin } from '@embedpdf/svelte/search';
+	import { stagePlugin } from '@embedpdf/svelte/stage';
 
 	const engine = localEngine();
-	const plugins = [renderPlugin()];
+	const plugins = [stagePlugin(), renderPlugin(), searchPlugin()];
 </script>
 
 <script lang="ts">
@@ -14,9 +16,16 @@
 	import Alert from '#lib/components/Alert.svelte';
 	import LoadingSpinner from '#lib/components/LoadingSpinner.svelte';
 	import type { RendererProps } from '../registry.js';
-	import PdfPageList from './PdfPageList.svelte';
+	import PdfStage from './PdfStage.svelte';
 
-	let { collectionId, documentId, page }: RendererProps = $props();
+	let {
+		collectionId,
+		documentId,
+		page,
+		query,
+		activeHit,
+		visible,
+	}: RendererProps = $props();
 
 	let source = $state<Uint8Array | null>(null);
 	let error = $state<string | null>(null);
@@ -54,7 +63,7 @@
 			{#snippet error(document)}
 				<Alert>{document.error.message}</Alert>
 			{/snippet}
-			<PdfPageList {documentId} {page} />
+			<PdfStage {page} {query} {activeHit} {visible} />
 		</DocumentGate>
 	</Viewer>
 {:else}

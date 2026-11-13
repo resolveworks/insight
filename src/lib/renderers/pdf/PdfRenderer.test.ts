@@ -30,6 +30,7 @@ describe('PdfRenderer', () => {
 				page: null,
 				query: '',
 				activeHit: 0,
+				visible: true,
 			},
 		});
 
@@ -50,6 +51,7 @@ describe('PdfRenderer', () => {
 				page: null,
 				query: '',
 				activeHit: 0,
+				visible: true,
 			},
 		});
 
@@ -72,6 +74,7 @@ describe('PdfRenderer', () => {
 				page: null,
 				query: '',
 				activeHit: 0,
+				visible: true,
 			},
 		});
 

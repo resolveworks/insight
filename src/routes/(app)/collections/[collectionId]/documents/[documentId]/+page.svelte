@@ -283,6 +283,7 @@
 					page={requestedPage}
 					{query}
 					{activeHit}
+					visible={activeTab === 'source'}
 				/>
 			{/await}
 		</div>
