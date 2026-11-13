@@ -24,9 +24,12 @@ use milli::{
     Condition, CreateOrOpen, FilterableAttributesRule, Index, IndexFilter, IndexFilterCondition,
     MatcherBuilder, MustStopProcessing, TermsMatchingStrategy, Token,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
+
+pub use crate::text::SourceRange;
+use crate::text::{source_range, Extraction};
 
 /// Fields indexed for keyword search, in relevance order.
 const SEARCHABLE_FIELDS: [&str; 2] = ["document_name", "content"];
@@ -46,6 +49,12 @@ fn indexed_field_equals(field: &str, value: &str) -> IndexFilterCondition {
 /// Restrict a search to one collection.
 fn collection_filter(collection_id: &str) -> IndexFilter {
     IndexFilter::from(indexed_field_equals("collection_id", collection_id))
+}
+
+/// Restrict a search to one document in one collection.
+fn document_filter(collection_id: &str, document_id: &str) -> IndexFilter {
+    collection_filter(collection_id)
+        & IndexFilter::from(indexed_field_equals("document_id", document_id))
 }
 
 /// Open or create a milli search index
@@ -406,6 +415,44 @@ pub struct SearchResults {
     pub total_hits: usize,
 }
 
+/// Parameters for a literal phrase search over one indexed document.
+pub struct DocumentSearchParams<'a> {
+    /// Literal text to find. All its words must occur in order; milli query
+    /// syntax is not interpreted.
+    pub query: &'a str,
+    /// Collection that owns the document.
+    pub collection_id: &'a str,
+    /// Document to search.
+    pub document_id: &'a str,
+    /// The document's canonical extraction, used to attribute matches to
+    /// source pages.
+    pub extraction: &'a Extraction,
+}
+
+/// Every match of a literal phrase within one indexed document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DocumentSearchResults {
+    /// Whether part of the document is outside the search index's coverage.
+    pub partially_indexed: bool,
+    /// Matches in content order.
+    pub matches: Vec<DocumentSearchMatch>,
+}
+
+/// One occurrence of a literal phrase in a document's content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DocumentSearchMatch {
+    /// The exact matched substring.
+    pub content: String,
+    /// Zero-based Unicode character offset of the match in the extraction.
+    /// This is a character offset, not a UTF-8 byte offset.
+    pub offset: usize,
+    /// Unicode character offset one past the match.
+    pub next_offset: usize,
+    /// Inclusive source pages covered by the match, when the extraction maps
+    /// pages.
+    pub source_range: Option<SourceRange>,
+}
+
 /// Character length of one search excerpt.
 const EXCERPT_LIMIT: usize = 500;
 /// Characters of context kept before the matching text when possible.
@@ -483,6 +530,107 @@ pub fn search_index(index: &Index, params: SearchParams<'_>) -> Result<SearchRes
     Ok(SearchResults { hits, total_hits })
 }
 
+/// Search exactly one indexed document for a literal phrase.
+///
+/// The query is matched as an ordered phrase over the document's words; milli
+/// query operators are never interpreted. Every content occurrence is
+/// returned, with character offsets and the source pages it covers.
+///
+/// Returns an error when the document has no index record in the collection.
+/// An empty query returns no matches without running a search.
+pub fn search_document(
+    index: &Index,
+    params: DocumentSearchParams<'_>,
+) -> Result<DocumentSearchResults> {
+    let DocumentSearchParams {
+        query,
+        collection_id,
+        document_id,
+        extraction,
+    } = params;
+
+    let external_id = document_external_id(collection_id, document_id);
+    let document =
+        get_indexed_document_by_external_id(index, &external_id)?.with_context(|| {
+            format!("document {document_id} in collection {collection_id} is not indexed")
+        })?;
+
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(DocumentSearchResults {
+            partially_indexed: document.partially_indexed,
+            matches: Vec::new(),
+        });
+    }
+
+    let phrase_query = literal_phrase_query(query);
+    let rtxn = index.read_txn()?;
+    let result = execute_search_with_filter(
+        index,
+        &rtxn,
+        &phrase_query,
+        1,
+        0,
+        document_filter(collection_id, document_id),
+    )?;
+
+    if result.documents_ids.is_empty() {
+        return Ok(DocumentSearchResults {
+            partially_indexed: document.partially_indexed,
+            matches: Vec::new(),
+        });
+    }
+
+    let stop_words = index.stop_words(&rtxn)?;
+    let separators = index.allowed_separators(&rtxn)?;
+    let separators: Option<Vec<_>> = separators
+        .as_ref()
+        .map(|separators| separators.iter().map(String::as_str).collect());
+    let dictionary = index.dictionary(&rtxn)?;
+    let dictionary: Option<Vec<_>> = dictionary
+        .as_ref()
+        .map(|dictionary| dictionary.iter().map(String::as_str).collect());
+    let mut tokenizer_builder = tokenizer_builder(
+        stop_words.as_ref(),
+        separators.as_deref(),
+        dictionary.as_deref(),
+    );
+    let tokenizer = tokenizer_builder.build();
+    let matcher_builder = MatcherBuilder::new(result.matching_words, tokenizer);
+
+    let mut matcher = matcher_builder.build(&document.content, None);
+    let matches = matcher
+        .matches(&[])
+        .into_iter()
+        .map(|bounds| {
+            let start = bounds.start;
+            let end = start + bounds.length;
+            let offset = document.content[..start].chars().count();
+            let next_offset = offset + document.content[start..end].chars().count();
+            DocumentSearchMatch {
+                content: document.content[start..end].to_string(),
+                offset,
+                next_offset,
+                source_range: source_range(extraction, &document.content, offset, next_offset),
+            }
+        })
+        .collect();
+
+    Ok(DocumentSearchResults {
+        partially_indexed: document.partially_indexed,
+        matches,
+    })
+}
+
+/// Translate literal text into one milli phrase query.
+///
+/// Double quotes delimit phrases in milli's query grammar but are ordinary
+/// separators in indexed text, so they are replaced with spaces rather than
+/// escaping the phrase.
+fn literal_phrase_query(query: &str) -> String {
+    format!("\"{}\"", query.replace('"', " "))
+}
+
 /// Execute a milli search, returning its raw result set.
 fn execute_search(
     index: &Index,
@@ -491,6 +639,25 @@ fn execute_search(
     limit: usize,
     offset: usize,
     collection_id: &str,
+) -> Result<milli::SearchResult> {
+    execute_search_with_filter(
+        index,
+        rtxn,
+        query,
+        limit,
+        offset,
+        collection_filter(collection_id),
+    )
+}
+
+/// Execute a milli search with an explicit index filter.
+fn execute_search_with_filter(
+    index: &Index,
+    rtxn: &milli::heed::RoTxn,
+    query: &str,
+    limit: usize,
+    offset: usize,
+    filter: IndexFilter,
 ) -> Result<milli::SearchResult> {
     let fields_ids_map = index.fields_ids_map(rtxn)?;
     let progress = Progress::quiet();
@@ -509,7 +676,7 @@ fn execute_search(
     search.exhaustive_number_hits(true);
     search.terms_matching_strategy(TermsMatchingStrategy::Last);
 
-    search.filter(Some(collection_filter(collection_id)));
+    search.filter(Some(filter));
 
     Ok(search.execute()?)
 }
@@ -815,6 +982,7 @@ fn delete_documents_by_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{ParserId, TextSpan, Unit, UnitKind};
 
     fn test_indexer_config() -> IndexerConfig {
         IndexerConfig::default()
@@ -834,6 +1002,50 @@ mod tests {
             content: content.to_string(),
             collection_id: collection_id.to_string(),
         }
+    }
+
+    /// Build an extraction whose pages cover `text` up to the byte ends.
+    fn make_extraction(text: &str, page_ends: &[usize]) -> Extraction {
+        let mut start = 0;
+        let units = page_ends
+            .iter()
+            .enumerate()
+            .map(|(index, end)| {
+                let unit = Unit {
+                    number: index + 1,
+                    spans: vec![TextSpan { start, end: *end }],
+                };
+                start = *end;
+                unit
+            })
+            .collect();
+        Extraction {
+            parser: ParserId {
+                name: "test-parser".to_string(),
+            },
+            text: text.to_string(),
+            unit_kind: (!page_ends.is_empty()).then_some(UnitKind::Page),
+            units,
+        }
+    }
+
+    fn search_document_in(
+        index: &Index,
+        collection_id: &str,
+        document_id: &str,
+        query: &str,
+        extraction: &Extraction,
+    ) -> DocumentSearchResults {
+        search_document(
+            index,
+            DocumentSearchParams {
+                query,
+                collection_id,
+                document_id,
+                extraction,
+            },
+        )
+        .unwrap()
     }
 
     /// Helper to get a string field from a document (for testing)
@@ -1277,5 +1489,213 @@ mod tests {
 
         let terms = get_collection_terms(&index, "col1", 3).unwrap();
         assert!(terms.len() <= 3, "Should return at most 3 terms");
+    }
+
+    #[test]
+    fn test_document_search_returns_every_matching_phrase() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let content = "alpha beta first. alpha is not beta in order. \
+                       A second alpha beta appears. Final alpha beta.";
+        let document = make_document("doc1", "report.pdf", content, "col1");
+        index_documents_batch(&index, &config, vec![document]).unwrap();
+        let extraction = make_extraction(content, &[]);
+
+        let results = search_document_in(&index, "col1", "doc1", "alpha beta", &extraction);
+
+        assert!(!results.partially_indexed);
+        let expected: Vec<_> = content.match_indices("alpha beta").collect();
+        assert_eq!(results.matches.len(), expected.len());
+        assert_eq!(results.matches.len(), 3);
+
+        for (found, (byte_offset, matched)) in results.matches.iter().zip(expected) {
+            assert_eq!(found.content, matched);
+            assert_eq!(found.offset, content[..byte_offset].chars().count());
+            assert_eq!(found.next_offset, found.offset + matched.chars().count());
+            assert_eq!(found.source_range, None);
+        }
+    }
+
+    #[test]
+    fn test_document_search_offsets_are_unicode_characters() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let content = "Préface\ndéjà vu — 東京 — encore 東京";
+        let document = make_document("doc1", "unicode.pdf", content, "col1");
+        index_documents_batch(&index, &config, vec![document]).unwrap();
+        let extraction = make_extraction(content, &[]);
+
+        let tokyo = search_document_in(&index, "col1", "doc1", "東京", &extraction);
+        let expected: Vec<_> = content.match_indices("東京").collect();
+        assert_eq!(tokyo.matches.len(), 2);
+        for (found, (byte_offset, matched)) in tokyo.matches.iter().zip(expected) {
+            assert_eq!(found.content, matched);
+            assert_eq!(found.offset, content[..byte_offset].chars().count());
+            assert_ne!(found.offset, byte_offset, "offset is a character offset");
+            assert_eq!(found.next_offset, found.offset + matched.chars().count());
+        }
+
+        let vu = search_document_in(&index, "col1", "doc1", "vu", &extraction);
+        let (byte_offset, _) = content.match_indices("vu").next().unwrap();
+        assert_eq!(vu.matches.len(), 1);
+        assert_eq!(vu.matches[0].content, "vu");
+        assert_eq!(vu.matches[0].offset, content[..byte_offset].chars().count());
+        assert_ne!(vu.matches[0].offset, byte_offset);
+    }
+
+    #[test]
+    fn test_document_search_attributes_matches_to_pages() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let page_one = "Page one has no target.\n";
+        let page_two = "Page two has needle here.\n";
+        let page_three = "Page three needle again.";
+        let content = format!("{page_one}{page_two}{page_three}");
+        let page_ends = [
+            page_one.len(),
+            page_one.len() + page_two.len(),
+            content.len(),
+        ];
+        let document = make_document("doc1", "pages.pdf", &content, "col1");
+        index_documents_batch(&index, &config, vec![document]).unwrap();
+        let extraction = make_extraction(&content, &page_ends);
+
+        let results = search_document_in(&index, "col1", "doc1", "needle", &extraction);
+
+        assert_eq!(results.matches.len(), 2);
+        assert_eq!(results.matches[0].content, "needle");
+        assert_eq!(
+            results.matches[0].source_range,
+            Some(SourceRange { start: 2, end: 2 })
+        );
+        assert_eq!(
+            results.matches[1].source_range,
+            Some(SourceRange { start: 3, end: 3 })
+        );
+    }
+
+    #[test]
+    fn test_document_search_is_scoped_to_one_document_in_one_collection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let documents = vec![
+            make_document("doc1", "a.pdf", "shared phrase only here", "col1"),
+            make_document(
+                "doc2",
+                "b.pdf",
+                "shared phrase and another shared phrase",
+                "col1",
+            ),
+            make_document(
+                "doc1",
+                "a.pdf",
+                "shared phrase shared phrase shared phrase",
+                "col2",
+            ),
+        ];
+        index_documents_batch(&index, &config, documents).unwrap();
+
+        let first = make_extraction("shared phrase only here", &[]);
+        let results = search_document_in(&index, "col1", "doc1", "shared phrase", &first);
+        assert_eq!(results.matches.len(), 1);
+
+        let second = make_extraction("shared phrase and another shared phrase", &[]);
+        let results = search_document_in(&index, "col1", "doc2", "shared phrase", &second);
+        assert_eq!(results.matches.len(), 2);
+
+        let other_collection = make_extraction("shared phrase shared phrase shared phrase", &[]);
+        let results =
+            search_document_in(&index, "col2", "doc1", "shared phrase", &other_collection);
+        assert_eq!(results.matches.len(), 3);
+    }
+
+    #[test]
+    fn test_document_search_missing_record_is_an_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let document = make_document("doc1", "a.pdf", "Some indexed content", "col1");
+        index_documents_batch(&index, &config, vec![document]).unwrap();
+        let extraction = make_extraction("Some indexed content", &[]);
+
+        let missing_document = search_document(
+            &index,
+            DocumentSearchParams {
+                query: "indexed",
+                collection_id: "col1",
+                document_id: "missing",
+                extraction: &extraction,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            format!("{missing_document:#}").contains("document missing in collection col1"),
+            "unexpected error: {missing_document:#}"
+        );
+
+        let missing_collection = search_document(
+            &index,
+            DocumentSearchParams {
+                query: "indexed",
+                collection_id: "missing",
+                document_id: "doc1",
+                extraction: &extraction,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            format!("{missing_collection:#}").contains("document doc1 in collection missing"),
+            "unexpected error: {missing_collection:#}"
+        );
+    }
+
+    #[test]
+    fn test_document_search_empty_query_returns_no_matches() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let content = "Some indexed content";
+        let document = make_document("doc1", "a.pdf", content, "col1");
+        index_documents_batch(&index, &config, vec![document]).unwrap();
+        let extraction = make_extraction(content, &[]);
+
+        for query in ["", "   \n\t"] {
+            let results = search_document_in(&index, "col1", "doc1", query, &extraction);
+            assert!(!results.partially_indexed);
+            assert!(results.matches.is_empty());
+        }
+
+        let no_match = search_document_in(&index, "col1", "doc1", "absent", &extraction);
+        assert!(no_match.matches.is_empty());
+    }
+
+    #[test]
+    fn test_document_search_does_not_scan_partially_indexed_content() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let index = open_index(temp_dir.path()).unwrap();
+        let config = test_indexer_config();
+
+        let mut content = "word ".repeat(66_000);
+        content.push_str("tailmarker");
+        let document = make_document("doc1", "long.pdf", &content, "col1");
+        index_documents_batch(&index, &config, vec![document]).unwrap();
+        let extraction = make_extraction(&content, &[]);
+
+        let results = search_document_in(&index, "col1", "doc1", "tailmarker", &extraction);
+        assert!(results.partially_indexed);
+        assert!(
+            results.matches.is_empty(),
+            "unindexed text must not be found by scanning"
+        );
     }
 }
