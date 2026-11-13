@@ -9,6 +9,7 @@
 		placeholder?: string;
 		disabled?: boolean;
 		value?: string;
+		oninput?: (value: string) => void;
 	}
 
 	let {
@@ -19,9 +20,23 @@
 		placeholder,
 		disabled = false,
 		value = $bindable(''),
+		oninput,
 	}: Props = $props();
+
+	function handleInput(event: Event & { currentTarget: HTMLInputElement }) {
+		value = event.currentTarget.value;
+		oninput?.(value);
+	}
 </script>
 
 <Field {id} {label} {hint}>
-	<input {id} {type} {placeholder} {disabled} bind:value class="w-full field" />
+	<input
+		{id}
+		{type}
+		{placeholder}
+		{disabled}
+		bind:value
+		oninput={handleInput}
+		class="w-full field"
+	/>
 </Field>

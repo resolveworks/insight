@@ -11,6 +11,9 @@ HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
 	this.dispatchEvent(new Event('close'));
 };
 
+// jsdom ships the element but not scrolling; the webviews we target do.
+Element.prototype.scrollIntoView = function () {};
+
 // Clear Tauri mocks after each test to prevent state leakage
 afterEach(() => {
 	clearMocks();

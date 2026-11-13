@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/svelte';
+import { render, screen, cleanup, fireEvent } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { page } from '$app/state';
+import { replaceState } from '$app/navigation';
 import { load as documentLoad } from './+page';
 import DocumentPage from './+page.svelte';
 import type { PageProps } from './$types';
@@ -61,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
@@ -245,5 +247,180 @@ describe('Document detail source and text tabs', () => {
 		expect(await screen.findByText('Extracted text')).toBeVisible();
 		expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
 		expect(commands).not.toContain('get_document_source');
+	});
+});
+
+describe('Document detail search', () => {
+	const matches = [
+		{ content: 'needle', offset: 0, next_offset: 6, source_range: null },
+		{ content: 'needle', offset: 13, next_offset: 19, source_range: null },
+		{ content: 'needle', offset: 25, next_offset: 31, source_range: null },
+	];
+	const results = { partially_indexed: false, matches };
+	const text = 'needle alpha needle beta needle';
+
+	function mockSearch(handler: (payload: unknown) => unknown = () => results) {
+		const searches: unknown[] = [];
+		mockIPC((cmd, payload) => {
+			if (cmd === 'get_document_text') return text;
+			if (cmd === 'get_document_source') return pendingSource();
+			if (cmd === 'search_document') {
+				searches.push(payload);
+				return handler(payload);
+			}
+		});
+		return searches;
+	}
+
+	it('runs a deep-linked search immediately, selects its hit and opens Text', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2&view=text',
+		);
+		const searches = mockSearch();
+
+		renderPage({ partially_indexed: false });
+
+		expect(await screen.findByText('2 of 3')).toBeVisible();
+		expect(searches).toEqual([
+			{ collectionId: 'col1', documentId: 'doc1', query: 'needle' },
+		]);
+		expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute(
+			'aria-selected',
+			'true',
+		);
+		const marks = document.querySelectorAll('mark');
+		expect(marks).toHaveLength(3);
+		expect(marks[1]).toHaveAttribute('data-active', 'true');
+	});
+
+	it('keeps Source selected for a query deep link without a view', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2',
+		);
+		mockSearch();
+
+		renderPage({ partially_indexed: false });
+
+		expect(await screen.findByText('2 of 3')).toBeVisible();
+		expect(screen.getByRole('tab', { name: 'Source' })).toHaveAttribute(
+			'aria-selected',
+			'true',
+		);
+	});
+
+	it('searches after manual typing settles and resets the URL hit', async () => {
+		mockSearch();
+		renderPage({ partially_indexed: false });
+		const input = await screen.findByRole('textbox', {
+			name: 'Search document',
+		});
+
+		vi.useFakeTimers();
+		await fireEvent.input(input, { target: { value: 'needle' } });
+
+		expect(page.url.searchParams.get('q')).toBe('needle');
+		expect(page.url.searchParams.has('hit')).toBe(false);
+		expect(page.url.searchParams.has('page')).toBe(false);
+		expect(replaceState).toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(200);
+
+		expect(await screen.findByText('1 of 3')).toBeVisible();
+		expect(
+			screen.getByRole('textbox', { name: 'Search document' }),
+		).toHaveValue('needle');
+		vi.useRealTimers();
+	});
+
+	it('clears the query without searching and disables navigation', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2&view=text',
+		);
+		const searches = mockSearch();
+		renderPage({ partially_indexed: false });
+		expect(await screen.findByText('2 of 3')).toBeVisible();
+
+		await userEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+
+		expect(page.url.searchParams.has('q')).toBe(false);
+		expect(page.url.searchParams.has('hit')).toBe(false);
+		expect(searches).toHaveLength(1);
+		expect(document.querySelectorAll('mark')).toHaveLength(0);
+		expect(
+			screen.getByRole('button', { name: 'Previous match' }),
+		).toBeDisabled();
+		expect(screen.getByRole('button', { name: 'Next match' })).toBeDisabled();
+	});
+
+	it('wraps previous and next navigation while replacing the URL', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=1&view=text&page=2',
+		);
+		mockSearch();
+		renderPage({ partially_indexed: false });
+		expect(await screen.findByText('1 of 3')).toBeVisible();
+
+		await userEvent.click(screen.getByRole('button', { name: 'Next match' }));
+
+		expect(await screen.findByText('2 of 3')).toBeVisible();
+		expect(page.url.searchParams.get('hit')).toBe('2');
+		expect(page.url.searchParams.get('q')).toBe('needle');
+		expect(page.url.searchParams.get('view')).toBe('text');
+		expect(page.url.searchParams.has('page')).toBe(false);
+
+		await userEvent.click(
+			screen.getByRole('button', { name: 'Previous match' }),
+		);
+		expect(await screen.findByText('1 of 3')).toBeVisible();
+
+		await userEvent.click(
+			screen.getByRole('button', { name: 'Previous match' }),
+		);
+		expect(await screen.findByText('3 of 3')).toBeVisible();
+		expect(page.url.searchParams.get('hit')).toBe('3');
+	});
+
+	it('shows no matches and disables navigation', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?q=missing&view=text',
+		);
+		mockSearch(() => ({ partially_indexed: false, matches: [] }));
+		renderPage({ partially_indexed: false });
+
+		expect(await screen.findByText('No matches')).toBeVisible();
+		expect(
+			screen.getByRole('button', { name: 'Previous match' }),
+		).toBeDisabled();
+		expect(screen.getByRole('button', { name: 'Next match' })).toBeDisabled();
+	});
+
+	it('shows a deep-linked search error while manual search is disabled', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?q=needle',
+		);
+		const searches = mockSearch(() => {
+			throw { code: 'not_indexed', message: 'Document is not indexed' };
+		});
+		renderPage({ partially_indexed: null });
+
+		expect(await screen.findByRole('alert')).toHaveTextContent(
+			'Document is not indexed',
+		);
+		expect(searches).toHaveLength(1);
+		expect(
+			screen.getByRole('textbox', { name: 'Search document' }),
+		).toBeDisabled();
+	});
+
+	it('selects the first match when the requested hit is out of range', async () => {
+		page.url = new URL(
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=9&view=text',
+		);
+		mockSearch();
+		renderPage({ partially_indexed: false });
+
+		expect(await screen.findByText('1 of 3')).toBeVisible();
+		const marks = document.querySelectorAll('mark');
+		expect(marks[0]).toHaveAttribute('data-active', 'true');
 	});
 });

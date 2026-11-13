@@ -1,27 +1,47 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import Alert from '#lib/components/Alert.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
+	import DocumentSearch from '#lib/components/DocumentSearch.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import TagList from '#lib/components/TagList.svelte';
-	import { getDocumentText } from '#lib/api/document.js';
+	import { getDocumentText, searchDocument } from '#lib/api/document.js';
 	import { describeError } from '#lib/api/provider.js';
 	import { formatTimestamp } from '#lib/format.js';
 	import { rendererFor } from '#lib/renderers/index.js';
+	import type { DocumentSearchResults } from '#lib/types/documents.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
 	type Tab = 'source' | 'text';
+	type PageUrl = typeof page.url;
+
+	function requestedHit(url: PageUrl): number {
+		const raw = url.searchParams.get('hit');
+		if (raw === null) return 1;
+		const parsed = Number(raw);
+		return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+	}
+
+	function requestedTab(url: PageUrl): Tab {
+		return url.searchParams.get('view') === 'text' ? 'text' : 'source';
+	}
 
 	let content = $state<string | null>(null);
 	let loadingContent = $state(false);
 	let contentError = $state<string | null>(null);
-	let activeTab = $state<Tab>('source');
+	let activeTab = $state<Tab>(requestedTab(page.url));
+	let query = $state(page.url.searchParams.get('q') ?? '');
+	let results = $state<DocumentSearchResults | null>(null);
+	let activeHit = $state(0);
+	let searching = $state(false);
+	let searchError = $state<string | null>(null);
 
 	const collectionId = $derived(data.collection.id);
 	const documentId = $derived(data.document.id);
@@ -34,14 +54,121 @@
 		return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 	});
 
-	let tabDocumentId: string | undefined;
+	let syncedUrl: string | undefined;
 
 	$effect(() => {
-		if (documentId !== tabDocumentId || requestedPage !== null) {
-			tabDocumentId = documentId;
-			activeTab = 'source';
-		}
+		const href = page.url.href;
+		if (href === syncedUrl) return;
+		syncedUrl = href;
+		activeTab = requestedTab(page.url);
 	});
+
+	let searchRequest = 0;
+	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function cancelSearch() {
+		searchRequest += 1;
+		if (searchTimer !== undefined) {
+			clearTimeout(searchTimer);
+			searchTimer = undefined;
+		}
+	}
+
+	async function runSearch(value: string, hit: number) {
+		const request = ++searchRequest;
+		results = null;
+		searchError = null;
+		searching = true;
+		try {
+			const found = await searchDocument(collectionId, documentId, value);
+			if (request !== searchRequest) return;
+			results = found;
+			activeHit =
+				found.matches.length === 0 || hit > found.matches.length ? 0 : hit - 1;
+		} catch (e) {
+			if (request !== searchRequest) return;
+			searchError = describeError(e);
+		} finally {
+			if (request === searchRequest) searching = false;
+		}
+	}
+
+	function updateUrl(change: (url: URL) => void) {
+		const url = new URL(page.url.href);
+		change(url);
+		// The current route with its query replaced; resolve() cannot type a runtime query.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void replaceState(url, page.state);
+	}
+
+	let searchDocumentId: string | undefined;
+
+	$effect(() => {
+		const id = documentId;
+		if (id === searchDocumentId) return;
+		searchDocumentId = id;
+
+		const url = untrack(() => page.url);
+		const value = url.searchParams.get('q') ?? '';
+		cancelSearch();
+		query = value;
+		results = null;
+		activeHit = 0;
+		searchError = null;
+		searching = false;
+		if (value.trim() !== '') void runSearch(value, requestedHit(url));
+	});
+
+	$effect(() => {
+		return () => {
+			cancelSearch();
+		};
+	});
+
+	function handleQueryChange(value: string) {
+		query = value;
+		activeHit = 0;
+		cancelSearch();
+		results = null;
+		searchError = null;
+		searching = false;
+
+		updateUrl((url) => {
+			if (value === '') url.searchParams.delete('q');
+			else url.searchParams.set('q', value);
+			url.searchParams.delete('hit');
+			url.searchParams.delete('page');
+		});
+
+		if (value.trim() === '') return;
+
+		searchTimer = setTimeout(() => {
+			searchTimer = undefined;
+			void runSearch(value, 1);
+		}, 200);
+	}
+
+	function clearSearch() {
+		handleQueryChange('');
+	}
+
+	function moveHit(step: number) {
+		const matches = results?.matches ?? [];
+		if (matches.length === 0) return;
+		activeHit = (activeHit + step + matches.length) % matches.length;
+		updateUrl((url) => {
+			url.searchParams.set('hit', String(activeHit + 1));
+			url.searchParams.delete('page');
+		});
+	}
+
+	function selectTab(tab: Tab) {
+		activeTab = tab;
+		updateUrl((url) => {
+			if (tab === 'text') url.searchParams.set('view', 'text');
+			else url.searchParams.delete('view');
+		});
+	}
 
 	onMount(async () => {
 		// Load document content — failure here is non-critical;
@@ -98,6 +225,19 @@
 		</Alert>
 	{/if}
 
+	<DocumentSearch
+		bind:query
+		{results}
+		{activeHit}
+		{searching}
+		error={searchError}
+		disabled={data.document.partially_indexed === null}
+		onquerychange={handleQueryChange}
+		onprevious={() => moveHit(-1)}
+		onnext={() => moveHit(1)}
+		onclear={clearSearch}
+	/>
+
 	{#if renderer}
 		<div role="tablist" class="flex gap-1 border-b border-neutral-200">
 			<button
@@ -110,7 +250,7 @@
 				'source'
 					? 'border-neutral-800 text-neutral-800'
 					: 'border-transparent text-neutral-500 hover:text-neutral-700'}"
-				onclick={() => (activeTab = 'source')}
+				onclick={() => selectTab('source')}
 			>
 				Source
 			</button>
@@ -124,7 +264,7 @@
 				'text'
 					? 'border-neutral-800 text-neutral-800'
 					: 'border-transparent text-neutral-500 hover:text-neutral-700'}"
-				onclick={() => (activeTab = 'text')}
+				onclick={() => selectTab('text')}
 			>
 				Text
 			</button>
@@ -137,7 +277,13 @@
 			hidden={activeTab !== 'source'}
 		>
 			{#await renderer.load() then Renderer}
-				<Renderer {collectionId} {documentId} page={requestedPage} />
+				<Renderer
+					{collectionId}
+					{documentId}
+					page={requestedPage}
+					{query}
+					{activeHit}
+				/>
 			{/await}
 		</div>
 
@@ -148,9 +294,23 @@
 			hidden={activeTab !== 'text'}
 			class="mx-auto max-w-2xl"
 		>
-			<DocumentText {content} error={contentError} loading={loadingContent} />
+			<DocumentText
+				{content}
+				error={contentError}
+				loading={loadingContent}
+				matches={results?.matches ?? []}
+				{activeHit}
+				visible={activeTab === 'text'}
+			/>
 		</div>
 	{:else}
-		<DocumentText {content} error={contentError} loading={loadingContent} />
+		<DocumentText
+			{content}
+			error={contentError}
+			loading={loadingContent}
+			matches={results?.matches ?? []}
+			{activeHit}
+			visible={true}
+		/>
 	{/if}
 </Page>
