@@ -223,11 +223,18 @@ describe('Chat', () => {
 							{
 								document_name: 'report.pdf',
 								document_id: 'doc-1',
+								quote: {
+									content: 'climate budget',
+									offset: 120,
+									next_offset: 134,
+									source_range: { start: 2, end: 2 },
+								},
 								excerpt: { content: 'unique excerpt content' },
 							},
 							{
 								document_name: 'notes.txt',
 								document_id: 'doc-2',
+								quote: null,
 								excerpt: null,
 							},
 						],
@@ -251,6 +258,65 @@ describe('Chat', () => {
 		expect(details).toHaveAttribute('open');
 		expect(screen.getByText(/unique excerpt content/)).toBeVisible();
 		expect(screen.getByText(/query:/)).toBeVisible();
+
+		const [quoteLink, filenameLink] = screen.getAllByRole('link');
+		const quoteHref = new URL(
+			quoteLink.getAttribute('href')!,
+			'http://localhost',
+		);
+		expect(quoteHref.pathname).toBe('/collections/col1/documents/doc-1');
+		expect(quoteHref.searchParams.get('q')).toBe('climate budget');
+		expect(quoteHref.searchParams.has('hit')).toBe(false);
+		expect(quoteLink).toHaveTextContent('report.pdf');
+		expect(quoteLink).toHaveTextContent('Page 2');
+		expect(quoteLink).toHaveTextContent('unique excerpt content');
+
+		expect(filenameLink).toHaveAttribute(
+			'href',
+			'/collections/col1/documents/doc-2',
+		);
+		expect(filenameLink).toHaveTextContent('notes.txt');
+		expect(filenameLink).not.toHaveTextContent(/Page/);
+	});
+
+	it('links each successful search quote to its document search', async () => {
+		await renderChat(
+			'document-links',
+			{},
+			{
+				conversations: [{ id: 'c1', title: 'Existing chat' }],
+				transcript: [
+					toolCall('1-0', 'search', { query: 'needle' }),
+					toolResult('2-0', 'search', {
+						total_hits: 1,
+						hits: [
+							{
+								document_name: 'report.pdf',
+								document_id: 'doc-1',
+								quote: {
+									content: 'needle & thread',
+									offset: 40,
+									next_offset: 55,
+									source_range: { start: 4, end: 5 },
+								},
+								excerpt: { content: 'context around the needle' },
+							},
+						],
+					}),
+				],
+			},
+		);
+
+		const label = await screen.findByText('Search “needle”');
+		await fireEvent.click(label);
+
+		const link = screen.getByRole('link', { name: /report\.pdf/ });
+		const href = new URL(link.getAttribute('href')!, 'http://localhost');
+		expect(href.pathname).toBe('/collections/col1/documents/doc-1');
+		expect(href.searchParams.get('q')).toBe('needle & thread');
+		expect(href.searchParams.has('hit')).toBe(false);
+		expect(link).toHaveTextContent('Pages 4–5');
+		expect(link).toHaveTextContent('context around the needle');
 	});
 
 	it('shows a running step while its result is pending', async () => {

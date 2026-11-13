@@ -3,11 +3,12 @@
 	import Disclosure from './Disclosure.svelte';
 	import Icon from './Icon.svelte';
 	import LoadingSpinner from './LoadingSpinner.svelte';
+	import ResearchSearchResults from './ResearchSearchResults.svelte';
 	import { formatResult, type ActivityStep } from '#lib/chat/activity.js';
 
-	type Props = { step: ActivityStep };
+	type Props = { step: ActivityStep; collectionId: string };
 
-	let { step }: Props = $props();
+	let { step, collectionId }: Props = $props();
 </script>
 
 {#if step.kind === 'reasoning'}
@@ -63,7 +64,11 @@
 			{/if}
 
 			{#if step.resultText !== null}
-				<CodeBlock text={formatResult(step.resultText)} />
+				{#if step.name === 'search' && !step.isError}
+					<ResearchSearchResults {collectionId} resultText={step.resultText} />
+				{:else}
+					<CodeBlock text={formatResult(step.resultText)} />
+				{/if}
 			{/if}
 		</div>
 	</Disclosure>

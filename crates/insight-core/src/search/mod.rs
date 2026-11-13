@@ -407,6 +407,18 @@ pub struct SearchExcerpt {
     pub next_offset: usize,
     /// Total character length of the extraction.
     pub total_length: usize,
+    /// The first content match inside the excerpt.
+    pub matched: SearchMatch,
+}
+
+/// The exact text matched by the search query in a document's content.
+pub struct SearchMatch {
+    /// The exact matched substring.
+    pub content: String,
+    /// Zero-based Unicode character offset of the match in the extraction.
+    pub offset: usize,
+    /// Unicode character offset one past the match.
+    pub next_offset: usize,
 }
 
 /// Search results with pagination info.
@@ -690,6 +702,15 @@ fn excerpt_around_match(builder: &MatcherBuilder<'_>, text: &str) -> Option<Sear
 
     let total_length = text.chars().count();
     let match_start = text[..first.start].chars().count();
+    let match_end = match_start
+        + text[first.start..first.start + first.length]
+            .chars()
+            .count();
+    let matched = SearchMatch {
+        content: text[first.start..first.start + first.length].to_string(),
+        offset: match_start,
+        next_offset: match_end,
+    };
     let mut start = match_start.saturating_sub(EXCERPT_CONTEXT_BEFORE);
     let mut end = (start + EXCERPT_LIMIT).min(total_length);
     if end - start < EXCERPT_LIMIT && total_length >= EXCERPT_LIMIT {
@@ -703,6 +724,7 @@ fn excerpt_around_match(builder: &MatcherBuilder<'_>, text: &str) -> Option<Sear
         offset: start,
         next_offset: end,
         total_length,
+        matched,
     })
 }
 

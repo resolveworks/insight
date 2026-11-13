@@ -88,6 +88,19 @@ pub struct SearchExcerptResult {
     pub source_range: Option<SourceRange>,
 }
 
+/// The exact text a search query matched in a document's content.
+#[derive(Debug, Serialize)]
+pub struct SearchQuoteResult {
+    /// The exact matched substring.
+    pub content: String,
+    /// Zero-based Unicode character offset of the quote in the extraction.
+    pub offset: usize,
+    /// Unicode character offset one past the quote.
+    pub next_offset: usize,
+    /// Source pages covered by the quote, when the extraction maps pages.
+    pub source_range: Option<SourceRange>,
+}
+
 /// One ranked document search hit.
 #[derive(Debug, Serialize)]
 pub struct SearchHitResult {
@@ -99,6 +112,9 @@ pub struct SearchHitResult {
     pub partially_indexed: bool,
     /// Excerpt around the content match; `None` for a filename-only match.
     pub excerpt: Option<SearchExcerptResult>,
+    /// Exact first content match; `None` for a filename-only match. The
+    /// content can be reused verbatim as the document search query.
+    pub quote: Option<SearchQuoteResult>,
     /// Relevance score.
     pub score: f64,
 }
@@ -191,6 +207,17 @@ impl Tool for Search {
                 continue;
             };
 
+            let quote = hit.excerpt.as_ref().map(|excerpt| SearchQuoteResult {
+                content: excerpt.matched.content.clone(),
+                offset: excerpt.matched.offset,
+                next_offset: excerpt.matched.next_offset,
+                source_range: source_range(
+                    &extraction,
+                    &extraction.text,
+                    excerpt.matched.offset,
+                    excerpt.matched.next_offset,
+                ),
+            });
             let excerpt = hit.excerpt.map(|excerpt| SearchExcerptResult {
                 source_range: source_range(
                     &extraction,
@@ -209,6 +236,7 @@ impl Tool for Search {
                 document_id: hit.document_id,
                 partially_indexed: hit.partially_indexed,
                 excerpt,
+                quote,
                 score: search::compute_hit_score(&hit.scores),
             });
         }
@@ -643,6 +671,65 @@ mod tests {
         let excerpt = hit.excerpt.as_ref().expect("content match has an excerpt");
         assert!(excerpt.content.to_lowercase().contains("temperatures"));
         assert_eq!(excerpt.source_range.as_ref().unwrap().start, 1);
+        let quote = hit.quote.as_ref().expect("content match has a quote");
+        assert_eq!(quote.content, "temperatures");
+        assert_eq!(
+            quote.offset,
+            content[..content.find("temperatures").unwrap()]
+                .chars()
+                .count()
+        );
+        assert_eq!(
+            quote.next_offset,
+            quote.offset + "temperatures".chars().count()
+        );
+        assert_eq!(quote.source_range, Some(SourceRange { start: 1, end: 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_search_quote_is_the_exact_first_content_match_with_its_pages() {
+        let (_tmp, mut state) = create_state().await;
+        let page_one = format!("{}end of page one.\n", "filler words ".repeat(12));
+        let page_two = "The unique needle appears here.\n";
+        let page_three = "Closing page three.";
+        let content = format!("{page_one}{page_two}{page_three}");
+        let page_ends = vec![
+            page_one.len(),
+            page_one.len() + page_two.len(),
+            content.len(),
+        ];
+        let collection = create_collection(&state, "Paged").await;
+        let document_id = add_document(
+            &state,
+            &collection,
+            "Paged.pdf",
+            &content,
+            page_ends,
+            Some(UnitKind::Page),
+        )
+        .await;
+        index_document(&state, &collection, &document_id, "Paged.pdf", &content);
+        state.collection_id = scope(&collection);
+
+        let out = search(&state, "needle").await.unwrap();
+
+        let hit = &out.hits[0];
+        let quote = hit.quote.as_ref().expect("content match has a quote");
+        assert_eq!(quote.content, "needle");
+        assert_eq!(
+            quote.offset,
+            content[..content.find("needle").unwrap()].chars().count()
+        );
+        assert_eq!(quote.next_offset, quote.offset + "needle".chars().count());
+        assert_eq!(quote.source_range, Some(SourceRange { start: 2, end: 2 }));
+
+        let excerpt = hit.excerpt.as_ref().expect("content match has an excerpt");
+        assert!(excerpt.content.contains("needle"));
+        assert_eq!(
+            excerpt.source_range,
+            Some(SourceRange { start: 1, end: 3 }),
+            "the excerpt keeps its own, wider source range"
+        );
     }
 
     #[tokio::test]
@@ -670,6 +757,7 @@ mod tests {
         let out = search(&state, "Budget_Report").await.unwrap();
         assert_eq!(out.hits.len(), 1);
         assert!(out.hits[0].excerpt.is_none());
+        assert!(out.hits[0].quote.is_none());
     }
 
     #[tokio::test]
