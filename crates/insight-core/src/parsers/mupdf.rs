@@ -6,7 +6,7 @@
 //! Non-paginated formats are reflowed by MuPDF onto pages.
 
 use anyhow::{Context, Result};
-use mupdf::{Document, TextExtractOptions};
+use mupdf::{Document, TextExtractOptions, TextPageFlags};
 
 use super::{Format, Parser};
 use crate::text::{Extraction, ParserId, TextSpan, Unit, UnitKind};
@@ -14,10 +14,13 @@ use crate::text::{Extraction, ParserId, TextSpan, Unit, UnitKind};
 /// Parser name recorded on extractions produced by this module.
 const PARSER_NAME: &str = "mupdf";
 
-/// Parser version recorded on extractions produced by this module.
+/// Keep only text that can be seen, and flatten hyphenated line breaks.
 ///
-/// Bump this whenever the extractor's output changes.
-const PARSER_VERSION: &str = "1";
+/// `CLIP` drops glyphs entirely outside the page's clip path, which is how
+/// off-page content ends up in extraction; `DEHYPHENATE` joins a line ending
+/// in a hyphen with the next one instead of exposing `hyphen-` as a broken
+/// token.
+const EXTRACT_FLAGS: TextPageFlags = TextPageFlags::CLIP.union(TextPageFlags::DEHYPHENATE);
 
 /// The formats MuPDF's bundled handlers accept.
 const FORMATS: &[Format] = &[
@@ -60,7 +63,6 @@ impl Parser for MupdfParser {
     fn id(&self) -> ParserId {
         ParserId {
             name: PARSER_NAME.to_string(),
-            version: PARSER_VERSION.to_string(),
         }
     }
 
@@ -86,7 +88,9 @@ impl Parser for MupdfParser {
                 .load_page(page_number)
                 .with_context(|| format!("Failed to load page {}", index + 1))?;
             let page_text = page
-                .text(TextExtractOptions::default())
+                .text(TextExtractOptions {
+                    flags: EXTRACT_FLAGS,
+                })
                 .with_context(|| format!("Failed to extract text from page {}", index + 1))?;
 
             // MuPDF ends a page's text with a blank line for block separation —
@@ -166,7 +170,7 @@ mod tests {
         assert_eq!(result.units[0].spans.len(), 1);
         assert_eq!(result.units[0].spans[0].start, 0);
         assert_eq!(result.units[0].spans[0].end, result.text.len());
-        assert_eq!(result.parser.key(), "mupdf@1");
+        assert_eq!(result.parser.name, "mupdf");
     }
 
     #[test]

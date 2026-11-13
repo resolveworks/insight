@@ -583,7 +583,6 @@ mod tests {
             let extraction = Extraction {
                 parser: ParserId {
                     name: "test-parser".to_string(),
-                    version: "1".to_string(),
                 },
                 text: text.to_string(),
                 unit_kind: Some(unit_kind),
@@ -849,8 +848,7 @@ mod tests {
         let namespace_id = collection.parse::<iroh_docs::NamespaceId>().unwrap();
         let latest = Extraction {
             parser: ParserId {
-                name: "test-parser".to_string(),
-                version: "2".to_string(),
+                name: "latest-parser".to_string(),
             },
             text: "latest extraction".to_string(),
             unit_kind: Some(UnitKind::Page),

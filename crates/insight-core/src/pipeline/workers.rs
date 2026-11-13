@@ -71,7 +71,7 @@ pub fn spawn_extract_workers(
                     Ok(Some(metadata)) => {
                         tracing::debug!(
                             doc_id = %job.doc_id,
-                            parser = ?metadata.extraction.as_ref().map(|p| p.key()),
+                            parser = ?metadata.extraction.as_ref().map(|p| &p.name),
                             "Extracted text"
                         );
                         // Hand off to the index stage before settling this

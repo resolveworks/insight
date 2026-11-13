@@ -5,20 +5,10 @@ use serde::{Deserialize, Serialize};
 
 /// Identifies the parser that produced an extraction.
 ///
-/// `name` must not contain `/` or `@`; it is part of an iroh-docs key.
-/// `version` is maintained by the parser and must be bumped when its output
-/// changes.
+/// `name` must not contain `/`; it is part of an iroh-docs key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParserId {
     pub name: String,
-    pub version: String,
-}
-
-impl ParserId {
-    /// The parser's identity as used in extraction keys: `{name}@{version}`.
-    pub fn key(&self) -> String {
-        format!("{}@{}", self.name, self.version)
-    }
 }
 
 /// A byte range in an extraction's text.

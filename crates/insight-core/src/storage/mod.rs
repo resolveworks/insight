@@ -32,7 +32,7 @@ pub use sharing::{
 // =============================================================================
 //
 // Document entries follow the pattern: files/{doc_id}/{part}
-// where part is one of: meta, source, extractions/{parser_key}.
+// where part is one of: meta, source, extractions/{parser}.
 // A document's id is the BLAKE3 hash iroh computed for its source blob.
 //
 // This structure ensures iroh-docs syncs all parts automatically.
@@ -78,10 +78,7 @@ pub fn doc_source_key(doc_id: &str) -> String {
 pub fn doc_extraction_key(doc_id: &str, parser: &ParserId) -> String {
     format!(
         "{}{}{}{}",
-        FILES_PREFIX,
-        doc_id,
-        EXTRACTIONS_SEGMENT,
-        parser.key()
+        FILES_PREFIX, doc_id, EXTRACTIONS_SEGMENT, parser.name
     )
 }
 
@@ -113,7 +110,7 @@ pub struct CollectionMetadata {
 ///
 /// The actual content is stored in separate entries:
 /// - `files/{id}/source` - original file bytes (PDF, etc.)
-/// - `files/{id}/extractions/{parser_key}` - one extraction per parser
+/// - `files/{id}/extractions/{parser}` - one extraction per parser
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentMetadata {
     pub id: String,
@@ -918,7 +915,7 @@ impl Storage {
             doc.close().await?;
             anyhow::bail!(
                 "Extraction {} not found for document {}",
-                parser.key(),
+                parser.name,
                 doc_id
             );
         }
@@ -1333,7 +1330,7 @@ impl Storage {
 
     /// Commit an extraction produced from [`Self::extraction_input`].
     ///
-    /// Writes `files/{id}/extractions/{parser_key}` and selects it canonical
+    /// Writes `files/{id}/extractions/{parser}` and selects it canonical
     /// when the document has no canonical extraction yet. A document deleted
     /// while extraction was running yields [`CommitOutcome::DocumentGone`]
     /// without recreating any of its entries.
@@ -1525,7 +1522,6 @@ mod tests {
     fn parser(name: &str) -> ParserId {
         ParserId {
             name: name.to_string(),
-            version: "1".to_string(),
         }
     }
 

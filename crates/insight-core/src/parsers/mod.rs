@@ -125,7 +125,6 @@ mod tests {
         fn id(&self) -> ParserId {
             ParserId {
                 name: "stub".to_string(),
-                version: "1".to_string(),
             }
         }
 
@@ -152,7 +151,6 @@ mod tests {
         fn id(&self) -> ParserId {
             ParserId {
                 name: "duplicate-mime".to_string(),
-                version: "1".to_string(),
             }
         }
 
@@ -174,7 +172,6 @@ mod tests {
         fn id(&self) -> ParserId {
             ParserId {
                 name: "duplicate-extension".to_string(),
-                version: "1".to_string(),
             }
         }
 

@@ -706,7 +706,6 @@ mod tests {
 
         let parser = ParserId {
             name: "test".to_string(),
-            version: "1".to_string(),
         };
         let extraction = Extraction {
             parser: parser.clone(),
@@ -910,7 +909,6 @@ mod tests {
             .unwrap();
         let parser = ParserId {
             name: "test".to_string(),
-            version: "1".to_string(),
         };
         let extraction = Extraction {
             parser: parser.clone(),

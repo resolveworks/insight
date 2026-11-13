@@ -383,7 +383,7 @@ mod tests {
         for key in [
             "files/doc1/source",
             "files/doc1/meta",
-            "files/doc1/extractions/test@1",
+            "files/doc1/extractions/test",
             "_collection",
         ] {
             handle_event(
@@ -412,7 +412,7 @@ mod tests {
         for key in [
             "files/doc1/meta",
             "files/doc1/source",
-            "files/doc1/extractions/test@1",
+            "files/doc1/extractions/test",
         ] {
             handle_event(
                 &insert_remote(namespace, key, ContentStatus::Complete),
@@ -494,11 +494,7 @@ mod tests {
         let event = LiveEvent::InsertRemote {
             from: SecretKey::generate().public(),
             entry: Entry::new(
-                RecordIdentifier::new(
-                    namespace,
-                    AuthorId::default(),
-                    b"files/doc1/extractions/p@1",
-                ),
+                RecordIdentifier::new(namespace, AuthorId::default(), b"files/doc1/extractions/p"),
                 Record::new(content_hash, 17, 0),
             ),
             content_status: ContentStatus::Missing,
