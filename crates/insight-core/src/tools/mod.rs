@@ -20,7 +20,7 @@ use tokio::sync::RwLock;
 
 use crate::search;
 use crate::storage::Storage;
-use crate::text::Extraction;
+use crate::text::{char_to_byte, source_range, SourceRange};
 
 /// Per-run state shared by the document tools.
 #[derive(Clone)]
@@ -69,62 +69,6 @@ fn namespace(state: &ToolState) -> Result<iroh_docs::NamespaceId, ToolExecutionE
                 state.collection_id
             ))
         })
-}
-
-/// Convert a zero-based character offset to a UTF-8 byte offset.
-///
-/// `Some(text.len())` is returned for an offset equal to the character count.
-fn char_to_byte(text: &str, char_offset: usize) -> Option<usize> {
-    if char_offset == 0 {
-        return Some(0);
-    }
-    if let Some((byte, _)) = text.char_indices().nth(char_offset) {
-        return Some(byte);
-    }
-    (char_offset == text.chars().count()).then_some(text.len())
-}
-
-/// Inclusive source unit numbers (pages) covering the character range.
-fn source_range(
-    extraction: &Extraction,
-    text: &str,
-    start_char: usize,
-    end_char: usize,
-) -> Option<SourceRange> {
-    let start_byte = char_to_byte(text, start_char)?;
-    let end_byte = char_to_byte(text, end_char)?;
-    if end_byte <= start_byte {
-        return None;
-    }
-
-    let mut range: Option<SourceRange> = None;
-    for unit in &extraction.units {
-        let overlaps = unit
-            .spans
-            .iter()
-            .any(|span| span.start < end_byte && span.end > start_byte);
-        if overlaps {
-            match &mut range {
-                Some(range) => range.end = unit.number,
-                None => {
-                    range = Some(SourceRange {
-                        start: unit.number,
-                        end: unit.number,
-                    })
-                }
-            }
-        }
-    }
-    range
-}
-
-/// An inclusive range of source units (pages) in an extraction.
-#[derive(Debug, Clone, Serialize)]
-pub struct SourceRange {
-    /// First source unit number.
-    pub start: usize,
-    /// Last source unit number.
-    pub end: usize,
 }
 
 // ==================== search ====================

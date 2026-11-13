@@ -56,3 +56,63 @@ impl Extraction {
         (self.unit_kind == Some(UnitKind::Page)).then_some(self.units.len())
     }
 }
+
+/// Convert a zero-based character offset to a UTF-8 byte offset.
+///
+/// Returns `Some(text.len())` for an offset equal to the character count.
+pub(crate) fn char_to_byte(text: &str, char_offset: usize) -> Option<usize> {
+    if char_offset == 0 {
+        return Some(0);
+    }
+    if let Some((byte, _)) = text.char_indices().nth(char_offset) {
+        return Some(byte);
+    }
+    (char_offset == text.chars().count()).then_some(text.len())
+}
+
+/// An inclusive range of source unit numbers (pages) in an extraction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceRange {
+    /// First source unit number.
+    pub start: usize,
+    /// Last source unit number.
+    pub end: usize,
+}
+
+/// Inclusive source unit numbers (pages) covering a character range.
+///
+/// `text` is the text the character offsets index into; it is normally the
+/// extraction's own text. Returns `None` when the range is empty or no unit
+/// span overlaps it.
+pub fn source_range(
+    extraction: &Extraction,
+    text: &str,
+    start_char: usize,
+    end_char: usize,
+) -> Option<SourceRange> {
+    let start_byte = char_to_byte(text, start_char)?;
+    let end_byte = char_to_byte(text, end_char)?;
+    if end_byte <= start_byte {
+        return None;
+    }
+
+    let mut range: Option<SourceRange> = None;
+    for unit in &extraction.units {
+        let overlaps = unit
+            .spans
+            .iter()
+            .any(|span| span.start < end_byte && span.end > start_byte);
+        if overlaps {
+            match &mut range {
+                Some(range) => range.end = unit.number,
+                None => {
+                    range = Some(SourceRange {
+                        start: unit.number,
+                        end: unit.number,
+                    })
+                }
+            }
+        }
+    }
+    range
+}
