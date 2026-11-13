@@ -31,6 +31,32 @@ export interface DeletedDocument {
 	deleted_at: string;
 }
 
+/** An inclusive range of source page numbers. */
+export interface SourceRange {
+	start: number;
+	end: number;
+}
+
+/** One occurrence of a searched phrase in a document's content. */
+export interface DocumentSearchMatch {
+	/** The exact matched substring. */
+	content: string;
+	/** Zero-based Unicode character offset of the match in the extraction. */
+	offset: number;
+	/** Unicode character offset one past the match. */
+	next_offset: number;
+	/** Inclusive source pages covered by the match, when the extraction maps pages. */
+	source_range: SourceRange | null;
+}
+
+/** Every literal phrase match within one document. */
+export interface DocumentSearchResults {
+	/** Whether part of the document is outside the search index's coverage. */
+	partially_indexed: boolean;
+	/** Matches in content order. */
+	matches: DocumentSearchMatch[];
+}
+
 /** Per-stage progress counts. */
 export interface StageProgress {
 	pending: number;

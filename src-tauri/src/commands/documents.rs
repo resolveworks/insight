@@ -52,6 +52,63 @@ pub struct ImportOutcome {
     pub failures: Vec<ImportFailure>,
 }
 
+/// Every literal phrase match within one document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSearchResultsInfo {
+    /// Whether part of the document is outside the search index's coverage.
+    pub partially_indexed: bool,
+    /// Matches in content order.
+    pub matches: Vec<DocumentSearchMatchInfo>,
+}
+
+/// One occurrence of a searched phrase in a document's content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSearchMatchInfo {
+    /// The exact matched substring.
+    pub content: String,
+    /// Zero-based Unicode character offset of the match in the extraction.
+    pub offset: usize,
+    /// Unicode character offset one past the match.
+    pub next_offset: usize,
+    /// Inclusive source pages covered by the match, when the extraction maps
+    /// pages.
+    pub source_range: Option<SourceRangeInfo>,
+}
+
+/// An inclusive range of source page numbers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceRangeInfo {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl From<insight_core::search::DocumentSearchResults> for DocumentSearchResultsInfo {
+    fn from(results: insight_core::search::DocumentSearchResults) -> Self {
+        Self {
+            partially_indexed: results.partially_indexed,
+            matches: results
+                .matches
+                .into_iter()
+                .map(DocumentSearchMatchInfo::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<insight_core::search::DocumentSearchMatch> for DocumentSearchMatchInfo {
+    fn from(matched: insight_core::search::DocumentSearchMatch) -> Self {
+        Self {
+            content: matched.content,
+            offset: matched.offset,
+            next_offset: matched.next_offset,
+            source_range: matched.source_range.map(|range| SourceRangeInfo {
+                start: range.start,
+                end: range.end,
+            }),
+        }
+    }
+}
+
 /// Start importing files into a collection.
 ///
 /// Runs the store stage of the event-driven import pipeline:
@@ -204,6 +261,41 @@ pub async fn get_document_text(
         .ok_or(CommandError::text_not_found())?;
 
     Ok(extraction.text)
+}
+
+/// Search one document's indexed content for a literal phrase
+///
+/// Returns every occurrence in content order. Matches come from the search
+/// index only: content outside its coverage is not scanned.
+#[tauri::command]
+pub async fn search_document(
+    collection_id: CollectionId,
+    document_id: String,
+    query: String,
+    state: State<'_, AppState>,
+) -> CommandResult<DocumentSearchResultsInfo> {
+    let storage = state.storage.read().await;
+
+    let namespace_id = collection_id.namespace();
+    let collection_id = namespace_id.to_string();
+    let extraction = storage
+        .get_canonical_extraction(namespace_id, &document_id)
+        .await
+        .storage_err()?
+        .ok_or(CommandError::text_not_found())?;
+
+    let results = insight_core::search::search_document(
+        &state.search,
+        insight_core::search::DocumentSearchParams {
+            query: &query,
+            collection_id: &collection_id,
+            document_id: &document_id,
+            extraction: &extraction,
+        },
+    )
+    .storage_err()?;
+
+    Ok(results.into())
 }
 
 /// Get a document's original source file bytes
