@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/svelte';
+import {
+	render,
+	screen,
+	cleanup,
+	fireEvent,
+	waitFor,
+} from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { page } from '$app/state';
@@ -13,14 +19,6 @@ import type { Document } from '#lib/types/documents.js';
 vi.mock('@tauri-apps/api/event', () => ({
 	listen: vi.fn(async () => () => {}),
 }));
-
-/**
- * A source read that never settles: the viewer only mounts once the source arrives, and a real
- * PDF engine has no business running in these tests.
- */
-function pendingSource() {
-	return new Promise<ArrayBuffer>(() => {});
-}
 
 const collection = {
 	id: 'col1',
@@ -90,7 +88,6 @@ describe('Document detail page', () => {
 	it('names the document with a second-level content heading', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage();
@@ -104,7 +101,6 @@ describe('Document detail page', () => {
 	it('links back to the documents list above the title', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage();
@@ -119,7 +115,6 @@ describe('Document detail page', () => {
 	it('summarises the document under its title', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage({ page_count: 1, tags: ['budget', 'eu'] });
@@ -134,11 +129,9 @@ describe('Document detail page', () => {
 	it('renders the extracted document text', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage();
-		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
 
 		expect(await screen.findByText('Extracted text')).toBeVisible();
 	});
@@ -146,7 +139,6 @@ describe('Document detail page', () => {
 	it('warns that search covers only part of a partially indexed document', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage({ partially_indexed: true });
@@ -162,11 +154,9 @@ describe('Document detail page', () => {
 	it('shows no partial-index warning when coverage is full', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage({ partially_indexed: false });
-		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
 
 		expect(await screen.findByText('Extracted text')).toBeVisible();
 		expect(screen.queryByText('Partially searchable')).not.toBeInTheDocument();
@@ -175,78 +165,74 @@ describe('Document detail page', () => {
 	it('shows no partial-index warning while coverage is unknown', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
 		});
 
 		renderPage({ partially_indexed: null });
-		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
 
 		expect(await screen.findByText('Extracted text')).toBeVisible();
 		expect(screen.queryByText('Partially searchable')).not.toBeInTheDocument();
 	});
 });
 
-describe('Document detail source and text tabs', () => {
-	function tabPanel(id: 'source-panel' | 'text-panel') {
-		const panel = document.getElementById(id);
-		if (!panel) throw new Error(`Missing tab panel #${id}`);
-		return panel;
-	}
-
-	it('shows source and text tabs with the source selected', async () => {
-		mockIPC((cmd) => {
+describe('Document detail open original', () => {
+	it('opens the original and disables the button while the request is pending', async () => {
+		let resolveOpen!: () => void;
+		const opened: unknown[] = [];
+		mockIPC((cmd, payload) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
+			if (cmd === 'open_document_original') {
+				opened.push(payload);
+				return new Promise<void>((resolve) => {
+					resolveOpen = resolve;
+				});
+			}
 		});
 
 		renderPage();
 
-		const sourceTab = await screen.findByRole('tab', { name: 'Source' });
-		const textTab = screen.getByRole('tab', { name: 'Text' });
-		expect(sourceTab).toHaveAttribute('aria-selected', 'true');
-		expect(textTab).toHaveAttribute('aria-selected', 'false');
-		expect(tabPanel('text-panel')).toHaveAttribute('hidden');
+		const open = await screen.findByRole('button', { name: 'Open original' });
+		expect(open).toBeEnabled();
+
+		await userEvent.click(open);
+
+		await waitFor(() => expect(open).toBeDisabled());
+		expect(opened).toEqual([{ collectionId: 'col1', documentId: 'doc1' }]);
+
+		resolveOpen();
+		await waitFor(() => expect(open).toBeEnabled());
 	});
 
-	it('switches to the extraction and back to the source', async () => {
+	it('shows a clear error when opening the original fails', async () => {
 		mockIPC((cmd) => {
 			if (cmd === 'get_document_text') return 'Extracted text';
-			if (cmd === 'get_document_source') return pendingSource();
+			if (cmd === 'open_document_original') {
+				throw { code: 'not_found', message: 'Original file is missing' };
+			}
 		});
 
 		renderPage();
 
-		await userEvent.click(await screen.findByRole('tab', { name: 'Text' }));
-
-		expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute(
-			'aria-selected',
-			'true',
+		await userEvent.click(
+			await screen.findByRole('button', { name: 'Open original' }),
 		);
-		expect(await screen.findByText('Extracted text')).toBeVisible();
-		expect(tabPanel('source-panel')).toHaveAttribute('hidden');
 
-		await userEvent.click(screen.getByRole('tab', { name: 'Source' }));
-
-		expect(screen.getByRole('tab', { name: 'Source' })).toHaveAttribute(
-			'aria-selected',
-			'true',
+		expect(await screen.findByRole('alert')).toHaveTextContent(
+			'Failed to open original: Original file is missing',
 		);
-		expect(tabPanel('source-panel')).not.toHaveAttribute('hidden');
-		expect(tabPanel('text-panel')).toHaveAttribute('hidden');
 	});
 
-	it('renders text without tabs and never reads the source', async () => {
-		const commands: string[] = [];
+	it('stays available when extraction is unavailable', async () => {
 		mockIPC((cmd) => {
-			commands.push(cmd);
-			if (cmd === 'get_document_text') return 'Extracted text';
+			if (cmd === 'get_document_text') {
+				throw { code: 'not_extracted', message: 'Extraction is running' };
+			}
 		});
 
-		renderPage({ name: 'notes.txt', file_type: 'text/plain' });
+		renderPage({ partially_indexed: null });
 
-		expect(await screen.findByText('Extracted text')).toBeVisible();
-		expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
-		expect(commands).not.toContain('get_document_source');
+		expect(
+			await screen.findByRole('button', { name: 'Open original' }),
+		).toBeEnabled();
 	});
 });
 
@@ -263,7 +249,6 @@ describe('Document detail search', () => {
 		const searches: unknown[] = [];
 		mockIPC((cmd, payload) => {
 			if (cmd === 'get_document_text') return text;
-			if (cmd === 'get_document_source') return pendingSource();
 			if (cmd === 'search_document') {
 				searches.push(payload);
 				return handler(payload);
@@ -272,9 +257,9 @@ describe('Document detail search', () => {
 		return searches;
 	}
 
-	it('runs a deep-linked search immediately, selects its hit and opens Text', async () => {
+	it('runs a deep-linked search immediately and highlights its hit in the text', async () => {
 		page.url = new URL(
-			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2&view=text',
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2',
 		);
 		const searches = mockSearch();
 
@@ -284,28 +269,9 @@ describe('Document detail search', () => {
 		expect(searches).toEqual([
 			{ collectionId: 'col1', documentId: 'doc1', query: 'needle' },
 		]);
-		expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute(
-			'aria-selected',
-			'true',
-		);
 		const marks = document.querySelectorAll('mark');
 		expect(marks).toHaveLength(3);
 		expect(marks[1]).toHaveAttribute('data-active', 'true');
-	});
-
-	it('keeps Source selected for a query deep link without a view', async () => {
-		page.url = new URL(
-			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2',
-		);
-		mockSearch();
-
-		renderPage({ partially_indexed: false });
-
-		expect(await screen.findByText('2 of 3')).toBeVisible();
-		expect(screen.getByRole('tab', { name: 'Source' })).toHaveAttribute(
-			'aria-selected',
-			'true',
-		);
 	});
 
 	it('searches after manual typing settles and resets the URL hit', async () => {
@@ -320,7 +286,6 @@ describe('Document detail search', () => {
 
 		expect(page.url.searchParams.get('q')).toBe('needle');
 		expect(page.url.searchParams.has('hit')).toBe(false);
-		expect(page.url.searchParams.has('page')).toBe(false);
 		expect(replaceState).toHaveBeenCalled();
 
 		await vi.advanceTimersByTimeAsync(200);
@@ -334,7 +299,7 @@ describe('Document detail search', () => {
 
 	it('clears the query without searching and disables navigation', async () => {
 		page.url = new URL(
-			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2&view=text',
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=2',
 		);
 		const searches = mockSearch();
 		renderPage({ partially_indexed: false });
@@ -354,7 +319,7 @@ describe('Document detail search', () => {
 
 	it('wraps previous and next navigation while replacing the URL', async () => {
 		page.url = new URL(
-			'http://localhost/collections/col1/documents/doc1?q=needle&hit=1&view=text&page=2',
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=1',
 		);
 		mockSearch();
 		renderPage({ partially_indexed: false });
@@ -365,8 +330,6 @@ describe('Document detail search', () => {
 		expect(await screen.findByText('2 of 3')).toBeVisible();
 		expect(page.url.searchParams.get('hit')).toBe('2');
 		expect(page.url.searchParams.get('q')).toBe('needle');
-		expect(page.url.searchParams.get('view')).toBe('text');
-		expect(page.url.searchParams.has('page')).toBe(false);
 
 		await userEvent.click(
 			screen.getByRole('button', { name: 'Previous match' }),
@@ -382,7 +345,7 @@ describe('Document detail search', () => {
 
 	it('shows no matches and disables navigation', async () => {
 		page.url = new URL(
-			'http://localhost/collections/col1/documents/doc1?q=missing&view=text',
+			'http://localhost/collections/col1/documents/doc1?q=missing',
 		);
 		mockSearch(() => ({ partially_indexed: false, matches: [] }));
 		renderPage({ partially_indexed: false });
@@ -414,7 +377,7 @@ describe('Document detail search', () => {
 
 	it('selects the first match when the requested hit is out of range', async () => {
 		page.url = new URL(
-			'http://localhost/collections/col1/documents/doc1?q=needle&hit=9&view=text',
+			'http://localhost/collections/col1/documents/doc1?q=needle&hit=9',
 		);
 		mockSearch();
 		renderPage({ partially_indexed: false });

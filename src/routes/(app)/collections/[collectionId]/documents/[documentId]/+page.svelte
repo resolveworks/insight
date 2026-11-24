@@ -4,64 +4,45 @@
 	import { resolve } from '$app/paths';
 	import { onMount, untrack } from 'svelte';
 	import Alert from '#lib/components/Alert.svelte';
+	import Button from '#lib/components/Button.svelte';
 	import ButtonLink from '#lib/components/ButtonLink.svelte';
 	import DocumentSearch from '#lib/components/DocumentSearch.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import DocumentText from '#lib/components/DocumentText.svelte';
 	import Page from '#lib/components/Page.svelte';
 	import TagList from '#lib/components/TagList.svelte';
-	import { getDocumentText, searchDocument } from '#lib/api/document.js';
+	import {
+		getDocumentText,
+		openDocumentOriginal,
+		searchDocument,
+	} from '#lib/api/document.js';
 	import { describeError } from '#lib/api/provider.js';
 	import { formatTimestamp } from '#lib/format.js';
-	import { rendererFor } from '#lib/renderers/index.js';
 	import type { DocumentSearchResults } from '#lib/types/documents.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 
-	type Tab = 'source' | 'text';
-	type PageUrl = typeof page.url;
-
-	function requestedHit(url: PageUrl): number {
+	function requestedHit(url: typeof page.url): number {
 		const raw = url.searchParams.get('hit');
 		if (raw === null) return 1;
 		const parsed = Number(raw);
 		return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
 	}
 
-	function requestedTab(url: PageUrl): Tab {
-		return url.searchParams.get('view') === 'text' ? 'text' : 'source';
-	}
-
 	let content = $state<string | null>(null);
 	let loadingContent = $state(false);
 	let contentError = $state<string | null>(null);
-	let activeTab = $state<Tab>(requestedTab(page.url));
 	let query = $state(page.url.searchParams.get('q') ?? '');
 	let results = $state<DocumentSearchResults | null>(null);
 	let activeHit = $state(0);
 	let searching = $state(false);
 	let searchError = $state<string | null>(null);
+	let openingOriginal = $state(false);
+	let openOriginalError = $state<string | null>(null);
 
 	const collectionId = $derived(data.collection.id);
 	const documentId = $derived(data.document.id);
-	const renderer = $derived(rendererFor(data.document.file_type));
-
-	const requestedPage = $derived.by(() => {
-		const raw = page.url.searchParams.get('page');
-		if (raw === null) return null;
-		const parsed = Number(raw);
-		return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-	});
-
-	let syncedUrl: string | undefined;
-
-	$effect(() => {
-		const href = page.url.href;
-		if (href === syncedUrl) return;
-		syncedUrl = href;
-		activeTab = requestedTab(page.url);
-	});
 
 	let searchRequest = 0;
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -137,7 +118,6 @@
 			if (value === '') url.searchParams.delete('q');
 			else url.searchParams.set('q', value);
 			url.searchParams.delete('hit');
-			url.searchParams.delete('page');
 		});
 
 		if (value.trim() === '') return;
@@ -158,16 +138,19 @@
 		activeHit = (activeHit + step + matches.length) % matches.length;
 		updateUrl((url) => {
 			url.searchParams.set('hit', String(activeHit + 1));
-			url.searchParams.delete('page');
 		});
 	}
 
-	function selectTab(tab: Tab) {
-		activeTab = tab;
-		updateUrl((url) => {
-			if (tab === 'text') url.searchParams.set('view', 'text');
-			else url.searchParams.delete('view');
-		});
+	async function openOriginal() {
+		openingOriginal = true;
+		openOriginalError = null;
+		try {
+			await openDocumentOriginal(collectionId, documentId);
+		} catch (e) {
+			openOriginalError = `Failed to open original: ${describeError(e)}`;
+		} finally {
+			openingOriginal = false;
+		}
 	}
 
 	onMount(async () => {
@@ -184,16 +167,26 @@
 	});
 </script>
 
-<Page measure={renderer ? 'wide' : 'prose'}>
+<Page measure="prose">
 	<div>
-		<ButtonLink
-			href={resolve(`collections/${collectionId}/documents`)}
-			variant="outline"
-			size="sm"
-		>
-			<Icon name="arrow-left" size="sm" />
-			Back to documents
-		</ButtonLink>
+		<div class="flex flex-wrap items-center gap-2">
+			<ButtonLink
+				href={resolve(`collections/${collectionId}/documents`)}
+				variant="outline"
+				size="sm"
+			>
+				<Icon name="arrow-left" size="sm" />
+				Back to documents
+			</ButtonLink>
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={openingOriginal}
+				onclick={openOriginal}
+			>
+				Open original
+			</Button>
+		</div>
 		<h2 class="truncate text-xl font-semibold text-neutral-800">
 			{data.document.name}
 		</h2>
@@ -214,6 +207,10 @@
 			{/if}
 		</div>
 	</div>
+
+	{#if openOriginalError}
+		<Alert>{openOriginalError}</Alert>
+	{/if}
 
 	{#if data.document.partially_indexed === true}
 		<Alert variant="warning">
@@ -238,80 +235,12 @@
 		onclear={clearSearch}
 	/>
 
-	{#if renderer}
-		<div role="tablist" class="flex gap-1 border-b border-neutral-200">
-			<button
-				type="button"
-				role="tab"
-				id="source-tab"
-				aria-selected={activeTab === 'source'}
-				aria-controls="source-panel"
-				class="-mb-px border-b-2 px-4 py-2 text-sm font-medium {activeTab ===
-				'source'
-					? 'border-neutral-800 text-neutral-800'
-					: 'border-transparent text-neutral-500 hover:text-neutral-700'}"
-				onclick={() => selectTab('source')}
-			>
-				Source
-			</button>
-			<button
-				type="button"
-				role="tab"
-				id="text-tab"
-				aria-selected={activeTab === 'text'}
-				aria-controls="text-panel"
-				class="-mb-px border-b-2 px-4 py-2 text-sm font-medium {activeTab ===
-				'text'
-					? 'border-neutral-800 text-neutral-800'
-					: 'border-transparent text-neutral-500 hover:text-neutral-700'}"
-				onclick={() => selectTab('text')}
-			>
-				Text
-			</button>
-		</div>
-
-		<div
-			role="tabpanel"
-			id="source-panel"
-			aria-labelledby="source-tab"
-			hidden={activeTab !== 'source'}
-		>
-			{#await renderer.load() then Renderer}
-				<Renderer
-					{collectionId}
-					{documentId}
-					page={requestedPage}
-					{query}
-					{activeHit}
-					visible={activeTab === 'source'}
-				/>
-			{/await}
-		</div>
-
-		<div
-			role="tabpanel"
-			id="text-panel"
-			aria-labelledby="text-tab"
-			hidden={activeTab !== 'text'}
-			class="mx-auto max-w-2xl"
-		>
-			<DocumentText
-				{content}
-				error={contentError}
-				loading={loadingContent}
-				matches={results?.matches ?? []}
-				{activeHit}
-				visible={activeTab === 'text'}
-			/>
-		</div>
-	{:else}
-		<DocumentText
-			{content}
-			error={contentError}
-			loading={loadingContent}
-			matches={results?.matches ?? []}
-			{activeHit}
-			visible={true}
-		/>
-	{/if}
+	<DocumentText
+		{content}
+		error={contentError}
+		loading={loadingContent}
+		matches={results?.matches ?? []}
+		{activeHit}
+		visible={true}
+	/>
 </Page>
