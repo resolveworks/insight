@@ -42,16 +42,12 @@ export async function searchDocument(
 	});
 }
 
-/** Read a document's original source bytes. */
-export async function getDocumentSource(
+/** Open a document's stored original in the OS default handler. */
+export async function openDocumentOriginal(
 	collectionId: string,
 	documentId: string,
-): Promise<Uint8Array> {
-	const buffer = await invoke<ArrayBuffer>('get_document_source', {
-		collectionId,
-		documentId,
-	});
-	return new Uint8Array(buffer);
+): Promise<void> {
+	await invoke('open_document_original', { collectionId, documentId });
 }
 
 /** List a collection's deleted documents. */

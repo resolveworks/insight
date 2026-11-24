@@ -12,10 +12,10 @@ import {
 } from './collection';
 import {
 	deleteDocument,
-	getDocumentSource,
 	getPipelineProgress,
 	listDeletedDocuments,
 	listDocuments,
+	openDocumentOriginal,
 	startImport,
 	undeleteDocument,
 } from './document';
@@ -187,20 +187,20 @@ describe('Document commands', () => {
 		expect(invalidate).toHaveBeenCalledWith('app:collection:col1');
 	});
 
-	it('reads a document’s source bytes without re-reading anything', async () => {
-		const bytes = new TextEncoder().encode('%PDF-1.4');
+	it('opens a document’s original without re-reading anything', async () => {
+		const invoked: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 		mockIPC((cmd, args) => {
-			if (
-				cmd === 'get_document_source' &&
-				commandArgs(args).collectionId === 'col1' &&
-				commandArgs(args).documentId === 'doc1'
-			)
-				return bytes.buffer;
+			invoked.push({ cmd, args: commandArgs(args) });
+			if (cmd === 'open_document_original') return null;
 		});
 
-		const source = await getDocumentSource('col1', 'doc1');
-		expect(source).toBeInstanceOf(Uint8Array);
-		expect(Array.from(source)).toEqual(Array.from(bytes));
+		expect(await openDocumentOriginal('col1', 'doc1')).toBeUndefined();
+		expect(invoked).toEqual([
+			{
+				cmd: 'open_document_original',
+				args: { collectionId: 'col1', documentId: 'doc1' },
+			},
+		]);
 		expect(invalidate).not.toHaveBeenCalled();
 	});
 
