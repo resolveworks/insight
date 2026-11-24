@@ -10,7 +10,6 @@
 		loading: boolean;
 		matches: DocumentSearchMatch[];
 		activeHit: number;
-		visible: boolean;
 	}
 
 	interface Segment {
@@ -19,8 +18,7 @@
 		active: boolean;
 	}
 
-	let { content, error, loading, matches, activeHit, visible }: Props =
-		$props();
+	let { content, error, loading, matches, activeHit }: Props = $props();
 
 	let activeMark = $state<HTMLElement | null>(null);
 
@@ -106,9 +104,8 @@
 	);
 
 	$effect(() => {
-		const show = visible;
 		const mark = activeMark;
-		if (!show || !mark) return;
+		if (!mark) return;
 		mark.scrollIntoView({ block: 'center' });
 	});
 </script>
