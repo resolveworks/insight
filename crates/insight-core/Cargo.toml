@@ -21,9 +21,9 @@ iroh-gossip = "0.101"
 mupdf = { version = "0.8", default-features = false, features = ["base14-fonts", "html", "epub"] }
 
 # milli from meilisearch — full-text keyword search
-milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.56.1" }
+milli = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.58.0" }
 # milli's Settings::execute / indexer::index take &IpPolicy even without embedders
-http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.56.1", package = "http-client" }
+http-client = { git = "https://github.com/meilisearch/meilisearch.git", tag = "v1.58.0", package = "http-client" }
 bumpalo = "3"
 fst = "0.4.7"
 roaring = "0.11.5"

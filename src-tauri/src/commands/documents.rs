@@ -1,5 +1,8 @@
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 use super::CollectionId;
 use crate::core::{AppState, PipelineProgress};
@@ -298,29 +301,70 @@ pub async fn search_document(
     Ok(results.into())
 }
 
-/// Get a document's original source file bytes
+/// Open a document's stored original in the OS default handler.
+///
+/// The stored bytes are written to a cache copy named after the document's id
+/// and original extension, then opened. Imported and synced documents both
+/// have their source in storage and no filesystem path of their own.
 #[tauri::command]
-pub async fn get_document_source(
+pub async fn open_document_original(
     collection_id: CollectionId,
     document_id: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
-) -> CommandResult<tauri::ipc::Response> {
-    let storage = state.storage.read().await;
-    let namespace_id = collection_id.namespace();
+) -> CommandResult<()> {
+    let (metadata, source) = {
+        let storage = state.storage.read().await;
+        let namespace_id = collection_id.namespace();
 
-    storage
-        .get_document(namespace_id, &document_id)
-        .await
-        .storage_err()?
-        .ok_or(CommandError::document_not_found())?;
+        let metadata = storage
+            .get_document(namespace_id, &document_id)
+            .await
+            .storage_err()?
+            .ok_or(CommandError::document_not_found())?;
+        let source = storage
+            .get_document_source(namespace_id, &document_id)
+            .await
+            .storage_err()?
+            .ok_or(CommandError::source_not_available())?;
 
-    let source = storage
-        .get_document_source(namespace_id, &document_id)
-        .await
-        .storage_err()?
-        .ok_or(CommandError::source_not_available())?;
+        (metadata, source)
+    };
 
-    Ok(tauri::ipc::Response::new(source))
+    let path = write_original_copy(&app, &metadata, &source)?;
+    app.opener()
+        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| {
+            CommandError::external(format!(
+                "failed to open original {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(())
+}
+
+/// Write a document's stored source to a cache copy and return its path.
+///
+/// The copy is rewritten on every call so it always reflects the stored bytes.
+/// The cache file is named from the document id and the original name's
+/// extension because a document can arrive without a local source path.
+fn write_original_copy(
+    app: &tauri::AppHandle,
+    document: &insight_core::storage::DocumentMetadata,
+    source: &[u8],
+) -> CommandResult<PathBuf> {
+    let extension = Path::new(&document.name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .ok_or_else(|| CommandError::original_name_without_extension(&document.name))?;
+
+    let directory = app.path().app_cache_dir().internal_err()?.join("originals");
+    std::fs::create_dir_all(&directory)?;
+
+    let path = directory.join(format!("{}.{extension}", document.id));
+    std::fs::write(&path, source)?;
+    Ok(path)
 }
 
 /// Get the documents retained by reversible deletion in a collection
