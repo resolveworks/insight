@@ -241,6 +241,5 @@
 		loading={loadingContent}
 		matches={results?.matches ?? []}
 		{activeHit}
-		visible={true}
 	/>
 </Page>

@@ -16,19 +16,13 @@ function match(
 	};
 }
 
-function props(
-	content: string,
-	matches: DocumentSearchMatch[],
-	activeHit = 0,
-	visible = true,
-) {
+function props(content: string, matches: DocumentSearchMatch[], activeHit = 0) {
 	return {
 		content,
 		error: null,
 		loading: false,
 		matches,
 		activeHit,
-		visible,
 	};
 }
 
@@ -75,19 +69,24 @@ describe('DocumentText search highlights', () => {
 		expect(container.querySelector('pre')?.textContent).toBe(content);
 	});
 
-	it('scrolls the active match into view only while visible', async () => {
+	it('scrolls the active match into view', async () => {
 		const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
 		const content = 'alpha beta alpha';
 		const matches = [match(0, 5, 'alpha'), match(11, 16, 'alpha')];
 
-		const { rerender } = render(DocumentText, {
-			props: props(content, matches, 0, false),
+		const { container, rerender } = render(DocumentText, {
+			props: props(content, matches, 0),
 		});
-		expect(scrollIntoView).not.toHaveBeenCalled();
 
-		await rerender(props(content, matches, 1, true));
+		const marks = container.querySelectorAll('mark');
+		expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'center' });
+		expect(scrollIntoView.mock.instances.at(-1)).toBe(marks[0]);
 
-		expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+		await rerender(props(content, matches, 1));
+
+		expect(scrollIntoView.mock.instances.at(-1)).toBe(
+			container.querySelectorAll('mark')[1],
+		);
 	});
 
 	it('throws on unsorted match data', () => {
