@@ -17,6 +17,7 @@ pub enum CommandError {
     DocumentNotFound { message: String },
     TextNotFound { message: String },
     SourceNotAvailable { message: String },
+    OriginalNameWithoutExtension { message: String },
     CollectionNotFound { message: String },
     ConversationNotFound { message: String },
 
@@ -45,6 +46,12 @@ impl CommandError {
     pub fn source_not_available() -> Self {
         Self::SourceNotAvailable {
             message: "Source not available".to_string(),
+        }
+    }
+
+    pub fn original_name_without_extension(name: &str) -> Self {
+        Self::OriginalNameWithoutExtension {
+            message: format!("Original name \"{name}\" has no file extension"),
         }
     }
 
@@ -92,6 +99,7 @@ impl std::fmt::Display for CommandError {
             Self::DocumentNotFound { message } => write!(f, "{}", message),
             Self::TextNotFound { message } => write!(f, "{}", message),
             Self::SourceNotAvailable { message } => write!(f, "{}", message),
+            Self::OriginalNameWithoutExtension { message } => write!(f, "{}", message),
             Self::CollectionNotFound { message } => write!(f, "{}", message),
             Self::ConversationNotFound { message } => write!(f, "{}", message),
             Self::ProviderNotConfigured { message } => write!(f, "{}", message),

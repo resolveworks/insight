@@ -3767,8 +3767,8 @@ dependencies = [
 
 [[package]]
 name = "filter-parser"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "itertools 0.14.0",
  "levenshtein_automata",
@@ -3813,8 +3813,8 @@ dependencies = [
 
 [[package]]
 name = "flatten-serde-json"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "serde_json",
 ]
@@ -4984,8 +4984,8 @@ dependencies = [
 
 [[package]]
 name = "http-client"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "cidr",
  "hyper-util",
@@ -6140,8 +6140,8 @@ dependencies = [
 
 [[package]]
 name = "json-depth-checker"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "serde_json",
 ]
@@ -7289,8 +7289,8 @@ dependencies = [
 
 [[package]]
 name = "milli"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "arroy",
  "bbqueue",
@@ -7361,7 +7361,6 @@ dependencies = [
  "time",
  "tokenizers 0.22.2",
  "tracing",
- "twox-hash",
  "ureq 3.5.1",
  "url",
  "utoipa",
@@ -8646,8 +8645,8 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permissive-json-pointer"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "serde_json",
 ]
@@ -10247,8 +10246,8 @@ checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 
 [[package]]
 name = "routes"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "actix-web",
  "routes-macros",
@@ -10260,8 +10259,8 @@ dependencies = [
 
 [[package]]
 name = "routes-macros"
-version = "1.56.1"
-source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.56.1#421053d3f573efb3c1e5d857efb4e0408e599fd3"
+version = "1.58.0"
+source = "git+https://github.com/meilisearch/meilisearch.git?tag=v1.58.0#36dabf361a17c223e91cadc8ecf0378e90affc4b"
 dependencies = [
  "proc-macro2",
  "proc-macro2-diagnostics",
